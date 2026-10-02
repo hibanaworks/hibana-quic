@@ -1,5 +1,7 @@
 # Fixed-path zero-length peer connection IDs
 
+Historical document preserved from source `004a324`. It does not qualify the current full-owner tree; see the current README.
+
 The managed network profile accepts a peer whose authenticated initial source connection ID is empty. Outgoing Initial, Handshake and 1-RTT packets preserve that actual zero-length destination. This does not insert an empty or synthetic value into the nonzero `Cid`/`PeerCidTable` kernel.
 
 An explicit fixed-zero transmit target retains the real path reservation and adapter outcome. The path remains the original exact local/remote socket tuple, preserving anti-amplification, MTU, congestion/sent accounting, ECN and callback rollback. Authenticated transport parameters still have their actual values; the fixed-path policy is separate from `disable_active_migration`. A server-provided initial reset token is retained without a synthetic CID and can match only after an accepted send to the exact tuple.

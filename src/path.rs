@@ -617,6 +617,18 @@ impl<'a, const S: usize, const C: usize> Paths<'a, S, C> {
         r.validating = true;
         Ok(())
     }
+    /// Numeric address-only validation. The owning role must consume genuine
+    /// exact-address evidence before calling this; it never asserts MTU or
+    /// handshake completion and does not validate another tuple.
+    pub fn address_validated(&mut self, path: PathIdentity) -> Result<(), Error> {
+        let r = self.active_mut(path)?;
+        if r.probes.iter().flatten().any(|p| p.pending.is_some()) {
+            return Err(Error::PendingProbe);
+        }
+        r.budget.mark_validated()?;
+        r.address_validated = true;
+        Ok(())
+    }
     /// Bootstrap only from the handshake's actual address/MTU evidence. This is
     /// not an alternative for validating a migrated address.
     pub fn handshake_validated(&mut self, path: PathIdentity) -> Result<(), Error> {

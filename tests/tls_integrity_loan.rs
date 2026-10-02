@@ -342,8 +342,10 @@ fn dropping_affine_loan_retires_real_provider_and_absence_never_invents_a_budget
                     let loan = client.loan_integrity().await.unwrap().unwrap();
                     assert_eq!(loan.failed_packets().unwrap(), 0);
                     drop(loan);
+                    // Any subsequent request must observe closure; flight retrieval needs
+                    // no fabricated handshake-confirmation capability.
                     assert!(matches!(
-                        client.confirm_handshake().await,
+                        client.take_crypto_flight(128).await,
                         Err(tls_owner::ClientError::Closed)
                     ));
                 } else {

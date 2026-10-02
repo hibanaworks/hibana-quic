@@ -46,6 +46,8 @@ pub enum Rejection {
     Capacity,
     WrongPath,
     ClockWentBackwards,
+    AbandonmentPending,
+    InvalidSettlement,
 }
 impl From<accounting::AccountingError> for Rejection {
     fn from(e: accounting::AccountingError) -> Self {
@@ -239,6 +241,14 @@ impl ValidatedAck {
 }
 /// Real sent-ledger evidence for one newly acknowledged 1-RTT packet. A
 /// shared-space 0-RTT ACK or duplicate cannot manufacture key-update authority.
+/// ```compile_fail
+/// use hibana_quic::roles::recovery_owner::KeyAckGrant;
+/// let forged = KeyAckGrant { generation: 9, sent_packet_number: 0, received_key_generation: 0 };
+/// ```
+/// ```compile_fail
+/// use hibana_quic::roles::recovery_owner::KeyAckGrant;
+/// fn duplicate(grant: KeyAckGrant) { let first = grant; let second = grant; }
+/// ```
 #[derive(Debug)]
 pub struct KeyAckGrant {
     generation: u64,
@@ -267,6 +277,7 @@ pub struct AckResult<const L: usize> {
 pub struct LossGrant<const DOMAIN: u8> {
     generation: u64,
     metadata: PacketMetadata,
+    abandonment: Option<AbandonmentObligation>,
 }
 pub type LostPacket = LossGrant<0>;
 pub type PathLostPacket = LossGrant<1>;
@@ -280,6 +291,57 @@ impl<const D: u8> LossGrant<D> {
     pub const fn metadata(&self) -> PacketMetadata {
         self.metadata
     }
+}
+/// Settlement is minted only after the destination owner applies a loss.
+/// The domain is part of the type and the exact PN/path/serial are private.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AbandonmentObligation {
+    path: PathIdentity,
+    serial: u64,
+    packet: PacketNumber,
+}
+#[derive(Debug)]
+pub struct LossSettled<const DOMAIN: u8> {
+    generation: u64,
+    obligation: AbandonmentObligation,
+}
+pub type StreamLossSettled = LossSettled<0>;
+pub type PathLossSettled = LossSettled<1>;
+impl<const D: u8> LossGrant<D> {
+    pub(crate) fn abandonment_binding(&self) -> Option<(PathIdentity, u64)> {
+        self.abandonment.map(|o| (o.path, o.serial))
+    }
+    pub(crate) fn settle(self) -> Option<LossSettled<D>> {
+        self.abandonment.map(|obligation| LossSettled {
+            generation: self.generation,
+            obligation,
+        })
+    }
+}
+pub enum AbandonmentSettlement {
+    Stream(StreamLossSettled),
+    Path(PathLossSettled),
+}
+/// Released only after both owners have applied every required downstream loss.
+#[derive(Debug)]
+pub struct AbandonmentComplete {
+    grant: super::path_owner::PathAbandoned,
+}
+impl AbandonmentComplete {
+    pub const fn generation(&self) -> u64 {
+        self.grant.generation()
+    }
+    pub const fn path(&self) -> PathIdentity {
+        self.grant.path()
+    }
+    pub(crate) const fn serial(&self) -> u64 {
+        self.grant.serial()
+    }
+}
+struct PendingAbandonment<const L: usize> {
+    grant: super::path_owner::PathAbandoned,
+    stream: [Option<PacketNumber>; L],
+    path: [Option<PacketNumber>; L],
 }
 #[derive(Debug)]
 pub struct LossResult<const L: usize> {
@@ -344,6 +406,21 @@ impl<const D: u8> PtoGrant<D> {
         self.space
     }
 }
+/// Current probe duration, minted only by the Recovery owner after a timer
+/// update. Path may extend validation deadlines from this affine observation.
+#[derive(Debug)]
+pub struct PathProbeTimeoutGrant {
+    generation: u64,
+    pto_us: u64,
+}
+impl PathProbeTimeoutGrant {
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub const fn pto_us(&self) -> u64 {
+        self.pto_us
+    }
+}
 #[derive(Debug)]
 pub struct TimeoutResult {
     pub action: Option<TimeoutAction>,
@@ -375,9 +452,12 @@ pub enum Command<const B: usize> {
     },
     Flight(FlightCommand<B>),
     DiscardSpace(PacketNumberSpace),
-    RequeueSpace(PacketNumberSpace),
+    RetryReset(packet_authority::RecoveryRetryGrant),
     Reclaim(PacketNumberSpace),
     ResetPath(super::path_owner::RecoveryResetGrant),
+    AbandonPath(super::path_owner::PathAbandoned),
+    SettleAbandonment(AbandonmentSettlement),
+    FinishAbandonment,
     Timer(TimerCommand),
     KeyPto {
         max_ack_delay_us: u64,
@@ -404,6 +484,7 @@ pub struct EcnSnapshot {
 #[derive(Clone, Copy, Debug)]
 pub struct Snapshot {
     pub generation: u64,
+    pub active_path: Option<PathIdentity>,
     pub bytes_in_flight: u64,
     pub active_bytes_in_flight: u64,
     pub reserved_in_flight: u64,
@@ -415,6 +496,7 @@ pub struct Snapshot {
     pub smoothed_rtt_us: u64,
     pub min_rtt_us: Option<u64>,
     pub variation_us: u64,
+    pub base_pto_us: Result<u64, recovery::RecoveryError>,
     pub active_flights: usize,
     pub next_lost_flight: Option<FlightId>,
     pub probe_flights: [Option<FlightId>; 3],
@@ -446,16 +528,27 @@ pub enum Outcome<const L: usize, const B: usize> {
         space: PacketNumberSpace,
         bytes_removed: u64,
     },
-    SpaceRequeued {
-        space: PacketNumberSpace,
-        bytes_removed: u64,
+    RetryReset {
+        initial_bytes_removed: u64,
+        early_bytes_removed: u64,
+    },
+    RetryDeferred {
+        grant: packet_authority::RecoveryRetryGrant,
+        error: Rejection,
     },
     Reclaimed {
         space: PacketNumberSpace,
         floor: u64,
     },
     PathReset,
-    TimerUpdated,
+    AbandonmentStarted(LossResult<L>),
+    AbandonmentSettled,
+    PathAbandoned(AbandonmentComplete),
+    AbandonmentDeferred {
+        grant: super::path_owner::PathAbandoned,
+        error: Rejection,
+    },
+    TimerUpdated(PathProbeTimeoutGrant),
     KeyPto(u64),
     ZeroRttRejected {
         bytes_removed: u64,
@@ -491,6 +584,9 @@ pub struct RecoveryOwner<const L: usize, const F: usize, const B: usize, const R
     largest_acked: [Option<u64>; 3],
     path_acks: [Option<PathAckHigh>; L],
     loss_times: [Option<u64>; 3],
+    abandonment: Option<PendingAbandonment<L>>,
+    abandoned_epochs: [Option<u64>; super::path_owner::PATHS],
+    observed_epochs: [Option<u64>; super::path_owner::PATHS],
     last_now: Option<u64>,
     probe_epoch: u64,
     probe_space: Option<PacketNumberSpace>,
@@ -503,16 +599,20 @@ pub struct RecoveryOwner<const L: usize, const F: usize, const B: usize, const R
 }
 impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwner<L, F, B, R> {
     pub fn new(config: Config) -> Result<Self, Rejection> {
-        if config
-            .active_path
-            .is_some_and(|p| p.connection_generation != config.generation)
-        {
+        if config.active_path.is_some_and(|p| {
+            p.connection_generation != config.generation
+                || usize::from(p.slot) >= super::path_owner::PATHS
+        }) {
             return Err(Rejection::WrongPath);
         }
         if config.ecn.is_some_and(|p| {
             p.connection_generation != config.generation || config.active_path != Some(p)
         }) {
             return Err(Rejection::WrongPath);
+        }
+        let mut observed_epochs = [None; super::path_owner::PATHS];
+        if let Some(path) = config.active_path {
+            observed_epochs[usize::from(path.slot)] = Some(path.path_generation);
         }
         Ok(Self {
             ecn: config.ecn.map(crate::ecn::PathEcn::new),
@@ -529,6 +629,9 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
             largest_acked: [None; 3],
             path_acks: [None; L],
             loss_times: [None; 3],
+            abandonment: None,
+            abandoned_epochs: [None; super::path_owner::PATHS],
+            observed_epochs,
             last_now: None,
             probe_epoch: 0,
             probe_space: None,
@@ -537,9 +640,11 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
         })
     }
     fn active(&self, path: Option<PathIdentity>) -> bool {
-        self.config
-            .active_path
-            .is_none_or(|active| path == Some(active))
+        !path.is_some_and(|p| self.abandoned(p))
+            && self
+                .config
+                .active_path
+                .is_none_or(|active| path == Some(active))
     }
     fn active_flight(&self) -> u64 {
         self.config.active_path.map_or_else(
@@ -557,6 +662,7 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             generation: self.config.generation,
+            active_path: self.config.active_path,
             bytes_in_flight: self.sent.bytes_in_flight(),
             active_bytes_in_flight: self.active_flight(),
             reserved_in_flight: self.sent.reserved_in_flight(),
@@ -568,6 +674,7 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
             smoothed_rtt_us: self.rtt.smoothed_us(),
             min_rtt_us: self.rtt.min_us(),
             variation_us: self.rtt.variation_us(),
+            base_pto_us: self.rtt.pto_duration_us(0, 0),
             active_flights: self.flights.active_flights(),
             next_lost_flight: self.flights.next_lost(),
             probe_flights: SPACES.map(|s| self.flights.probe(s)),
@@ -592,6 +699,9 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
         }
     }
     fn reserve(&mut self, descriptor: Descriptor, plan: SendPlan) -> Result<SendTicket, Rejection> {
+        if self.abandonment.is_some() {
+            return Err(Rejection::AbandonmentPending);
+        }
         if plan.pto_probe
             && (self.probe_space != Some(plan.kind.space()) || self.probe_credits == 0)
         {
@@ -690,6 +800,7 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
         let (slot, pending) = self.pending(ticket)?;
         match path {
             Some(path) => {
+                self.check_path(path)?;
                 self.sent
                     .adapter_accepted_on_path(pending.reservation, now, ecn, path)?
             }
@@ -714,6 +825,9 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
                     self.ecn_disabled_error = Some(error);
                 }
             }
+        }
+        if let Some(path) = path {
+            self.observe_path(path);
         }
         self.pending[slot] = None;
         self.last_now = Some(now);
@@ -1004,15 +1118,52 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
                 metadata.map(|metadata| LossGrant {
                     generation: self.config.generation,
                     metadata,
+                    abandonment: None,
                 })
             }),
             path: candidates.map(|metadata| {
                 metadata.map(|metadata| LossGrant {
                     generation: self.config.generation,
                     metadata,
+                    abandonment: None,
                 })
             }),
         })
+    }
+    fn retry_reset(&mut self, grant: packet_authority::RecoveryRetryGrant) -> Outcome<L, B> {
+        let error = if grant.generation() != self.config.generation {
+            Some(Rejection::WrongPath)
+        } else if self.pending.iter().any(Option::is_some) {
+            Some(accounting::AccountingError::OutstandingPackets.into())
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            return Outcome::RetryDeferred { grant, error };
+        }
+        // Configuration was checked at owner construction. No adapter is
+        // pending, so each following bounded operation is infallible here.
+        let rtt = RttEstimator::new(self.config.initial_rtt_us)
+            .expect("validated recovery configuration");
+        let cc = NewReno::new(self.config.max_datagram_size)
+            .expect("validated congestion configuration");
+        let initial_bytes_removed = self
+            .space_change(PacketNumberSpace::Initial, true)
+            .expect("Retry preflight excludes pending Initial references");
+        let early_bytes_removed = self
+            .sent
+            .reject_zero_rtt()
+            .expect("Retry preflight excludes pending early references");
+        self.rtt = rtt;
+        self.cc = cc;
+        self.timer = RecoveryTimer::new();
+        self.loss_times = [None; 3];
+        self.probe_space = None;
+        self.probe_credits = 0;
+        Outcome::RetryReset {
+            initial_bytes_removed,
+            early_bytes_removed,
+        }
     }
     fn space_change(&mut self, space: PacketNumberSpace, requeue: bool) -> Result<u64, Rejection> {
         if space == PacketNumberSpace::ApplicationData {
@@ -1053,6 +1204,7 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
                 max_ack_delay_us,
             } => {
                 self.check_time(now)?;
+                let path_pto = self.rtt.pto_duration_us(max_ack_delay_us, 0)?;
                 let spaces = core::array::from_fn(|index| {
                     let at = self
                         .sent
@@ -1085,7 +1237,10 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
                     .update(now, &self.rtt, &spaces, context, max_ack_delay_us)?;
                 self.last_now = Some(now);
                 self.max_ack_delay_us = max_ack_delay_us;
-                Ok(Outcome::TimerUpdated)
+                Ok(Outcome::TimerUpdated(PathProbeTimeoutGrant {
+                    generation: self.config.generation,
+                    pto_us: path_pto,
+                }))
             }
             TimerCommand::Expire { now } => {
                 self.check_time(now)?;
@@ -1160,12 +1315,181 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
             }
         }
     }
-    fn reset_path(&mut self, path: Option<PathIdentity>) -> Result<(), Rejection> {
-        if path.is_some_and(|p| p.connection_generation != self.config.generation) {
+    fn abandoned(&self, path: PathIdentity) -> bool {
+        self.abandoned_epochs
+            .get(usize::from(path.slot))
+            .copied()
+            .flatten()
+            .is_some_and(|epoch| path.path_generation <= epoch)
+    }
+    fn check_path(&self, path: PathIdentity) -> Result<(), Rejection> {
+        if path.connection_generation != self.config.generation
+            || usize::from(path.slot) >= self.observed_epochs.len()
+            || self.abandoned(path)
+            || self.observed_epochs[usize::from(path.slot)]
+                .is_some_and(|epoch| path.path_generation < epoch)
+        {
             return Err(Rejection::WrongPath);
+        }
+        Ok(())
+    }
+    fn observe_path(&mut self, path: PathIdentity) {
+        let epoch = &mut self.observed_epochs[usize::from(path.slot)];
+        *epoch = Some(epoch.map_or(path.path_generation, |old| old.max(path.path_generation)));
+    }
+    fn begin_abandonment(&mut self, grant: super::path_owner::PathAbandoned) -> Outcome<L, B> {
+        let error = if grant.generation() != self.config.generation {
+            Some(Rejection::WrongPath)
+        } else if self.abandonment.is_some() {
+            Some(Rejection::AbandonmentPending)
+        } else if self.pending.iter().any(Option::is_some) {
+            Some(accounting::AccountingError::OutstandingPackets.into())
+        } else {
+            self.check_path(grant.path()).err()
+        };
+        if let Some(error) = error {
+            return Outcome::AbandonmentDeferred { grant, error };
+        }
+        let path = grant.path();
+        let serial = grant.serial();
+        let mut newly = [None; L];
+        for (index, sent) in self
+            .sent
+            .outstanding_sent()
+            .filter(|s| s.path == Some(path))
+            .enumerate()
+        {
+            let Some(kind) = self.sent.sent_kind(sent.packet) else {
+                return Outcome::AbandonmentDeferred {
+                    grant,
+                    error: Rejection::InvalidTicket,
+                };
+            };
+            newly[index] = Some(PacketMetadata { sent, kind });
+        }
+        // All candidates are actual outstanding accepted records. No arithmetic,
+        // allocation, clock change or external effect can fail after this point.
+        for metadata in newly.iter().flatten() {
+            self.sent
+                .declare_lost(metadata.sent.packet)
+                .expect("preflight outstanding ledger record");
+            self.flights.mark_lost(metadata.sent.packet);
+        }
+        self.observe_path(path);
+        self.abandoned_epochs[usize::from(path.slot)] = Some(path.path_generation);
+        if self.config.active_path == Some(path) {
+            self.timer = RecoveryTimer::new();
+            self.probe_space = None;
+            self.probe_credits = 0;
+        }
+        let required_stream = newly.map(|p| {
+            p.filter(|p| p.sent.packet.space == PacketNumberSpace::ApplicationData)
+                .map(|p| p.sent.packet)
+        });
+        let required_path = newly.map(|p| p.map(|p| p.sent.packet));
+        self.abandonment = Some(PendingAbandonment {
+            grant,
+            stream: required_stream,
+            path: required_path,
+        });
+        // Old-path abandonment is not congestion loss on the replacement path.
+        // No prefix reclaim: Lost originals remain available to actual late ACKs.
+        self.loss_times = [None; 3];
+        Outcome::AbandonmentStarted(LossResult {
+            newly,
+            loss_times: self.loss_times,
+            stream: newly.map(|p| {
+                p.filter(|p| p.sent.packet.space == PacketNumberSpace::ApplicationData)
+                    .map(|metadata| LossGrant {
+                        generation: self.config.generation,
+                        metadata,
+                        abandonment: Some(AbandonmentObligation {
+                            path,
+                            serial,
+                            packet: metadata.sent.packet,
+                        }),
+                    })
+            }),
+            path: newly.map(|p| {
+                p.map(|metadata| LossGrant {
+                    generation: self.config.generation,
+                    metadata,
+                    abandonment: Some(AbandonmentObligation {
+                        path,
+                        serial,
+                        packet: metadata.sent.packet,
+                    }),
+                })
+            }),
+        })
+    }
+    fn settle_abandonment(&mut self, settlement: AbandonmentSettlement) -> Result<(), Rejection> {
+        let (generation, obligation, stream) = match settlement {
+            AbandonmentSettlement::Stream(proof) => (proof.generation, proof.obligation, true),
+            AbandonmentSettlement::Path(proof) => (proof.generation, proof.obligation, false),
+        };
+        let pending = self
+            .abandonment
+            .as_mut()
+            .ok_or(Rejection::InvalidSettlement)?;
+        if generation != self.config.generation
+            || obligation.path != pending.grant.path()
+            || obligation.serial != pending.grant.serial()
+        {
+            return Err(Rejection::InvalidSettlement);
+        }
+        let required = if stream {
+            &mut pending.stream
+        } else {
+            &mut pending.path
+        };
+        let slot = required
+            .iter_mut()
+            .find(|slot| **slot == Some(obligation.packet))
+            .ok_or(Rejection::InvalidSettlement)?;
+        *slot = None;
+        Ok(())
+    }
+    fn finish_abandonment(&mut self) -> Result<AbandonmentComplete, Rejection> {
+        let pending = self
+            .abandonment
+            .as_ref()
+            .ok_or(Rejection::InvalidSettlement)?;
+        if pending
+            .stream
+            .iter()
+            .chain(&pending.path)
+            .any(Option::is_some)
+        {
+            return Err(Rejection::AbandonmentPending);
+        }
+        Ok(AbandonmentComplete {
+            grant: self
+                .abandonment
+                .take()
+                .ok_or(Rejection::InvalidSettlement)?
+                .grant,
+        })
+    }
+    fn reclaim(&mut self, space: PacketNumberSpace) -> Result<u64, Rejection> {
+        // Abandonment itself retains originals for late ACKs. This separate,
+        // explicit bounded-history operation may forget completed Lost records
+        // once their retransmission obligations have transferred to the owners.
+        // It advances the local floor, never fabricates an acknowledgment.
+        if self.abandonment.is_some() {
+            return Err(Rejection::AbandonmentPending);
+        }
+        Ok(self.sent.reclaim_completed_prefix(space)?)
+    }
+    fn reset_path(&mut self, path: Option<PathIdentity>) -> Result<(), Rejection> {
+        if let Some(path) = path {
+            self.check_path(path)?;
         }
         let rtt = RttEstimator::new(self.config.initial_rtt_us)?;
         let cc = NewReno::new(self.config.max_datagram_size)?;
+        if let Some(path) = path {
+            self.observe_path(path);
+        }
         self.config.active_path = path;
         self.rtt = rtt;
         self.cc = cc;
@@ -1181,7 +1505,20 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
         descriptor: Descriptor,
         command: Command<B>,
     ) -> Result<Outcome<L, B>, Rejection> {
+        if self.abandonment.is_some()
+            && !matches!(
+                &command,
+                Command::SettleAbandonment(_) | Command::FinishAbandonment | Command::Inspect
+            )
+        {
+            return Err(Rejection::AbandonmentPending);
+        }
         match command {
+            Command::AbandonPath(grant) => Ok(self.begin_abandonment(grant)),
+            Command::SettleAbandonment(proof) => self
+                .settle_abandonment(proof)
+                .map(|()| Outcome::AbandonmentSettled),
+            Command::FinishAbandonment => self.finish_abandonment().map(Outcome::PathAbandoned),
             Command::Reserve(plan) => self.reserve(descriptor, plan).map(Outcome::Reserved),
             Command::AdapterComplete(completion) => {
                 let ticket = completion.ticket();
@@ -1234,13 +1571,10 @@ impl<const L: usize, const F: usize, const B: usize, const R: usize> RecoveryOwn
                 space,
                 bytes_removed: self.space_change(space, false)?,
             }),
-            Command::RequeueSpace(space) => Ok(Outcome::SpaceRequeued {
-                space,
-                bytes_removed: self.space_change(space, true)?,
-            }),
+            Command::RetryReset(grant) => Ok(self.retry_reset(grant)),
             Command::Reclaim(space) => Ok(Outcome::Reclaimed {
                 space,
-                floor: self.sent.reclaim_completed_prefix(space)?,
+                floor: self.reclaim(space)?,
             }),
             Command::ResetPath(grant) => {
                 if grant.generation() != self.config.generation
@@ -1310,9 +1644,12 @@ impl<const B: usize> Command<B> {
             Self::DetectLoss { .. } => p::DETECT_LOSS,
             Self::Flight(_) => p::FLIGHT,
             Self::DiscardSpace(_) => p::DISCARD_SPACE,
-            Self::RequeueSpace(_) => p::REQUEUE_SPACE,
+            Self::RetryReset(_) => p::RETRY_RESET,
             Self::Reclaim(_) => p::RECLAIM,
             Self::ResetPath(_) => p::RESET_PATH,
+            Self::AbandonPath(_) => p::ABANDON_PATH,
+            Self::SettleAbandonment(_) => p::SETTLE_ABANDONMENT,
+            Self::FinishAbandonment => p::FINISH_ABANDONMENT,
             Self::Timer(_) => p::TIMER,
             Self::KeyPto { .. } => p::KEY_PTO,
             Self::RejectZeroRtt(_) => p::REJECT_ZERO_RTT,
@@ -1490,9 +1827,10 @@ async fn command_role<
             p::DETECT_LOSS => endpoint.send::<p::DetectLoss>(&wire).await?,
             p::FLIGHT => endpoint.send::<p::Flight>(&wire).await?,
             p::DISCARD_SPACE => endpoint.send::<p::DiscardSpace>(&wire).await?,
-            p::REQUEUE_SPACE => endpoint.send::<p::RequeueSpace>(&wire).await?,
+            p::RETRY_RESET => endpoint.send::<p::RetryReset>(&wire).await?,
             p::RECLAIM => endpoint.send::<p::Reclaim>(&wire).await?,
             p::RESET_PATH => endpoint.send::<p::ResetPath>(&wire).await?,
+            p::ABANDON_PATH => endpoint.send::<p::AbandonPath>(&wire).await?,
             p::TIMER => endpoint.send::<p::Timer>(&wire).await?,
             p::KEY_PTO => endpoint.send::<p::KeyPto>(&wire).await?,
             p::REJECT_ZERO_RTT => endpoint.send::<p::RejectZeroRtt>(&wire).await?,
@@ -1512,7 +1850,11 @@ async fn command_role<
             _ => return Err(Error::UnexpectedLabel(label)),
         }
         let branch = endpoint.offer().await?;
+        let abandoning = branch.label() == p::ABANDONMENT_STARTED;
         let observed = match branch.label() {
+            p::ABANDONMENT_STARTED if label == p::ABANDON_PATH => {
+                branch.recv::<p::AbandonmentStarted>().await?
+            }
             p::APPLIED => branch.recv::<p::Applied>().await?,
             p::REJECTED => branch.recv::<p::Rejected>().await?,
             label => return Err(Error::UnexpectedLabel(label)),
@@ -1525,6 +1867,50 @@ async fn command_role<
             .await
             .map_err(|_| Error::RepliesClosed)?;
         sequence = sequence.checked_add(1).ok_or(Error::SequenceExhausted)?;
+        if abandoning {
+            loop {
+                let command = commands.recv().await.map_err(|_| Error::CommandsClosed)?;
+                let label = command.label();
+                if !matches!(label, p::SETTLE_ABANDONMENT | p::FINISH_ABANDONMENT) {
+                    return Err(Error::UnexpectedLabel(label));
+                }
+                let descriptor = Descriptor {
+                    generation,
+                    sequence,
+                };
+                let wire = encode(descriptor);
+                exchange.put_request(Request {
+                    descriptor,
+                    command,
+                })?;
+                if label == p::FINISH_ABANDONMENT {
+                    endpoint.send::<p::FinishAbandonment>(&wire).await?;
+                } else {
+                    endpoint.send::<p::SettleAbandonment>(&wire).await?;
+                }
+                let observed = if label == p::FINISH_ABANDONMENT {
+                    endpoint.recv::<p::AbandonmentCompleted>().await?
+                } else {
+                    let branch = endpoint.offer().await?;
+                    match branch.label() {
+                        p::APPLIED => branch.recv::<p::Applied>().await?,
+                        p::REJECTED => branch.recv::<p::Rejected>().await?,
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    }
+                };
+                same(observed, wire)?;
+                let reply = exchange.take_reply(descriptor)?;
+                endpoint.send::<p::ResultTaken>(&wire).await?;
+                replies
+                    .send(reply)
+                    .await
+                    .map_err(|_| Error::RepliesClosed)?;
+                sequence = sequence.checked_add(1).ok_or(Error::SequenceExhausted)?;
+                if label == p::FINISH_ABANDONMENT {
+                    break;
+                }
+            }
+        }
         runtime::yield_now().await;
     }
 }
@@ -1566,9 +1952,10 @@ async fn owner_role<
             p::DETECT_LOSS => branch.recv::<p::DetectLoss>().await?,
             p::FLIGHT => branch.recv::<p::Flight>().await?,
             p::DISCARD_SPACE => branch.recv::<p::DiscardSpace>().await?,
-            p::REQUEUE_SPACE => branch.recv::<p::RequeueSpace>().await?,
+            p::RETRY_RESET => branch.recv::<p::RetryReset>().await?,
             p::RECLAIM => branch.recv::<p::Reclaim>().await?,
             p::RESET_PATH => branch.recv::<p::ResetPath>().await?,
+            p::ABANDON_PATH => branch.recv::<p::AbandonPath>().await?,
             p::TIMER => branch.recv::<p::Timer>().await?,
             p::KEY_PTO => branch.recv::<p::KeyPto>().await?,
             p::REJECT_ZERO_RTT => branch.recv::<p::RejectZeroRtt>().await?,
@@ -1590,7 +1977,13 @@ async fn owner_role<
                 Ok(outcome) => outcome,
                 Err(error) => Outcome::Rejected(error),
             };
-            let succeeded = !matches!(outcome, Outcome::Rejected(_) | Outcome::ZeroRttPending(_));
+            let succeeded = !matches!(
+                outcome,
+                Outcome::Rejected(_)
+                    | Outcome::ZeroRttPending(_)
+                    | Outcome::AbandonmentDeferred { .. }
+                    | Outcome::RetryDeferred { .. }
+            );
             exchange.put_reply(Reply {
                 descriptor,
                 snapshot: owner.snapshot(),
@@ -1603,18 +1996,62 @@ async fn owner_role<
             same(endpoint.recv::<p::RetirementAcknowledged>().await?, wire)?;
             return Ok(());
         }
-        if succeeded {
+        let abandoning = label == p::ABANDON_PATH && succeeded;
+        if abandoning {
+            endpoint.send::<p::AbandonmentStarted>(&wire).await?;
+        } else if succeeded {
             endpoint.send::<p::Applied>(&wire).await?;
         } else {
             endpoint.send::<p::Rejected>(&wire).await?;
         }
         same(endpoint.recv::<p::ResultTaken>().await?, wire)?;
+        if abandoning {
+            loop {
+                let branch = endpoint.offer().await?;
+                let label = branch.label();
+                let wire = match label {
+                    p::SETTLE_ABANDONMENT => branch.recv::<p::SettleAbandonment>().await?,
+                    p::FINISH_ABANDONMENT => branch.recv::<p::FinishAbandonment>().await?,
+                    label => return Err(Error::UnexpectedLabel(label)),
+                };
+                let Request {
+                    descriptor,
+                    command,
+                } = exchange.take_request(wire)?;
+                if descriptor.generation != generation || command.label() != label {
+                    return Err(Error::Correlation);
+                }
+                let outcome = owner
+                    .apply(authority, descriptor, command)
+                    .unwrap_or_else(Outcome::Rejected);
+                let succeeded = !matches!(outcome, Outcome::Rejected(_));
+                if label == p::FINISH_ABANDONMENT && !succeeded {
+                    return Err(Error::Correlation);
+                }
+                exchange.put_reply(Reply {
+                    descriptor,
+                    snapshot: owner.snapshot(),
+                    outcome,
+                })?;
+                if label == p::FINISH_ABANDONMENT {
+                    endpoint.send::<p::AbandonmentCompleted>(&wire).await?;
+                } else if succeeded {
+                    endpoint.send::<p::Applied>(&wire).await?;
+                } else {
+                    endpoint.send::<p::Rejected>(&wire).await?;
+                }
+                same(endpoint.recv::<p::ResultTaken>().await?, wire)?;
+                if label == p::FINISH_ABANDONMENT {
+                    break;
+                }
+            }
+        }
         runtime::yield_now().await;
     }
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Mailbox-facing recovery client. It does not hold any numeric kernel. An
 /// abandoned request closes its channels, so a later request cannot accidentally
@@ -1738,3 +2175,9 @@ impl<const L: usize, const B: usize, const Q: usize, const S: usize> Drop
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tls_authority_fixture;
+
+#[cfg(test)]
+pub(crate) mod cancellation_fixture;

@@ -337,9 +337,76 @@ pub struct Snapshot {
     pub deferred_controls: usize,
     pub admitted_packets: u64,
     pub release_ready: bool,
+    /// Copied owner observation; this is not release permission.
+    pub has_releasable: bool,
     pub pending_admission: bool,
     pub pending_release: bool,
     pub retired: bool,
+}
+/// Unclaimed, exclusively owned backing resources. Drop wipes these even if
+/// TLS rejects early data and the projected Install exchange never starts.
+pub struct Storage<'s, const RX: usize, const CONTROL: usize> {
+    generation: u64,
+    policy: ServerPolicy,
+    slots: Option<&'s mut [QuarantineSlot<RX>]>,
+    controls: Option<&'s mut [ControlSlot<CONTROL>]>,
+}
+impl<'s, const RX: usize, const CONTROL: usize> Storage<'s, RX, CONTROL> {
+    pub fn new(
+        generation: u64,
+        policy: ServerPolicy,
+        slots: &'s mut [QuarantineSlot<RX>],
+        controls: &'s mut [ControlSlot<CONTROL>],
+    ) -> Result<Self, Fault> {
+        if RX == 0
+            || CONTROL == 0
+            || slots.is_empty()
+            || controls.len() > MAX_PATH_CHECK_FRAMES
+            || matches!(policy, ServerPolicy::Disabled)
+        {
+            return Err(Fault::Capacity);
+        }
+        for slot in slots.iter_mut() {
+            slot.clear();
+        }
+        for control in controls.iter_mut() {
+            control.clear();
+        }
+        Ok(Self {
+            generation,
+            policy,
+            slots: Some(slots),
+            controls: Some(controls),
+        })
+    }
+    fn claim<const N: usize>(
+        mut self,
+        grant: super::tls_owner::EarlyReplayGrant,
+    ) -> Result<State<'s, RX, CONTROL, N>, Fault> {
+        if grant.generation() != self.generation || grant.early_generation() != self.generation {
+            return Err(Fault::WrongGeneration);
+        }
+        State::new(
+            self.policy,
+            grant,
+            self.slots.take().ok_or(Fault::Stale)?,
+            self.controls.take().ok_or(Fault::Stale)?,
+        )
+    }
+}
+impl<const RX: usize, const CONTROL: usize> Drop for Storage<'_, RX, CONTROL> {
+    fn drop(&mut self) {
+        if let Some(slots) = self.slots.as_mut() {
+            for slot in slots.iter_mut() {
+                slot.clear();
+            }
+        }
+        if let Some(controls) = self.controls.as_mut() {
+            for control in controls.iter_mut() {
+                control.clear();
+            }
+        }
+    }
 }
 /// The caller transfers its actual TLS claim and all backing storage once.
 /// No public mutator exposes the owned quarantine or deferred-control store.
@@ -403,6 +470,13 @@ impl<'s, const RX: usize, const CONTROL: usize, const N: usize> State<'s, RX, CO
             deferred_controls: self.count,
             admitted_packets: self.admitted,
             release_ready: self.ready.is_some(),
+            has_releasable: self.ready.is_some()
+                && (self.count != 0
+                    || self.pending_release.is_some()
+                    || self
+                        .quarantine
+                        .as_ref()
+                        .is_some_and(|q| q.next_release().ok().flatten().is_some())),
             pending_admission: self.pending_packet.is_some(),
             pending_release: self.pending_release.is_some(),
             retired: self.quarantine.is_none(),

@@ -313,60 +313,149 @@ fn projected_bootstrap_has_no_application_open_edge() {
     });
 }
 
+// The former blanket raw-label Inspect rejection test is preserved in
+// artifacts/stream-preparation-contract/historical/stream_owner_roles.rs.
+// Completed older rolls are elastic, so Inspect can denote an older occurrence.
+// tests/stream_elastic_reentry.rs records that scoped graph contract; actual
+// client_prepare mailbox denial is tested in stream_owner::tests instead.
+
+/// Exercise actual projected choice visibility on both sides. The first run
+/// takes the real PeerReady exit immediately; no operation primes the roll.
 #[test]
-fn projected_preparation_cannot_escape_without_owner_settlement_suffix() {
+fn projected_factored_requests_keep_outcomes_and_stage_exits() {
     use hibana_quic::roles::protocol_stream as p;
     let (count, waker) = waker();
-    with_pair(|mut c, mut o, _| {
-        let wire = [0; 16];
-        let requester = async {
-            c.send::<p::Install>(&wire).await.unwrap();
-            c.recv::<p::Installed>().await.unwrap();
-            c.send::<p::EarlySendReady>(&wire).await.unwrap();
-            c.offer()
-                .await
-                .unwrap()
-                .recv::<p::EarlySendInstalled>()
-                .await
-                .unwrap();
-            c.send::<p::ResultTaken>(&wire).await.unwrap();
-            c.send::<p::PrepareEarly>(&wire).await.unwrap();
-            c.offer()
-                .await
-                .unwrap()
-                .recv::<p::FramePrepared>()
-                .await
-                .unwrap();
-            c.send::<p::ResultTaken>(&wire).await.unwrap();
-            assert!(
-                c.send::<p::Inspect>(&wire).await.is_err(),
-                "outer Inspect cannot bypass reservation/cancellation suffix"
-            );
-            Err::<(), ()>(())
-        };
-        let owner = async {
-            o.recv::<p::Install>().await.unwrap();
-            o.send::<p::Installed>(&wire).await.unwrap();
-            o.offer()
-                .await
-                .unwrap()
-                .recv::<p::EarlySendReady>()
-                .await
-                .unwrap();
-            o.send::<p::EarlySendInstalled>(&wire).await.unwrap();
-            o.recv::<p::ResultTaken>().await.unwrap();
-            o.offer()
-                .await
-                .unwrap()
-                .recv::<p::PrepareEarly>()
-                .await
-                .unwrap();
-            o.send::<p::FramePrepared>(&wire).await.unwrap();
-            // Whether ResultTaken is received before the deliberately invalid
-            // edge closes the carrier is immaterial to this projection check.
-            let _ = o.recv::<p::ResultTaken>().await;
-            core::future::pending::<Result<(), ()>>().await
-        };
-        assert!(drive(join2(requester, owner), &count, &waker).is_err());
-    });
+    for bootstrap_operations in [false, true] {
+        with_pair(|mut c, mut o, _| {
+            let wire = [19; 16];
+            let requester = async {
+                c.send::<p::Install>(&wire).await.unwrap();
+                assert_eq!(c.recv::<p::Installed>().await.unwrap(), wire);
+                if bootstrap_operations {
+                    c.send::<p::Inspect>(&wire).await.unwrap();
+                    let reply = c.offer().await.unwrap();
+                    assert_eq!(reply.label(), p::APPLIED);
+                    assert_eq!(reply.recv::<p::Applied>().await.unwrap(), wire);
+                    c.send::<p::ResultTaken>(&wire).await.unwrap();
+                    c.send::<p::Retry>(&wire).await.unwrap();
+                    let reply = c.offer().await.unwrap();
+                    assert_eq!(reply.label(), p::REJECTED);
+                    assert_eq!(reply.recv::<p::Rejected>().await.unwrap(), wire);
+                    c.send::<p::ResultTaken>(&wire).await.unwrap();
+                }
+                c.send::<p::PeerReady>(&wire).await.unwrap();
+                let ready = c.offer().await.unwrap();
+                assert_eq!(ready.label(), p::READY);
+                assert_eq!(ready.recv::<p::Ready>().await.unwrap(), wire);
+                c.send::<p::ResultTaken>(&wire).await.unwrap();
+                c.send::<p::Open>(&wire).await.unwrap();
+                let reply = c.offer().await.unwrap();
+                assert_eq!(reply.label(), p::APPLIED);
+                assert_eq!(reply.recv::<p::Applied>().await.unwrap(), wire);
+                c.send::<p::ResultTaken>(&wire).await.unwrap();
+                c.send::<p::Consume>(&wire).await.unwrap();
+                let reply = c.offer().await.unwrap();
+                assert_eq!(reply.label(), p::REJECTED);
+                assert_eq!(reply.recv::<p::Rejected>().await.unwrap(), wire);
+                c.send::<p::ResultTaken>(&wire).await.unwrap();
+                c.send::<p::Inspect>(&wire).await.unwrap();
+                let reply = c.offer().await.unwrap();
+                assert_eq!(reply.label(), p::APPLIED);
+                assert_eq!(reply.recv::<p::Applied>().await.unwrap(), wire);
+                c.send::<p::ResultTaken>(&wire).await.unwrap();
+                c.send::<p::RetireRequested>(&wire).await.unwrap();
+                assert_eq!(c.recv::<p::Retired>().await.unwrap(), wire);
+                c.send::<p::RetirementAcknowledged>(&wire).await.unwrap();
+                Ok::<(), ()>(())
+            };
+            let owner = async {
+                assert_eq!(o.recv::<p::Install>().await.unwrap(), wire);
+                o.send::<p::Installed>(&wire).await.unwrap();
+                if bootstrap_operations {
+                    let request = o.offer().await.unwrap();
+                    assert_eq!(request.label(), p::INSPECT);
+                    assert_eq!(request.recv::<p::Inspect>().await.unwrap(), wire);
+                    o.send::<p::Applied>(&wire).await.unwrap();
+                    assert_eq!(o.recv::<p::ResultTaken>().await.unwrap(), wire);
+                    let request = o.offer().await.unwrap();
+                    assert_eq!(request.label(), p::RETRY);
+                    assert_eq!(request.recv::<p::Retry>().await.unwrap(), wire);
+                    o.send::<p::Rejected>(&wire).await.unwrap();
+                    assert_eq!(o.recv::<p::ResultTaken>().await.unwrap(), wire);
+                }
+                let request = o.offer().await.unwrap();
+                assert_eq!(request.label(), p::PEER_READY);
+                assert_eq!(request.recv::<p::PeerReady>().await.unwrap(), wire);
+                o.send::<p::Ready>(&wire).await.unwrap();
+                assert_eq!(o.recv::<p::ResultTaken>().await.unwrap(), wire);
+                let request = o.offer().await.unwrap();
+                assert_eq!(request.label(), p::OPEN);
+                assert_eq!(request.recv::<p::Open>().await.unwrap(), wire);
+                o.send::<p::Applied>(&wire).await.unwrap();
+                assert_eq!(o.recv::<p::ResultTaken>().await.unwrap(), wire);
+                let request = o.offer().await.unwrap();
+                assert_eq!(request.label(), p::CONSUME);
+                assert_eq!(request.recv::<p::Consume>().await.unwrap(), wire);
+                o.send::<p::Rejected>(&wire).await.unwrap();
+                assert_eq!(o.recv::<p::ResultTaken>().await.unwrap(), wire);
+                let request = o.offer().await.unwrap();
+                assert_eq!(request.label(), p::INSPECT);
+                assert_eq!(request.recv::<p::Inspect>().await.unwrap(), wire);
+                o.send::<p::Applied>(&wire).await.unwrap();
+                assert_eq!(o.recv::<p::ResultTaken>().await.unwrap(), wire);
+                let request = o.offer().await.unwrap();
+                assert_eq!(request.label(), p::RETIRE_REQUESTED);
+                assert_eq!(request.recv::<p::RetireRequested>().await.unwrap(), wire);
+                o.send::<p::Retired>(&wire).await.unwrap();
+                assert_eq!(o.recv::<p::RetirementAcknowledged>().await.unwrap(), wire);
+                Ok::<(), ()>(())
+            };
+            drive(join2(requester, owner), &count, &waker).unwrap();
+        });
+    }
+}
+
+#[test]
+fn projected_common_result_and_receipt_cannot_be_skipped() {
+    use hibana_quic::roles::protocol_stream as p;
+    let (count, waker) = waker();
+    for skip_receipt in [false, true] {
+        with_pair(|mut c, mut o, _| {
+            let wire = [23; 16];
+            let requester = async {
+                c.send::<p::Install>(&wire).await.unwrap();
+                c.recv::<p::Installed>().await.unwrap();
+                c.send::<p::PeerReady>(&wire).await.unwrap();
+                c.offer().await.unwrap().recv::<p::Ready>().await.unwrap();
+                c.send::<p::ResultTaken>(&wire).await.unwrap();
+                c.send::<p::Open>(&wire).await.unwrap();
+                if skip_receipt {
+                    c.offer().await.unwrap().recv::<p::Applied>().await.unwrap();
+                }
+                assert!(
+                    c.send::<p::Read>(&wire).await.is_err(),
+                    "a new request cannot skip the owner outcome or ResultTaken"
+                );
+                Err::<(), ()>(())
+            };
+            let owner = async {
+                o.recv::<p::Install>().await.unwrap();
+                o.send::<p::Installed>(&wire).await.unwrap();
+                o.offer()
+                    .await
+                    .unwrap()
+                    .recv::<p::PeerReady>()
+                    .await
+                    .unwrap();
+                o.send::<p::Ready>(&wire).await.unwrap();
+                o.recv::<p::ResultTaken>().await.unwrap();
+                o.offer().await.unwrap().recv::<p::Open>().await.unwrap();
+                if skip_receipt {
+                    o.send::<p::Applied>(&wire).await.unwrap();
+                }
+                core::future::pending::<Result<(), ()>>().await
+            };
+            assert!(drive(join2(requester, owner), &count, &waker).is_err());
+        });
+    }
 }

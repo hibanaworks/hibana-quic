@@ -214,7 +214,7 @@ fn altered_or_replayed_callback_does_not_release_another_reservation() {
             state.complete(AdapterCompletion {
                 record: changed,
                 accepted_at: Some(0),
-                initial_advertised: false
+                advertisement: None
             }),
             Err(Error::InvalidDescriptor)
         );
@@ -225,7 +225,7 @@ fn altered_or_replayed_callback_does_not_release_another_reservation() {
             state.complete(AdapterCompletion {
                 record: copy,
                 accepted_at: Some(0),
-                initial_advertised: false
+                advertisement: None
             }),
             Err(Error::InvalidDescriptor)
         );
@@ -300,10 +300,11 @@ fn timeout_requires_unchanged_current_observation_and_due_deadline() {
         state.revision += 1;
         assert_eq!(state.timeout(stale, 300), Err(Error::StaleTimer));
         let current = state.timer().unwrap();
-        assert_eq!(
-            state.timeout(current, 300),
-            Err(Error::Migration(migration::Error::NoViablePath))
-        );
+        assert_eq!(state.timeout(current, 300), Ok(None));
+        assert!(matches!(
+            state.abandonment.as_ref().unwrap().resume,
+            AbandonResume::Terminal
+        ));
         assert!(state.paths.snapshot(state.original).unwrap().failed);
         assert!(state.timer().is_none());
     });
@@ -352,7 +353,7 @@ fn challenge_matches_original_exact_tuple_and_only_accepted_full_size_send_prove
             .complete(AdapterCompletion {
                 record: pending.record,
                 accepted_at: Some(0),
-                initial_advertised: false,
+                advertisement: None,
             })
             .unwrap();
         let other = state
@@ -1453,3 +1454,452 @@ fn retry_proof_must_match_this_connection_and_role() {
         );
     });
 }
+
+/// The test bridge receives proof from an actual current validation timeout.
+/// The live Path owner remains borrowed until the callback completes.
+pub(crate) fn with_abandonment<T>(
+    generation: u64,
+    body: impl FnOnce(
+        PathAbandoned,
+        &mut dyn FnMut(
+            super::super::recovery_owner::PathLostPacket,
+        ) -> super::super::recovery_owner::PathLossSettled,
+    ) -> T,
+) -> T {
+    let mut cfg = config(Role::Client);
+    cfg.generation = generation;
+    with_unlearned_state(cfg, |state| {
+        state.paths.handshake_validated(state.original).unwrap();
+        state
+            .migration
+            .validated(state.original, &state.paths)
+            .unwrap();
+        let failed = state
+            .paths
+            .insert(address(6000), InitialValidation::Unvalidated, 0)
+            .unwrap();
+        state.timeout(state.timer().unwrap(), 300).unwrap();
+        let Outcome::AbandonmentRequired(grant) = state.abandonment_outcome().unwrap() else {
+            panic!("missing timeout proof")
+        };
+        assert_eq!(grant.path(), failed);
+        body(grant, &mut |loss| {
+            state
+                .lost(loss)
+                .unwrap()
+                .expect("abandonment loss settlement")
+        })
+    })
+}
+
+#[test]
+fn abandonment_keeps_slot_and_blocks_send_until_recovery_settlement() {
+    use super::super::recovery_owner::tests::complete_empty_abandonment;
+    with_state(config(Role::Client), |state| {
+        install(state);
+        let old = state
+            .paths
+            .insert(address(6000), InitialValidation::Unvalidated, 0)
+            .unwrap();
+        state.timeout(state.timer().unwrap(), 300).unwrap();
+        assert!(state.paths.snapshot(old).unwrap().failed);
+        assert!(matches!(
+            state.reserve(descriptor(3), state.original, 20, number(3), false, 300),
+            Err(Error::AbandonmentPending)
+        ));
+        assert!(matches!(
+            state
+                .paths
+                .insert(address(7000), InitialValidation::Unvalidated, 300),
+            Err(path::Error::Capacity)
+        ));
+        let Outcome::AbandonmentRequired(grant) = state.abandonment_outcome().unwrap() else {
+            panic!("proof")
+        };
+        let completion = complete_empty_abandonment(grant);
+        assert!(matches!(
+            state.finish_abandonment(completion).unwrap(),
+            Outcome::Expired { .. }
+        ));
+        assert!(matches!(
+            state.paths.snapshot(old),
+            Err(path::Error::StalePath)
+        ));
+        let next = state
+            .paths
+            .insert(address(7000), InitialValidation::Unvalidated, 300)
+            .unwrap();
+        assert_eq!(old.slot, next.slot);
+        assert_ne!(old.path_generation, next.path_generation);
+    });
+}
+
+#[test]
+fn abandonment_rejects_cross_generation_and_stale_completion_without_cleanup() {
+    use super::super::recovery_owner::tests::complete_empty_abandonment;
+    let wrong = with_abandonment(GENERATION + 1, |grant, _| complete_empty_abandonment(grant));
+    with_state(config(Role::Client), |state| {
+        install(state);
+        let old = state
+            .paths
+            .insert(address(6000), InitialValidation::Unvalidated, 0)
+            .unwrap();
+        state.timeout(state.timer().unwrap(), 300).unwrap();
+        assert!(matches!(
+            state.finish_abandonment(wrong),
+            Err(Error::InvalidDescriptor)
+        ));
+        assert!(state.paths.snapshot(old).is_ok());
+        let Outcome::AbandonmentRequired(grant) = state.abandonment_outcome().unwrap() else {
+            panic!("proof")
+        };
+        let stale = PathAbandoned {
+            generation: grant.generation,
+            path: grant.path,
+            serial: grant.serial + 1,
+        };
+        let stale = complete_empty_abandonment(stale);
+        assert!(matches!(
+            state.finish_abandonment(stale),
+            Err(Error::InvalidDescriptor)
+        ));
+        assert!(state.paths.snapshot(old).is_ok());
+        state
+            .finish_abandonment(complete_empty_abandonment(grant))
+            .unwrap();
+        assert!(state.paths.snapshot(old).is_err());
+    });
+}
+
+#[test]
+fn reclaimed_ingress_waits_for_cleanup_then_resumes_owned_authenticated_frame() {
+    use super::super::recovery_owner::tests::complete_empty_abandonment;
+    let (evidence, ready) = super::test_auth::authenticated(GENERATION, &[1], 10);
+    let arena = authority::Arena::<1, 2>::new(GENERATION);
+    let ticket = arena.admit(evidence, &[1]).unwrap();
+    with_state(config(Role::Server), |state| {
+        state.handshake(ready).unwrap();
+        let discarded = state
+            .paths
+            .insert(address(6000), InitialValidation::Unvalidated, 0)
+            .unwrap();
+        let received = context(1, address(7000));
+        arena.bind_path_context(ticket, received).unwrap();
+        let grant = arena
+            .grant_path(
+                ticket,
+                0,
+                PathFrame::PacketProcessed { non_probing: true },
+                received,
+            )
+            .unwrap();
+        let Outcome::AbandonmentRequired(grant) = state.frame(&arena, grant).unwrap() else {
+            panic!("reclaim must wait")
+        };
+        assert_eq!(grant.path(), discarded);
+        assert!(state.paths.find(received.address).is_none());
+        assert!(state.paths.snapshot(discarded).is_ok());
+        let Outcome::Frame { path, .. } = state
+            .finish_abandonment(complete_empty_abandonment(grant))
+            .unwrap()
+        else {
+            panic!("retained frame resumes")
+        };
+        assert_eq!(
+            state.paths.snapshot(path).unwrap().address,
+            received.address
+        );
+        assert_eq!(state.paths.snapshot(path).unwrap().received, 1200);
+        assert!(state.paths.snapshot(discarded).is_err());
+        assert_ne!(path.path_generation, discarded.path_generation);
+    });
+    arena.finish(ticket).unwrap();
+}
+
+pub(crate) fn repeated_abandonments(
+    generation: u64,
+    count: usize,
+    mut body: impl FnMut(
+        PathAbandoned,
+        &mut dyn FnMut(
+            super::super::recovery_owner::PathLostPacket,
+        ) -> super::super::recovery_owner::PathLossSettled,
+    ) -> super::super::recovery_owner::AbandonmentComplete,
+) {
+    let mut cfg = config(Role::Client);
+    cfg.generation = generation;
+    with_unlearned_state(cfg, |state| {
+        state.paths.handshake_validated(state.original).unwrap();
+        state
+            .migration
+            .validated(state.original, &state.paths)
+            .unwrap();
+        for index in 0..count {
+            state
+                .paths
+                .insert(
+                    address(6000 + index as u16),
+                    InitialValidation::Unvalidated,
+                    state.now,
+                )
+                .unwrap();
+            let deadline = state.timer().unwrap().deadline();
+            state.timeout(state.timer().unwrap(), deadline).unwrap();
+            let Outcome::AbandonmentRequired(grant) = state.abandonment_outcome().unwrap() else {
+                panic!("timeout proof")
+            };
+            let completion = body(grant, &mut |loss| state.lost(loss).unwrap().unwrap());
+            state.finish_abandonment(completion).unwrap();
+        }
+    });
+}
+
+#[test]
+fn cleanup_capacity_preflight_keeps_path_binding_and_retirement_state_unchanged() {
+    with_state(config(Role::Client), |state| {
+        install(state);
+        let path = state
+            .paths
+            .insert(address(6000), InitialValidation::Unvalidated, 0)
+            .unwrap();
+        let peer = state.peer.as_mut().unwrap();
+        let handle = peer
+            .accept_new_authenticated(
+                1,
+                0,
+                Cid::new(b"othercid").unwrap(),
+                ResetToken::new([7; 16]),
+            )
+            .unwrap()
+            .handle;
+        state.bindings[usize::from(path.slot)] = Some(handle);
+        let blocker = ControlRecord {
+            kind: ReliableControl::Advertise(state.local_initial.unwrap()),
+            ready: true,
+            acknowledged: false,
+            sent: [None; 4],
+            lost: [false; 4],
+        };
+        state.controls.fill(Some(blocker));
+        assert_eq!(
+            state.begin_abandonment(path, AbandonResume::Retire),
+            Err(Error::Capacity)
+        );
+        assert!(state.paths.snapshot(path).is_ok());
+        assert_eq!(state.bindings[usize::from(path.slot)], Some(handle));
+        assert!(state.peer.as_ref().unwrap().get(handle).is_ok());
+        assert!(state.abandonment.is_none());
+    });
+}
+
+fn server_retry_token(
+    remote: Address,
+    original: &[u8],
+    retry: &[u8],
+    client: &[u8],
+) -> crate::retry::ValidatedToken {
+    let address = match remote.remote {
+        core::net::SocketAddr::V4(a) => crate::retry::ClientAddress::V4 {
+            ip: a.ip().octets(),
+            port: a.port(),
+        },
+        core::net::SocketAddr::V6(a) => crate::retry::ClientAddress::V6 {
+            ip: a.ip().octets(),
+            port: a.port(),
+        },
+    };
+    let mut rng = Random {
+        value: 881,
+        fail: false,
+    };
+    let mut tokens = crate::retry::RetryTokens::<1>::generate(&mut rng, 3, 1000).unwrap();
+    let mut bytes = [0; crate::retry::TOKEN_LEN];
+    tokens
+        .issue(
+            0,
+            crate::retry::TokenContext {
+                original_destination_id: original,
+                retry_source_id: retry,
+                client_source_id: client,
+                address,
+            },
+            &mut bytes,
+        )
+        .unwrap();
+    let token = tokens.validate(1, address, retry, client, &bytes).unwrap();
+    assert_eq!(token.address(), address);
+    token
+}
+
+#[test]
+fn actual_server_retry_admission_releases_only_address_amplification_once() {
+    with_unlearned_state(config(Role::Server), |state| {
+        let before = state.paths.snapshot(state.original).unwrap();
+        assert!(!before.address_validated && !before.mtu_validated);
+        state
+            .server_retry(server_retry_token(
+                address(5000),
+                b"clientid",
+                b"serverid",
+                b"clientid",
+            ))
+            .unwrap();
+        let after = state.paths.snapshot(state.original).unwrap();
+        assert!(after.address_validated);
+        assert!(after.available_bytes >= 1200);
+        assert!(!after.mtu_validated);
+        assert!(!state.confirmed && !state.installed);
+        assert!(state.tls_confirmation.is_none());
+        assert!(state.learned_peer_initial.is_none());
+        assert!(state.initial_received_destination.is_none());
+        assert_eq!(
+            state.server_retry(server_retry_token(
+                address(5000),
+                b"clientid",
+                b"serverid",
+                b"clientid"
+            )),
+            Err(Error::RetryNotAllowed)
+        );
+        learn(state);
+        assert_eq!(
+            state.learned_peer_initial,
+            Some(Destination::new(b"clientid").unwrap())
+        );
+    });
+}
+
+#[test]
+fn server_retry_wrong_peer_address_and_connection_substitution_are_rejected_before_validation() {
+    with_unlearned_state(config(Role::Server), |state| {
+        assert_eq!(
+            state.server_retry(server_retry_token(
+                address(6000),
+                b"clientid",
+                b"serverid",
+                b"clientid"
+            )),
+            Err(Error::WrongDestination)
+        );
+        assert_eq!(
+            state.server_retry(server_retry_token(
+                address(5000),
+                b"other-id",
+                b"serverid",
+                b"clientid"
+            )),
+            Err(Error::WrongDestination)
+        );
+        let path = state.paths.snapshot(state.original).unwrap();
+        assert!(!path.address_validated && !path.mtu_validated);
+        assert_eq!(path.available_bytes, 0);
+        assert!(state.server_retry.is_none());
+    });
+    with_unlearned_state(config(Role::Client), |state| {
+        assert_eq!(
+            state.server_retry(server_retry_token(
+                address(5000),
+                b"clientid",
+                b"serverid",
+                b"clientid"
+            )),
+            Err(Error::RetryNotAllowed)
+        );
+    });
+}
+
+#[test]
+fn retry_admission_requires_actual_initial_source_and_destination_to_match_token() {
+    for (source, destination) in [
+        (b"evilpeer".as_slice(), b"serverid".as_slice()),
+        (b"clientid".as_slice(), b"othercid".as_slice()),
+    ] {
+        with_unlearned_state(config(Role::Server), |state| {
+            state
+                .server_retry(server_retry_token(
+                    address(5000),
+                    b"clientid",
+                    b"serverid",
+                    b"clientid",
+                ))
+                .unwrap();
+            let (receipt, packet) = super::test_auth::initial(GENERATION, source, destination);
+            let arena = authority::Arena::<1, 2>::new(GENERATION);
+            let ticket = arena
+                .admit(authority::ReceiveEvidence::Initial(receipt), packet.body())
+                .unwrap();
+            let grant = arena
+                .grant_initial_peer_cid(ticket, packet.header())
+                .unwrap();
+            assert_eq!(
+                state.learn_peer_cid(&arena, grant),
+                Err(Error::PeerCidMismatch)
+            );
+            assert!(state.learned_peer_initial.is_none());
+            assert!(state.initial_received_destination.is_none());
+            assert!(!state.paths.snapshot(state.original).unwrap().mtu_validated);
+            arena.finish(ticket).unwrap();
+        });
+    }
+}
+
+#[test]
+fn owned_recovery_pto_only_extends_validation_and_revokes_old_timer_observations() {
+    use super::super::recovery_owner::tests::probe_timeout_for_test;
+    with_unlearned_state(config(Role::Client), |state| {
+        let arena = authority::Arena::<1, 1>::new(GENERATION);
+        let old = state.timer().unwrap();
+        let old_deadline = old.deadline();
+        let grant = probe_timeout_for_test(GENERATION, 1000);
+        let pto = grant.pto_us();
+        assert!(matches!(
+            state
+                .execute(
+                    p::PROBE_TIMEOUT,
+                    descriptor(1),
+                    Command::ProbeTimeout(grant),
+                    &arena
+                )
+                .unwrap(),
+            Outcome::ProbeTimeoutUpdated
+        ));
+        let extended = state.timer().unwrap().deadline();
+        assert!(extended > old_deadline);
+        assert_eq!(extended, pto * 3);
+        assert_eq!(state.timeout(old, old_deadline), Err(Error::StaleTimer));
+        let before = state.timer().unwrap();
+        let shorter = probe_timeout_for_test(GENERATION, 1);
+        assert!(matches!(
+            state
+                .execute(
+                    p::PROBE_TIMEOUT,
+                    descriptor(2),
+                    Command::ProbeTimeout(shorter),
+                    &arena
+                )
+                .unwrap(),
+            Outcome::ProbeTimeoutUpdated
+        ));
+        assert_eq!(state.timer().unwrap().deadline(), extended);
+        assert_eq!(state.timeout(before, extended), Err(Error::StaleTimer));
+        let wrong = probe_timeout_for_test(GENERATION + 1, 10000);
+        assert!(matches!(
+            state
+                .execute(
+                    p::PROBE_TIMEOUT,
+                    descriptor(3),
+                    Command::ProbeTimeout(wrong),
+                    &arena
+                )
+                .unwrap(),
+            Outcome::Rejected(Error::WrongGeneration)
+        ));
+        assert_eq!(state.timer().unwrap().deadline(), extended);
+        let path = state.paths.snapshot(state.original).unwrap();
+        assert!(!path.address_validated && !path.mtu_validated);
+        assert!(!state.installed && !state.confirmed);
+    });
+}
+
+#[path = "preferred_tests.rs"]
+mod preferred;

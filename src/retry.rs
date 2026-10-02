@@ -143,6 +143,7 @@ pub struct TokenContext<'a> {
 /// fabricated outside this module. Retain the CIDs for server transport parameters.
 #[derive(Debug, Eq, PartialEq)]
 pub struct ValidatedToken {
+    address: ClientAddress,
     original: ConnectionId,
     retry: ConnectionId,
     client: ConnectionId,
@@ -150,6 +151,10 @@ pub struct ValidatedToken {
     expires_at: u64,
 }
 impl ValidatedToken {
+    /// Exact peer address authenticated as token AAD during admission.
+    pub const fn address(&self) -> ClientAddress {
+        self.address
+    }
     pub fn original_destination_id(&self) -> &[u8] {
         self.original.bytes()
     }
@@ -365,6 +370,7 @@ impl<const N: usize> RetryTokens<N> {
         self.admissions[slot] = Some(Admission { nonce, expires_at });
         self.last_time = Some(now);
         Ok(ValidatedToken {
+            address,
             original,
             retry,
             client,

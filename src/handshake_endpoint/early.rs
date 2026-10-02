@@ -1,331 +1,153 @@
-//! Actual early packet protection and quarantine integration. Early traffic
-//! shares ApplicationData packet numbers but never the ordinary receive ticket.
+//! Actual 0-RTT role capabilities at the packet boundary.
+//!
+//! The endpoint never owns quarantine bytes, replay history, deferred controls,
+//! or substitute Finished flags. It moves the real TLS claim at Install, then
+//! awaits Early/Path/Stream owners and settles their affine handoffs.
 use super::*;
-use crate::early_data::{EarlyStatus, Quarantine, QuarantineSlot, ServerPolicy};
+use crate::early_data::EarlyStatus;
+use crate::roles::{early_owner, path_owner, stream_owner};
+
 pub const EARLY_REQUEST_BYTES: usize = 1024;
 pub const EARLY_CONTROL_BYTES: usize = 128;
-pub(super) struct State<'s> {
-    slots: Option<&'s mut [QuarantineSlot<EARLY_REQUEST_BYTES>]>,
-    policy: ServerPolicy,
-    quarantine: Option<Quarantine<'s, EARLY_REQUEST_BYTES>>,
-    controls: Option<crate::early_control::Store<'s, EARLY_CONTROL_BYTES>>,
-    finished: bool,
-    client_reconciled: bool,
-    admitted_packets: u64,
-}
-impl<'s> State<'s> {
-    pub(super) const fn new() -> Self {
-        Self {
-            slots: None,
-            policy: ServerPolicy::Disabled,
-            quarantine: None,
-            controls: None,
-            finished: false,
-            client_reconciled: false,
-            admitted_packets: 0,
-        }
-    }
-}
-impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
-    /// Number of distinct authenticated 0-RTT packets admitted by this
-    /// connection generation. Includes accepted early close; excludes replay,
-    /// rejected early data, corrupt packets and local-capacity drops. Admission
-    /// does not imply Finished or delivery to the application. Kept after close
-    /// for diagnostics; a fresh endpoint generation starts at zero.
-    pub const fn admitted_early_packets(&self) -> u64 {
-        self.early.admitted_packets
-    }
-    pub(crate) async fn reconcile_early_client<A: ApplicationHandler>(
-        &mut self,
-        handler: &mut A,
-    ) -> Result<(), Error> {
-        if self.side != Side::Client || !self.parameters_verified || self.tls_snapshot().handshaking
-        {
-            return Ok(());
-        }
-        let decision = match self.tls_snapshot().early_status {
-            EarlyStatus::Accepted => crate::early_send::Decision::Accepted,
-            EarlyStatus::Rejected => crate::early_send::Decision::Rejected,
-            _ => return Ok(()),
-        };
-        if !self.early.client_reconciled {
-            if decision == crate::early_send::Decision::Rejected {
-                self.reject_early_packets().await?;
-            }
-            self.driver
-                .handshake_finished(self.finished_receipt.take().ok_or(Error::InvalidConfig)?)?;
-            self.early.client_reconciled = true;
-        }
-        let mut authority = crate::early_send::ImportAuthority::new(&mut self.driver);
-        handler
-            .early_decision(
-                decision,
-                self.peer_limits.ok_or(Error::InvalidConfig)?,
-                &mut authority,
-            )
-            .map_err(Error::Streams)?;
-        Ok(())
-    }
-    pub(super) fn retry_early_packets(&mut self) -> Result<(), Error> {
-        // Retry invalidates old-path early transmissions, not their owned
-        // application intent. This is a retransmission notification only;
-        // reject_zero_rtt does not call NewReno loss or rewind packet numbers.
-        self.sent.reject_zero_rtt()?;
-        let mut retry = [None; 64];
-        for (index, record) in self.application_packets.iter_mut().enumerate() {
-            if record.is_some_and(|p| p.early) {
-                retry[index] = record.take().map(|p| p.number);
-            }
-        }
-        for pn in retry.into_iter().flatten() {
-            if !self.lost_application.iter().flatten().any(|old| *old == pn) {
-                self.report_application_loss(pn)?;
-            }
-        }
-        self.sent
-            .reclaim_completed_prefix(PacketNumberSpace::ApplicationData)?;
-        Ok(())
-    }
-    pub(super) fn clear_early(&mut self) {
-        self.early.quarantine.take();
-        self.early.controls.take();
-    }
-    /// Reconcile authenticated TLS early rejection without declaring loss,
-    /// discarding one-RTT records, or rewinding the shared application allocator.
-    pub(super) async fn reject_early_packets_impl(&mut self) -> Result<u64, Error> {
-        if self.side != Side::Client || self.tls_snapshot().early_status != EarlyStatus::Rejected {
-            return Err(Error::InvalidConfig);
-        }
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.output.is_early_data())
-        {
-            return Err(Error::Busy);
-        }
-        let removed = self.sent.reject_zero_rtt()?;
-        for record in &mut self.application_packets {
-            if record.is_some_and(|r| r.early) {
-                *record = None;
-            }
-        }
-        if self.tls_snapshot().early_keys {
-            self.tls_discard_early().await?;
-        }
-        self.sent
-            .reclaim_completed_prefix(PacketNumberSpace::ApplicationData)?;
-        self.refresh_timer()?;
-        Ok(removed)
-    }
-    /// Low-level publication of legal encoded early frames. The caller owns
-    /// control retransmission/lifecycle policy; the high-level transport journal
-    /// deliberately exposes only replay-safe complete requests. The caller
-    /// retains intent and maps the accepted PN into its EarlyIntentJournal.
-    /// Initial CRYPTO must already have been submitted; output still owns the
-    /// ordinary path/PN/adapter reservation and the distinct early-key authority.
-    pub(super) async fn transmit_early_application_impl(
-        &mut self,
-        encoded: &[u8],
-        out: &mut [u8],
-    ) -> Result<Option<Transmit>, Error> {
-        if self.retired {
-            return Err(Error::Retired);
-        }
-        if self.pending.is_some() {
-            return Err(Error::Busy);
-        }
-        if self.side != Side::Client
-            || self.lifecycle.state() != ConnectionState::Active
-            || self.offsets[0] == 0
-            || !matches!(
-                self.tls_snapshot().early_status,
-                EarlyStatus::Offered | EarlyStatus::AcceptedPendingFinished
-            )
-            || !self.tls_snapshot().early_keys
-            || self.tls_has_keys(Level::OneRtt)
-        {
-            return Err(Error::InvalidConfig);
-        }
-        if out.len() < 1200 || encoded.is_empty() || encoded.len() > MAX_APPLICATION_FRAME_BYTES {
-            return Err(Error::Capacity);
-        }
-        let mut eliciting = false;
-        let mut padding = false;
-        for frame in FrameIter::new(encoded, EncryptionLevel::ZeroRtt, ParseLimits::default())? {
-            let frame = frame?;
-            eliciting |= frame.ack_eliciting();
-            padding |= matches!(frame, Frame::Padding { .. });
-        }
-        let result = self
-            .transmit_early_inner(encoded, out, eliciting || padding, eliciting)
-            .await;
-        if result.is_err() {
-            self.retire();
-        }
-        result
-    }
-    async fn transmit_early_inner(
-        &mut self,
-        encoded: &[u8],
-        out: &mut [u8],
-        in_flight: bool,
-        ack_eliciting: bool,
-    ) -> Result<Option<Transmit>, Error> {
-        self.sync_early_state().await?;
-        let application_slot = if ack_eliciting {
-            let Some(slot) = self.application_packets.iter().position(Option::is_none) else {
-                return Ok(None);
-            };
-            Some(slot)
-        } else {
-            None
-        };
-        let pn = self
-            .sent
-            .next_packet_number(PacketNumberSpace::ApplicationData)
-            .ok_or(Error::Capacity)?;
-        let hlen = packet::encode_long_header(
-            &LongHeader {
-                kind: LongType::ZeroRtt,
-                destination_id: self.remote.bytes(),
-                source_id: self.local.bytes(),
-                token: &[],
-                packet_number: pn,
-                packet_number_len: 4,
-            },
-            encoded.len() + 16,
-            out,
-        )?;
-        let total = hlen + encoded.len() + 16;
-        if total > out.len() {
-            return Err(Error::Capacity);
-        }
-        if !self.cc.can_send(
-            self.network_bytes_in_flight(),
-            self.sent.reserved_in_flight(),
-            total as u64,
-            in_flight,
-            self.application_probe_permit,
-        ) {
-            return Ok(None);
-        }
-        let path = match self.path.reserve(total as u64) {
-            Ok(p) => p,
-            Err(accounting::AccountingError::AmplificationLimited) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        let reservation = match self.sent.reserve_classified(
-            PacketKind::ZeroRtt,
-            total as u64,
-            in_flight,
-            ack_eliciting,
-        ) {
-            Ok(r) => r,
-            Err(accounting::AccountingError::Full) => {
-                self.path.cancel(path)?;
-                return Ok(None);
-            }
-            Err(e) => {
-                self.path.cancel(path)?;
-                return Err(e.into());
-            }
-        };
-        let ticket = self.driver.reserve_transmit()?;
-        self.bind_network_transmit(ticket, path)?;
-        out[hlen..hlen + encoded.len()].copy_from_slice(encoded);
-        let operation = async {
-            let (header, body) = out[..total].split_at_mut(hlen);
-            self.tls_seal_early(pn, header, body, encoded.len()).await?;
-            let sample: &[u8; 16] = out[hlen..hlen + 16]
-                .try_into()
-                .map_err(|_| Error::Capacity)?;
-            let mask = self.tls_early_mask(true, *sample).await?;
-            out[0] ^= mask[0] & 0x0f;
-            for i in 0..4 {
-                out[hlen - 4 + i] ^= mask[i + 1];
-            }
-            Ok::<(), Error>(())
-        }
-        .await;
-        operation?;
-        let output = Transmit {
-            authority: ticket,
-            early: true,
-            address: self.transmit_address(),
-            connection_generation: self.generation(),
-            id: self.next_id,
-            len: total,
-            level: Level::OneRtt,
-            packet_number: reservation.packet(),
-            ecn: if self.ecn_enabled {
-                self.ecn_tx.marking(self.path_identity(), self.now)?
-            } else {
-                Codepoint::NotEct
-            },
-        };
-        self.next_id = self.next_id.checked_add(1).ok_or(Error::Capacity)?;
-        self.pending = Some(Pending {
-            trace_key_generation: None,
-            close: None,
-            output,
-            sent: reservation,
-            path,
-            ticket,
-            crypto_len: 0,
-            reference: None,
-            was_probe: false,
-            handshake_done: false,
-            application_slot,
-            ping: false,
-            ack_largest: None,
-            ack_bits: 0,
-        });
-        Ok(Some(output))
-    }
+pub const EARLY_COMMAND_BYTES: usize = 1568;
+pub type EarlyClient<'channel, 'storage> =
+    early_owner::Client<'channel, 'storage, EARLY_COMMAND_BYTES, 1, 1>;
+pub type EarlyStarter<'channel, 'storage> =
+    early_owner::Starter<'channel, 'storage, EARLY_COMMAND_BYTES, 1, 1>;
+pub type EarlyStorage<'storage> =
+    early_owner::Storage<'storage, EARLY_REQUEST_BYTES, EARLY_CONTROL_BYTES>;
+pub type EarlyExchange = early_owner::Exchange<EARLY_COMMAND_BYTES>;
 
-    /// Configure actual caller storage before admitting an early-data offer.
-    /// The TLS provider's policy must be no broader than this backing storage.
+/// A cancelled multi-owner operation cannot leave a PathCheck or release
+/// continuation live while ordinary packet input resumes. Closing the whole
+/// connection also closes the downstream consumers of any transferred grant.
+struct PendingCall<'a, 'r, 's, 'tc, 'ts, K: InitialKeyProtection> {
+    endpoint: &'a mut HandshakeEndpoint<'r, 's, 'tc, 'ts, K>,
+    completed: bool,
+}
+impl<K: InitialKeyProtection> Drop for PendingCall<'_, '_, '_, '_, '_, K> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.endpoint.retire();
+        }
+    }
+}
+
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
+    /// Configure only the affine startup channel. Caller storage already belongs
+    /// to run_unclaimed_borrowed, before the TLS offer is admitted.
     pub fn configure_early_receive(
         &mut self,
-        policy: ServerPolicy,
-        slots: &'s mut [QuarantineSlot<EARLY_REQUEST_BYTES>],
+        starter: EarlyStarter<'tc, 'ts>,
     ) -> Result<(), Error> {
         if self.side != Side::Server
-            || self.early.slots.is_some()
-            || self.early.quarantine.is_some()
-            || self.received[0].largest.is_some()
-            || self.pending.is_some()
+            || self.io_started
+            || self.retired
+            || self.early.is_some()
+            || self.early_starter.is_some()
+            || self.early_last.is_some()
+            || starter.generation() != self.generation()
         {
             return Err(Error::InvalidConfig);
         }
-        self.early.policy = policy;
-        self.early.slots = Some(slots);
+        self.early_starter = Some(starter);
         Ok(())
     }
-    /// Supply caller-owned control quarantine before network input. The
-    /// STREAM-only compatibility profile drops packets containing controls if
-    /// this optional store was not configured; a complete early profile supplies
-    /// it together with managed CID/path resources.
-    pub fn configure_early_controls(
-        &mut self,
-        slots: &'s mut [crate::early_control::Slot<EARLY_CONTROL_BYTES>],
-    ) -> Result<(), Error> {
-        if self.side != Side::Server
-            || self.lifecycle.state() != ConnectionState::Active
-            || self.early.controls.is_some()
-            || self.received[0].largest.is_some()
-            || self.pending.is_some()
-        {
-            return Err(Error::InvalidConfig);
+    pub fn early_snapshot(&self) -> Option<early_owner::Snapshot> {
+        self.early
+            .as_ref()
+            .map(EarlyClient::snapshot)
+            .or(self.early_last)
+    }
+    pub fn admitted_early_packets(&self) -> u64 {
+        self.early_snapshot()
+            .map_or(0, |snapshot| snapshot.admitted_packets)
+    }
+    pub fn has_pending_early_release(&self) -> bool {
+        self.early
+            .as_ref()
+            .is_some_and(|owner| owner.snapshot().has_releasable)
+    }
+    /// Local cancellation is deliberately distinct from projected retirement.
+    /// This also releases an unused startup service if TLS never accepted 0-RTT.
+    pub(super) fn clear_early(&mut self) {
+        if let Some(mut owner) = self.early.take() {
+            self.early_last = Some(owner.snapshot());
+            owner.close();
         }
-        self.early.controls = Some(
-            crate::early_control::Store::new(self.generation(), slots)
-                .map_err(Error::EarlyControl)?,
-        );
+        if let Some(mut starter) = self.early_starter.take() {
+            starter.close();
+        }
+        self.early_ready.take();
+    }
+    pub(super) async fn retire_early_owner(&mut self) -> Result<(), Error> {
+        let mut pending = PendingCall {
+            endpoint: self,
+            completed: false,
+        };
+        let result = pending.endpoint.retire_early_inner().await;
+        pending.completed = result.is_ok();
+        result
+    }
+    async fn retire_early_inner(&mut self) -> Result<(), Error> {
+        if let Some(owner) = self.early.take() {
+            self.early_last = Some(owner.snapshot());
+            // Propagate the known projected send100 failure; cancellation is not
+            // substituted for a successfully completed Retired exchange.
+            self.early_last = Some(owner.retire_snapshot().await.map_err(Error::EarlyOwner)?);
+        }
+        // An unactivated optional service has no claimed quarantine or active
+        // projected session. Closing it is explicitly local resource teardown.
+        if let Some(mut starter) = self.early_starter.take() {
+            starter.close();
+        }
+        self.early_ready.take();
         Ok(())
+    }
+    async fn early_request(
+        &mut self,
+        command: early_owner::Command<EARLY_COMMAND_BYTES>,
+    ) -> Result<early_owner::Outcome<EARLY_COMMAND_BYTES>, Error> {
+        let mut pending = PendingCall {
+            endpoint: self,
+            completed: false,
+        };
+        let owner = pending
+            .endpoint
+            .early
+            .as_mut()
+            .ok_or(Error::InvalidConfig)?;
+        let outcome = owner.request(command).await.map_err(Error::EarlyOwner)?;
+        pending.endpoint.early_last = Some(owner.snapshot());
+        pending.completed = true;
+        match outcome {
+            early_owner::Outcome::Rejected(error) => Err(Error::EarlyOwnerFault(error)),
+            outcome => Ok(outcome),
+        }
+    }
+    async fn settle_early(
+        &mut self,
+        completion: early_owner::ReleaseCompletion,
+    ) -> Result<(), Error> {
+        match self
+            .early_request(early_owner::Command::Settle(completion))
+            .await?
+        {
+            early_owner::Outcome::Settled => Ok(()),
+            _ => Err(Error::InvalidConfig),
+        }
+    }
+    async fn cancel_early_check(&mut self, check: early_owner::PathCheck) -> Result<(), Error> {
+        match self
+            .early_request(early_owner::Command::Checked(check.cancel()))
+            .await?
+        {
+            early_owner::Outcome::Admission(early_owner::Admission::Cancelled) => Ok(()),
+            _ => Err(Error::InvalidConfig),
+        }
     }
     pub(super) async fn sync_early_state(&mut self) -> Result<(), Error> {
-        if self.lifecycle.state() != ConnectionState::Active {
+        if self.lifecycle.state() != ConnectionState::Active || self.retired {
             return Ok(());
         }
         if self.tls_snapshot().early_keys
@@ -333,138 +155,158 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         {
             return Err(Error::InvalidConfig);
         }
-        if self.side == Side::Client && self.tls_snapshot().early_status == EarlyStatus::Rejected {
-            // HRR/EE rejection removes early flight immediately. Waiting for
-            // Finished could leave a full early congestion window blocking CH2.
-            // Intent stays in its journal until new authenticated limits exist.
-            self.reject_early_packets().await?;
+        if self.side == Side::Client {
+            // A copied rejection status cannot mint recovery authority. Move
+            // the actual TLS transition receipt once, including pre-Finished EE.
+            if self.early_rejection.is_none() {
+                self.early_rejection = self
+                    .tls
+                    .as_mut()
+                    .and_then(|owner| owner.take_early_rejected());
+            }
+            if self.early_rejection.is_some() {
+                self.reject_early_packets_impl().await?;
+            }
+            return Ok(());
         }
-        if self.side == Side::Server
-            && self.early.quarantine.is_none()
-            && matches!(
+        if self.early.is_some()
+            || !matches!(
                 self.tls_snapshot().early_status,
                 EarlyStatus::AcceptedPendingFinished | EarlyStatus::Accepted
             )
         {
-            let claim = self
-                .tls_take_replay_claim()
-                .await?
-                .ok_or(Error::InvalidConfig)?;
-            if claim.generation() != self.generation() {
-                return Err(Error::InvalidConfig);
-            }
-            let limits = self
-                .tls_snapshot()
-                .remembered_early_limits
-                .ok_or(Error::InvalidConfig)?;
-            let slots = self.early.slots.take().ok_or(Error::InvalidConfig)?;
-            self.early.quarantine = Some(
-                Quarantine::new(self.early.policy, limits, claim, slots).map_err(Error::Early)?,
-            );
+            return Ok(());
         }
+        let mut pending = PendingCall {
+            endpoint: self,
+            completed: false,
+        };
+        let starter = pending
+            .endpoint
+            .early_starter
+            .take()
+            .ok_or(Error::InvalidConfig)?;
+        let grant = pending
+            .endpoint
+            .tls
+            .as_mut()
+            .ok_or(Error::Retired)?
+            .take_early_replay_grant()
+            .await?
+            .ok_or(Error::InvalidConfig)?;
+        let owner = starter.activate(grant).await.map_err(Error::EarlyOwner)?;
+        pending.endpoint.early_last = Some(owner.snapshot());
+        pending.endpoint.early = Some(owner);
+        pending.completed = true;
         Ok(())
     }
-    pub fn has_pending_early_release(&self) -> bool {
-        self.early.finished
-            && (self
-                .early
-                .quarantine
-                .as_ref()
-                .is_some_and(|q| q.next_release().ok().flatten().is_some())
-                || self
-                    .early
-                    .controls
-                    .as_ref()
-                    .is_some_and(|c| c.pending() != 0))
+    /// The server consumes the genuine Finished+TP+Accepted grant once. Each
+    /// target either commits the exact frame or returns its grant for cancellation;
+    /// the source retains bytes until that settlement has been acknowledged.
+    pub(crate) async fn release_early(&mut self) -> Result<(), Error> {
+        if self.side != Side::Server || self.early.is_none() {
+            return Ok(());
+        }
+        let mut pending = PendingCall {
+            endpoint: self,
+            completed: false,
+        };
+        let result = pending.endpoint.release_early_inner().await;
+        pending.completed = result.is_ok();
+        result
     }
-    /// Drain bounded quarantined ranges only after genuine verified Finished
-    /// and authenticated transport parameters, holding both checked authorities.
-    pub(crate) fn release_early<A: ApplicationHandler>(
-        &mut self,
-        handler: &mut A,
-    ) -> Result<(), Error> {
-        if self.side != Side::Server
-            || self.tls_snapshot().handshaking
-            || !self.parameters_verified
-            || self.early.quarantine.is_none()
+    async fn release_early_inner(&mut self) -> Result<(), Error> {
+        if let Some(ready) = self.early_ready.take() {
+            match self
+                .early_request(early_owner::Command::Finish(ready))
+                .await?
+            {
+                early_owner::Outcome::Ready => {}
+                _ => return Err(Error::InvalidConfig),
+            }
+        }
+        if !self
+            .early
+            .as_ref()
+            .ok_or(Error::InvalidConfig)?
+            .snapshot()
+            .release_ready
         {
             return Ok(());
         }
-        if !self.early.finished {
-            self.driver
-                .handshake_finished(self.finished_receipt.take().ok_or(Error::InvalidConfig)?)?;
-            let generation = self.generation();
-            self.early
-                .quarantine
-                .as_mut()
-                .ok_or(Error::InvalidConfig)?
-                .finish_after_verified_handshake(generation)
-                .map_err(Error::Early)?;
-            if let Some(controls) = self.early.controls.as_mut() {
-                controls.finished(generation).map_err(Error::EarlyControl)?;
-            }
-            self.early.finished = true;
-        }
-        // At most one complete receive-buffer capacity can be released in a
-        // turn. The outer caller supplies bounded slots; no unbounded input loop.
-        let mut work = 0usize;
-        loop {
-            let q = self.early.quarantine.as_mut().ok_or(Error::InvalidConfig)?;
-            let Some(view) = q.next_release().map_err(Error::Early)? else {
-                break;
+        for _ in 0..128 {
+            let release = match self.early_request(early_owner::Command::Release).await? {
+                early_owner::Outcome::Release(Some(release)) => release,
+                early_owner::Outcome::Release(None) => return Ok(()),
+                _ => return Err(Error::InvalidConfig),
             };
-            if work >= 128 {
-                return Ok(());
-            }
-            work += 1;
-            let ticket = view.ticket;
-            let authority = self.driver.begin_early_release(view.stream_id, ticket)?;
-            handler
-                .frame(Frame::Stream {
-                    id: view.stream_id,
-                    offset: view.offset,
-                    fin: view.fin,
-                    data: view.bytes,
-                })
-                .map_err(Error::Streams)?;
-            self.driver.finish_early_release(authority)?;
-            q.complete_release(ticket).map_err(Error::Early)?;
-        }
-        self.release_early_controls(handler)
-    }
-    fn release_early_controls<A: ApplicationHandler>(
-        &mut self,
-        handler: &mut A,
-    ) -> Result<(), Error> {
-        let Some(mut controls) = self.early.controls.take() else {
-            return Ok(());
-        };
-        let result = (|| -> Result<(), Error> {
-            for _ in 0..128 {
-                let Some(view) = controls.next_release().map_err(Error::EarlyControl)? else {
-                    break;
-                };
-                let ticket = view.ticket;
-                let authority = self.driver.begin_early_control_release(ticket)?;
-                if !self.process_early_network_frame(authority, view.frame, view.context)? {
-                    handler.frame(view.frame).map_err(Error::Streams)?;
+            match release {
+                early_owner::Release::Application(grant) => {
+                    match self.stream_deliver_early(grant).await? {
+                        Ok(completion) => self.settle_early(completion).await?,
+                        Err((error, grant)) => {
+                            self.settle_early(grant.cancel()).await?;
+                            if matches!(
+                                error,
+                                stream_owner::Fault::Capacity
+                                    | stream_owner::Fault::Streams(crate::streams::Error::Capacity)
+                            ) {
+                                return Ok(());
+                            }
+                            return Err(Error::StreamOwner(stream_owner::ClientError::Rejected(
+                                error,
+                            )));
+                        }
+                    }
                 }
-                self.driver.finish_early_control_release(authority)?;
-                controls
-                    .complete_release(ticket)
-                    .map_err(Error::EarlyControl)?;
+                early_owner::Release::Path(grant) => match self
+                    .path_request(path_owner::Command::EarlyRelease(grant))
+                    .await?
+                {
+                    path_owner::Outcome::EarlyReleased(completion) => {
+                        self.settle_early(completion).await?
+                    }
+                    path_owner::Outcome::EarlyReleaseRejected { release, error } => {
+                        self.settle_early(release.cancel()).await?;
+                        if matches!(
+                            error,
+                            path_owner::Error::Capacity
+                                | path_owner::Error::Path(crate::path::Error::Capacity)
+                        ) {
+                            return Ok(());
+                        }
+                        return Err(NetworkError::Owner(error).into());
+                    }
+                    _ => return Err(Error::InvalidConfig),
+                },
             }
-            Ok(())
-        })();
-        self.early.controls = Some(controls);
-        result
+        }
+        Ok(())
     }
-    pub(super) async fn receive_early<A: ApplicationHandler>(
+    pub(super) async fn receive_early(
         &mut self,
         packet: packet::Packet<'_>,
         scratch: &mut [u8],
         received_ecn: Option<Codepoint>,
-        handler: &mut A,
+        datagram_bytes: usize,
+    ) -> Result<bool, Error> {
+        let mut pending = PendingCall {
+            endpoint: self,
+            completed: false,
+        };
+        let result = pending
+            .endpoint
+            .receive_early_inner(packet, scratch, received_ecn, datagram_bytes)
+            .await;
+        pending.completed = result.is_ok();
+        result
+    }
+    async fn receive_early_inner(
+        &mut self,
+        packet: packet::Packet<'_>,
+        scratch: &mut [u8],
+        received_ecn: Option<Codepoint>,
+        datagram_bytes: usize,
     ) -> Result<bool, Error> {
         let Header::Long {
             kind: LongType::ZeroRtt,
@@ -476,117 +318,94 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         else {
             return Ok(false);
         };
+        let path = self.path_snapshot();
+        let address = self.ingress_address.unwrap_or(path.initial_address);
         if self.side != Side::Server
-            || !self.early_path_allowed()
+            || address != path.initial_address
             || self.lifecycle.state() != ConnectionState::Active
             || !self.tls_snapshot().early_keys
             || !matches!(
                 self.tls_snapshot().early_status,
                 EarlyStatus::AcceptedPendingFinished | EarlyStatus::Accepted
             )
-            || self.early.quarantine.is_none()
             || packet.bytes.len() > scratch.len()
-            || (destination_id != self.local.bytes()
-                && destination_id != self.initial_destination.bytes())
+            || packet.bytes.len() > TLS_PACKET_BYTES
             || (self.remote_known && source_id != self.remote.bytes())
         {
             return Ok(false);
         }
+        // The original Initial DCID is admitted by Path's distinct Early route;
+        // ordinary one-RTT packets never gain this alias.
+        let destination_allowed = path
+            .routable_cids
+            .into_iter()
+            .flatten()
+            .any(|cid| cid.as_bytes() == destination_id)
+            || path
+                .initial_destination_cid
+                .is_some_and(|cid| cid.as_bytes() == destination_id);
+        if !destination_allowed {
+            return Ok(false);
+        }
         self.sync_early_state().await?;
+        if self.early.is_none() {
+            return Err(Error::InvalidConfig);
+        }
         let bytes = &mut scratch[..packet.bytes.len()];
         bytes.copy_from_slice(packet.bytes);
         let Some(sample) = bytes.get(pn_offset + 4..pn_offset + 20) else {
             return Ok(false);
         };
         let sample: [u8; 16] = sample.try_into().map_err(|_| Error::Capacity)?;
-        let operation = async {
-            let mask = self.tls_early_mask(false, sample).await?;
-            bytes[0] ^= mask[0] & 0x0f;
-            let n = usize::from((bytes[0] & 3) + 1);
-            if pn_offset + n > bytes.len() {
-                return Ok(None);
-            }
-            for i in 0..n {
-                bytes[pn_offset + i] ^= mask[i + 1];
-            }
-            let (truncated, _) =
-                packet::decode_truncated_packet_number(bytes[0], &bytes[pn_offset..])?;
-            let pn =
-                match packet::restore_packet_number(truncated, n as u8, self.received[2].largest) {
-                    Ok(p) => p,
-                    Err(_) => return Ok(None),
-                };
-            let first = bytes[0];
-            let (header, body) = bytes.split_at_mut(pn_offset + n);
-            let (len, receipt) = match self.tls_open_early(pn, header, body).await {
-                Ok(n) => n,
-                Err(Error::Tls(tls::Error::Authentication | tls::Error::KeysUnavailable)) => {
-                    return Ok(None);
-                }
-                Err(e) => return Err(e),
-            };
-            self.trace_event(crate::trace::Event::Packet {
-                direction: crate::trace::Direction::Received,
-                header: crate::trace::PacketHeader {
-                    packet_type: crate::trace::PacketType::ZeroRtt,
-                    packet_number: Some(pn),
-                    key_phase: None,
-                },
-                datagram_id: None,
-            });
-            packet::validate_reserved_bits(first)?;
-            if len == 0 {
-                return Err(Error::ProtocolViolation);
-            }
-            Ok(Some((pn, pn_offset + n, len, receipt)))
-        }
-        .await;
-        let Some((pn, header_len, len, receipt)) = operation? else {
+        let mask = self.tls_early_mask(false, sample).await?;
+        bytes[0] ^= mask[0] & 0x0f;
+        let pn_len = usize::from((bytes[0] & 3) + 1);
+        if pn_offset + pn_len > bytes.len() {
             return Ok(false);
+        }
+        for i in 0..pn_len {
+            bytes[pn_offset + i] ^= mask[i + 1];
+        }
+        let (truncated, _) = packet::decode_truncated_packet_number(bytes[0], &bytes[pn_offset..])?;
+        let pn = match packet::restore_packet_number(
+            truncated,
+            pn_len as u8,
+            self.received[2].largest,
+        ) {
+            Ok(pn) => pn,
+            Err(_) => return Ok(false),
         };
-        let payload = &bytes[header_len..header_len + len];
-        let limits = ParseLimits {
-            max_bytes: 65535,
-            max_frames: 128,
-            max_ack_ranges: 32,
+        let first = bytes[0];
+        let (header, body) = bytes.split_at_mut(pn_offset + pn_len);
+        let (len, receipt) = match self.tls_open_early(pn, header, body).await {
+            Ok(opened) => opened,
+            Err(Error::Tls(tls::Error::Authentication | tls::Error::KeysUnavailable)) => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
         };
-        // Validate the entire syntax before terminal or storage effects.
-        let terminal = match crate::early_control::terminal_close(payload) {
-            Ok(value) => value,
-            Err(
-                crate::early_control::Error::Capacity
-                | crate::early_control::Error::Packet(packet::Error::LimitExceeded(_)),
-            ) => return Ok(false),
-            Err(error) => return Err(Error::EarlyControl(error)),
-        };
+        packet::validate_reserved_bits(first)?;
+        if len == 0 {
+            return Err(Error::ProtocolViolation);
+        }
+        let payload = body.get(..len).ok_or(Error::Capacity)?;
         let mut eliciting = false;
-        let mut has_controls = false;
-        let mut unsupported_network = false;
-        for frame in FrameIter::new(payload, EncryptionLevel::ZeroRtt, limits)? {
-            let frame = match frame {
-                Ok(frame) => frame,
+        for frame in FrameIter::new(payload, EncryptionLevel::ZeroRtt, ParseLimits::default())? {
+            match frame {
+                Ok(frame) => eliciting |= frame.ack_eliciting(),
                 Err(packet::Error::LimitExceeded(_)) => return Ok(false),
                 Err(error) => return Err(error.into()),
-            };
-            eliciting |= frame.ack_eliciting();
-            has_controls |= !matches!(
-                frame,
-                Frame::Stream { .. }
-                    | Frame::Ping
-                    | Frame::Padding { .. }
-                    | Frame::ConnectionClose { .. }
-            );
-            if !self.path.managed()
-                && matches!(
-                    frame,
-                    Frame::NewConnectionId { .. }
-                        | Frame::RetireConnectionId { .. }
-                        | Frame::PathChallenge { .. }
-                )
-            {
-                unsupported_network = true;
             }
         }
+        self.trace_event(crate::trace::Event::Packet {
+            direction: crate::trace::Direction::Received,
+            header: crate::trace::PacketHeader {
+                packet_type: crate::trace::PacketType::ZeroRtt,
+                packet_number: Some(pn),
+                key_phase: None,
+            },
+            datagram_id: u32::try_from(self.path_datagram_id).ok(),
+        });
         let mut seen = self.received[2];
         if !seen.insert(pn) {
             if eliciting {
@@ -594,133 +413,77 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             }
             return Ok(false);
         }
-        if let Some(Frame::ConnectionClose {
-            error_code,
-            frame_type,
-            ..
-        }) = terminal
+        let context = self.path_receive_context(destination_id, datagram_bytes)?;
+        let admitted =
+            early_owner::AuthenticatedPacket::new(receipt, payload, context, path.original_path)
+                .map_err(Error::EarlyOwnerFault)?;
+        let check = match self
+            .early_request(early_owner::Command::Receive(admitted))
+            .await?
         {
-            let receive = self.driver.begin_early_receive(
-                receipt,
-                self.early.quarantine.as_ref().ok_or(Error::InvalidConfig)?,
-            )?;
-            let close = self.driver.begin_early_peer_close(receive, error_code)?;
-            self.driver.finish_early_peer_close(close)?;
-            self.driver.finish_early_receive(receive)?;
-            self.peer_close = Some(PeerClose {
-                error_code,
-                frame_type,
-                level: Level::OneRtt,
-                protection: EncryptionLevel::ZeroRtt,
-            });
-            self.enter_draining().await?;
-            self.early.admitted_packets = self.early.admitted_packets.saturating_add(1);
-            return Ok(true);
-        }
-        if unsupported_network {
-            return Ok(false);
-        }
-        let generation = self.generation();
+            early_owner::Outcome::Check(check) => check,
+            early_owner::Outcome::Dropped => return Ok(false),
+            _ => return Err(Error::InvalidConfig),
+        };
+        let checked = match self
+            .path_request(path_owner::Command::EarlyPreflight(check))
+            .await?
+        {
+            path_owner::Outcome::EarlyChecked(checked) => checked,
+            path_owner::Outcome::EarlyCheckRejected { check, error } => {
+                self.cancel_early_check(check).await?;
+                if matches!(error, path_owner::Error::Capacity) {
+                    return Ok(false);
+                }
+                return Err(NetworkError::Owner(error).into());
+            }
+            _ => return Err(Error::InvalidConfig),
+        };
         match self
-            .early
-            .quarantine
-            .as_ref()
-            .ok_or(Error::InvalidConfig)?
-            .preflight_authenticated_packet(generation, payload)
+            .early_request(early_owner::Command::Checked(checked))
+            .await?
         {
-            Ok(()) => {}
-            Err(crate::early_data::Error::Capacity) => return Ok(false),
-            Err(e) => return Err(Error::Early(e)),
-        }
-        if has_controls && self.early.controls.is_none() {
-            return Ok(false);
-        }
-        let context = self.network_receive_context(destination_id)?;
-        let remembered_limit = self
-            .tls_snapshot()
-            .remembered_early_limits
-            .ok_or(Error::InvalidConfig)?
-            .active_connection_id_limit();
-        self.preflight_early_network_controls(
-            self.early
-                .controls
-                .as_ref()
-                .into_iter()
-                .flat_map(|store| store.pending_frames()),
-            payload,
-            context,
-            remembered_limit,
-        )?;
-
-        let mut control_owner = self.early.controls.take();
-        let admission = (|| -> Result<bool, Error> {
-            let prepared = if let Some(owner) = control_owner.as_mut() {
-                match owner.prepare(payload, context) {
-                    Ok(p) => Some(p),
-                    Err(crate::early_control::Error::Capacity) => return Ok(false),
-                    Err(e) => return Err(Error::EarlyControl(e)),
-                }
-            } else {
-                None
-            };
-            let receive = self.driver.begin_early_receive(
-                receipt,
-                self.early.quarantine.as_ref().ok_or(Error::InvalidConfig)?,
-            )?;
-            if let Some(prepared) = prepared {
-                if prepared.control_count() != 0 {
-                    let control = self.driver.begin_early_control_buffer(receive)?;
-                    prepared.commit().map_err(Error::EarlyControl)?;
-                    for frame in FrameIter::new(payload, EncryptionLevel::ZeroRtt, limits)? {
-                        self.early
-                            .quarantine
-                            .as_mut()
-                            .ok_or(Error::InvalidConfig)?
-                            .buffer_authenticated_control(generation, frame?)
-                            .map_err(Error::Early)?;
-                    }
-                    self.driver.finish_early_control_buffer(control)?;
-                } else {
-                    prepared.commit().map_err(Error::EarlyControl)?;
-                }
-            }
-            for frame in FrameIter::new(payload, EncryptionLevel::ZeroRtt, limits)? {
-                if let Frame::Stream {
-                    id,
-                    offset,
-                    fin,
-                    data,
-                } = frame?
+            early_owner::Outcome::Admission(early_owner::Admission::Admitted(grant)) => {
+                match self
+                    .path_request(path_owner::Command::EarlyAdmission(grant))
+                    .await?
                 {
-                    let buffer = self.driver.begin_early_buffer(receive, id)?;
-                    self.early
-                        .quarantine
-                        .as_mut()
-                        .ok_or(Error::InvalidConfig)?
-                        .buffer_authenticated_stream(generation, id, offset, data, fin)
-                        .map_err(Error::Early)?;
-                    self.driver.finish_early_buffer(buffer)?;
+                    path_owner::Outcome::EarlyAdmitted {
+                        path: admitted_path,
+                    } if admitted_path == path.original_path => {}
+                    path_owner::Outcome::EarlyAdmissionRejected { error, .. } => {
+                        return Err(NetworkError::Owner(error).into());
+                    }
+                    _ => return Err(Error::InvalidConfig),
                 }
+                self.received[2] = seen;
+                self.ecn_rx
+                    .processed(PacketNumberSpace::ApplicationData, received_ecn)?;
+                if eliciting {
+                    self.received[2].ack_pending = true;
+                }
+                self.release_early().await?;
+                Ok(true)
             }
-            self.driver.finish_early_receive(receive)?;
-            Ok(true)
-        })();
-        self.early.controls = control_owner;
-        if !admission? {
-            return Ok(false);
+            early_owner::Outcome::Admission(early_owner::Admission::PeerClose(close)) => {
+                let Frame::ConnectionClose {
+                    error_code,
+                    frame_type,
+                    ..
+                } = close.frame()?
+                else {
+                    return Err(Error::InvalidConfig);
+                };
+                self.peer_close = Some(PeerClose {
+                    error_code,
+                    frame_type,
+                    level: Level::OneRtt,
+                    protection: EncryptionLevel::ZeroRtt,
+                });
+                self.enter_draining().await?;
+                Ok(true)
+            }
+            _ => Err(Error::InvalidConfig),
         }
-        self.received[2] = seen;
-        let admitted = self.on_authenticated_early_path(destination_id, pn)?;
-        if admitted != context {
-            return Err(Error::InvalidConfig);
-        }
-        self.ecn_rx
-            .processed(PacketNumberSpace::ApplicationData, received_ecn)?;
-        if eliciting {
-            self.received[2].ack_pending = true;
-        }
-        self.early.admitted_packets = self.early.admitted_packets.saturating_add(1);
-        self.release_early(handler)?;
-        Ok(true)
     }
 }

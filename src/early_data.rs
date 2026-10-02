@@ -4,7 +4,8 @@
 //! packet numbers, acknowledge data, or establish Finished. Their caller must
 //! supply those checked facts. No application bytes are exposed until finish.
 //! Replay claims are burned before accepting early data and are not rolled back.
-//! The TLS/transport/typed-driver integration is intentionally still separate.
+//! The actual TLS and Early roles supply those capabilities; these numerical
+//! kernels do not manufacture them or interpret copied status as authority.
 
 use crate::parameters::{Parameters, Peer};
 use zeroize::Zeroize;
@@ -523,7 +524,7 @@ impl<const BYTES: usize> QuarantineSlot<BYTES> {
         bytes: [0; BYTES],
         present: [0; BYTES],
     };
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.bytes.zeroize();
         self.present.fill(0);
         self.id = None;

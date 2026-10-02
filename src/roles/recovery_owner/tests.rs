@@ -556,6 +556,15 @@ fn q1_projected_owner_runs_real_reserve_accept_ack_and_retire() {
                 rrx.recv().await.unwrap().outcome,
                 Outcome::Installed
             ));
+            tx.send(Command::RetryReset(
+                actual_retry_grants(GENERATION).recovery,
+            ))
+            .await
+            .unwrap_or_else(|_| panic!("closed"));
+            assert!(matches!(
+                rrx.recv().await.unwrap().outcome,
+                Outcome::RetryReset { .. }
+            ));
             tx.send(Command::Reserve(plan(None)))
                 .await
                 .unwrap_or_else(|_| panic!("closed"));
@@ -1273,6 +1282,82 @@ fn optional_ecn_failure_never_relabels_actual_udp_acceptance_as_rejection() {
         Outcome::EcnMarking(Codepoint::NotEct)
     ));
 }
+pub(crate) fn actual_retry_grants(generation: u64) -> crate::roles::packet_authority::RetryGrants {
+    let mut retry = crate::retry::ClientRetry::<64>::new(b"original", b"clientid").unwrap();
+    let mut wire = [0; 128];
+    let mut scratch = [0; 256];
+    let len = crate::retry::encode_retry(
+        b"original",
+        b"clientid",
+        b"retrycid",
+        b"token",
+        0,
+        &mut wire,
+        &mut scratch,
+    )
+    .unwrap();
+    let checked = retry.validate(&wire[..len], &mut scratch).unwrap();
+    let receipt = retry.commit_with_receipt(checked).unwrap();
+    crate::roles::packet_authority::split_retry(generation, receipt)
+}
+#[test]
+fn committed_retry_resets_recovery_retains_non_early_history_and_preserves_pending_grant() {
+    let mut owner = owner();
+    let flight = owner.flights.append(Level::Initial, 0, b"crypto").unwrap();
+    let initial = owner.reserve(descriptor(1), plan(Some(flight))).unwrap();
+    owner.accepted(initial, 1, Codepoint::NotEct, None).unwrap();
+    let early = owner
+        .reserve(
+            descriptor(2),
+            SendPlan {
+                kind: PacketKind::ZeroRtt,
+                ..plan(None)
+            },
+        )
+        .unwrap();
+    owner.accepted(early, 2, Codepoint::NotEct, None).unwrap();
+    let ordinary = owner
+        .reserve(
+            descriptor(3),
+            SendPlan {
+                kind: PacketKind::OneRtt,
+                ..plan(None)
+            },
+        )
+        .unwrap();
+    owner
+        .accepted(ordinary, 3, Codepoint::NotEct, None)
+        .unwrap();
+    owner.cc.on_congestion_event(10, 3).unwrap();
+    let pending = owner.reserve(descriptor(4), plan(None)).unwrap();
+    let Outcome::RetryDeferred { grant, error } =
+        owner.retry_reset(actual_retry_grants(GENERATION).recovery)
+    else {
+        panic!("pending must preserve grant")
+    };
+    assert_eq!(
+        error,
+        Rejection::Accounting(accounting::AccountingError::OutstandingPackets)
+    );
+    assert_eq!(owner.snapshot().bytes_in_flight, 3600);
+    assert_eq!(owner.snapshot().congestion_window, 6000);
+    owner.rejected(pending).unwrap();
+    assert!(matches!(
+        owner.retry_reset(grant),
+        Outcome::RetryReset {
+            initial_bytes_removed: 1200,
+            early_bytes_removed: 1200
+        }
+    ));
+    assert_eq!(owner.snapshot().bytes_in_flight, 1200);
+    assert_eq!(owner.snapshot().congestion_window, 12000);
+    assert_eq!(owner.snapshot().next_packet_number[0], Some(2));
+    assert_eq!(owner.snapshot().next_packet_number[2], Some(2));
+    assert_eq!(owner.snapshot().next_lost_flight, Some(flight));
+    assert!(owner.sent.is_new_ack(ordinary.packet()));
+    assert!(!owner.sent.is_new_ack(early.packet()));
+    assert_eq!(owner.snapshot().pto_probe_credits, 0);
+}
 fn actual_retry_rejection(generation: u64) -> crate::roles::tls_owner::EarlyRejectedGrant {
     let mut retry = crate::retry::ClientRetry::<64>::new(b"original", b"clientid").unwrap();
     let mut wire = [0; 128];
@@ -1382,4 +1467,383 @@ fn key_pto_query_uses_owned_rtt_and_overflow_does_not_mutate_recovery() {
     ));
     assert_eq!(owner.snapshot().bytes_in_flight, before.bytes_in_flight);
     assert_eq!(owner.snapshot().congestion_window, before.congestion_window);
+}
+
+pub(crate) fn complete_empty_abandonment(
+    grant: super::super::path_owner::PathAbandoned,
+) -> AbandonmentComplete {
+    let mut recovery = owner();
+    recovery.config.generation = grant.generation();
+    recovery.sent = SentLedger::new(grant.generation());
+    assert!(matches!(
+        recovery.begin_abandonment(grant),
+        Outcome::AbandonmentStarted(_)
+    ));
+    recovery.finish_abandonment().unwrap()
+}
+
+#[test]
+fn abandonment_requeues_exact_sent_path_keeps_late_ack_and_never_charges_replacement_cc() {
+    super::super::path_owner::tests::with_abandonment(GENERATION, |grant, path_loss| {
+        let failed = grant.path();
+        let survivor = PathIdentity {
+            slot: 0,
+            path_generation: 1,
+            connection_generation: GENERATION,
+        };
+        let mut recovery = owner();
+        recovery.reset_path(Some(survivor)).unwrap();
+        let flight = recovery
+            .flights
+            .append(Level::Initial, 0, b"retained crypto")
+            .unwrap();
+        let old = recovery.reserve(descriptor(1), plan(Some(flight))).unwrap();
+        recovery
+            .accepted(old, 1, Codepoint::NotEct, Some(failed))
+            .unwrap();
+        let new = recovery.reserve(descriptor(2), plan(None)).unwrap();
+        recovery
+            .accepted(new, 2, Codepoint::NotEct, Some(survivor))
+            .unwrap();
+        let cwnd = recovery.snapshot().congestion_window;
+        let Outcome::AbandonmentStarted(mut losses) = recovery.begin_abandonment(grant) else {
+            panic!("abandon")
+        };
+        assert_eq!(losses.newly.iter().flatten().count(), 1);
+        assert_eq!(losses.newly[0].unwrap().sent.packet, old.packet());
+        assert_eq!(recovery.snapshot().bytes_in_flight, 1200);
+        assert_eq!(recovery.snapshot().active_bytes_in_flight, 1200);
+        assert_eq!(recovery.snapshot().congestion_window, cwnd);
+        assert_eq!(recovery.snapshot().next_lost_flight, Some(flight));
+        assert!(recovery.sent.is_new_ack(old.packet()));
+        assert!(matches!(
+            recovery.finish_abandonment(),
+            Err(Rejection::AbandonmentPending)
+        ));
+        let proof = path_loss(losses.path[0].take().unwrap());
+        recovery
+            .settle_abandonment(AbandonmentSettlement::Path(proof))
+            .unwrap();
+        let completion = recovery.finish_abandonment().unwrap();
+        assert_eq!(completion.path(), failed);
+        // No implicit reclaim was performed: old Lost metadata remains live
+        // until the caller explicitly advances the bounded history floor.
+        assert_eq!(recovery.snapshot().retained_records, 2);
+        let arena = Arena::<1, 2>::new(GENERATION);
+        let ticket = authenticated_scope(&arena, &[0, 0]);
+        let result = recovery
+            .ack(&arena, self::grant(&arena, ticket, 0, 0), 100, context())
+            .unwrap();
+        assert_eq!(result.summary.newly_acknowledged, 1);
+        assert_eq!(recovery.snapshot().bytes_in_flight, 1200);
+        assert_eq!(recovery.snapshot().congestion_window, cwnd);
+        assert_eq!(recovery.snapshot().active_flights, 0);
+        let duplicate = recovery
+            .ack(&arena, self::grant(&arena, ticket, 1, 0), 101, context())
+            .unwrap();
+        assert_eq!(duplicate.summary.newly_acknowledged, 0);
+        assert_eq!(recovery.reclaim(PacketNumberSpace::Initial).unwrap(), 1);
+        arena.finish(ticket).unwrap();
+    });
+}
+
+#[test]
+fn abandonment_requires_both_real_stream_and_path_settlements_and_rejects_duplicates() {
+    super::super::path_owner::tests::with_abandonment(GENERATION, |grant, path_loss| {
+        let mut recovery = owner();
+        let path = grant.path();
+        let mut app = plan(None);
+        app.kind = PacketKind::OneRtt;
+        let packet = recovery.reserve(descriptor(1), app).unwrap();
+        recovery
+            .accepted(packet, 1, Codepoint::NotEct, Some(path))
+            .unwrap();
+        let Outcome::AbandonmentStarted(mut loss) = recovery.begin_abandonment(grant) else {
+            panic!("abandon")
+        };
+        let stream = super::super::stream_owner::tests::settle_abandonment_loss(
+            loss.stream[0].take().unwrap(),
+        );
+        let bad = StreamLossSettled {
+            generation: GENERATION + 1,
+            obligation: stream.obligation,
+        };
+        assert_eq!(
+            recovery.settle_abandonment(AbandonmentSettlement::Stream(bad)),
+            Err(Rejection::InvalidSettlement)
+        );
+        let stale = StreamLossSettled {
+            generation: GENERATION,
+            obligation: AbandonmentObligation {
+                serial: stream.obligation.serial + 1,
+                ..stream.obligation
+            },
+        };
+        assert_eq!(
+            recovery.settle_abandonment(AbandonmentSettlement::Stream(stale)),
+            Err(Rejection::InvalidSettlement)
+        );
+        let duplicate = StreamLossSettled {
+            generation: stream.generation,
+            obligation: stream.obligation,
+        };
+        recovery
+            .settle_abandonment(AbandonmentSettlement::Stream(stream))
+            .unwrap();
+        assert_eq!(
+            recovery.settle_abandonment(AbandonmentSettlement::Stream(duplicate)),
+            Err(Rejection::InvalidSettlement)
+        );
+        assert!(matches!(
+            recovery.finish_abandonment(),
+            Err(Rejection::AbandonmentPending)
+        ));
+        recovery
+            .settle_abandonment(AbandonmentSettlement::Path(path_loss(
+                loss.path[0].take().unwrap(),
+            )))
+            .unwrap();
+        recovery.finish_abandonment().unwrap();
+        assert!(matches!(
+            recovery.finish_abandonment(),
+            Err(Rejection::InvalidSettlement)
+        ));
+    });
+}
+
+#[test]
+fn abandonment_rejects_old_generation_old_path_and_preserves_grant_while_udp_is_pending() {
+    super::super::path_owner::tests::with_abandonment(GENERATION + 1, |grant, _| {
+        assert!(matches!(
+            owner().begin_abandonment(grant),
+            Outcome::AbandonmentDeferred {
+                error: Rejection::WrongPath,
+                ..
+            }
+        ));
+    });
+    super::super::path_owner::tests::with_abandonment(GENERATION, |grant, _| {
+        let mut recovery = owner();
+        let old = grant.path();
+        let next = PathIdentity {
+            path_generation: old.path_generation + 1,
+            ..old
+        };
+        let packet = recovery.reserve(descriptor(1), plan(None)).unwrap();
+        let Outcome::AbandonmentDeferred { grant, error } = recovery.begin_abandonment(grant)
+        else {
+            panic!("pending UDP")
+        };
+        assert_eq!(
+            error,
+            Rejection::Accounting(accounting::AccountingError::OutstandingPackets)
+        );
+        recovery
+            .accepted(packet, 1, Codepoint::NotEct, Some(next))
+            .unwrap();
+        assert!(matches!(
+            recovery.begin_abandonment(grant),
+            Outcome::AbandonmentDeferred {
+                error: Rejection::WrongPath,
+                ..
+            }
+        ));
+        assert_eq!(recovery.snapshot().bytes_in_flight, 1200);
+    });
+}
+
+#[test]
+fn more_than_capacity_migrations_retransmit_ack_and_explicitly_reclaim_without_waiting_for_lost_originals()
+ {
+    let mut recovery = owner();
+    let survivor = PathIdentity {
+        connection_generation: GENERATION,
+        slot: 0,
+        path_generation: 1,
+    };
+    recovery.reset_path(Some(survivor)).unwrap();
+    super::super::path_owner::tests::repeated_abandonments(GENERATION, 12, |grant, path_loss| {
+        let flight = recovery
+            .flights
+            .append(Level::Initial, 0, b"retry")
+            .unwrap();
+        let original = recovery.reserve(descriptor(1), plan(Some(flight))).unwrap();
+        let now = original.packet().value + 1;
+        recovery
+            .accepted(original, now, Codepoint::NotEct, Some(grant.path()))
+            .unwrap();
+        let Outcome::AbandonmentStarted(mut losses) = recovery.begin_abandonment(grant) else {
+            panic!("abandon")
+        };
+        recovery
+            .settle_abandonment(AbandonmentSettlement::Path(path_loss(
+                losses.path[0].take().unwrap(),
+            )))
+            .unwrap();
+        let completion = recovery.finish_abandonment().unwrap();
+        assert!(recovery.sent.is_new_ack(original.packet()));
+        let replacement = recovery.reserve(descriptor(2), plan(Some(flight))).unwrap();
+        recovery
+            .accepted(replacement, now + 1, Codepoint::NotEct, Some(survivor))
+            .unwrap();
+        let arena = Arena::<1, 1>::new(GENERATION);
+        let ticket = authenticated_scope(&arena, &[replacement.packet().value as u8]);
+        let ack = recovery
+            .ack(
+                &arena,
+                self::grant(&arena, ticket, 0, replacement.packet().value),
+                now + 2,
+                context(),
+            )
+            .unwrap();
+        assert_eq!(ack.summary.newly_acknowledged, 1);
+        assert_eq!(recovery.snapshot().active_flights, 0);
+        assert_eq!(
+            recovery.reclaim(PacketNumberSpace::Initial).unwrap(),
+            replacement.packet().value + 1
+        );
+        assert_eq!(recovery.snapshot().retained_records, 0);
+        assert_eq!(recovery.snapshot().bytes_in_flight, 0);
+        arena.finish(ticket).unwrap();
+        completion
+    });
+    // A mixed old/new ACK still validates the newly sent suffix. The locally
+    // forgotten prefix is clamped, never asserted to have been acknowledged.
+    let sent = recovery.reserve(descriptor(3), plan(None)).unwrap();
+    recovery
+        .accepted(sent, 30, Codepoint::NotEct, Some(survivor))
+        .unwrap();
+    let payload = [
+        2,
+        sent.packet().value as u8,
+        0,
+        0,
+        sent.packet().value as u8,
+    ];
+    let (receipt, plaintext) = authenticated_payload(&payload);
+    let arena = Arena::<1, 1>::new(GENERATION);
+    let ticket = arena
+        .admit(ReceiveEvidence::Initial(receipt), plaintext.body())
+        .unwrap();
+    let ack = arena
+        .grant_ack(
+            ticket,
+            0,
+            packet::AckRanges::new(&[packet::AckRange {
+                smallest: 0,
+                largest: sent.packet().value,
+            }])
+            .unwrap(),
+            0,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        recovery
+            .ack(&arena, ack, 40, context())
+            .unwrap()
+            .summary
+            .newly_acknowledged,
+        1
+    );
+    arena.finish(ticket).unwrap();
+}
+
+pub(crate) fn probe_timeout_for_test(
+    generation: u64,
+    initial_rtt_us: u64,
+) -> PathProbeTimeoutGrant {
+    let mut owner = RecoveryOwner::<8, 4, 32, 8>::new(Config {
+        generation,
+        initial_rtt_us,
+        max_datagram_size: 1200,
+        active_path: None,
+        ecn: None,
+        max_ack_delay_us: 0,
+    })
+    .unwrap();
+    let Outcome::TimerUpdated(grant) = owner
+        .timer(TimerCommand::Update {
+            now: 0,
+            keys_available: [true, false, false],
+            context: TimerContext {
+                is_server: false,
+                handshake_confirmed: false,
+                handshake_ack_received: false,
+                server_amplification_blocked: false,
+            },
+            max_ack_delay_us: 0,
+        })
+        .unwrap()
+    else {
+        panic!("actual timer update")
+    };
+    grant
+}
+
+/// Numerical fixture for Path's accepted EE provenance tests. Every ticket and
+/// callback runs the same Store/reserve/AdapterComplete code as the owner; it
+/// has no constructor for a ticket, flight binding, or UDP acceptance proof.
+pub(crate) struct AdvertisementRecovery {
+    owner: RecoveryOwner<16, 8, 1024, 16>,
+    authority: Arena<1, 2>,
+    sequence: u64,
+}
+impl AdvertisementRecovery {
+    pub(crate) fn new(generation: u64) -> Self {
+        Self {
+            owner: RecoveryOwner::new(Config {
+                generation,
+                initial_rtt_us: recovery::INITIAL_RTT_US,
+                max_datagram_size: 1200,
+                active_path: None,
+                ecn: None,
+                max_ack_delay_us: 0,
+            })
+            .unwrap(),
+            authority: Arena::new(generation),
+            sequence: 1,
+        }
+    }
+    fn apply(&mut self, command: Command<1024>) -> Outcome<16, 1024> {
+        let descriptor = Descriptor {
+            generation: self.owner.config.generation,
+            sequence: self.sequence,
+        };
+        self.sequence += 1;
+        self.owner
+            .apply(&self.authority, descriptor, command)
+            .unwrap()
+    }
+    pub(crate) fn next_packet_number(&self) -> u64 {
+        self.owner.snapshot().next_packet_number[1].unwrap()
+    }
+    pub(crate) fn reserve(&mut self, offset: u64, data: &[u8], bytes: u64) -> SendTicket {
+        let Outcome::FlightStored(flight) = self.apply(Command::Flight(FlightCommand::Store {
+            level: Level::Handshake,
+            offset,
+            bytes: FlightBytes::new(data).unwrap(),
+        })) else {
+            panic!("actual retained flight")
+        };
+        let Outcome::Reserved(ticket) = self.apply(Command::Reserve(SendPlan {
+            kind: PacketKind::Handshake,
+            bytes,
+            in_flight: true,
+            ack_eliciting: true,
+            pto_probe: false,
+            flight: Some(flight),
+        })) else {
+            panic!("actual send reservation")
+        };
+        ticket
+    }
+    pub(crate) fn complete(&mut self, completion: super::super::datagram::RecoveryCompletion) {
+        let accepted = completion.accepted_at().is_some();
+        let result = self.apply(Command::AdapterComplete(completion));
+        assert!(matches!(
+            (accepted, result),
+            (true, Outcome::AdapterAccepted(_)) | (false, Outcome::AdapterRejected(_))
+        ));
+    }
 }

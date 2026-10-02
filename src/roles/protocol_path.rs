@@ -63,6 +63,59 @@ pub const RETIRED: u8 = 186;
 pub type Retired = g::Msg<RETIRED, [u8; 16]>;
 pub const RETIREMENT_ACKNOWLEDGED: u8 = 187;
 pub type RetirementAcknowledged = g::Msg<RETIREMENT_ACKNOWLEDGED, [u8; 16]>;
+pub const ABANDONMENT_REQUIRED: u8 = 188;
+pub type AbandonmentRequired = g::Msg<ABANDONMENT_REQUIRED, [u8; 16]>;
+pub const ABANDON_COMPLETE: u8 = 189;
+pub type AbandonComplete = g::Msg<ABANDON_COMPLETE, [u8; 16]>;
+/// Lost deliveries must settle before Recovery can mint AbandonComplete. The
+/// continuation cannot return to receive, transmit, or timer work prematurely.
+pub type AbandonmentContinuation<const C: u8, const O: u8> = g::Seq<
+    g::Send<C, O, ResultTaken>,
+    g::Seq<
+        g::Roll<g::Route<Operation<C, O, Lost>, g::Send<C, O, AbandonComplete>>>,
+        g::Seq<g::Send<O, C, Applied>, g::Send<C, O, ResultTaken>>,
+    >,
+>;
+pub type MayAbandon<const C: u8, const O: u8, M> = g::Seq<
+    g::Send<C, O, M>,
+    g::Route<
+        g::Seq<g::Send<O, C, AbandonmentRequired>, AbandonmentContinuation<C, O>>,
+        g::Seq<
+            g::Route<g::Send<O, C, Applied>, g::Send<O, C, Rejected>>,
+            g::Send<C, O, ResultTaken>,
+        >,
+    >,
+>;
+fn may_abandon<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]>>()
+-> g::Program<MayAbandon<C, O, M>> {
+    g::seq(
+        g::send::<C, O, M>(),
+        g::route(
+            g::seq(
+                g::send::<O, C, AbandonmentRequired>(),
+                g::seq(
+                    g::send::<C, O, ResultTaken>(),
+                    g::seq(
+                        g::route(
+                            operation::<C, O, Lost>(),
+                            g::send::<C, O, AbandonComplete>(),
+                        )
+                        .roll(),
+                        g::seq(g::send::<O, C, Applied>(), g::send::<C, O, ResultTaken>()),
+                    ),
+                ),
+            ),
+            g::seq(
+                g::route(g::send::<O, C, Applied>(), g::send::<O, C, Rejected>()),
+                g::send::<C, O, ResultTaken>(),
+            ),
+        ),
+    )
+}
+pub const PROBE_TIMEOUT: u8 = 191;
+pub type ProbeTimeout = g::Msg<PROBE_TIMEOUT, [u8; 16]>;
+pub const SERVER_RETRY: u8 = 190;
+pub type ServerRetry = g::Msg<SERVER_RETRY, [u8; 16]>;
 pub type Operation<const C: u8, const O: u8, M> = g::Seq<
     g::Send<C, O, M>,
     g::Seq<g::Route<g::Send<O, C, Applied>, g::Send<O, C, Rejected>>, g::Send<C, O, ResultTaken>>,
@@ -78,8 +131,63 @@ pub type ReservationFlow<const C: u8, const O: u8, M> = g::Seq<
     >,
 >;
 pub type PathFlow<const C: u8, const O: u8> = g::Seq<
-    g::Send<C, O, Install>, g::Seq<g::Send<O, C, Installed>, g::Seq<
-        g::Roll<g::Route<Operation<C, O, LearnPeerCid>, g::Route<Operation<C, O, ApplyRetry>, g::Route<Operation<C, O, EarlyPreflight>, g::Route<Operation<C, O, EarlyAdmission>, g::Route<Operation<C, O, EarlyRelease>, g::Route<Operation<C, O, Frame>, g::Route<Operation<C, O, Ack>, g::Route<Operation<C, O, Lost>, g::Route<Operation<C, O, Pto>, g::Route<Operation<C, O, CheckReset>, g::Route<Operation<C, O, ObserveTimer>, g::Route<Operation<C, O, Timeout>, g::Route<Operation<C, O, IssueCid>, g::Route<Operation<C, O, Handshake>, g::Route<Operation<C, O, RetirePath>, g::Route<Operation<C, O, Inspect>, g::Route<ReservationFlow<C, O, Reserve>, g::Route<ReservationFlow<C, O, ReserveControl>, g::Send<C, O, RetireRequested>>>>>>>>>>>>>>>>>>>>,
+    g::Send<C, O, Install>,
+    g::Seq<g::Send<O, C, Installed>, g::Seq<
+        g::Roll<g::Route<
+            Operation<C, O, ServerRetry>,
+            g::Route<
+                Operation<C, O, LearnPeerCid>,
+                g::Route<
+                    Operation<C, O, ApplyRetry>,
+                    g::Route<
+                        Operation<C, O, EarlyPreflight>,
+                        g::Route<
+                            Operation<C, O, EarlyAdmission>,
+                            g::Route<
+                                Operation<C, O, EarlyRelease>,
+                                g::Route<
+                                    MayAbandon<C, O, Frame>,
+                                    g::Route<
+                                        Operation<C, O, Ack>,
+                                        g::Route<
+                                            Operation<C, O, Lost>,
+                                            g::Route<
+                                                Operation<C, O, Pto>,
+                                                g::Route<
+                                                    Operation<C, O, ProbeTimeout>,
+                                                    g::Route<
+                                                        Operation<C, O, CheckReset>,
+                                                        g::Route<
+                                                            Operation<C, O, ObserveTimer>,
+                                                            g::Route<
+                                                                MayAbandon<C, O, Timeout>,
+                                                                g::Route<
+                                                                    Operation<C, O, IssueCid>,
+                                                                    g::Route<
+                                                                        Operation<C, O, Handshake>,
+                                                                        g::Route<
+                                                                            MayAbandon<C, O, RetirePath>,
+                                                                            g::Route<
+                                                                                Operation<C, O, Inspect>,
+                                                                                g::Route<ReservationFlow<C, O, Reserve>, g::Route<ReservationFlow<C, O, ReserveControl>, g::Send<C, O, RetireRequested>>>,
+                                                                            >,
+                                                                        >,
+                                                                    >,
+                                                                >,
+                                                            >,
+                                                        >,
+                                                    >,
+                                                >,
+                                            >,
+                                        >,
+                                    >,
+                                >,
+                            >,
+                        >,
+                    >,
+                >,
+            >,
+        >>,
         g::Seq<g::Send<O, C, Retired>, g::Send<C, O, RetirementAcknowledged>>,
     >>,
 >;
@@ -110,7 +218,8 @@ fn reservation<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]>>()
     )
 }
 pub fn path_choreography<const C: u8, const O: u8>() -> g::Program<PathFlow<C, O>> {
-    let work =
+    let work = g::route(
+        operation::<C, O, ServerRetry>(),
         g::route(
             operation::<C, O, LearnPeerCid>(),
             g::route(
@@ -122,7 +231,7 @@ pub fn path_choreography<const C: u8, const O: u8>() -> g::Program<PathFlow<C, O
                         g::route(
                             operation::<C, O, EarlyRelease>(),
                             g::route(
-                                operation::<C, O, Frame>(),
+                                may_abandon::<C, O, Frame>(),
                                 g::route(
                                     operation::<C, O, Ack>(),
                                     g::route(
@@ -130,41 +239,22 @@ pub fn path_choreography<const C: u8, const O: u8>() -> g::Program<PathFlow<C, O
                                         g::route(
                                             operation::<C, O, Pto>(),
                                             g::route(
-                                                operation::<C, O, CheckReset>(),
+                                                operation::<C, O, ProbeTimeout>(),
                                                 g::route(
-                                                    operation::<C, O, ObserveTimer>(),
+                                                    operation::<C, O, CheckReset>(),
                                                     g::route(
-                                                        operation::<C, O, Timeout>(),
+                                                        operation::<C, O, ObserveTimer>(),
                                                         g::route(
-                                                            operation::<C, O, IssueCid>(),
+                                                            may_abandon::<C, O, Timeout>(),
                                                             g::route(
-                                                                operation::<C, O, Handshake>(),
+                                                                operation::<C, O, IssueCid>(),
                                                                 g::route(
-                                                                    operation::<C, O, RetirePath>(),
+                                                                    operation::<C, O, Handshake>(),
                                                                     g::route(
-                                                                        operation::<C, O, Inspect>(
-                                                                        ),
+                                                                        may_abandon::<C, O, RetirePath>(),
                                                                         g::route(
-                                                                            reservation::<
-                                                                                C,
-                                                                                O,
-                                                                                Reserve,
-                                                                            >(
-                                                                            ),
-                                                                            g::route(
-                                                                                reservation::<
-                                                                                    C,
-                                                                                    O,
-                                                                                    ReserveControl,
-                                                                                >(
-                                                                                ),
-                                                                                g::send::<
-                                                                                    C,
-                                                                                    O,
-                                                                                    RetireRequested,
-                                                                                >(
-                                                                                ),
-                                                                            ),
+                                                                            operation::<C, O, Inspect>(),
+                                                                            g::route(reservation::<C, O, Reserve>(), g::route(reservation::<C, O, ReserveControl>(), g::send::<C, O, RetireRequested>())),
                                                                         ),
                                                                     ),
                                                                 ),
@@ -181,8 +271,8 @@ pub fn path_choreography<const C: u8, const O: u8>() -> g::Program<PathFlow<C, O
                     ),
                 ),
             ),
-        )
-        .roll();
+        ),
+    ).roll();
     g::seq(
         g::send::<C, O, Install>(),
         g::seq(

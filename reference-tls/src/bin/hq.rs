@@ -1,14 +1,19 @@
 //! Linux development HTTP/0.9 adapter. Real bounded TLS + hibana-quic transport;
 //! host arguments, files and PEM setup allocate, file bodies are streamed.
-//! Initial keys and the owned TLS provider use one projected async choreography;
-//! UDP/timers await epoll/eventfd readiness. Transport/recovery Driver control
-//! remains partial. This is an experimental integration, not a full architecture claim.
+//! Initial protection, TLS, Recovery, Path/CID, Stream and optional Early state
+//! belong to their projected owners in one async connection choreography.
+//! UDP/timers await real epoll/eventfd readiness; runtime qualification is separate.
 #![forbid(unsafe_code)]
-// Composed Initial RX/TX and owned TLS projection exceeds the default const-eval budget.
+// The complete owned-role projection exceeds the default const-eval budget.
 #![allow(long_running_const_eval)]
 
-#[path = "support/initial_roles.rs"]
-mod initial_roles;
+#[path = "support/connection_roles.rs"]
+mod connection_roles;
+#[path = "support/host_udp.rs"]
+mod host_udp;
+#[cfg(test)]
+use host_udp::send_activity;
+use host_udp::{HostSendOutcome, HostUdpAdapter};
 
 #[path = "../../../adapters/host/src/pem.rs"]
 mod pem;
@@ -16,35 +21,30 @@ use pem::{certificates, private_key};
 #[cfg(not(target_os = "linux"))]
 compile_error!("hq's symlink-safe descriptor-relative file adapter requires Linux");
 
-use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
     bounded_tls::{
         BoundedTls, CipherPolicy, ClientConfig as BoundedClientConfig, ClientEarlyData,
         ClientResumption, ServerConfig as BoundedServerConfig, ServerEarlyData, ServerResumption,
         SigningKey, Storage,
     },
-    carrier::{CarrierStorage, LocalCarrier},
-    connection_id::{LocalCidSlot, PeerCidSlot},
     crypto,
-    driver::{Driver, Roles},
     early_data::{
         EarlyFreshness, EarlyStatus, QuarantineSlot, RememberedLimits, ReplayClaim, ReplayStorage,
         ServerPolicy,
     },
-    early_send::RequestSlot,
     ecn::{self, Codepoint},
     handshake::CryptoBuffer,
     handshake_endpoint::{
-        Config, Error as EngineError, HandshakeEndpoint, InitialProtection, NetworkConfig,
-        NetworkResources, PreferredServer, Side, TlsClient,
+        Config, EarlyStarter, HandshakeEndpoint, InitialProtection, NetworkConfig, PacketAuthority,
+        PreferredServer, RecoveryClient, Side, StreamClient, TlsClient,
     },
     lifecycle::{CloseReason, State as ConnectionState},
     packet::{Header, LongType, PacketIter, encode_varint},
-    path::{Address, PathSlot},
-    protocol::*,
+    path::Address,
     retry::{self, ClientAddress, RetryTokens, TokenContext, ValidatedToken},
+    roles::{early_owner, path_owner, stream_owner},
     runtime::yield_now,
-    streams::{self, Limits, PacketReference, SendChunk, StreamHandle, StreamSlot},
+    streams::{self, Limits, StreamHandle},
     tls,
     tls_certificate::{Limits as CertificateLimits, UnixTime, trust_anchor_from_der},
     tls_schedule::Secret32,
@@ -77,10 +77,11 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, String>;
-const LIVE: usize = 4;
+const LIVE: usize = connection_roles::LIVE_STREAMS;
 // Bounded host profile: four 16KiB receive windows; no embedded-memory claim.
-const RX: usize = 16384;
-const CHUNK: usize = 1024;
+const RX: usize = connection_roles::STREAM_RECEIVE_BYTES;
+const CHUNK: usize = connection_roles::STREAM_CHUNK_BYTES;
+const _: () = assert!(CHUNK == hibana_quic::handshake_endpoint::EARLY_REQUEST_BYTES);
 const MAX_TARGET: usize = 1000;
 const MAX_REQUESTS: usize = 4096;
 const UDP_BYTES: usize = 65535;
@@ -205,19 +206,16 @@ const EARLY_POLICY: ServerPolicy = ServerPolicy::BufferedReplaySafeRequests {
     max_bytes: LIVE * CHUNK,
     max_streams: LIVE,
 };
-struct EarlyStorage {
-    received: [QuarantineSlot<CHUNK>; LIVE],
-    controls: [hibana_quic::early_control::Slot<128>; 16],
-    requests: [RequestSlot<CHUNK>; LIVE],
-}
-impl EarlyStorage {
-    fn new() -> Self {
-        Self {
-            received: [const { QuarantineSlot::EMPTY }; LIVE],
-            controls: [const { hibana_quic::early_control::Slot::EMPTY }; 16],
-            requests: [const { RequestSlot::EMPTY }; LIVE],
-        }
-    }
+/// Constructor-time geometry check only. The connected Early owner allocates and
+/// exclusively owns the actual quarantine with these same bounded dimensions.
+fn server_early_profile(
+    generation: u64,
+    parameters: &[u8],
+    freshness: EarlyFreshness,
+) -> Result<ServerEarlyData> {
+    let slots = [const { QuarantineSlot::<CHUNK>::EMPTY }; LIVE];
+    ServerEarlyData::buffered(generation, EARLY_POLICY, parameters, &slots, freshness)
+        .map_err(|e| format!("early admission: {e:?}"))
 }
 #[derive(Debug)]
 struct Request {
@@ -529,10 +527,7 @@ fn parse_key_update_after(value: &str) -> Result<u64> {
 fn update_temporarily_blocked(error: &TransportError) -> bool {
     matches!(
         error,
-        TransportError::Busy
-            | TransportError::Engine(
-                EngineError::Busy | EngineError::Tls(tls::Error::KeyUpdateNotAllowed)
-            )
+        TransportError::Busy | TransportError::Tls(tls::Error::KeyUpdateNotAllowed)
     )
 }
 fn url_target<'a>(value: &'a str, name: &str, port: u16) -> Result<&'a str> {
@@ -1228,12 +1223,31 @@ fn transient(e: &io::Error) -> bool {
         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
     )
 }
+fn stream_error(error: &TransportError) -> Option<streams::Error> {
+    match error {
+        TransportError::Streams(error)
+        | TransportError::StreamOwner(stream_owner::ClientError::Rejected(
+            stream_owner::Fault::Streams(error),
+        )) => Some(*error),
+        _ => None,
+    }
+}
 fn backpressure(error: &TransportError) -> bool {
     matches!(
+        stream_error(error),
+        Some(streams::Error::Capacity | streams::Error::FlowControl | streams::Error::StreamLimit)
+    ) || matches!(
         error,
-        TransportError::Streams(
-            streams::Error::Capacity | streams::Error::FlowControl | streams::Error::StreamLimit
-        )
+        TransportError::StreamOwner(stream_owner::ClientError::Rejected(
+            stream_owner::Fault::Capacity
+                | stream_owner::Fault::Early(hibana_quic::early_send::Error::Capacity)
+        ))
+    )
+}
+fn retirement_pending(error: &TransportError) -> bool {
+    matches!(
+        stream_error(error),
+        Some(streams::Error::NotTerminal | streams::Error::Capacity)
     )
 }
 #[derive(Default)]
@@ -1245,6 +1259,7 @@ struct EarlyReport {
     admitted_packets: u64,
     requests_queued: usize,
     request_bytes_queued: usize,
+    service_completion: Option<early_owner::ServiceCompletion>,
 }
 impl EarlyReport {
     fn accepted(&self) -> bool {
@@ -1252,6 +1267,11 @@ impl EarlyReport {
             && (self.packets_sent > 0 || self.admitted_packets > 0)
     }
     fn json(&self) -> String {
+        let completion = match self.service_completion {
+            None => "not_configured",
+            Some(early_owner::ServiceCompletion::Retired) => "retired",
+            Some(early_owner::ServiceCompletion::UnactivatedCancelled) => "unactivated_cancelled",
+        };
         let decision = match self.decision {
             EarlyStatus::Disabled => "not_offered",
             EarlyStatus::Offered => "offered",
@@ -1260,14 +1280,15 @@ impl EarlyReport {
             EarlyStatus::Rejected => "rejected",
         };
         format!(
-            "{{\"mode\":{},\"offered\":{},\"decision\":{},\"packets_sent\":{},\"admitted_packets\":{},\"requests_queued\":{},\"request_bytes_queued\":{}}}",
+            "{{\"mode\":{},\"offered\":{},\"decision\":{},\"packets_sent\":{},\"admitted_packets\":{},\"requests_queued\":{},\"request_bytes_queued\":{},\"receive_service_completion\":{}}}",
             json_string(self.mode.name()),
             self.offered,
             json_string(decision),
             self.packets_sent,
             self.admitted_packets,
             self.requests_queued,
-            self.request_bytes_queued
+            self.request_bytes_queued,
+            json_string(completion)
         )
     }
 }
@@ -1554,7 +1575,7 @@ struct App {
     servers: [Option<ServerJob>; LIVE],
 }
 type Endpoint<'r, 's, 'c, 't, 'i, 'q> =
-    TransportEndpoint<'r, 's, 'c, 't, RX, CHUNK, 64, 128, InitialProtection<'i, 'q>>;
+    TransportEndpoint<'r, 's, 'c, 't, InitialProtection<'i, 'q>>;
 impl App {
     fn active(&self) -> usize {
         if self.side == Side::Client {
@@ -1572,7 +1593,7 @@ impl App {
                 self.max_requests.is_some_and(|n| report.files >= n)
             }
     }
-    fn advance(
+    async fn advance(
         &mut self,
         ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
         report: &mut Report,
@@ -1581,14 +1602,14 @@ impl App {
             return Ok(false);
         }
         if self.side == Side::Client {
-            self.client_advance(ep, report)
+            self.client_advance(ep, report).await
         } else {
-            self.server_advance(ep, report)
+            self.server_advance(ep, report).await
         }
     }
     /// The explicit CLI policy authorizes this complete GET and its fallback
     /// retry. Core journal ownership persists until Finished and ordinary import.
-    fn queue_early(
+    async fn queue_early(
         &mut self,
         ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
         report: &mut Report,
@@ -1603,7 +1624,7 @@ impl App {
             line[..4].copy_from_slice(b"GET ");
             line[4..len - 2].copy_from_slice(request.target.as_bytes());
             line[len - 2..len].copy_from_slice(b"\r\n");
-            let handle = match ep.enqueue_early_request(&line[..len]) {
+            let handle = match ep.enqueue_early_request(&line[..len]).await {
                 Ok(handle) => handle,
                 Err(error) if backpressure(&error) => break,
                 Err(error) => {
@@ -1612,6 +1633,7 @@ impl App {
             };
             let stream_id = ep
                 .early_stream_id(handle)
+                .await
                 .map_err(|e| format!("early stream identity: {e:?}"))?;
             *slot = Some(EarlyJob {
                 stream_id,
@@ -1626,15 +1648,15 @@ impl App {
         }
         Ok(())
     }
-    fn adopt_early(&mut self, ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>) -> Result<bool> {
+    async fn adopt_early(&mut self, ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>) -> Result<bool> {
         let mut progress = false;
         for pending in &mut self.early_pending {
             let Some(job) = *pending else {
                 continue;
             };
-            let stream = match ep.streams().lookup(job.stream_id) {
+            let stream = match ep.lookup(job.stream_id).await {
                 Ok(stream) => stream,
-                Err(streams::Error::NotOpened) => continue,
+                Err(error) if stream_error(&error) == Some(streams::Error::NotOpened) => continue,
                 Err(error) => return Err(format!("imported early stream: {error:?}")),
             };
             let Some(slot) = self.clients.iter_mut().find(|slot| slot.is_none()) else {
@@ -1659,19 +1681,19 @@ impl App {
         }
         Ok(progress)
     }
-    fn client_advance(
+    async fn client_advance(
         &mut self,
         ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
         report: &mut Report,
     ) -> Result<bool> {
-        let mut progress = self.adopt_early(ep)?;
+        let mut progress = self.adopt_early(ep).await?;
         let ordinary_open_allowed = self.early_pending.iter().all(Option::is_none);
         for index in 0..LIVE {
             if ordinary_open_allowed
                 && self.clients[index].is_none()
                 && self.next_request < self.requests.len()
             {
-                let h = match ep.open(true) {
+                let h = match ep.open(true).await {
                     Ok(h) => h,
                     Err(e) if backpressure(&e) => break,
                     Err(e) => return Err(format!("open request stream: {e:?}")),
@@ -1701,7 +1723,10 @@ impl App {
                 continue;
             };
             if !job.queued {
-                match ep.send(job.stream, &job.request[..job.request_len], true) {
+                match ep
+                    .send(job.stream, &job.request[..job.request_len], true)
+                    .await
+                {
                     Ok(()) => {
                         job.queued = true;
                         progress = true
@@ -1713,16 +1738,17 @@ impl App {
             if !job.published {
                 if job.unconsumed == 0 {
                     let view = ep
-                        .read(job.stream)
+                        .read_up_to(job.stream, CHUNK)
+                        .await
                         .map_err(|e| format!("read body: {e:?}"))?;
                     if let Some(code) = view.reset {
                         return Err(format!("peer reset request stream with code {code}"));
                     }
-                    let count = view.first.len() + view.second.len();
+                    let bytes = view.bytes.as_bytes();
+                    let count = bytes.len();
                     job.download
                         .file
-                        .write_all(view.first)
-                        .and_then(|_| job.download.file.write_all(view.second))
+                        .write_all(bytes)
                         .map_err(|e| format!("write body chunk: {e}"))?;
                     job.bytes += count as u64;
                     report.body_progress += count as u64;
@@ -1731,7 +1757,7 @@ impl App {
                     job.fin = view.fin;
                 }
                 if job.unconsumed > 0 || job.fin {
-                    match ep.consume(job.stream, job.unconsumed) {
+                    match ep.consume(job.stream, job.unconsumed).await {
                         Ok(()) => {
                             progress |= job.unconsumed > 0;
                             job.unconsumed = 0;
@@ -1748,7 +1774,7 @@ impl App {
                 }
             }
             if job.published {
-                match ep.retire_stream(job.stream) {
+                match ep.retire_stream(job.stream).await {
                     Ok(()) => {
                         report.files += 1;
                         report.bytes += job.bytes;
@@ -1756,23 +1782,28 @@ impl App {
                         self.clients[index] = None;
                         progress = true
                     }
-                    Err(TransportError::Streams(
-                        streams::Error::NotTerminal | streams::Error::Capacity,
-                    )) => {}
+                    Err(error) if retirement_pending(&error) => {}
                     Err(e) => return Err(format!("retire completed client stream: {e:?}")),
                 }
             }
         }
         Ok(progress)
     }
-    fn server_advance(
+    async fn server_advance(
         &mut self,
         ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
         report: &mut Report,
     ) -> Result<bool> {
         let mut progress = false;
         let mut handles = [None; LIVE];
-        for (slot, h) in handles.iter_mut().zip(ep.streams().live_handles()) {
+        let page = ep
+            .handles_after(None)
+            .await
+            .map_err(|e| format!("list request streams: {e:?}"))?;
+        if page.more {
+            return Err("stream owner exceeded the bounded host live-stream profile".into());
+        }
+        for (slot, h) in handles.iter_mut().zip(page.handles()) {
             *slot = Some(h);
         }
         for h in handles.into_iter().flatten() {
@@ -1809,24 +1840,24 @@ impl App {
             if job.file.is_none() {
                 if job.unconsumed == 0 {
                     let view = ep
-                        .read(job.stream)
+                        .read_up_to(job.stream, CHUNK)
+                        .await
                         .map_err(|e| format!("read GET: {e:?}"))?;
                     if view.reset.is_some() {
                         return Err("client reset unfinished GET".into());
                     }
-                    let count = view.first.len() + view.second.len();
+                    let bytes = view.bytes.as_bytes();
+                    let count = bytes.len();
                     if job.request_len + count > CHUNK {
                         return Err("GET exceeds bounded request buffer".into());
                     }
-                    let mid = job.request_len + view.first.len();
-                    job.request[job.request_len..mid].copy_from_slice(view.first);
-                    job.request[mid..mid + view.second.len()].copy_from_slice(view.second);
+                    job.request[job.request_len..job.request_len + count].copy_from_slice(bytes);
                     job.request_len += count;
                     job.unconsumed = count;
                     job.request_fin = view.fin;
                 }
                 if job.unconsumed > 0 || job.request_fin {
-                    match ep.consume(job.stream, job.unconsumed) {
+                    match ep.consume(job.stream, job.unconsumed).await {
                         Ok(()) => {
                             progress |= job.unconsumed > 0;
                             job.unconsumed = 0;
@@ -1855,7 +1886,10 @@ impl App {
                     job.eof = job.chunk_len == 0;
                     job.loaded = true;
                 }
-                match ep.send(job.stream, &job.chunk[..job.chunk_len], job.eof) {
+                match ep
+                    .send(job.stream, &job.chunk[..job.chunk_len], job.eof)
+                    .await
+                {
                     Ok(()) => {
                         job.bytes += job.chunk_len as u64;
                         report.body_progress += job.chunk_len as u64;
@@ -1872,7 +1906,7 @@ impl App {
                 }
             }
             if job.fin_queued {
-                match ep.retire_stream(job.stream) {
+                match ep.retire_stream(job.stream).await {
                     Ok(()) => {
                         report.files += 1;
                         report.bytes += job.bytes;
@@ -1880,9 +1914,7 @@ impl App {
                         self.servers[index] = None;
                         progress = true
                     }
-                    Err(TransportError::Streams(
-                        streams::Error::NotTerminal | streams::Error::Capacity,
-                    )) => {}
+                    Err(error) if retirement_pending(&error) => {}
                     Err(e) => return Err(format!("retire completed server stream: {e:?}")),
                 }
             }
@@ -2050,40 +2082,6 @@ async fn before_deadline<T>(
     .await
 }
 
-/// Submit ready UDP before servicing a soft recovery/probe deadline. Hard
-/// wall, idle, and closing expiry always win before another syscall attempt.
-/// A soft wake returns None only when submission actually remains Pending;
-/// the caller then rejects its reservation and gives receive work a turn.
-async fn send_activity<T>(
-    reactor: &HostReactor,
-    hard_deadline: Instant,
-    soft_deadline: Option<Instant>,
-    operation: impl Future<Output = io::Result<T>>,
-) -> io::Result<Option<T>> {
-    let wake_deadline = soft_deadline.map_or(hard_deadline, |soft| soft.min(hard_deadline));
-    let mut operation = pin!(operation);
-    let mut timer = pin!(reactor.sleep_until(wake_deadline));
-    poll_fn(|cx| {
-        if Instant::now() >= hard_deadline {
-            return Poll::Ready(Err(io::ErrorKind::TimedOut.into()));
-        }
-        if let Poll::Ready(result) = operation.as_mut().poll(cx) {
-            return Poll::Ready(result.map(Some));
-        }
-        if let Poll::Ready(result) = timer.as_mut().poll(cx) {
-            return Poll::Ready(result.and_then(|()| {
-                if Instant::now() >= hard_deadline {
-                    Err(io::ErrorKind::TimedOut.into())
-                } else {
-                    Ok(None)
-                }
-            }));
-        }
-        Poll::Pending
-    })
-    .await
-}
-
 /// Select actual socket/timer futures. Dropping the losing receive cancels its
 /// readiness registration without consuming a datagram. The two owned buffers
 /// permit both sockets to remain armed; polling priority alternates per packet.
@@ -2161,9 +2159,9 @@ async fn receive_activity(
     }
 }
 
-/// One global Initial RX/TX + TLS choreography retains all six endpoint values
-/// until their borrowed actors and the application finish. The shared bootstrap
-/// moves the complete provider into its owner before connecting capabilities.
+/// One aggregate retains every actual projected connection role until the
+/// application and all owners have joined. Mutable owner storage stays inside
+/// the resource bootstrap; only affine clients reach the application.
 #[allow(clippy::too_many_arguments)]
 async fn exchange(
     reactor: &HostReactor,
@@ -2182,7 +2180,6 @@ async fn exchange(
     key_update_after: Option<u64>,
     use_ecn: bool,
     app: App,
-    early_storage: EarlyStorage,
     session: SessionOptions<'_>,
 ) -> Result<Report> {
     let generation = session.generation;
@@ -2190,12 +2187,27 @@ async fn exchange(
         .as_ref()
         .map_or(original.as_slice(), ValidatedToken::retry_source_id);
     let keys = crypto::initial_keys(destination).map_err(|e| format!("Initial keys: {e:?}"))?;
-    let mut report = initial_roles::with_connection(
+    let side = app.side;
+    let mut network = NetworkConfig::new(initial_address);
+    network.preferred_server = preferred_server;
+    let bootstrap = connection_roles::Config {
+        network,
+        local_cid: path_owner::Destination::new(&local).map_err(|e| format!("local CID: {e:?}"))?,
+        // Retry changes Initial keys, never the authenticated original CID.
+        bootstrap_destination: path_owner::Destination::new(&original)
+            .map_err(|e| format!("original CID: {e:?}"))?,
+        local_limits: profile_limits(side, session.early),
+        early_send: side == Side::Client && session.early.mode == EarlyMode::ReplaySafeGet,
+        early_receive: (side == Side::Server && session.early.mode == EarlyMode::BufferedGet)
+            .then_some(EARLY_POLICY),
+    };
+    let completed = connection_roles::with_connection(
         keys,
-        app.side,
+        side,
         generation,
         tls,
-        async move |initial, tls| {
+        bootstrap,
+        async move |initial, tls, recovery, authority, path, stream, early_starter| {
             exchange_connected(
                 reactor,
                 socket,
@@ -2205,6 +2217,11 @@ async fn exchange(
                 local,
                 original,
                 tls,
+                recovery,
+                authority,
+                path,
+                stream,
+                early_starter,
                 admission,
                 retry_stats,
                 first,
@@ -2213,7 +2230,6 @@ async fn exchange(
                 key_update_after,
                 use_ecn,
                 app,
-                early_storage,
                 session,
                 initial,
             )
@@ -2221,8 +2237,10 @@ async fn exchange(
         },
     )
     .await?;
-    // The shared aggregate has joined all three owner actors, so total includes
-    // graceful retirement rather than merely the application's Closed edge.
+    let mut report = completed.application;
+    report.early.service_completion = completed.early;
+    // Every configured actor joined successfully. Activated Early errors remain
+    // errors from with_connection; unused cancellation never claims Retired.
     report.timing.finish();
     report.duration_ms = u128::from(report.timing.total_us.expect("finished milestone")) / 1000;
     Ok(report)
@@ -2466,7 +2484,6 @@ async fn run_async(reactor: &HostReactor, options: Options) -> Result<RunReport>
                 let local = random::<8>()?;
                 let original = random::<8>()?;
                 let params = parameters(&local, None, None, local_limits(Side::Client))?;
-                let early_storage = EarlyStorage::new();
                 let mut buffers = TlsBuffers::new();
                 let cfg = BoundedClientConfig {
                     server_name: &name,
@@ -2571,7 +2588,6 @@ async fn run_async(reactor: &HostReactor, options: Options) -> Result<RunReport>
                         key_update_after,
                         use_ecn,
                         app,
-                        early_storage,
                         SessionOptions {
                             early,
                             generation,
@@ -2734,7 +2750,6 @@ async fn run_async(reactor: &HostReactor, options: Options) -> Result<RunReport>
                     age: &age,
                     prepared_at: None,
                 };
-                let early_storage = EarlyStorage::new();
                 let mut buffers = TlsBuffers::new();
                 let cfg = BoundedServerConfig {
                     certificate_chain: &der,
@@ -2765,14 +2780,11 @@ async fn run_async(reactor: &HostReactor, options: Options) -> Result<RunReport>
                     };
                     if early.mode == EarlyMode::BufferedGet && (index == 0 || !early.reject_second)
                     {
-                        let admission = ServerEarlyData::buffered(
+                        let admission = server_early_profile(
                             generation,
-                            EARLY_POLICY,
                             &params,
-                            &early_storage.received,
                             early.freshness.ok_or("missing explicit early freshness")?,
-                        )
-                        .map_err(|e| format!("early admission: {e:?}"))?;
+                        )?;
                         BoundedTls::server_with_early_data_and_policy(
                             cfg,
                             buffers.storage(),
@@ -2829,7 +2841,6 @@ async fn run_async(reactor: &HostReactor, options: Options) -> Result<RunReport>
                     key_update_after,
                     use_ecn,
                     app,
-                    early_storage,
                     SessionOptions {
                         early,
                         generation,
@@ -2856,7 +2867,7 @@ async fn run_async(reactor: &HostReactor, options: Options) -> Result<RunReport>
     }
 }
 #[allow(clippy::too_many_arguments)]
-async fn exchange_connected(
+async fn exchange_connected<'channel, 'storage>(
     reactor: &HostReactor,
     socket: &HostSocket<'_>,
     initial_address: Address,
@@ -2864,7 +2875,12 @@ async fn exchange_connected(
     preferred_server: Option<PreferredServer>,
     local: [u8; 8],
     original: Vec<u8>,
-    tls: TlsClient<'_, '_>,
+    tls: TlsClient<'channel, 'storage>,
+    recovery: RecoveryClient<'channel, 'storage>,
+    authority: &'channel PacketAuthority,
+    path: path_owner::Client<'channel, 'storage, 1, 1>,
+    stream: StreamClient<'channel, 'storage>,
+    early_starter: Option<EarlyStarter<'channel, 'storage>>,
     admission: Option<ValidatedToken>,
     retry_stats: RetryStats,
     first: Option<(&[u8], Option<Codepoint>)>,
@@ -2873,41 +2889,11 @@ async fn exchange_connected(
     key_update_after: Option<u64>,
     use_ecn: bool,
     mut app: App,
-    mut early_storage: EarlyStorage,
     session: SessionOptions<'_>,
-    initial: InitialProtection<'_, '_>,
+    initial: InitialProtection<'channel, 'storage>,
 ) -> Result<Report> {
     let side = app.side;
     let generation = session.generation;
-    let sid = SessionId::new(1);
-    let queues = CarrierStorage::<8, 16, { hibana_quic::protocol::SERVICE_PORTS }>::new();
-    let mut slab = [0; 32768];
-    let mut storage = SessionKitStorage::<
-        LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>,
-    >::uninit();
-    let rv = storage
-        .init()
-        .rendezvous(
-            &mut slab,
-            queues.bind(sid).map_err(|e| format!("carrier: {e:?}"))?,
-        )
-        .map_err(|e| format!("rendezvous: {e:?}"))?;
-    let p0 = service_program::<INGRESS>();
-    let p1 = service_program::<PACKET>();
-    let p2 = service_program::<APPLICATION>();
-    let p3 = service_program::<RECOVERY>();
-    let p4 = service_program::<ADAPTER>();
-    let p5 = service_program::<TIMER>();
-    let roles = Roles {
-        ingress: rv.enter(sid, &p0).map_err(|e| format!("ingress: {e:?}"))?,
-        packet: rv.enter(sid, &p1).map_err(|e| format!("packet: {e:?}"))?,
-        application: rv
-            .enter(sid, &p2)
-            .map_err(|e| format!("application: {e:?}"))?,
-        recovery: rv.enter(sid, &p3).map_err(|e| format!("recovery: {e:?}"))?,
-        adapter: rv.enter(sid, &p4).map_err(|e| format!("adapter: {e:?}"))?,
-        timer: rv.enter(sid, &p5).map_err(|e| format!("timer: {e:?}"))?,
-    };
     // The nine-certificate bounded profile needs a >9KiB Handshake flight.
     // Initial and application CRYPTO keep their independent smaller budgets.
     let mut d0 = [0; 8192];
@@ -2927,64 +2913,27 @@ async fn exchange_connected(
         original_destination_id: &original,
         generation,
     };
-    // Transport/recovery control still uses the partial synchronous Driver.
-    // Initial keys and the complete TLS provider are owned by their actors.
-    let driver = Driver::new(generation, roles);
-    let mut path_slots = [const { PathSlot::<1, 3>::empty() }; 2];
-    let mut local_cids = [LocalCidSlot::EMPTY; 8];
-    let mut peer_cids = [PeerCidSlot::<2>::EMPTY; 16];
-    let mut network_rng = OsRng;
-    let mut advertisement = [0u8; 2048];
     let mut engine = match admission {
-        Some(admission) => {
-            HandshakeEndpoint::new_after_retry(config, tls, driver, crypto, admission, initial)
-        }
-        None => HandshakeEndpoint::new(config, tls, driver, crypto, initial),
+        Some(admission) => HandshakeEndpoint::new_after_retry(
+            config, tls, recovery, authority, path, stream, crypto, admission, initial,
+        ),
+        None => HandshakeEndpoint::new(
+            config, tls, recovery, authority, path, stream, crypto, initial,
+        ),
     }
     .map_err(|e| format!("QUIC setup: {e:?}"))?;
-    let mut network = NetworkConfig::new(initial_address);
-    network.preferred_server = preferred_server;
-    engine
-        .enable_network(
-            network,
-            NetworkResources {
-                paths: &mut path_slots,
-                local_cids: &mut local_cids,
-                peer_cids: &mut peer_cids,
-                preferred_advertisement: preferred_server.map(|_| &mut advertisement[..]),
-            },
-            &mut network_rng,
-        )
-        .map_err(|e| format!("network setup: {e:?}"))?;
     // parameters() omits TP 1: the advertised local idle timeout is exactly zero.
     // The host wall deadline is deliberately independent.
     engine
         .configure_idle_timeout(0)
         .map_err(|e| format!("idle timeout setup: {e:?}"))?;
-    let mut stream_slots = [const { StreamSlot::<RX>::EMPTY }; LIVE];
-    let mut chunks = [const { SendChunk::<CHUNK>::EMPTY }; 16];
-    let mut references = [PacketReference::EMPTY; 128];
-    let mut endpoint: Endpoint<'_, '_, '_, '_, '_, '_> = TransportEndpoint::new(
-        engine,
-        profile_limits(side, session.early),
-        &mut stream_slots,
-        &mut chunks,
-        &mut references,
-        generation,
-    )
-    .map_err(|e| format!("stream setup: {e:?}"))?;
-    if side == Side::Server && session.early.mode == EarlyMode::BufferedGet {
+    let mut endpoint: Endpoint<'_, '_, '_, '_, '_, '_> = TransportEndpoint::new(engine)
+        .await
+        .map_err(|e| format!("stream setup: {e:?}"))?;
+    if let Some(starter) = early_starter {
         endpoint
-            .configure_early_receive(EARLY_POLICY, &mut early_storage.received)
-            .map_err(|e| format!("early receive storage: {e:?}"))?;
-        endpoint
-            .configure_early_controls(&mut early_storage.controls)
-            .map_err(|e| format!("early control storage: {e:?}"))?;
-    }
-    if side == Side::Client && endpoint.tls_snapshot().early_status == EarlyStatus::Offered {
-        endpoint
-            .configure_early_send(&mut early_storage.requests)
-            .map_err(|e| format!("early request journal: {e:?}"))?;
+            .configure_early_receive(starter)
+            .map_err(|e| format!("early receive owner: {e:?}"))?;
     }
     if use_ecn {
         endpoint
@@ -2994,7 +2943,6 @@ async fn exchange_connected(
     let mut input = [0; UDP_BYTES];
     let mut alternate_input = [0; UDP_BYTES];
     let mut scratch = [0; UDP_BYTES];
-    let mut output = [0; 1500];
     let mut report = Report {
         timing: Milestones::new(start),
         early: EarlyReport {
@@ -3036,7 +2984,7 @@ async fn exchange_connected(
         ticket_age: None,
     };
     if side == Side::Client && endpoint.tls_snapshot().early_status == EarlyStatus::Offered {
-        app.queue_early(&mut endpoint, &mut report)?;
+        app.queue_early(&mut endpoint, &mut report).await?;
     }
     let mut diagnostics = ProgressLog::new();
     diagnostics.connection(reactor, &endpoint, &report, now(start));
@@ -3156,7 +3104,7 @@ async fn exchange_connected(
             }
         }
         let progress = if state == ConnectionState::Active {
-            app.advance(&mut endpoint, &mut report)?
+            app.advance(&mut endpoint, &mut report).await?
         } else {
             false
         };
@@ -3204,30 +3152,8 @@ async fn exchange_connected(
         }
         let mut drained = false;
         for _ in 0..64 {
-            let Some(tx) = endpoint
-                .transmit(&mut output)
-                .await
-                .map_err(|e| format!("packet production: {e:?}"))?
-            else {
-                drained = true;
-                break;
-            };
-            if !endpoint
-                .transmit_permitted(tx, now(start))
-                .map_err(|e| format!("transmit permission: {e:?}"))?
-            {
-                // A hard lifecycle expiry may have revoked this reservation.
-                // Reach the outer Closed/retirement gate before producing more.
-                continue 'connection;
-            }
-            let target = tx.address.ok_or("missing prepared network tuple")?;
-            let sender = if preferred_server.is_some_and(|p| p.address == target.local) {
-                preferred_socket.ok_or("missing preferred socket")?
-            } else {
-                socket
-            };
-            // Recovery/probe deadlines request work; they do not revoke a
-            // prepared packet. Only wall/idle/closing expiry forbids submission.
+            // Recovery/probe deadlines request work; wall/idle/closing expiry
+            // wins at the real adapter before another syscall can be attempted.
             let hard_deadline = [endpoint.idle_deadline(), endpoint.close_deadline()]
                 .into_iter()
                 .flatten()
@@ -3237,60 +3163,50 @@ async fn exchange_connected(
             let soft_deadline = endpoint
                 .next_deadline()
                 .map(|deadline| start + Duration::from_micros(deadline));
-            match send_activity(
+            let mut adapter = HostUdpAdapter {
                 reactor,
+                socket,
+                preferred_socket,
+                preferred_address: preferred_server.map(|p| p.address),
+                start,
                 hard_deadline,
                 soft_deadline,
-                sender.send_from(&output[..tx.len], target, tx.ecn),
-            )
-            .await
-            {
-                Ok(Some(n)) if n == tx.len => {
-                    endpoint
-                        .adapter_result(tx, true, now(start))
-                        .await
-                        .map_err(|e| format!("adapter acceptance: {e:?}"))?;
+                outcome: HostSendOutcome::NotAttempted,
+            };
+            let produced = endpoint.transmit_with(&mut adapter).await;
+            // Submission returns only after Path, Recovery and Stream settled.
+            // Preserve host failures even when the protocol reports rejection.
+            if let HostSendOutcome::Failed(error) = &adapter.outcome {
+                return Err(format!(
+                    "UDP did not accept datagram: {error}; packet settlement: {produced:?}"
+                ));
+            }
+            let produced = produced.map_err(|e| format!("packet production/submission: {e:?}"))?;
+            match (produced, adapter.outcome) {
+                (Some(tx), HostSendOutcome::Accepted(accepted_at))
+                    if tx.accepted_at == Some(accepted_at) =>
+                {
                     report.sent += 1;
                     if tx.is_early_data() {
                         report.early.packets_sent += 1;
                     }
                 }
-                Ok(None) => {
-                    let rejected_at = now(start);
-                    if !endpoint
-                        .transmit_permitted(tx, rejected_at)
-                        .map_err(|e| format!("cancel soft adapter wait: {e:?}"))?
-                    {
-                        continue 'connection;
-                    }
-                    endpoint
-                        .adapter_result(tx, false, rejected_at)
-                        .await
-                        .map_err(|e| format!("cancel soft adapter wait: {e:?}"))?;
-                    // Do not skip receive: its queued ACK may unblock this work.
+                (Some(tx), HostSendOutcome::SoftDeadline) if tx.accepted_at.is_none() => {
+                    // Allow a queued ACK to unblock the rejected output.
                     break;
                 }
-                Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                    let rejected_at = now(start);
-                    // Idle/closing expiry may already retire the reservation.
-                    // Do not report a stale adapter callback after that edge.
-                    if endpoint
-                        .transmit_permitted(tx, rejected_at)
-                        .map_err(|e| format!("expire adapter wait: {e:?}"))?
-                    {
-                        endpoint
-                            .adapter_result(tx, false, rejected_at)
-                            .await
-                            .map_err(|e| format!("cancel expired adapter wait: {e:?}"))?;
-                    }
+                (Some(tx), HostSendOutcome::HardDeadline) if tx.accepted_at.is_none() => {
+                    // The next timer/Closed gate owns lifecycle expiry.
                     continue 'connection;
                 }
-                other => {
-                    endpoint
-                        .adapter_result(tx, false, now(start))
-                        .await
-                        .map_err(|e| format!("adapter rejection: {e:?}"))?;
-                    return Err(format!("UDP did not accept datagram: {other:?}"));
+                (None, HostSendOutcome::NotAttempted) => {
+                    drained = true;
+                    break;
+                }
+                (output, outcome) => {
+                    return Err(format!(
+                        "inconsistent real UDP submission: {outcome:?}; output: {output:?}"
+                    ));
                 }
             }
         }
@@ -3306,7 +3222,7 @@ async fn exchange_connected(
                 app.max_requests,
                 report.files,
                 app.active(),
-                endpoint.streams().live_count(),
+                endpoint.stream_snapshot().live_count,
             )
         {
             report.check_update_threshold()?;
@@ -4059,8 +3975,8 @@ mod tests {
             assert!(parse_key_update_after(value).is_err());
         }
         assert_eq!(parse_key_update_after("1048576"), Ok(1048576));
-        assert!(update_temporarily_blocked(&TransportError::Engine(
-            EngineError::Tls(tls::Error::KeyUpdateNotAllowed)
+        assert!(update_temporarily_blocked(&TransportError::Tls(
+            tls::Error::KeyUpdateNotAllowed
         )));
         assert!(update_temporarily_blocked(&TransportError::Busy));
         for error in [
@@ -4069,9 +3985,7 @@ mod tests {
             tls::Error::KeyUpdateError,
             tls::Error::KeysUnavailable,
         ] {
-            assert!(!update_temporarily_blocked(&TransportError::Engine(
-                EngineError::Tls(error)
-            )));
+            assert!(!update_temporarily_blocked(&TransportError::Tls(error)));
         }
     }
     #[test]
@@ -4587,15 +4501,62 @@ mod tests {
             local_limits(Side::Client)
         );
         let encoded = parameters(b"server01", Some(b"original"), None, limits).unwrap();
-        let storage = EarlyStorage::new();
-        ServerEarlyData::buffered(
-            1,
-            EARLY_POLICY,
-            &encoded,
-            &storage.received,
-            early.freshness.unwrap(),
-        )
-        .unwrap();
+        server_early_profile(1, &encoded, early.freshness.unwrap()).unwrap();
+    }
+    #[test]
+    fn early_service_reports_actual_retirement_unused_cancellation_and_absence() {
+        let mut report = EarlyReport::default();
+        assert!(
+            report
+                .json()
+                .contains("\"receive_service_completion\":\"not_configured\"")
+        );
+        report.service_completion = Some(early_owner::ServiceCompletion::UnactivatedCancelled);
+        assert!(
+            report
+                .json()
+                .contains("\"receive_service_completion\":\"unactivated_cancelled\"")
+        );
+        report.service_completion = Some(early_owner::ServiceCompletion::Retired);
+        assert!(
+            report
+                .json()
+                .contains("\"receive_service_completion\":\"retired\"")
+        );
+        assert!(!report.accepted());
+    }
+    #[test]
+    fn owned_stream_backpressure_does_not_hide_service_failure() {
+        for error in [
+            streams::Error::Capacity,
+            streams::Error::FlowControl,
+            streams::Error::StreamLimit,
+        ] {
+            let wrapped = TransportError::StreamOwner(stream_owner::ClientError::Rejected(
+                stream_owner::Fault::Streams(error),
+            ));
+            assert!(backpressure(&wrapped));
+            assert_eq!(stream_error(&wrapped), Some(error));
+        }
+        let pending = TransportError::StreamOwner(stream_owner::ClientError::Rejected(
+            stream_owner::Fault::Streams(streams::Error::NotTerminal),
+        ));
+        assert!(retirement_pending(&pending));
+        assert!(!backpressure(&pending));
+        for error in [
+            TransportError::StreamOwner(stream_owner::ClientError::Closed),
+            TransportError::StreamOwner(stream_owner::ClientError::Correlation),
+            TransportError::StreamOwner(stream_owner::ClientError::Rejected(
+                stream_owner::Fault::WrongGeneration,
+            )),
+            TransportError::StreamOwner(stream_owner::ClientError::Rejected(
+                stream_owner::Fault::NotReady,
+            )),
+            TransportError::Retired,
+        ] {
+            assert!(!backpressure(&error));
+            assert!(!retirement_pending(&error));
+        }
     }
     #[test]
     fn early_success_requires_actual_output_or_admission_and_finished_acceptance() {

@@ -111,7 +111,7 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         header: &[u8],
         body: &mut [u8],
         len: usize,
-    ) -> Result<(), Error> {
+    ) -> Result<crate::roles::sealed_packet::SealedPacket<TLS_PACKET_BYTES>, Error> {
         let packet = Packet::new(pn, header, body.get(..len).ok_or(Error::Capacity)?)?;
         let owner = self.tls.as_mut().ok_or(Error::Retired)?;
         let packet = match level {
@@ -122,7 +122,7 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         body.get_mut(..packet.body().len())
             .ok_or(Error::Capacity)?
             .copy_from_slice(packet.body());
-        Ok(())
+        Ok(packet)
     }
     pub(super) async fn tls_receive_crypto(
         &mut self,
@@ -180,25 +180,27 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         };
         Ok(())
     }
-    pub(super) async fn tls_confirm(&mut self) -> Result<(), Error> {
+    pub(super) async fn tls_confirm(
+        &mut self,
+        grant: crate::roles::path_owner::HandshakeConfirmation,
+    ) -> Result<(), Error> {
         self.tls
             .as_mut()
             .ok_or(Error::Retired)?
-            .confirm_handshake()
+            .confirm_handshake(grant)
             .await??;
         Ok(())
     }
     pub(super) async fn tls_acknowledge(
         &mut self,
-        pn: u64,
-        generation: u64,
+        grant: crate::roles::recovery_owner::KeyAckGrant,
         now: u64,
         pto: u64,
     ) -> Result<(), Error> {
         self.tls
             .as_mut()
             .ok_or(Error::Retired)?
-            .acknowledge_one_rtt(pn, generation, now, pto)
+            .acknowledge_one_rtt(grant, now, pto)
             .await??;
         Ok(())
     }
@@ -287,15 +289,5 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             .ok_or(Error::Capacity)?
             .copy_from_slice(opened.packet.body());
         Ok((len, opened.receipt))
-    }
-    pub(super) async fn tls_take_replay_claim(
-        &mut self,
-    ) -> Result<Option<crate::early_data::ReplayClaim>, Error> {
-        Ok(self
-            .tls
-            .as_mut()
-            .ok_or(Error::Retired)?
-            .take_early_replay_claim()
-            .await?)
     }
 }

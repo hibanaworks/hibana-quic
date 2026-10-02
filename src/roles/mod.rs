@@ -8,6 +8,7 @@ pub mod protocol;
 
 pub mod client;
 pub mod protocol_tls;
+pub mod protocol_tls_phases;
 pub mod tls_owner;
 
 pub mod packet_authority;

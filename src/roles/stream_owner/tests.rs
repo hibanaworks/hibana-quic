@@ -3,7 +3,7 @@
 //! authenticated grant ingress covered by the connection/recovery actor tests.
 use super::*;
 
-const LIMITS: Limits = Limits {
+pub(super) const LIMITS: Limits = Limits {
     max_data: 128,
     max_streams_bidi: 2,
     max_streams_uni: 2,
@@ -28,7 +28,7 @@ fn with_state(body: impl FnOnce(&mut State<'_, 32, 16, 2, 4>)) {
     .unwrap();
     body(&mut state);
 }
-fn numeric_ready(state: &mut State<'_, 32, 16, 2, 4>) {
+pub(super) fn numeric_ready(state: &mut State<'_, 32, 16, 2, 4>) {
     const RAW: &[u8] = &[
         15, 8, b'c', b'l', b'i', b'e', b'n', b't', b'i', b'd', 4, 2, 0x40, 128, 5, 1, 32, 6, 1, 32,
         7, 1, 32, 8, 1, 2, 9, 1, 2,
@@ -66,6 +66,59 @@ fn admission_starts_closed_until_actual_finished_grant() {
             Err(Fault::NotReady)
         ));
         assert_eq!(state.snapshot().live_count, 0);
+    });
+}
+
+fn committed_retry(generation: u64) -> packet_authority::StreamRetryGrant {
+    let mut retry = crate::retry::ClientRetry::<64>::new(b"original", b"clientid").unwrap();
+    let mut packet = [0; 128];
+    let mut scratch = [0; 256];
+    let len = crate::retry::encode_retry(
+        b"original",
+        b"clientid",
+        b"retrycid",
+        b"token",
+        0,
+        &mut packet,
+        &mut scratch,
+    )
+    .unwrap();
+    let checked = retry.validate(&packet[..len], &mut scratch).unwrap();
+    packet_authority::split_retry(generation, retry.commit_with_receipt(checked).unwrap()).stream
+}
+
+#[test]
+fn retry_requires_actual_commit_and_matching_client_generation() {
+    let mut slots = [StreamSlot::<32>::EMPTY];
+    let mut chunks = [SendChunk::<16>::EMPTY];
+    let mut references = [PacketReference::EMPTY];
+    let mut state = State::<32, 16, 2, 4>::new(
+        911,
+        Role::Client,
+        Limits::ZERO,
+        &mut slots,
+        &mut chunks,
+        &mut references,
+        83,
+        None,
+    )
+    .unwrap();
+    let arena = packet_authority::Arena::<1, 2>::new(911);
+    assert!(matches!(
+        state.execute::<64, 1, 2>(Command::Retry(committed_retry(912)), &arena),
+        Err(Fault::WrongGeneration)
+    ));
+    assert!(matches!(
+        state.execute::<64, 1, 2>(Command::Retry(committed_retry(911)), &arena),
+        Ok(Outcome::Applied)
+    ));
+    assert_eq!(state.table.live_count(), 0);
+    with_state(|server| {
+        assert!(matches!(
+            server.execute::<64, 1, 2>(Command::Retry(committed_retry(911)), &arena),
+            Err(Fault::NotReady)
+        ));
+        assert_eq!(server.table.live_count(), 0);
     });
 }
 #[test]
@@ -165,6 +218,115 @@ fn copied_read_wraps_without_exposing_owner_borrow() {
         };
         assert_eq!(second.bytes.as_bytes(), b"klmnop");
         assert!(second.fin);
+    });
+}
+
+#[test]
+fn large_receive_ring_is_drained_through_bounded_copied_replies() {
+    let mut slots = [StreamSlot::<16384>::EMPTY; 2];
+    let mut chunks = [SendChunk::<16>::EMPTY];
+    let mut references = [PacketReference::EMPTY];
+    let local = Limits {
+        max_data: 16384,
+        max_streams_bidi: 1,
+        stream_data_bidi_remote: 16384,
+        ..Limits::ZERO
+    };
+    let mut state = State::<16384, 16, 2, 4>::new(
+        911,
+        Role::Server,
+        local,
+        &mut slots,
+        &mut chunks,
+        &mut references,
+        81,
+        None,
+    )
+    .unwrap();
+    const RAW: &[u8] = &[15, 8, b'c', b'l', b'i', b'e', b'n', b't', b'i', b'd'];
+    let receipt = crate::driver::test_support::finished_with_parameters(911, RAW);
+    let grants = crate::roles::connection_authority::verify_and_split(
+        receipt,
+        RAW,
+        crate::parameters::Peer::Client,
+        b"clientid",
+        None,
+        None,
+    )
+    .unwrap();
+    state.peer_ready(grants.application).unwrap();
+    state
+        .deliver(Frame::Stream {
+            id: 0,
+            offset: 0,
+            fin: true,
+            data: &[7; 128],
+        })
+        .unwrap();
+    let handle = state.table.lookup(0).unwrap();
+    let arena = packet_authority::Arena::<1, 2>::new(911);
+    let Outcome::Read(first) = state
+        .execute::<64, 1, 2>(
+            Command::Read {
+                stream: handle,
+                maximum: usize::MAX,
+            },
+            &arena,
+        )
+        .unwrap()
+    else {
+        panic!("read reply");
+    };
+    assert_eq!(first.bytes.as_bytes(), &[7; 64]);
+    assert_eq!(first.remaining, 64);
+    assert!(!first.fin);
+    state.consume(handle, 64).unwrap();
+    let Outcome::Read(last) = state
+        .execute::<64, 1, 2>(
+            Command::Read {
+                stream: handle,
+                maximum: 64,
+            },
+            &arena,
+        )
+        .unwrap()
+    else {
+        panic!("read reply");
+    };
+    assert_eq!(last.bytes.as_bytes(), &[7; 64]);
+    assert_eq!(last.remaining, 0);
+    assert!(last.fin);
+    assert_eq!(first.bytes.as_bytes(), &[7; 64]);
+}
+
+#[test]
+fn equal_generation_and_sequence_do_not_authorize_foreign_prepared_bytes() {
+    with_state(|first| {
+        numeric_ready(first);
+        let stream = open(first);
+        first
+            .queue
+            .enqueue(&mut first.table, stream, b"first", true)
+            .unwrap();
+        let own = first.prepare::<64>(false, false).unwrap().unwrap();
+        with_state(|second| {
+            numeric_ready(second);
+            let stream = open(second);
+            second
+                .queue
+                .enqueue(&mut second.table, stream, b"other", true)
+                .unwrap();
+            let foreign = second.prepare::<64>(false, false).unwrap().unwrap();
+            assert_eq!(own.id.generation, foreign.id.generation);
+            assert_eq!(own.id.sequence, foreign.id.sequence);
+            assert_ne!(own.id, foreign.id);
+            assert_eq!(first.reserve(foreign.id, 1), Err(Fault::Stale));
+            assert!(matches!(first.pending, Some(PendingTx::Prepared(id, _, _)) if id == own.id));
+            let copied = own.id;
+            let reservation = first.reserve(copied, 1).unwrap();
+            assert_eq!(reservation.prepared_id(), own.id);
+            assert_eq!(first.reserve(own.id, 2), Err(Fault::Stale));
+        });
     });
 }
 #[test]
@@ -561,4 +723,60 @@ fn q1_preparation_scope_retries_stale_cancel_without_releasing_next_frame() {
         }
         panic!("preparation scope did not finish");
     });
+}
+
+/// Numerical fixture with actual Finished authority and an accepted retained
+/// stream reference. The returned receipt follows the real Lost command effect.
+pub(crate) fn settle_abandonment_loss(
+    grant: super::super::recovery_owner::LostPacket,
+) -> super::super::recovery_owner::StreamLossSettled {
+    let generation = grant.generation();
+    let packet = grant.packet().value;
+    let mut slots = [StreamSlot::EMPTY; 8];
+    let mut chunks = [SendChunk::EMPTY; 4];
+    let mut references = [PacketReference::EMPTY; 8];
+    let mut state = State::<32, 16, 2, 4>::new(
+        generation,
+        Role::Server,
+        LIMITS,
+        &mut slots,
+        &mut chunks,
+        &mut references,
+        80,
+        None,
+    )
+    .unwrap();
+    const RAW: &[u8] = &[
+        15, 8, b'c', b'l', b'i', b'e', b'n', b't', b'i', b'd', 4, 2, 0x40, 128, 5, 1, 32, 6, 1, 32,
+        7, 1, 32, 8, 1, 2, 9, 1, 2,
+    ];
+    let finished = crate::driver::test_support::finished_with_parameters(generation, RAW);
+    let ready = super::super::connection_authority::verify_and_split(
+        finished,
+        RAW,
+        crate::parameters::Peer::Client,
+        b"clientid",
+        None,
+        None,
+    )
+    .unwrap();
+    state.peer_ready(ready.application).unwrap();
+    let stream = state.table.open_local(true).unwrap();
+    state
+        .queue
+        .enqueue(&mut state.table, stream, b"requeue me", true)
+        .unwrap();
+    let prepared = state.prepare::<64>(false, false).unwrap().unwrap();
+    let id = state.reserve(prepared.id, packet).unwrap();
+    state.adapter_result(id, true).unwrap();
+    assert!(state.prepare::<64>(false, false).unwrap().is_none());
+    let arena = packet_authority::Arena::<1, 2>::new(generation);
+    let Outcome::LossApplied(Some(proof)) = state
+        .execute::<64, 1, 2>(Command::Lost(grant), &arena)
+        .unwrap()
+    else {
+        panic!("loss settlement")
+    };
+    assert!(state.prepare::<64>(false, false).unwrap().is_some());
+    proof
 }

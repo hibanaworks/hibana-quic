@@ -27,8 +27,8 @@ pub const FLIGHT: u8 = 207;
 pub type Flight = g::Msg<FLIGHT, [u8; 16]>;
 pub const DISCARD_SPACE: u8 = 208;
 pub type DiscardSpace = g::Msg<DISCARD_SPACE, [u8; 16]>;
-pub const REQUEUE_SPACE: u8 = 209;
-pub type RequeueSpace = g::Msg<REQUEUE_SPACE, [u8; 16]>;
+pub const RETRY_RESET: u8 = 209;
+pub type RetryReset = g::Msg<RETRY_RESET, [u8; 16]>;
 pub const RECLAIM: u8 = 210;
 pub type Reclaim = g::Msg<RECLAIM, [u8; 16]>;
 pub const RESET_PATH: u8 = 211;
@@ -56,10 +56,76 @@ pub type Retired = g::Msg<RETIRED, [u8; 16]>;
 pub const RETIREMENT_ACKNOWLEDGED: u8 = 218;
 pub type RetirementAcknowledged = g::Msg<RETIREMENT_ACKNOWLEDGED, [u8; 16]>;
 
+pub const ABANDON_PATH: u8 = 223;
+pub type AbandonPath = g::Msg<ABANDON_PATH, [u8; 16]>;
+pub const ABANDONMENT_STARTED: u8 = 224;
+pub type AbandonmentStarted = g::Msg<ABANDONMENT_STARTED, [u8; 16]>;
+pub const SETTLE_ABANDONMENT: u8 = 225;
+pub type SettleAbandonment = g::Msg<SETTLE_ABANDONMENT, [u8; 16]>;
+pub const FINISH_ABANDONMENT: u8 = 226;
+pub type FinishAbandonment = g::Msg<FINISH_ABANDONMENT, [u8; 16]>;
+pub const ABANDONMENT_COMPLETED: u8 = 227;
+pub type AbandonmentCompleted = g::Msg<ABANDONMENT_COMPLETED, [u8; 16]>;
 pub type Operation<const C: u8, const O: u8, M> = g::Seq<
     g::Send<C, O, M>,
     g::Seq<g::Route<g::Send<O, C, Applied>, g::Send<O, C, Rejected>>, g::Send<C, O, ResultTaken>>,
 >;
+pub type AbandonmentFlow<const C: u8, const O: u8> = g::Seq<
+    g::Send<C, O, AbandonPath>,
+    g::Route<
+        g::Seq<
+            g::Send<O, C, AbandonmentStarted>,
+            g::Seq<
+                g::Send<C, O, ResultTaken>,
+                g::Seq<
+                    g::Roll<
+                        g::Route<
+                            Operation<C, O, SettleAbandonment>,
+                            g::Send<C, O, FinishAbandonment>,
+                        >,
+                    >,
+                    g::Seq<g::Send<O, C, AbandonmentCompleted>, g::Send<C, O, ResultTaken>>,
+                >,
+            >,
+        >,
+        g::Seq<g::Send<O, C, Rejected>, g::Send<C, O, ResultTaken>>,
+    >,
+>;
+fn operation<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]>>()
+-> g::Program<Operation<C, O, M>> {
+    g::seq(
+        g::send::<C, O, M>(),
+        g::seq(
+            g::route(g::send::<O, C, Applied>(), g::send::<O, C, Rejected>()),
+            g::send::<C, O, ResultTaken>(),
+        ),
+    )
+}
+fn abandonment<const C: u8, const O: u8>() -> g::Program<AbandonmentFlow<C, O>> {
+    g::seq(
+        g::send::<C, O, AbandonPath>(),
+        g::route(
+            g::seq(
+                g::send::<O, C, AbandonmentStarted>(),
+                g::seq(
+                    g::send::<C, O, ResultTaken>(),
+                    g::seq(
+                        g::route(
+                            operation::<C, O, SettleAbandonment>(),
+                            g::send::<C, O, FinishAbandonment>(),
+                        )
+                        .roll(),
+                        g::seq(
+                            g::send::<O, C, AbandonmentCompleted>(),
+                            g::send::<C, O, ResultTaken>(),
+                        ),
+                    ),
+                ),
+            ),
+            g::seq(g::send::<O, C, Rejected>(), g::send::<C, O, ResultTaken>()),
+        ),
+    )
+}
 pub type RecoveryFlow<const C: u8, const O: u8> = g::Seq<
     g::Send<C, O, Install>,
     g::Seq<
@@ -81,7 +147,7 @@ pub type RecoveryFlow<const C: u8, const O: u8> = g::Seq<
                                         g::Route<
                                             Operation<C, O, DiscardSpace>,
                                             g::Route<
-                                                Operation<C, O, RequeueSpace>,
+                                                Operation<C, O, RetryReset>,
                                                 g::Route<
                                                     Operation<C, O, Reclaim>,
                                                     g::Route<
@@ -100,10 +166,16 @@ pub type RecoveryFlow<const C: u8, const O: u8> = g::Seq<
                                                                                 O,
                                                                                 RejectZeroRtt,
                                                                             >,
-                                                                            g::Send<
-                                                                                C,
-                                                                                O,
-                                                                                RetireRequested,
+                                                                            g::Route<
+                                                                                AbandonmentFlow<
+                                                                                    C,
+                                                                                    O,
+                                                                                >,
+                                                                                g::Send<
+                                                                                    C,
+                                                                                    O,
+                                                                                    RetireRequested,
+                                                                                >,
                                                                             >,
                                                                         >,
                                                                     >,
@@ -125,77 +197,8 @@ pub type RecoveryFlow<const C: u8, const O: u8> = g::Seq<
         >,
     >,
 >;
-fn operation<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]>>()
--> g::Program<Operation<C, O, M>> {
-    g::seq(
-        g::send::<C, O, M>(),
-        g::seq(
-            g::route(g::send::<O, C, Applied>(), g::send::<O, C, Rejected>()),
-            g::send::<C, O, ResultTaken>(),
-        ),
-    )
-}
 pub fn recovery_choreography<const C: u8, const O: u8>() -> g::Program<RecoveryFlow<C, O>> {
-    let work = g::route(
-        operation::<C, O, Reserve>(),
-        g::route(
-            operation::<C, O, AdapterComplete>(),
-            g::route(
-                operation::<C, O, Cancel>(),
-                g::route(
-                    operation::<C, O, Ack>(),
-                    g::route(
-                        operation::<C, O, DetectLoss>(),
-                        g::route(
-                            operation::<C, O, Flight>(),
-                            g::route(
-                                operation::<C, O, DiscardSpace>(),
-                                g::route(
-                                    operation::<C, O, RequeueSpace>(),
-                                    g::route(
-                                        operation::<C, O, Reclaim>(),
-                                        g::route(
-                                            operation::<C, O, ResetPath>(),
-                                            g::route(
-                                                operation::<C, O, Inspect>(),
-                                                g::route(
-                                                    operation::<C, O, Timer>(),
-                                                    g::route(
-                                                        operation::<C, O, KeyPto>(),
-                                                        g::route(
-                                                            operation::<C, O, EcnMarking>(),
-                                                            g::route(
-                                                                operation::<C, O, RejectZeroRtt>(),
-                                                                g::send::<C, O, RetireRequested>(),
-                                                            ),
-                                                        ),
-                                                    ),
-                                                ),
-                                            ),
-                                        ),
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        ),
-    )
-    .roll();
-    g::seq(
-        g::send::<C, O, Install>(),
-        g::seq(
-            g::send::<O, C, Installed>(),
-            g::seq(
-                work,
-                g::seq(
-                    g::send::<O, C, Retired>(),
-                    g::send::<C, O, RetirementAcknowledged>(),
-                ),
-            ),
-        ),
-    )
+    g::seq(g::send::<C,O,Install>(),g::seq(g::send::<O,C,Installed>(),g::seq(g::route(operation::<C,O,Reserve>(),g::route(operation::<C,O,AdapterComplete>(),g::route(operation::<C,O,Cancel>(),g::route(operation::<C,O,Ack>(),g::route(operation::<C,O,DetectLoss>(),g::route(operation::<C,O,Flight>(),g::route(operation::<C,O,DiscardSpace>(),g::route(operation::<C,O,RetryReset>(),g::route(operation::<C,O,Reclaim>(),g::route(operation::<C,O,ResetPath>(),g::route(operation::<C,O,Inspect>(),g::route(operation::<C,O,Timer>(),g::route(operation::<C,O,KeyPto>(),g::route(operation::<C,O,EcnMarking>(),g::route(operation::<C,O,RejectZeroRtt>(),g::route(abandonment::<C,O>(),g::send::<C,O,RetireRequested>())))))))))))))))).roll(),g::seq(g::send::<O,C,Retired>(),g::send::<C,O,RetirementAcknowledged>()))))
 }
 pub fn recovery_program<const ROLE: u8>() -> RoleProgram<ROLE> {
     project(&recovery_choreography::<RECOVERY_CLIENT, RECOVERY_OWNER>())

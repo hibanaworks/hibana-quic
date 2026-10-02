@@ -55,43 +55,6 @@ impl ImportTicket {
     }
 }
 
-/// Narrow post-Finished authority handed to the transport handler. It exposes
-/// only checked intent import, never the internal endpoints or arbitrary driver
-/// operations. Completion means the attempted operation finished, not that a
-/// capacity/flow-control rejection transferred bytes.
-pub struct ImportAuthority<'a, 'r> {
-    driver: &'a mut crate::driver::Driver<'r>,
-}
-impl<'a, 'r> ImportAuthority<'a, 'r> {
-    pub(crate) fn new(driver: &'a mut crate::driver::Driver<'r>) -> Self {
-        Self { driver }
-    }
-    pub fn import_next<const B: usize, const RX: usize, const TX: usize>(
-        &mut self,
-        journal: &mut Journal<'_, B>,
-        table: &mut crate::streams::StreamTable<'_, RX>,
-        queue: &mut crate::streams::SendQueue<'_, TX>,
-    ) -> Result<Option<crate::streams::StreamHandle>, crate::streams::Error> {
-        let Some(view) = journal
-            .next_import()
-            .map_err(|_| crate::streams::Error::InvalidTransition)?
-        else {
-            return Ok(None);
-        };
-        let grant = self
-            .driver
-            .begin_early_intent_import(view.ticket)
-            .map_err(|_| crate::streams::Error::InvalidTransition)?;
-        let stream_id = view.ticket.stream_id();
-        let result = journal.import_next(table, queue);
-        let request_complete = result.is_ok() && !journal.has_pending_stream(stream_id);
-        self.driver
-            .finish_early_intent_import(grant, request_complete)
-            .map_err(|_| crate::streams::Error::InvalidTransition)?;
-        result
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
     Offering,
@@ -183,7 +146,9 @@ impl<'a, const BYTES: usize> Journal<'a, BYTES> {
             last_packet: None,
         })
     }
-    pub fn is_offering(&self)->bool{self.phase==Phase::Offering}
+    pub fn is_offering(&self) -> bool {
+        self.phase == Phase::Offering
+    }
     pub fn decision(&self) -> Option<Decision> {
         match self.phase {
             Phase::Importing(d) => Some(d),
@@ -344,6 +309,27 @@ impl<'a, const BYTES: usize> Journal<'a, BYTES> {
         count
     }
 
+    /// The Stream owner calls this only after consuming the connection's
+    /// committed Retry grant. Old-path accepted copies remain recorded for
+    /// final import; intent and the monotonic PN floor are unchanged. These
+    /// journal flags schedule retransmission and do not alter Recovery flight.
+    pub(crate) fn retry_accepted(&mut self) -> Result<(), Error> {
+        if self.phase != Phase::Offering {
+            return Err(Error::State);
+        }
+        if self.pending.is_some() {
+            return Err(Error::Busy);
+        }
+        for slot in self.slots.iter_mut().filter(|slot| slot.live) {
+            for (index, packet) in slot.packets.iter().enumerate() {
+                if packet.is_some() {
+                    slot.lost[index] = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Call only after the real TLS decision and authenticated parameters are
     /// known. In-flight adapter ownership must be reconciled first. Rejection
     /// is not loss and cannot free any ordinary queue's bytes.
@@ -486,6 +472,31 @@ mod tests {
             0, 0, 15, 0, 4, 1, 32, 6, 1, 16, 8, 1, 2,
         ])
         .unwrap()
+    }
+    #[test]
+    fn retry_requeues_accepted_copies_and_preserves_intent_and_packet_floor() {
+        let mut slots = [const { RequestSlot::<16>::EMPTY }; 2];
+        let mut journal = Journal::new(7, limits(), &mut slots).unwrap();
+        let first = journal.enqueue(b"GET /a").unwrap();
+        let accepted = journal.reserve(first, 10).unwrap();
+        journal.adapter_result(accepted, true).unwrap();
+        assert_eq!(journal.next_transmit(false), None);
+        let second = journal.enqueue(b"GET /b").unwrap();
+        let pending = journal.reserve(second, 11).unwrap();
+        assert_eq!(journal.retry_accepted(), Err(Error::Busy));
+        journal.adapter_result(pending, false).unwrap();
+        journal.retry_accepted().unwrap();
+        assert_eq!(journal.next_transmit(false), Some(first));
+        assert_eq!(journal.request(first).unwrap().bytes, b"GET /a");
+        assert_eq!(journal.reserve(first, 10), Err(Error::PacketNumber));
+        let replacement = journal.reserve(first, 12).unwrap();
+        journal.adapter_result(replacement, true).unwrap();
+        journal.decide(Decision::Accepted).unwrap();
+        let import = journal.next_import().unwrap().unwrap();
+        assert_eq!(import.bytes, b"GET /a");
+        assert_eq!(import.accepted_packets[..2], [Some(10), Some(12)]);
+        assert_eq!(import.lost_packets[..2], [true, false]);
+        assert_eq!(journal.retry_accepted(), Err(Error::State));
     }
     #[test]
     fn rejected_intent_keeps_bytes_but_not_credit_handles_or_packet_refs() {

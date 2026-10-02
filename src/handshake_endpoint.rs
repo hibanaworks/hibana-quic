@@ -5,19 +5,26 @@
 //! Initial keys and the whole TLS Provider are owned by separate projected
 //! async roles. Packet protection, CRYPTO processing, key maintenance and key
 //! retirement are genuinely awaited; no Provider or key handle lives here.
-//! Remaining non-key Driver services are migrating separately.
+//! Recovery, streams and Path/CID state live in independent projected owners;
+//! this coordinator retains only affine clients, bounded packets and observations.
 //! Retry and explicit close/draining are integrated; provider resumption is
 //! supported. Migration and automatic fatal-error close reporting remain incomplete. Allocation
 //! policy depends on the selected provider; the bounded backend and allocating
 //! Rustls reference backend have separate evidence.
+mod recovery_actor;
+pub use recovery_actor::{
+    PacketAuthority, RecoveryClient, RecoveryExchange, RecoveryOwner, RecoverySnapshot,
+};
+mod stream_actor;
+pub use stream_actor::{STREAM_FRAME_BYTES, StreamClient, StreamCommand, StreamOutcome};
 mod tls_actor;
+mod tx_actor;
 pub use tls_actor::{TLS_PACKET_BYTES, TLS_PARAMETER_BYTES, TlsClient, TlsSnapshot};
 mod initial;
 pub use initial::{
     INITIAL_PACKET_BYTES, InitialKeyClient, InitialKeyProtection, InitialProtection,
 };
 mod path;
-use path::Reservation as PathReservation;
 pub use path::{
     NetworkConfig, NetworkError, NetworkRandom, NetworkReceiveContext, NetworkResources,
     PreferredServer,
@@ -25,14 +32,16 @@ pub use path::{
 mod trace;
 pub use trace::{TraceSetupError, TraceStatus};
 mod early;
-pub use early::{EARLY_CONTROL_BYTES, EARLY_REQUEST_BYTES};
+pub use early::{
+    EARLY_COMMAND_BYTES, EARLY_CONTROL_BYTES, EARLY_REQUEST_BYTES, EarlyClient, EarlyExchange,
+    EarlyStarter, EarlyStorage,
+};
 
 use crate::{
-    accounting::{self, PacketKind, PacketNumberSpace, SendReservation, SentLedger},
+    accounting::{self, PacketKind, PacketNumberSpace},
     crypto::{self},
-    driver::{Driver, DriverError, TransmitTicket},
-    ecn::{self, Codepoint, MarkedPackets, PathEcn, PathIdentity, RxCounts},
-    flights::{self, FlightId, FlightStore, Reference},
+    ecn::{self, Codepoint, PathIdentity, RxCounts},
+    flights::{self, FlightId},
     handshake::{self, CryptoBuffer},
     idle::{self, IdleTimeout},
     lifecycle::{self, CloseReason, CloseTransmit, Lifecycle, State as ConnectionState},
@@ -41,12 +50,16 @@ use crate::{
         PacketIter, ParseLimits, ShortHeader,
     },
     parameters::{Parameters, Peer},
-    recovery::{
-        self, RecoveryTimer, RttEstimator, RttSample, SpaceTimer, TimeoutAction, TimerContext,
-    },
+    recovery::{self, TimeoutAction, TimerContext},
     retry::{self, ClientRetry, ValidatedToken},
     tls::{self, Level},
     version_negotiation,
+};
+
+#[cfg(test)]
+use crate::{
+    accounting::SentLedger,
+    ecn::{MarkedPackets, PathEcn},
 };
 
 /// Fits a 1024-byte STREAM chunk plus worst-case base STREAM fields.
@@ -71,6 +84,9 @@ pub enum Error {
     /// Unauthenticated VN omitted the sole supported version. No restart occurs.
     VersionNegotiationNoCommonVersion,
     Early(crate::early_data::Error),
+    EarlyOwner(crate::roles::early_owner::ServiceError),
+    EarlyOwnerFault(crate::roles::early_owner::Fault),
+    ConnectionAuthority(crate::roles::connection_authority::Error),
     Lifecycle(lifecycle::Error),
     Idle(idle::Error),
     Ecn(ecn::Error),
@@ -78,11 +94,17 @@ pub enum Error {
     Busy,
     Retry(retry::Error),
     Capacity,
+    Datagram(crate::roles::datagram::Error),
+    UdpSubmission(crate::roles::path_owner::SubmitError),
     UnexpectedFrame,
     ProtocolViolation,
     Streams(crate::streams::Error),
+    StreamOwner(crate::roles::stream_owner::ClientError),
     Flight(flights::Error),
     Recovery(recovery::RecoveryError),
+    RecoveryOwner(crate::roles::recovery_owner::ClientError),
+    RecoveryRejected(crate::roles::recovery_owner::Rejection),
+    PacketAuthority(crate::roles::packet_authority::Error),
     Wire(packet::Error),
     Crypto(crypto::Error),
     /// The key-role service failed. The connection is terminal after this error.
@@ -91,7 +113,6 @@ pub enum Error {
     IntegrityLoanUnavailable,
     Tls(tls::Error),
     Accounting(accounting::AccountingError),
-    Driver(DriverError),
     Reassembly(handshake::Error),
     Parameters(crate::parameters::Error),
 }
@@ -130,6 +151,21 @@ impl From<recovery::RecoveryError> for Error {
         Self::Recovery(e)
     }
 }
+impl From<crate::roles::recovery_owner::ClientError> for Error {
+    fn from(error: crate::roles::recovery_owner::ClientError) -> Self {
+        Self::RecoveryOwner(error)
+    }
+}
+impl From<crate::roles::packet_authority::Error> for Error {
+    fn from(error: crate::roles::packet_authority::Error) -> Self {
+        Self::PacketAuthority(error)
+    }
+}
+impl From<crate::roles::stream_owner::ClientError> for Error {
+    fn from(error: crate::roles::stream_owner::ClientError) -> Self {
+        Self::StreamOwner(error)
+    }
+}
 impl From<packet::Error> for Error {
     fn from(e: packet::Error) -> Self {
         Self::Wire(e)
@@ -155,11 +191,6 @@ impl From<accounting::AccountingError> for Error {
         Self::Accounting(e)
     }
 }
-impl From<DriverError> for Error {
-    fn from(e: DriverError) -> Self {
-        Self::Driver(e)
-    }
-}
 impl From<handshake::Error> for Error {
     fn from(e: handshake::Error) -> Self {
         Self::Reassembly(e)
@@ -171,42 +202,12 @@ impl From<crate::parameters::Error> for Error {
     }
 }
 
-/// Effects are called only inside the authenticated Hibana receive contract.
-pub trait ApplicationHandler {
-    /// Client-side reconciliation boundary after certificate/Finished and TP
-    /// validation, before any coalesced 1-RTT ACK can touch early references.
-    fn early_decision(
-        &mut self,
-        _decision: crate::early_send::Decision,
-        _limits: crate::streams::Limits,
-        _authority: &mut crate::early_send::ImportAuthority<'_, '_>,
-    ) -> Result<(), crate::streams::Error> {
-        Ok(())
-    }
-    fn frame(&mut self, frame: Frame<'_>) -> Result<(), crate::streams::Error>;
-    fn acknowledged(&mut self, ranges: AckRanges<'_>) -> Result<(), crate::streams::Error>;
-}
-struct NoApplication;
-impl ApplicationHandler for NoApplication {
-    fn frame(&mut self, _: Frame<'_>) -> Result<(), crate::streams::Error> {
-        Err(crate::streams::Error::StreamState)
-    }
-    fn acknowledged(&mut self, _: AckRanges<'_>) -> Result<(), crate::streams::Error> {
-        Ok(())
-    }
-}
-#[derive(Clone, Copy)]
-struct ApplicationPacket {
-    number: u64,
-    early: bool,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Config<'a> {
     pub side: Side,
     pub local_id: &'a [u8],
     pub original_destination_id: &'a [u8],
-    /// Must match Driver and remain unique while any old callback descriptor can exist.
+    /// Must match every connected owner and remain unique while old callbacks can exist.
     /// Reused connection slots need a checked, monotonically advanced generation.
     pub generation: u64,
 }
@@ -242,12 +243,9 @@ impl ConnectionId {
         &self.bytes[..self.len]
     }
 }
-/// A caller must report adapter acceptance or rejection before reusing this slot.
+/// Observation returned after actual adapter submission and every owner settlement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Transmit {
-    // Opaque issued authority survives copying; changing public reporting fields
-    // cannot turn an old output into a grant for a new reservation.
-    authority: TransmitTicket,
     early: bool,
     pub connection_generation: u64,
     pub id: u64,
@@ -255,6 +253,7 @@ pub struct Transmit {
     pub level: Level,
     pub packet_number: accounting::PacketNumber,
     pub ecn: Codepoint,
+    pub accepted_at: Option<u64>,
     /// Exact source/destination when opt-in path resources are configured.
     pub address: Option<crate::path::Address>,
 }
@@ -283,22 +282,6 @@ pub struct PeerClose {
     pub frame_type: Option<u64>,
     pub level: Level,
     pub protection: packet::EncryptionLevel,
-}
-struct Pending {
-    close: Option<CloseTransmit>,
-    output: Transmit,
-    sent: SendReservation,
-    path: PathReservation,
-    ticket: TransmitTicket,
-    crypto_len: usize,
-    reference: Option<Reference>,
-    was_probe: bool,
-    handshake_done: bool,
-    application_slot: Option<usize>,
-    ping: bool,
-    ack_largest: Option<u64>,
-    ack_bits: u64,
-    trace_key_generation: Option<u64>,
 }
 #[derive(Clone, Copy, Default)]
 struct Seen {
@@ -389,6 +372,7 @@ fn wire_level(level: Level) -> EncryptionLevel {
 /// Use an explicitly conservative upper bound for recovery discrimination,
 /// never for RTT. Current time is the final upper bound on any prior accepted
 /// send if no per-space history remains. Validated congestion is never dropped.
+#[cfg(test)]
 fn ecn_congestion_event<const N: usize>(
     cc: &mut recovery::NewReno,
     sent: &SentLedger<N>,
@@ -405,61 +389,56 @@ fn ecn_congestion_event<const N: usize>(
 pub struct HandshakeEndpoint<'r, 's, 'tc, 'ts, K: InitialKeyProtection = InitialProtection<'r, 's>>
 {
     side: Side,
-    early: early::State<'s>,
+    early: Option<early::EarlyClient<'tc, 'ts>>,
+    early_starter: Option<early::EarlyStarter<'tc, 'ts>>,
+    early_last: Option<crate::roles::early_owner::Snapshot>,
     trace: Option<trace::State<'s>>,
     local: ConnectionId,
     original: ConnectionId,
     initial_destination: ConnectionId,
     client_retry: ClientRetry<MAX_RETRY_TOKEN_BYTES>,
     version_negotiation: Option<version_negotiation::Client>,
-    retry_pending: bool,
+    retry_grants: Option<crate::roles::packet_authority::RetryGrants>,
+    retry_admission: Option<ValidatedToken>,
     remote: ConnectionId,
     remote_known: bool,
     tls: Option<TlsClient<'tc, 'ts>>,
     tls_last: TlsSnapshot,
+    stream: Option<StreamClient<'tc, 'ts>>,
+    stream_last: crate::roles::stream_owner::Snapshot,
     finished_receipt: Option<crate::roles::tls_owner::FinishedReceipt>,
     initial: K,
-    driver: Driver<'r>,
+    initial_lifetime: core::marker::PhantomData<&'r ()>,
     received: [Seen; 3],
     crypto: [CryptoBuffer<'s>; 3],
     offsets: [u64; 3],
     pending_crypto: [u8; 900],
     pending_tls: Option<tls::Output>,
     queued_flight: Option<FlightId>,
-    flights: FlightStore<16, 900, 64>,
     probe: Option<FlightId>,
     now: u64,
-    rtt: RttEstimator,
-    recovery: RecoveryTimer,
+    recovery: Option<RecoveryClient<'tc, 'ts>>,
+    recovery_last: RecoverySnapshot,
+    authority: &'tc PacketAuthority,
+    early_rejection: Option<crate::roles::tls_owner::EarlyRejectedGrant>,
+    early_ready: Option<crate::roles::connection_authority::EarlyReady>,
     handshake_ack: bool,
     handshake_confirmed: bool,
     peer_limits: Option<crate::streams::Limits>,
     discarded: [bool; 2],
     discard_requested: [bool; 2],
-    largest_acked: [Option<u64>; 3],
-    loss_times: [Option<u64>; 3],
     peer_ack_exponent: u8,
     peer_max_ack_delay: u64,
-    cc: recovery::NewReno,
-    application_packets: [Option<ApplicationPacket>; 64],
-    application_probe: bool,
-    application_probe_permit: bool,
-    crypto_probe_permit: bool,
-    lost_application: [Option<u64>; 64],
-    lost_head: usize,
-    lost_len: usize,
     ping_probe: Option<Level>,
     handshake_done_pending: bool,
     handshake_done_flight: Option<FlightId>,
-    pending: Option<Pending>,
     next_id: u64,
-    sent: SentLedger<64>,
-    path: path::Owner<'s>,
+    path: Option<path::PathClient<'tc, 'ts>>,
+    path_last: crate::roles::path_owner::Snapshot,
+    ingress_address: Option<crate::path::Address>,
+    path_datagram_id: u64,
     ecn_enabled: bool,
-    ecn_tx: PathEcn,
     ecn_rx: RxCounts,
-    ecn_validated_ce: u64,
-    ecn_congestion_events: u64,
     retired: bool,
     lifecycle: Lifecycle,
     idle: IdleTimeout,
@@ -478,11 +457,16 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
     pub fn new(
         config: Config<'_>,
         tls: TlsClient<'tc, 'ts>,
-        driver: Driver<'r>,
+        recovery: RecoveryClient<'tc, 'ts>,
+        authority: &'tc PacketAuthority,
+        path: path::PathClient<'tc, 'ts>,
+        stream: StreamClient<'tc, 'ts>,
         crypto: [CryptoBuffer<'s>; 3],
         initial: K,
     ) -> Result<Self, Error> {
-        Self::new_inner(config, tls, driver, crypto, None, initial)
+        Self::new_inner(
+            config, tls, recovery, authority, path, stream, crypto, None, initial,
+        )
     }
     /// Bootstrap a server only after its dispatcher authenticates and consumes a
     /// Retry token for this peer address and this Initial's source/destination CIDs.
@@ -493,7 +477,10 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
     pub fn new_after_retry(
         config: Config<'_>,
         tls: TlsClient<'tc, 'ts>,
-        driver: Driver<'r>,
+        recovery: RecoveryClient<'tc, 'ts>,
+        authority: &'tc PacketAuthority,
+        path: path::PathClient<'tc, 'ts>,
+        stream: StreamClient<'tc, 'ts>,
         crypto: [CryptoBuffer<'s>; 3],
         admission: ValidatedToken,
         initial: K,
@@ -503,19 +490,39 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         {
             return Err(Error::InvalidConfig);
         }
-        Self::new_inner(config, tls, driver, crypto, Some(admission), initial)
+        Self::new_inner(
+            config,
+            tls,
+            recovery,
+            authority,
+            path,
+            stream,
+            crypto,
+            Some(admission),
+            initial,
+        )
     }
     fn new_inner(
         config: Config<'_>,
         tls: TlsClient<'tc, 'ts>,
-        driver: Driver<'r>,
+        recovery: RecoveryClient<'tc, 'ts>,
+        authority: &'tc PacketAuthority,
+        path: path::PathClient<'tc, 'ts>,
+        stream: StreamClient<'tc, 'ts>,
         crypto: [CryptoBuffer<'s>; 3],
         admission: Option<ValidatedToken>,
         initial: K,
     ) -> Result<Self, Error> {
-        if config.generation != driver.generation()
-            || config.generation != initial.generation()
+        if config.generation != initial.generation()
             || config.generation != tls.generation()
+            || config.generation != recovery.snapshot().generation
+            || config.generation != authority.generation()
+            || config.generation != stream.generation()
+            || stream.snapshot().role
+                != match config.side {
+                    Side::Client => crate::streams::Role::Client,
+                    Side::Server => crate::streams::Role::Server,
+                }
         {
             return Err(Error::InvalidConfig);
         }
@@ -545,72 +552,73 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                 .as_ref()
                 .map_or(original.bytes(), ValidatedToken::client_source_id),
         )?;
-        let mut path = path::Owner::new(0, config.generation);
-        if config.side == Side::Client || admission.is_some() {
-            path.mark_validated()?;
+        let path_last = path.snapshot();
+        if path_last.active.connection_generation != config.generation
+            || path_last.local_cid.as_bytes() != config.local_id
+            || path_last.role
+                != match config.side {
+                    Side::Client => crate::migration::Role::Client,
+                    Side::Server => crate::migration::Role::Server,
+                }
+            || recovery.snapshot().active_path != Some(path_last.active)
+        {
+            return Err(Error::InvalidConfig);
         }
         let tls_last = *tls.snapshot();
+        let recovery_last = recovery.snapshot();
+        let stream_last = *stream.snapshot();
         Ok(Self {
             side: config.side,
-            early: early::State::new(),
+            early: None,
+            early_starter: None,
+            early_last: None,
             trace: None,
             local,
             original,
             initial_destination,
             client_retry,
             version_negotiation,
-            retry_pending: false,
+            retry_grants: None,
             remote,
             remote_known: admission.is_some(),
+            retry_admission: admission,
             tls: Some(tls),
             tls_last,
+            stream: Some(stream),
+            stream_last,
             finished_receipt: None,
             initial,
-            driver,
+            initial_lifetime: core::marker::PhantomData,
             received: [Seen::default(); 3],
             crypto,
             offsets: [0; 3],
             pending_crypto: [0; 900],
             pending_tls: None,
             queued_flight: None,
-            flights: FlightStore::new(),
             probe: None,
             now: 0,
-            rtt: RttEstimator::new(recovery::INITIAL_RTT_US)?,
-            recovery: RecoveryTimer::new(),
+            recovery: Some(recovery),
+            recovery_last,
+            authority,
+            early_rejection: None,
+            early_ready: None,
             handshake_ack: false,
             handshake_confirmed: false,
             discarded: [false; 2],
             discard_requested: [false; 2],
-            largest_acked: [None; 3],
-            loss_times: [None; 3],
             peer_ack_exponent: 3,
             peer_max_ack_delay: 25_000,
-            cc: recovery::NewReno::new(1200)?,
             peer_limits: None,
-            application_packets: [None; 64],
-            application_probe: false,
-            application_probe_permit: false,
-            crypto_probe_permit: false,
-            lost_application: [None; 64],
-            lost_head: 0,
-            lost_len: 0,
             ping_probe: None,
             handshake_done_pending: false,
             handshake_done_flight: None,
-            pending: None,
             next_id: 0,
-            sent: SentLedger::new(config.generation),
-            path,
+            path: Some(path),
+            path_last,
+            ingress_address: None,
+            path_datagram_id: 0,
             ecn_enabled: false,
-            ecn_tx: PathEcn::new(PathIdentity {
-                connection_generation: config.generation,
-                slot: 0,
-                path_generation: 0,
-            }),
             ecn_rx: RxCounts::new(),
-            ecn_validated_ce: 0,
-            ecn_congestion_events: 0,
             retired: false,
             lifecycle: Lifecycle::new(config.generation),
             idle: IdleTimeout::new(config.generation, 0, 0, recovery::INITIAL_RTT_US)?,
@@ -658,14 +666,14 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
     // exponential backoff. Otherwise repeated unanswered probes could keep
     // extending their own idle expiry. max_ack_delay applies after confirmation.
     fn idle_pto(&self) -> Result<u64, Error> {
-        Ok(self.rtt.pto_duration_us(
-            if self.handshake_confirmed {
+        self.recovery_snapshot()
+            .base_pto_us?
+            .checked_add(if self.handshake_confirmed {
                 self.peer_max_ack_delay
             } else {
                 0
-            },
-            0,
-        )?)
+            })
+            .ok_or(Error::Recovery(recovery::RecoveryError::Overflow))
     }
     /// Check idle expiry before a wrapper rejects work as Busy. Expiry cancels
     /// any prepared output and silently retires this endpoint. Closing/draining
@@ -717,42 +725,50 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
     }
     /// True only while a validated Retry awaits the outstanding adapter callback.
     pub const fn retry_is_pending(&self) -> bool {
-        self.retry_pending
+        self.retry_grants.is_some()
     }
     async fn apply_client_retry(&mut self) -> Result<(), Error> {
-        if !self.retry_pending || self.pending.is_some() {
+        use crate::roles::{
+            packet_authority::RetryGrants,
+            recovery_owner::{Command, Outcome},
+        };
+        let Some(RetryGrants {
+            path,
+            recovery,
+            stream,
+        }) = self.retry_grants.take()
+        else {
             return Ok(());
+        };
+        match self.recovery_request(Command::RetryReset(recovery)).await? {
+            Outcome::RetryReset { .. } => {}
+            Outcome::RetryDeferred { grant, error } => {
+                self.retry_grants = Some(RetryGrants {
+                    path,
+                    recovery: grant,
+                    stream,
+                });
+                return Err(Error::RecoveryRejected(error));
+            }
+            _ => return Err(Error::InvalidConfig),
         }
-        let source = self
-            .client_retry
-            .retry_source_id()
-            .ok_or(Error::InvalidConfig)?;
-        let destination = ConnectionId::peer(source)?;
-        self.initial.rekey(source, self.side).await?;
-        let rtt = RttEstimator::new(recovery::INITIAL_RTT_US)?;
-        let cc = recovery::NewReno::new(1200)?;
-        // There is no unreported adapter reference now. Retain CRYPTO and every
-        // burned PN; Retry is neither an ACK nor a congestion-loss event.
-        self.flights.requeue_space(PacketNumberSpace::Initial)?;
-        self.sent.discard_space(PacketNumberSpace::Initial)?;
-        self.retry_early_packets()?;
+        let destination = ConnectionId::peer(path.source_cid())?;
+        self.initial.rekey(destination.bytes(), self.side).await?;
+        self.stream_retry(stream).await?;
+        self.path_apply_retry(path).await?;
         self.initial_destination = destination;
         self.remote = destination;
         self.remote_known = false;
         self.received = [Seen::default(); 3];
-        self.rtt = rtt;
-        self.cc = cc;
-        self.recovery = RecoveryTimer::new();
-        self.largest_acked = [None; 3];
-        self.loss_times = [None; 3];
         self.probe = None;
-        self.crypto_probe_permit = false;
         self.ping_probe = None;
-        self.retry_pending = false;
         Ok(())
     }
     fn key_pto(&self) -> Result<u64, Error> {
-        Ok(self.rtt.pto_duration_us(self.peer_max_ack_delay, 0)?)
+        self.recovery_snapshot()
+            .base_pto_us?
+            .checked_add(self.peer_max_ack_delay)
+            .ok_or(Error::Recovery(recovery::RecoveryError::Overflow))
     }
     /// Request an authenticated QUIC application-key update. Pending adapter output
     /// must complete first so no old-key datagram crosses the local update boundary.
@@ -762,9 +778,6 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         }
         if self.is_retired() {
             return Err(Error::Retired);
-        }
-        if self.pending.is_some() {
-            return Err(Error::Busy);
         }
         if !self.handshake_confirmed {
             return Err(tls::Error::KeyUpdateNotAllowed.into());
@@ -784,29 +797,35 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         if self.is_retired() {
             return Err(Error::Retired);
         }
-        if self.next_id != 0 || self.received.iter().any(|s| s.largest.is_some()) {
+        if self.next_id != 0
+            || self.received.iter().any(|s| s.largest.is_some())
+            || !self.recovery_snapshot().ecn.is_some_and(|ecn| ecn.active)
+        {
             return Err(Error::InvalidConfig);
         }
+        // The actual owner must have been configured for ECN at bootstrap.
         self.ecn_enabled = true;
         Ok(())
     }
     pub fn path_identity(&self) -> PathIdentity {
-        self.path.identity()
+        self.path_snapshot().active
     }
     pub fn ecn_snapshot(&self) -> ecn::Snapshot {
-        let spaces = [
-            PacketNumberSpace::Initial,
-            PacketNumberSpace::Handshake,
-            PacketNumberSpace::ApplicationData,
-        ];
+        let snapshot = self.recovery_snapshot();
+        let state = snapshot.ecn;
         ecn::Snapshot {
-            enabled: self.ecn_enabled,
-            state: self.ecn_tx.state(),
-            failure: self.ecn_tx.failure(),
-            sent: spaces.map(|s| self.sent.accepted_ecn_counts(s)),
-            received: spaces.map(|s| self.ecn_rx.ack_counts(s)),
-            validated_ce: self.ecn_validated_ce,
-            congestion_events: self.ecn_congestion_events,
+            enabled: self.ecn_enabled && state.is_some(),
+            state: state.map_or(ecn::State::Testing, |s| s.state),
+            failure: state.and_then(|s| s.failure),
+            sent: snapshot.accepted_ecn,
+            received: [
+                PacketNumberSpace::Initial,
+                PacketNumberSpace::Handshake,
+                PacketNumberSpace::ApplicationData,
+            ]
+            .map(|space| self.ecn_rx.ack_counts(space)),
+            validated_ce: state.map_or(0, |s| s.validated_ce),
+            congestion_events: state.map_or(0, |s| s.congestion_events),
         }
     }
     pub fn handshake_complete(&self) -> bool {
@@ -816,13 +835,13 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             && self.parameters_verified
     }
     pub fn congestion_window(&self) -> u64 {
-        self.cc.congestion_window()
+        self.recovery_snapshot().congestion_window
     }
     pub fn has_rtt_sample(&self) -> bool {
-        self.rtt.first_sample_at().is_some()
+        self.recovery_snapshot().min_rtt_us.is_some()
     }
     pub fn bytes_in_flight(&self) -> u64 {
-        self.sent.bytes_in_flight()
+        self.recovery_snapshot().bytes_in_flight
     }
     pub fn keys_discarded(&self, level: Level) -> bool {
         match level {
@@ -835,41 +854,10 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         self.side
     }
     pub fn generation(&self) -> u64 {
-        self.driver.generation()
-    }
-    pub(crate) fn stream_retired(&mut self, id: u64) -> Result<(), Error> {
-        if self.is_retired() {
-            return Err(Error::Retired);
-        }
-        if let Err(error) = self.driver.stream_retired(id) {
-            self.retire();
-            return Err(error.into());
-        }
-        Ok(())
+        self.recovery_last.generation
     }
     pub fn verified_peer_limits(&self) -> Option<crate::streams::Limits> {
         self.peer_limits
-    }
-    pub fn take_lost_application_packet(&mut self) -> Option<u64> {
-        if self.lost_len == 0 {
-            return None;
-        }
-        let pn = self.lost_application[self.lost_head].take();
-        self.lost_head = (self.lost_head + 1) % 64;
-        self.lost_len -= 1;
-        pn
-    }
-    fn report_application_loss(&mut self, pn: u64) -> Result<(), Error> {
-        if self.lost_len == 64 {
-            return Err(Error::Capacity);
-        }
-        let at = (self.lost_head + self.lost_len) % 64;
-        self.lost_application[at] = Some(pn);
-        self.lost_len += 1;
-        Ok(())
-    }
-    pub fn take_application_probe(&mut self) -> bool {
-        core::mem::take(&mut self.application_probe)
     }
     pub fn peer_close(&self) -> Option<PeerClose> {
         self.peer_close
@@ -888,9 +876,6 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         if self.retired {
             return Err(Error::Retired);
         }
-        if self.pending.is_some() {
-            return Err(Error::Busy);
-        }
         if self
             .lifecycle
             .local_close(reason, self.now, self.key_pto()?)?
@@ -904,29 +889,15 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         if self.tls_snapshot().early_keys {
             self.tls_discard_early().await?;
         }
-        self.clear_early();
+        self.retire_early_owner().await?;
         self.close_round = None;
         self.discard_requested = [false; 2];
-        self.flights.discard();
-        for space in [
-            PacketNumberSpace::Initial,
-            PacketNumberSpace::Handshake,
-            PacketNumberSpace::ApplicationData,
-        ] {
-            self.sent.discard_space(space)?;
-        }
         self.pending_tls = None;
         self.queued_flight = None;
         self.probe = None;
         self.ping_probe = None;
         self.handshake_done_pending = false;
         self.handshake_done_flight = None;
-        self.application_packets.fill(None);
-        self.lost_application.fill(None);
-        self.lost_len = 0;
-        self.application_probe = false;
-        self.application_probe_permit = false;
-        self.crypto_probe_permit = false;
         for seen in &mut self.received {
             seen.ack_pending = false;
         }
@@ -935,49 +906,17 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
     async fn enter_draining(&mut self) -> Result<(), Error> {
         self.idle.stop();
         self.lifecycle.on_peer_close(self.now, self.key_pto()?)?;
-        if let Some(pending) = self.pending.take() {
-            self.begin_network_result(&pending, false)?;
-            self.sent.cancel(pending.sent)?;
-            self.path.cancel(pending.path)?;
-            if let Some(reference) = pending.reference {
-                self.flights.cancelled(reference)?;
-            }
-            self.driver.adapter_result(pending.ticket)?;
-        }
         self.stop_ordinary_output().await?;
         self.initial.retire().await?;
         self.retire_tls().await?;
+        self.retire_recovery().await?;
+        self.retire_stream_owner().await?;
+        self.retire_path_owner().await?;
         self.discarded = [true; 2];
-        self.driver.retire();
         Ok(())
     }
-    /// Check immediately before synchronous adapter submission. Serialize this
-    /// check/send with receive and timer calls. A result reports submission, not delivery.
-    /// Closing expiry revokes the output synchronously; the caller must then
-    /// await `retire_owned` to finish the retained crypto owners before returning
-    /// success. This check cannot suspend between permission and submission.
-    pub fn transmit_permitted(&mut self, output: Transmit, now: u64) -> Result<bool, Error> {
-        let Some(pending) = self.pending.as_ref() else {
-            return Ok(false);
-        };
-        if self.retired || pending.output != output {
-            return Ok(false);
-        }
-        if let Some(token) = pending.close {
-            let permitted = self.lifecycle.transmit_permitted(token, now)?;
-            self.now = self.now.max(now);
-            if self.lifecycle.state() == ConnectionState::Closed {
-                self.retire_data_plane();
-            }
-            return Ok(permitted);
-        }
-        if self.poll_idle_timeout(now)? {
-            return Ok(false);
-        }
-        Ok(self.lifecycle.state() == ConnectionState::Active)
-    }
     pub fn is_retired(&self) -> bool {
-        self.retired || self.driver.is_retired()
+        self.retired
     }
     pub fn retire(&mut self) {
         self.retire_data_plane();
@@ -989,30 +928,26 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
     /// leaves owner capabilities retained for the explicit async finalizer.
     fn retire_data_plane(&mut self) {
         self.idle.stop();
-        self.pending = None;
         self.pending_tls = None;
         self.close_round = None;
         self.retired = true;
-        self.driver.retire();
         self.clear_early();
-        self.sent.retire();
-        self.path.retire();
-        self.flights.discard();
+        self.abort_recovery();
+        self.abort_path();
+        self.abort_stream();
     }
     /// Advance the injected monotonic clock and arm a bounded fresh-PN CRYPTO
     /// probe on PTO. A PTO does not declare every outstanding packet lost.
     async fn timer_impl(&mut self, now: u64) -> Result<(), Error> {
+        use crate::roles::recovery_owner::{Command, Outcome, TimerCommand};
         if self.retired {
             return Err(Error::Retired);
         }
         if now < self.now {
-            return Err(Error::Recovery(recovery::RecoveryError::TimeWentBackwards));
+            return Err(recovery::RecoveryError::TimeWentBackwards.into());
         }
         if self.lifecycle.state() != ConnectionState::Active {
             self.now = now;
-            if self.lifecycle.state() == ConnectionState::Closing {
-                self.driver.timer(now)?;
-            }
             if self.lifecycle.on_timeout(now)? || self.lifecycle.state() == ConnectionState::Closed
             {
                 self.retire_owned().await?;
@@ -1022,39 +957,41 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         if self.poll_idle_timeout(now)? {
             return Ok(());
         }
-        let timer = self.driver.timer_with_ticket(now)?;
         self.now = now;
-        self.network_timeout(timer)?;
+        self.path_timeout().await?;
         if self.is_retired() {
             return Ok(());
         }
         self.tls_maintain(now, self.key_pto()?).await?;
-        if let Some(action) = self.recovery.on_timeout(now)? {
-            if let TimeoutAction::DetectLoss(_) = action {
-                self.detect_losses()?;
+        let Outcome::Timeout(timeout) = self
+            .recovery_request(Command::Timer(TimerCommand::Expire { now }))
+            .await?
+        else {
+            return Err(Error::InvalidConfig);
+        };
+        if let Some(grant) = timeout.path {
+            self.path_pto(grant).await?;
+        }
+        if let Some(grant) = timeout.stream {
+            self.stream_pto(grant).await?;
+        }
+        if let Some(action) = timeout.action {
+            match action {
+                TimeoutAction::DetectLoss(_) => self.detect_losses().await?,
+                TimeoutAction::Probe { space, .. } => {
+                    if self.probe.is_none() {
+                        self.probe = self.recovery_snapshot().probe_flights[space as usize];
+                    }
+                    if self.probe.is_none() && self.stream_snapshot().probe_budget == 0 {
+                        self.ping_probe = Some(match space {
+                            PacketNumberSpace::Initial => Level::Initial,
+                            PacketNumberSpace::Handshake => Level::Handshake,
+                            PacketNumberSpace::ApplicationData => Level::OneRtt,
+                        });
+                    }
+                }
             }
-            if let TimeoutAction::Probe { space, .. } = action {
-                if space == PacketNumberSpace::ApplicationData {
-                    self.path.on_pto();
-                }
-                if self.probe.is_none() {
-                    self.probe = self.flights.probe(space);
-                    self.crypto_probe_permit = self.probe.is_some();
-                }
-                if space == PacketNumberSpace::ApplicationData
-                    && self.application_packets.iter().any(Option::is_some)
-                {
-                    self.application_probe = true;
-                    self.application_probe_permit = true;
-                } else if self.probe.is_none() {
-                    self.ping_probe = Some(match space {
-                        PacketNumberSpace::Initial => Level::Initial,
-                        PacketNumberSpace::Handshake => Level::Handshake,
-                        PacketNumberSpace::ApplicationData => Level::OneRtt,
-                    });
-                }
-            }
-            self.refresh_timer()?;
+            self.refresh_timer().await?;
         }
         Ok(())
     }
@@ -1065,21 +1002,20 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         if self.lifecycle.state() != ConnectionState::Active {
             return self.lifecycle.next_deadline();
         }
-        let network = if self.handshake_confirmed && self.pending.is_none() {
-            let can_prepare = self.sent.remaining_capacity() > 0
-                && self.cc.can_send(
-                    self.network_bytes_in_flight(),
-                    self.sent.reserved_in_flight(),
-                    50,
-                    true,
-                    false,
-                );
-            self.path.network_deadline(can_prepare)
+        let snapshot = self.recovery_snapshot();
+        let network = if self.handshake_confirmed {
+            let can_prepare = snapshot.remaining_capacity > 0
+                && snapshot
+                    .active_bytes_in_flight
+                    .saturating_add(snapshot.reserved_in_flight)
+                    .saturating_add(50)
+                    <= snapshot.congestion_window;
+            self.network_deadline(can_prepare)
         } else {
             None
         };
         [
-            self.recovery.deadline().map(|d| d.at),
+            snapshot.timer.map(|deadline| deadline.at),
             self.idle.deadline(),
             network,
         ]
@@ -1093,64 +1029,39 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             handshake_confirmed: self.handshake_confirmed,
             handshake_ack_received: self.handshake_ack,
             server_amplification_blocked: self.side == Side::Server
-                && self.path.available_bytes() == 0,
+                && self.path_available_bytes() == 0,
         }
     }
-    fn refresh_timer(&mut self) -> Result<(), Error> {
-        if self.poll_idle_timeout(self.now)? {
+    async fn refresh_timer(&mut self) -> Result<(), Error> {
+        if self.poll_idle_timeout(self.now)? || self.lifecycle.state() != ConnectionState::Active {
             return Ok(());
         }
-        if self.lifecycle.state() != ConnectionState::Active {
-            return Ok(());
-        }
-        let spaces = core::array::from_fn(|i| {
-            let level = [Level::Initial, Level::Handshake, Level::OneRtt][i];
-            let at = self
-                .sent
-                .outstanding_sent()
-                .filter(|p| {
-                    p.packet.space == space(level)
-                        && p.ack_eliciting
-                        && self.path.matches_active(p.path)
-                })
-                .map(|p| p.sent_at)
-                .max()
-                // An abandoned STREAM original can remain unacknowledged while
-                // the replacement path has no in-flight data. Retain a PTO
-                // source so its owned bytes can be probed under a fresh PN on
-                // the active path, without importing old RTT/CC evidence.
-                .or_else(|| {
-                    self.sent
-                        .outstanding_sent()
-                        .filter(|p| p.packet.space == space(level) && p.ack_eliciting)
-                        .map(|p| p.sent_at)
-                        .max()
-                });
-            SpaceTimer {
-                keys_available: if i == 0 {
-                    !self.discarded[0]
-                } else {
-                    self.tls_has_keys(level)
-                },
-                loss_time: self.loss_times[i],
-                ack_eliciting_in_flight: at.is_some(),
-                last_ack_eliciting_sent_at: at,
+        let command = crate::roles::recovery_owner::TimerCommand::Update {
+            now: self.now,
+            keys_available: [
+                !self.discarded[0],
+                self.tls_has_keys(Level::Handshake),
+                self.tls_has_keys(Level::OneRtt),
+            ],
+            context: self.timer_context(),
+            max_ack_delay_us: self.peer_max_ack_delay,
+        };
+        match self
+            .recovery_request(crate::roles::recovery_owner::Command::Timer(command))
+            .await?
+        {
+            crate::roles::recovery_owner::Outcome::TimerUpdated(grant) => {
+                self.path_probe_timeout(grant).await
             }
-        });
-        self.recovery.update(
-            self.now,
-            &self.rtt,
-            &spaces,
-            self.timer_context(),
-            self.peer_max_ack_delay,
-        )?;
-        Ok(())
+            _ => Err(Error::InvalidConfig),
+        }
     }
 
     async fn sync_tls_effects(&mut self) -> Result<(), Error> {
         self.sync_early_state().await
     }
     async fn apply_key_discards(&mut self) -> Result<(), Error> {
+        use crate::roles::recovery_owner::{Command, FlightCommand, Outcome};
         if self.lifecycle.state() != ConnectionState::Active {
             return Ok(());
         }
@@ -1160,27 +1071,31 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             } else {
                 Level::Handshake
             };
-            if !self.discard_requested[i]
-                || self.discarded[i]
-                || self
-                    .pending
-                    .as_ref()
-                    .is_some_and(|p| p.output.level == level)
-            {
+            if !self.discard_requested[i] || self.discarded[i] {
                 continue;
             }
-            self.sent.discard_space(space(level))?;
-            self.flights.discard_space(space(level))?;
-            self.recovery.on_keys_discarded(space(level))?;
+            match self
+                .recovery_request(Command::DiscardSpace(space(level)))
+                .await?
+            {
+                Outcome::SpaceDiscarded { .. } => {}
+                _ => return Err(Error::InvalidConfig),
+            }
             if i == 0 {
                 self.initial.retire().await?;
             } else {
                 self.tls_discard_handshake().await?;
             }
             self.received[i].ack_pending = false;
-            self.loss_times[i] = None;
-            if self.probe.is_some_and(|p| self.flights.data(p).is_err()) {
-                self.probe = None;
+            if let Some(probe) = self.probe {
+                match self.recovery_flight(FlightCommand::Read(probe)).await {
+                    Ok(Outcome::FlightData { .. }) => {}
+                    Err(Error::RecoveryRejected(
+                        crate::roles::recovery_owner::Rejection::Flight(flights::Error::Invalid),
+                    )) => self.probe = None,
+                    Err(error) => return Err(error),
+                    Ok(_) => return Err(Error::InvalidConfig),
+                }
             }
             if self.ping_probe == Some(level) {
                 self.ping_probe = None;
@@ -1189,97 +1104,45 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         }
         Ok(())
     }
-    fn detect_losses(&mut self) -> Result<(), Error> {
-        self.loss_times = [None; 3];
-        let mut records = [None; 64];
-        for (i, p) in self.sent.outstanding_sent().enumerate() {
-            records[i] = Some(p);
-        }
-        for packet in records.into_iter().flatten() {
-            let i = packet.packet.space as usize;
-            let largest_on_path = self
-                .path
-                .largest_ack_on_path(&packet, self.largest_acked[i]);
-            let decision = recovery::loss_decision(
-                &self.rtt,
-                recovery::LossCandidate {
-                    packet_number: packet.packet.value,
-                    sent_at: packet.sent_at,
-                    newer_sent_packets: largest_on_path.map_or(0, |n| {
-                        if self.path.managed() {
-                            packet.path.map_or(0, |path| {
-                                self.sent.count_later_sent_on_path(packet.packet, n, path)
-                            })
-                        } else {
-                            self.sent.count_later_sent(packet.packet, n)
-                        }
-                    }),
+    async fn detect_losses(&mut self) -> Result<(), Error> {
+        use crate::roles::recovery_owner::{Command, Outcome};
+        let Outcome::Losses(losses) = self
+            .recovery_request(Command::DetectLoss { now: self.now })
+            .await?
+        else {
+            return Err(Error::InvalidConfig);
+        };
+        for packet in losses.newly.into_iter().flatten() {
+            self.trace_event(crate::trace::Event::PacketLost {
+                header: crate::trace::PacketHeader {
+                    packet_type: match packet.kind {
+                        PacketKind::Initial => crate::trace::PacketType::Initial,
+                        PacketKind::Handshake => crate::trace::PacketType::Handshake,
+                        PacketKind::ZeroRtt => crate::trace::PacketType::ZeroRtt,
+                        PacketKind::OneRtt => crate::trace::PacketType::OneRtt,
+                    },
+                    packet_number: Some(packet.sent.packet.value),
+                    key_phase: None,
                 },
-                largest_on_path,
-                self.now,
-            )?;
-            match decision {
-                recovery::LossDecision::Lost => {
-                    if let accounting::LossOutcome::NewlyLost {
-                        bytes_removed_from_flight,
-                    } = self.sent.declare_lost(packet.packet)?
-                    {
-                        if let Some(kind) = self.sent.sent_kind(packet.packet) {
-                            self.trace_event(crate::trace::Event::PacketLost {
-                                header: crate::trace::PacketHeader {
-                                    packet_type: match kind {
-                                        PacketKind::Initial => crate::trace::PacketType::Initial,
-                                        PacketKind::Handshake => {
-                                            crate::trace::PacketType::Handshake
-                                        }
-                                        PacketKind::ZeroRtt => crate::trace::PacketType::ZeroRtt,
-                                        PacketKind::OneRtt => crate::trace::PacketType::OneRtt,
-                                    },
-                                    packet_number: Some(packet.packet.value),
-                                    key_phase: None,
-                                },
-                                // loss_decision does not expose its winning cause.
-                                trigger: None,
-                            });
-                        } else if let Some(trace) = self.trace.as_mut() {
-                            trace.observation_lost(crate::trace::Error::InvalidHeader);
-                        }
-                        if matches!(packet.ecn, Codepoint::Ect0 | Codepoint::Ect1)
-                            && packet.path == Some(self.ecn_tx.identity())
-                        {
-                            self.ecn_tx.lost(self.ecn_tx.identity(), 1)?;
-                        }
-                        if bytes_removed_from_flight > 0 && self.path.matches_active(packet.path) {
-                            self.cc.on_congestion_event(self.now, packet.sent_at)?;
-                        }
-                        self.flights.mark_lost(packet.packet);
-                        self.path.on_lost(packet.packet);
-                        if packet.packet.space == PacketNumberSpace::ApplicationData {
-                            let mut found = false;
-                            for r in &mut self.application_packets {
-                                if r.is_some_and(|r| r.number == packet.packet.value) {
-                                    *r = None;
-                                    found = true;
-                                }
-                            }
-                            if found {
-                                self.report_application_loss(packet.packet.value)?;
-                            }
-                        }
-                    }
-                }
-                recovery::LossDecision::WaitUntil(at) => {
-                    self.loss_times[i] = Some(self.loss_times[i].map_or(at, |old| old.min(at)));
-                }
-                recovery::LossDecision::NotEligible => {}
+                trigger: None,
+            });
+        }
+        for grant in losses.path.into_iter().flatten() {
+            self.path_loss(grant).await?;
+        }
+        for grant in losses.stream.into_iter().flatten() {
+            if grant.packet().space == PacketNumberSpace::ApplicationData {
+                self.stream_loss(grant).await?;
             }
         }
+        // Downstream owners now retain every reliable reference. Explicitly
+        // release completed numeric history only after those real effects.
         for space in [
             PacketNumberSpace::Initial,
             PacketNumberSpace::Handshake,
             PacketNumberSpace::ApplicationData,
         ] {
-            self.sent.reclaim_completed_prefix(space)?;
+            self.recovery_reclaim(space).await?;
         }
         Ok(())
     }
@@ -1291,18 +1154,6 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         datagram: &[u8],
         scratch: &mut [u8],
     ) -> Result<Received, Error> {
-        if self.retired {
-            return Err(Error::Retired);
-        }
-        self.receive_with(datagram, scratch, &mut NoApplication)
-            .await
-    }
-    pub async fn receive_with<A: ApplicationHandler>(
-        &mut self,
-        datagram: &[u8],
-        scratch: &mut [u8],
-        handler: &mut A,
-    ) -> Result<Received, Error> {
         self.receive_with_metadata(
             datagram,
             scratch,
@@ -1310,23 +1161,19 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                 path: self.path_identity(),
                 codepoint: None,
             },
-            handler,
         )
         .await
     }
-    async fn receive_with_metadata_impl<A: ApplicationHandler>(
+    async fn receive_with_metadata_impl(
         &mut self,
         datagram: &[u8],
         scratch: &mut [u8],
         metadata: ecn::Metadata,
-        handler: &mut A,
     ) -> Result<Received, Error> {
-        if !self.path.ready_ingress() {
-            return Err(Error::InvalidConfig);
-        }
         if self.retired {
             return Err(Error::Retired);
         }
+        self.path_prepare().await?;
         if self.poll_idle_timeout(self.now)? {
             return Err(Error::Retired);
         }
@@ -1343,18 +1190,7 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                 discarded: 1,
             });
         }
-        // Application output owns the current write-key generation until the
-        // adapter reports acceptance or rejection. Defer input (without mutation
-        // or retirement) so an authenticated peer update cannot invalidate bytes
-        // prepared but not yet submitted. The caller retains and retries input.
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|p| p.output.level == Level::OneRtt)
-        {
-            return Err(Error::Busy);
-        }
-        if self.retry_pending {
+        if self.retry_grants.is_some() {
             // The already-validated Retry is retained. Old-key peer data cannot
             // overtake the adapter completion and restart boundary.
             return Ok(Received {
@@ -1363,24 +1199,23 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             });
         }
         let result = self
-            .receive_inner(datagram, scratch, metadata.codepoint, handler)
+            .receive_inner(datagram, scratch, metadata.codepoint)
             .await;
         if result.is_err() {
             self.retire();
         } else if !self.retired {
-            self.refresh_timer()?;
+            self.refresh_timer().await?;
         }
         result
     }
-    async fn receive_inner<A: ApplicationHandler>(
+    async fn receive_inner(
         &mut self,
         datagram: &[u8],
         scratch: &mut [u8],
         received_ecn: Option<Codepoint>,
-        handler: &mut A,
     ) -> Result<Received, Error> {
         self.tls_maintain(self.now, self.key_pto()?).await?;
-        self.path.record_received(datagram.len() as u64)?;
+        self.path_begin_datagram()?;
         let mut report = Received::default();
         let packets = match PacketIter::new(datagram, self.local.len, 8) {
             Ok(p) => p,
@@ -1424,11 +1259,14 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                 }
                 match self.client_retry.validate(packet.bytes, scratch) {
                     Ok(checked) => {
-                        self.client_retry.commit(checked)?;
+                        let committed = self.client_retry.commit_with_receipt(checked)?;
+                        self.retry_grants = Some(crate::roles::packet_authority::split_retry(
+                            self.generation(),
+                            committed,
+                        ));
                         if let Some(client) = &mut self.version_negotiation {
                             client.on_peer_processed();
                         }
-                        self.retry_pending = true;
                         self.apply_client_retry().await?;
                     }
                     Err(_) => report.discarded += 1,
@@ -1444,7 +1282,7 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             ) {
                 let receive_pto = self.idle_pto()?;
                 if self
-                    .receive_early(packet, scratch, received_ecn, handler)
+                    .receive_early(packet, scratch, received_ecn, datagram.len())
                     .await?
                 {
                     self.idle.on_processed_receive(self.now, receive_pto)?;
@@ -1494,14 +1332,7 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                     continue;
                 }
             };
-            if (if self.path.managed() {
-                !self.path.accepts_destination(destination)
-            } else {
-                destination != self.local.bytes()
-            }) && !(self.side == Side::Server
-                && level == Level::Initial
-                && destination == self.initial_destination.bytes())
-            {
+            if !self.path_accepts_destination(destination, level) {
                 report.discarded += 1;
                 continue;
             }
@@ -1559,7 +1390,10 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             let mut received_key_generation = 0;
             let (plaintext, receive_evidence) = if level == Level::Initial {
                 match self.open_initial(pn, header, body).await {
-                    Ok((n, receipt)) => (n, crate::driver::ReceiveEvidence::Initial(receipt)),
+                    Ok((n, receipt)) => (
+                        n,
+                        crate::roles::packet_authority::ReceiveEvidence::Initial(receipt),
+                    ),
                     Err(Error::Crypto(crypto::Error::AuthenticationFailed)) => {
                         report.discarded += 1;
                         continue;
@@ -1585,7 +1419,10 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                     self.tls_open(level, pn, header, body).await
                 };
                 match opened {
-                    Ok((n, receipt)) => (n, crate::driver::ReceiveEvidence::Tls(receipt)),
+                    Ok((n, receipt)) => (
+                        n,
+                        crate::roles::packet_authority::ReceiveEvidence::Tls(receipt),
+                    ),
                     Err(Error::Tls(tls::Error::Authentication | tls::Error::KeysUnavailable)) => {
                         report.discarded += 1;
                         continue;
@@ -1658,13 +1495,6 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                 self.remote = ConnectionId::peer(source)?;
                 self.remote_known = true;
             }
-            if !self
-                .path
-                .source_allowed(self.side, self.handshake_confirmed)
-            {
-                report.discarded += 1;
-                continue;
-            }
             // Authentication precedes both duplicate state and the typed contract.
             let payload = &body[..plaintext];
             let limits = ParseLimits {
@@ -1724,25 +1554,22 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                 report.discarded += 1;
                 continue;
             }
-            let ticket = self.driver.begin_receive(receive_evidence)?;
-            let path_pto = self.key_pto()?;
-            self.path.ensure_probe_pto(path_pto)?;
-            let network_context = if self.path.managed() {
-                Some(self.path.admit_packet(
-                    destination,
-                    pn,
-                    non_probing,
-                    datagram.len() as u64,
-                    self.now,
-                )?)
-            } else {
-                None
-            };
-            self.finish_network_admission(ticket)?;
-            for frame in FrameIter::new(payload, wire_level(level), limits)? {
+            let packet_scope =
+                recovery_actor::PacketScope::admit(self.authority, receive_evidence, payload)?;
+            let ticket = packet_scope.ticket();
+            if level == Level::Initial {
+                self.path_learn_initial(ticket, header).await?;
+            }
+            let network_context = self.path_receive_context(destination, datagram.len())?;
+            let received_path = self
+                .path_received_packet(ticket, network_context, non_probing)
+                .await?;
+            for (ordinal, frame) in FrameIter::new(payload, wire_level(level), limits)?.enumerate()
+            {
                 let frame = frame?;
-                if let Some(context) = network_context
-                    && self.process_network_frame(ticket, frame, context)?
+                if self
+                    .path_received_frame(ticket, ordinal as u32, frame, network_context)
+                    .await?
                 {
                     continue;
                 }
@@ -1764,165 +1591,26 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                         }
                     }
                     Frame::Ack { ranges, delay, ecn } => {
-                        let mut converted = [accounting::AckRange { start: 0, end: 0 }; 32];
-                        let n = ranges.len();
-                        for (i, r) in ranges.iter().enumerate() {
-                            converted[n - 1 - i] = accounting::AckRange {
-                                start: r.smallest,
-                                end: r.largest,
-                            };
-                        }
-                        let largest = converted[n - 1].end;
-                        let largest_packet = accounting::PacketNumber {
-                            space: space(level),
-                            value: largest,
-                        };
-                        let largest_new = self.sent.is_new_ack(largest_packet);
-                        let sent_at = self.sent.sent_at(largest_packet);
-                        let largest_on_active_path = self
-                            .path
-                            .matches_active(self.sent.sent_path(largest_packet))
-                            && (!self.path.managed()
-                                || network_context.is_none_or(|context| {
-                                    context.path == self.path.active_identity()
-                                }));
-                        let mut newly_flight = [None; 64];
-                        let mut added = 0;
-                        for p in self.sent.unacknowledged_sent() {
-                            if p.packet.space == space(level)
-                                && ranges.iter().any(|r| {
-                                    r.smallest <= p.packet.value && p.packet.value <= r.largest
-                                })
-                            {
-                                newly_flight[added] = Some(p);
-                                added += 1;
-                            }
-                        }
-                        let any_eliciting = newly_flight.iter().flatten().any(|p| p.ack_eliciting);
-                        self.sent.validate_ack(space(level), &converted[..n])?;
-                        let ack_authority = self.driver.begin_ack_release(ticket)?;
-                        for packet in newly_flight.iter().flatten() {
-                            self.path.observe_ack(packet);
-                        }
-                        let newly_active = newly_flight
-                            .iter()
-                            .flatten()
-                            .any(|p| self.path.matches_active(p.path));
-                        if level == Level::OneRtt {
-                            self.path.on_ack(ranges)?;
-                        }
-                        if level == Level::OneRtt {
-                            for sent in newly_flight.iter().flatten() {
-                                // A 1-RTT ACK can acknowledge shared-space 0-RTT
-                                // packets, which must not authorize a key update.
-                                if self.sent.sent_kind(sent.packet) != Some(PacketKind::OneRtt) {
-                                    continue;
-                                }
-                                self.tls_acknowledge(
-                                    sent.packet.value,
-                                    received_key_generation,
-                                    self.now,
-                                    self.key_pto()?,
-                                )
-                                .await?;
-                            }
-                        }
-                        let mut marked = MarkedPackets::default();
-                        for p in newly_flight.iter().flatten() {
-                            match p.ecn {
-                                Codepoint::Ect0 => marked.ect0 += 1,
-                                Codepoint::Ect1 => marked.ect1 += 1,
-                                _ => {}
-                            }
-                        }
-                        if self.ecn_enabled
-                            && self.path.active_identity() == self.ecn_tx.identity()
-                            && let ecn::Feedback::Validated { ce_increase } =
-                                self.ecn_tx.acknowledged(
-                                    self.path_identity(),
-                                    space(level),
-                                    largest,
-                                    marked,
-                                    ecn,
-                                )?
-                        {
-                            self.ecn_validated_ce = self
-                                .ecn_validated_ce
-                                .checked_add(ce_increase)
-                                .ok_or(Error::Capacity)?;
-                            if ce_increase > 0
-                                && ecn_congestion_event(
-                                    &mut self.cc,
-                                    &self.sent,
-                                    largest_packet,
-                                    self.now,
-                                )?
-                            {
-                                self.ecn_congestion_events = self
-                                    .ecn_congestion_events
-                                    .checked_add(1)
-                                    .ok_or(Error::Capacity)?;
-                            }
-                        }
-                        let summary = self.sent.acknowledge(space(level), &converted[..n])?;
-                        if level == Level::OneRtt {
-                            handler.acknowledged(ranges).map_err(Error::Streams)?;
-                            for record in &mut self.application_packets {
-                                if record.is_some_and(|r| {
-                                    ranges
-                                        .iter()
-                                        .any(|a| a.smallest <= r.number && r.number <= a.largest)
-                                }) {
-                                    *record = None;
-                                }
-                            }
-                        }
-                        if let Some(sent_at) = sent_at
-                            && largest_new
-                            && largest_on_active_path
-                            && any_eliciting
-                        {
-                            self.rtt.on_ack(RttSample {
-                                now: self.now,
-                                sent_at,
-                                ack_delay_us: delay.saturating_mul(1u64 << self.peer_ack_exponent),
-                                max_ack_delay_us: self.peer_max_ack_delay,
-                                space: space(level),
-                                handshake_confirmed: self.handshake_confirmed,
-                                largest_newly_acknowledged: true,
-                                any_newly_acknowledged_ack_eliciting: true,
-                                local_decryption_delay_us: 0,
-                            })?;
-                        }
-                        for p in newly_flight.into_iter().flatten() {
-                            if p.in_flight && self.path.matches_active(p.path) {
-                                self.cc.on_ack(self.now, p.sent_at, p.bytes, false)?;
-                            }
-                        }
-                        self.largest_acked[index(level)] = Some(
-                            self.largest_acked[index(level)]
-                                .map_or(largest, |old| old.max(largest)),
-                        );
-                        self.flights.acknowledge(space(level), &converted[..n]);
-                        self.detect_losses()?;
-                        if level == Level::Handshake && summary.newly_acknowledged > 0 {
+                        let grant =
+                            self.authority
+                                .grant_ack(ticket, ordinal as u32, ranges, delay, ecn)?;
+                        let ack = self.recovery_ack(grant, Some(received_path)).await?;
+                        if level == Level::Handshake && ack.summary.newly_acknowledged != 0 {
                             self.handshake_ack = true;
                         }
-                        self.recovery.on_new_ack(
-                            summary.newly_acknowledged > 0 && newly_active,
-                            self.timer_context().peer_completed_address_validation(),
-                        );
-                        self.sent.reclaim_completed_prefix(space(level))?;
-                        self.driver.finish_ack_release(ack_authority)?;
+                        let (stream, path) = ack.validated.split();
+                        self.path_ack(path).await?;
+                        if level == Level::OneRtt {
+                            self.stream_ack(stream).await?;
+                        }
+                        for grant in ack.keys.into_iter().flatten() {
+                            self.tls_acknowledge(grant, self.now, self.key_pto()?)
+                                .await?;
+                        }
+                        self.detect_losses().await?;
+                        self.recovery_reclaim(space(level)).await?;
                     }
                     Frame::Padding { .. } | Frame::Ping => {}
-                    Frame::HandshakeDone if self.side == Side::Client && level == Level::OneRtt => {
-                        if !self.handshake_confirmed {
-                            self.tls_confirm().await?;
-                            self.handshake_confirmed = true;
-                            self.discard_requested[1] = true;
-                        }
-                    }
                     // These optional post-handshake frames require no immediate
                     // effect for the handshake-only endpoint. No stream API exists.
                     Frame::NewConnectionId { .. } if level == Level::OneRtt => {}
@@ -1939,36 +1627,28 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
                             level,
                             protection: wire_level(level),
                         });
-                        self.driver.finish_receive(ticket)?;
+                        packet_scope.finish()?;
                         self.enter_draining().await?;
                         report.authenticated += 1;
                         return Ok(report);
                     }
-                    other @ (Frame::Stream { id, .. } | Frame::ResetStream { id, .. })
-                        if level == Level::OneRtt =>
-                    {
-                        let delivery = self.driver.begin_stream_delivery(ticket, id)?;
-                        handler.frame(other).map_err(Error::Streams)?;
-                        self.driver.finish_stream_delivery(delivery)?;
-                    }
                     other if level == Level::OneRtt => {
-                        handler.frame(other).map_err(Error::Streams)?
+                        let grant = self.authority.grant_delivery::<STREAM_FRAME_BYTES>(
+                            ticket,
+                            ordinal as u32,
+                            other,
+                        )?;
+                        self.stream_deliver(grant).await?;
                     }
                     _ => return Err(Error::UnexpectedFrame),
                 }
             }
             self.ecn_rx.processed(space(level), received_ecn)?;
-            if level == Level::OneRtt
-                && let Some(context) = network_context
-            {
-                self.network_packet_processed(ticket, context, pn, non_probing)?;
-            }
-            self.driver.finish_receive(ticket)?;
+            packet_scope.finish()?;
             if eliciting {
                 self.received[index(level)].ack_pending = true;
             }
             if self.side == Side::Server && level == Level::Handshake {
-                self.path.mark_validated()?;
                 self.discard_requested[0] = true;
             }
             if self.side == Side::Client && level == Level::Initial {
@@ -1980,8 +1660,7 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             }
             self.idle.on_processed_receive(self.now, receive_pto)?;
             self.validate_parameters().await?;
-            self.reconcile_early_client(handler).await?;
-            self.release_early(handler)?;
+            self.release_early().await?;
             if level == Level::OneRtt && self.side == Side::Server && self.tls_snapshot().early_keys
             {
                 self.tls_discard_early().await?;
@@ -2013,8 +1692,26 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
             None
         };
         p.verify_connection_ids(self.remote.bytes(), original, retry)?;
-        self.path
-            .install_parameters(&p, self.remote.bytes(), self.side)?;
+        let receipt = self.finished_receipt.take().ok_or(Error::InvalidConfig)?;
+        let grants = crate::roles::connection_authority::verify_and_split(
+            receipt,
+            raw,
+            peer,
+            self.remote.bytes(),
+            original,
+            retry,
+        )
+        .map_err(Error::ConnectionAuthority)?;
+        self.path_install_ready(grants.path).await?;
+        self.stream_install_early_send().await?;
+        self.stream_ready(grants.application).await?;
+        if self.side == Side::Client {
+            if self.stream_snapshot().early_import_required {
+                self.stream_early_ready(grants.early).await?;
+            }
+        } else {
+            self.early_ready = Some(grants.early);
+        }
         self.peer_ack_exponent = p.get_integer(10, 3)? as u8;
         self.peer_max_ack_delay = p
             .get_integer(11, 25)?
@@ -2032,643 +1729,12 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         self.idle
             .negotiate_peer(peer_idle_timeout, self.now, self.idle_pto()?)?;
         if self.side == Side::Server {
-            self.tls_confirm().await?;
-            self.handshake_confirmed = true;
+            // PathReady consumed the actual server Finished confirmation.
             self.handshake_done_pending = true;
             self.discard_requested[1] = true;
         }
         self.parameters_verified = true;
         Ok(())
-    }
-
-    /// Produce one standard protected QUIC datagram. At most one unreported
-    /// transmission exists. Failed adapter submission retains TLS bytes for retry
-    /// under a new PN; accepted packets are never rolled back.
-    async fn transmit_impl(&mut self, out: &mut [u8]) -> Result<Option<Transmit>, Error> {
-        if self.poll_idle_timeout(self.now)? {
-            return Err(Error::Retired);
-        }
-        self.io_started = true;
-        if self.retired {
-            return Err(Error::Retired);
-        }
-        if self.pending.is_some() {
-            return Err(Error::Busy);
-        }
-        if out.len() < 1200 {
-            return Err(Error::Capacity);
-        }
-        if self.lifecycle.state() == ConnectionState::Draining {
-            return Ok(None);
-        }
-        let result = if self.lifecycle.state() == ConnectionState::Closing {
-            self.transmit_close(out).await
-        } else {
-            match self.transmit_inner(out, None, None).await {
-                Ok(None) => self.transmit_network_control(out).await,
-                result => result,
-            }
-        };
-        if result.is_err() {
-            self.retire();
-        }
-        result
-    }
-    /// Encoded application frames still pass normal key, reservation, path and
-    /// Hibana publication gates. Drain transmit() handshake/control output first.
-    async fn transmit_application_impl(
-        &mut self,
-        encoded_frames: &[u8],
-        out: &mut [u8],
-    ) -> Result<Option<Transmit>, Error> {
-        if self.retired {
-            return Err(Error::Retired);
-        }
-        if self.poll_idle_timeout(self.now)? {
-            return Err(Error::Retired);
-        }
-        self.io_started = true;
-        if !self.handshake_complete()
-            || self.pending.is_some()
-            || self.pending_tls.is_some()
-            || self.probe.is_some()
-            || self.lost_len > 0
-        {
-            return Err(Error::Busy);
-        }
-        if out.len() < 1200
-            || encoded_frames.is_empty()
-            || encoded_frames.len() > MAX_APPLICATION_FRAME_BYTES
-        {
-            return Err(Error::Capacity);
-        }
-        for frame in FrameIter::new(
-            encoded_frames,
-            EncryptionLevel::OneRtt,
-            ParseLimits::default(),
-        )? {
-            match frame? {
-                Frame::Stream { .. }
-                | Frame::ResetStream { .. }
-                | Frame::StopSending { .. }
-                | Frame::MaxData { .. }
-                | Frame::MaxStreamData { .. }
-                | Frame::MaxStreams { .. }
-                | Frame::DataBlocked { .. }
-                | Frame::StreamDataBlocked { .. }
-                | Frame::StreamsBlocked { .. } => {}
-                _ => return Err(Error::UnexpectedFrame),
-            }
-        }
-        let result = self.transmit_inner(out, Some(encoded_frames), None).await;
-        if result.is_err() {
-            self.retire();
-        }
-        result
-    }
-    async fn transmit_close(&mut self, out: &mut [u8]) -> Result<Option<Transmit>, Error> {
-        if self.close_round.is_none() {
-            let mut levels = 0_u8;
-            if self.tls_has_keys(Level::OneRtt) && !self.tls_snapshot().handshaking {
-                levels |= 4;
-            }
-            if !self.handshake_confirmed {
-                if self.tls_has_keys(Level::Handshake) {
-                    levels |= 2;
-                }
-                if !self.discarded[0] && (self.side == Side::Server || levels == 0) {
-                    levels |= 1;
-                }
-            }
-            if levels == 0 {
-                self.retire();
-                return Ok(None);
-            }
-            let Some(token) = self.lifecycle.poll_transmit(self.now)? else {
-                if self.lifecycle.state() == ConnectionState::Closed {
-                    self.retire();
-                }
-                return Ok(None);
-            };
-            self.close_round = Some((token, levels, false));
-        }
-        let (token, levels, accepted) = self.close_round.ok_or(Error::InvalidConfig)?;
-        let level = if levels & 4 != 0 {
-            Level::OneRtt
-        } else if levels & 2 != 0 {
-            Level::Handshake
-        } else {
-            Level::Initial
-        };
-        let mut encoded = [0; 160];
-        let frame = self
-            .lifecycle
-            .reason()
-            .ok_or(Error::InvalidConfig)?
-            .frame(level);
-        let len = packet::encode_frame(&frame, &mut encoded)?;
-        let result = self
-            .transmit_inner(out, None, Some((level, &encoded[..len])))
-            .await?;
-        if result.is_some() {
-            self.pending.as_mut().ok_or(Error::InvalidConfig)?.close = Some(token);
-        } else {
-            self.close_round = None;
-            self.lifecycle.adapter_result(token, accepted, self.now)?;
-        }
-        Ok(result)
-    }
-    async fn transmit_inner(
-        &mut self,
-        out: &mut [u8],
-        application: Option<&[u8]>,
-        closing: Option<(Level, &[u8])>,
-    ) -> Result<Option<Transmit>, Error> {
-        self.path.reset_staged_advertisement();
-        if self.probe.is_none() {
-            self.probe = self.flights.next_lost();
-        }
-        if self.probe.is_some_and(|id| self.flights.data(id).is_err()) {
-            self.probe = None;
-        }
-        if closing.is_none()
-            && application.is_none()
-            && self.pending_tls.is_none()
-            && self.probe.is_none()
-        {
-            self.take_tls_flight().await?;
-        }
-        if let Some(output) = self.pending_tls
-            && self.queued_flight.is_none()
-        {
-            if output.len == 0 || output.len > self.pending_crypto.len() {
-                return Err(Error::InvalidConfig);
-            }
-            match self.flights.append(
-                output.level,
-                self.offsets[index(output.level)],
-                &self.pending_crypto[..output.len],
-            ) {
-                Ok(id) => self.queued_flight = Some(id),
-                Err(flights::Error::Full) => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        if self.handshake_done_pending && self.handshake_done_flight.is_none() {
-            match self.flights.append_handshake_done() {
-                Ok(id) => self.handshake_done_flight = Some(id),
-                Err(flights::Error::Full) => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        let selected = if closing.is_some() {
-            None
-        } else {
-            self.probe
-                .or(self.queued_flight)
-                .or(if self.handshake_done_pending {
-                    self.handshake_done_flight
-                } else {
-                    None
-                })
-        };
-        let was_probe = closing.is_none() && self.probe.is_some();
-        let level = if let Some((level, _)) = closing {
-            level
-        } else if application.is_some() {
-            Level::OneRtt
-        } else if let Some(id) = selected {
-            self.flights.data(id)?.0
-        } else if let Some(level) = self.ping_probe {
-            level
-        } else {
-            let Some(i) = self.received.iter().enumerate().find_map(|(i, s)| {
-                if s.ack_pending
-                    && ((i == 0 && !self.discarded[0])
-                        || self.tls_has_keys(if i == 1 {
-                            Level::Handshake
-                        } else {
-                            Level::OneRtt
-                        }))
-                {
-                    Some(i)
-                } else {
-                    None
-                }
-            }) else {
-                return Ok(None);
-            };
-            [Level::Initial, Level::Handshake, Level::OneRtt][i]
-        };
-        if closing.is_none() && level == Level::OneRtt && self.tls_snapshot().handshaking {
-            return Ok(None);
-        }
-        let mut plaintext = [0_u8; 1200];
-        let mut len = 0;
-        let mut ack_largest = None;
-        let mut ack_bits = 0;
-        let seen = &self.received[index(level)];
-        if closing.is_none() && seen.ack_pending {
-            let mut ranges = [packet::AckRange {
-                smallest: 0,
-                largest: 0,
-            }; 32];
-            let n = seen.ranges(&mut ranges);
-            if n > 0 {
-                len += packet::encode_frame(
-                    &Frame::Ack {
-                        delay: 0,
-                        ranges: AckRanges::new(&ranges[..n])?,
-                        ecn: self.ecn_rx.ack_counts(space(level)),
-                    },
-                    &mut plaintext[len..],
-                )?;
-                ack_largest = seen.largest;
-                ack_bits = seen.bits;
-            }
-        }
-        let ack_len = len;
-        let handshake_done =
-            selected.is_some_and(|id| self.flights.is_handshake_done(id).unwrap_or(false));
-        let crypto_len = if let Some(id) = selected {
-            let (_, offset, data) = self.flights.data(id)?;
-            if handshake_done {
-                len += packet::encode_frame(&Frame::HandshakeDone, &mut plaintext[len..])?;
-                0
-            } else {
-                self.path.stage_crypto_advertisement(level, offset, data)?;
-                len +=
-                    packet::encode_frame(&Frame::Crypto { offset, data }, &mut plaintext[len..])?;
-                if Some(id) == self.queued_flight {
-                    data.len()
-                } else {
-                    0
-                }
-            }
-        } else {
-            0
-        };
-        let ping = closing.is_none()
-            && application.is_none()
-            && selected.is_none()
-            && self.ping_probe == Some(level);
-        if ping {
-            len += packet::encode_frame(&Frame::Ping, &mut plaintext[len..])?;
-        }
-        let application_slot = if let Some(encoded) = application {
-            let Some(slot) = self.application_packets.iter().position(Option::is_none) else {
-                return Ok(None);
-            };
-            if len + encoded.len() > plaintext.len() {
-                return Err(Error::Capacity);
-            }
-            plaintext[len..len + encoded.len()].copy_from_slice(encoded);
-            len += encoded.len();
-            Some(slot)
-        } else {
-            None
-        };
-        if let Some((_, encoded)) = closing {
-            plaintext[..encoded.len()].copy_from_slice(encoded);
-            len = encoded.len();
-        }
-        let pn = self
-            .sent
-            .next_packet_number(space(level))
-            .ok_or(Error::Capacity)?;
-        // A zero-length peer CID is a legal wire destination on its fixed
-        // address-bound path; it is not a member of the nonzero CID table.
-        let selected_destination = self.path.selected_destination();
-        let destination = selected_destination
-            .as_ref()
-            .map_or(self.remote.bytes(), |cid| cid.as_bytes());
-        let hlen = if level == Level::OneRtt {
-            packet::encode_short_header(
-                &ShortHeader {
-                    destination_id: destination,
-                    packet_number: pn,
-                    packet_number_len: 4,
-                    spin: false,
-                    key_phase: self.tls_snapshot().key_phase,
-                },
-                out,
-            )?
-        } else {
-            let header = LongHeader {
-                kind: if level == Level::Initial {
-                    LongType::Initial
-                } else {
-                    LongType::Handshake
-                },
-                destination_id: destination,
-                source_id: self.local.bytes(),
-                token: if level == Level::Initial && self.side == Side::Client {
-                    self.client_retry.token()
-                } else {
-                    &[]
-                },
-                packet_number: pn,
-                packet_number_len: 4,
-            };
-            let mut hlen = packet::encode_long_header(&header, len + 16, out)?;
-            if level == Level::Initial {
-                hlen = packet::encode_long_header(&header, 1200 - hlen, out)?;
-                hlen = packet::encode_long_header(&header, 1200 - hlen, out)?;
-            }
-            hlen
-        };
-        if level == Level::Initial {
-            let padded = 1200usize.checked_sub(hlen + 16).ok_or(Error::Capacity)?;
-            if len > padded && ack_len > 0 && len - ack_len <= padded {
-                // Keep the whole CRYPTO fragment and defer the ACK; never trim a
-                // frame or fail a previously admitted Retry on ACK overhead.
-                plaintext.copy_within(ack_len..len, 0);
-                len -= ack_len;
-                ack_largest = None;
-                ack_bits = 0;
-            }
-            if len > padded {
-                return Err(Error::Capacity);
-            }
-            plaintext[len..padded].fill(0);
-            len = padded;
-        }
-        if hlen + len + 16 > out.len() || len > plaintext.len() {
-            return Err(Error::Capacity);
-        }
-        if let Some(total) = self.path.control_padding() {
-            let padded = total.checked_sub(hlen + 16).ok_or(Error::Capacity)?;
-            if len > padded || padded > plaintext.len() {
-                return Err(Error::Capacity);
-            }
-            plaintext[len..padded].fill(0);
-            len = padded;
-        }
-        let internal_eliciting = if let Some((level, bytes)) = closing {
-            let mut eliciting = false;
-            for frame in FrameIter::new(bytes, wire_level(level), ParseLimits::default())? {
-                eliciting |= frame?.ack_eliciting();
-            }
-            eliciting
-        } else {
-            false
-        };
-        let total = hlen + len + 16;
-        let in_flight = internal_eliciting
-            || selected.is_some()
-            || handshake_done
-            || application.is_some()
-            || ping
-            || level == Level::Initial;
-        if !self.cc.can_send(
-            self.network_bytes_in_flight(),
-            self.sent.reserved_in_flight(),
-            total as u64,
-            in_flight,
-            (was_probe && self.crypto_probe_permit)
-                || ping
-                || (application.is_some() && self.application_probe_permit),
-        ) {
-            return Ok(None);
-        }
-        let path = match self.path.reserve(total as u64) {
-            Ok(p) => p,
-            Err(accounting::AccountingError::AmplificationLimited) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        let reservation = match self.sent.reserve_classified(
-            kind(level),
-            total as u64,
-            internal_eliciting
-                || selected.is_some()
-                || handshake_done
-                || application.is_some()
-                || ping
-                || level == Level::Initial,
-            internal_eliciting
-                || selected.is_some()
-                || handshake_done
-                || application.is_some()
-                || ping,
-        ) {
-            Ok(r) => r,
-            Err(accounting::AccountingError::Full) => {
-                self.path.cancel(path)?;
-                return Ok(None);
-            }
-            Err(e) => {
-                self.path.cancel(path)?;
-                return Err(e.into());
-            }
-        };
-        let reference = if let Some(id) = selected {
-            match self.flights.reserve(id, reservation.packet()) {
-                Ok(r) => Some(r),
-                Err(flights::Error::Full) => {
-                    self.sent.cancel(reservation)?;
-                    self.sent.reclaim_completed_prefix(space(level))?;
-                    self.path.cancel(path)?;
-                    return Ok(None);
-                }
-                Err(e) => return Err(e.into()),
-            }
-        } else {
-            None
-        };
-        let ticket = self.driver.reserve_transmit()?;
-        self.bind_network_transmit(ticket, path)?;
-        self.sync_tls_effects().await?;
-        out[hlen..hlen + len].copy_from_slice(&plaintext[..len]);
-        let (header, body) = out[..total].split_at_mut(hlen);
-        if level == Level::Initial {
-            self.initial.seal(pn, header, body, len).await?;
-        } else {
-            self.tls_seal(level, pn, header, body, len).await?;
-        }
-        let pn_offset = hlen - 4;
-        let sample: &[u8; 16] = out[pn_offset + 4..pn_offset + 20]
-            .try_into()
-            .map_err(|_| Error::Capacity)?;
-        let mask = if level == Level::Initial {
-            self.initial.transmit_mask(*sample).await?
-        } else {
-            self.tls_mask(level, true, *sample).await?
-        };
-        out[0] ^= mask[0] & if out[0] & 0x80 != 0 { 0x0f } else { 0x1f };
-        for i in 0..4 {
-            out[pn_offset + i] ^= mask[i + 1];
-        }
-
-        let output = Transmit {
-            authority: ticket,
-            early: false,
-            address: self.transmit_address(),
-            connection_generation: self.generation(),
-            id: self.next_id,
-            len: total,
-            level,
-            packet_number: reservation.packet(),
-            ecn: self.transmit_ecn()?,
-        };
-        self.next_id = self.next_id.checked_add(1).ok_or(Error::Capacity)?;
-        let trace_key_generation =
-            (level == Level::OneRtt).then(|| self.tls_snapshot().send_generation);
-        self.pending = Some(Pending {
-            trace_key_generation,
-            close: None,
-            output,
-            sent: reservation,
-            path,
-            ticket,
-            crypto_len,
-            reference,
-            was_probe,
-            handshake_done,
-            application_slot,
-            ping,
-            ack_largest,
-            ack_bits,
-        });
-        Ok(Some(output))
-    }
-    async fn adapter_result_impl(
-        &mut self,
-        output: Transmit,
-        accepted: bool,
-        now: u64,
-    ) -> Result<(), Error> {
-        if self.retired {
-            return Err(Error::Retired);
-        }
-        let pending = self.pending.as_ref().ok_or(Error::InvalidConfig)?;
-        if pending.output.authority != output.authority || pending.output != output {
-            return Err(Error::InvalidConfig);
-        }
-        let trace_key_generation = pending.trace_key_generation;
-        if accepted {
-            self.trace_event_at(
-                now,
-                crate::trace::Event::Packet {
-                    direction: crate::trace::Direction::Sent,
-                    header: crate::trace::PacketHeader {
-                        packet_type: match output.encryption_level() {
-                            EncryptionLevel::Initial => crate::trace::PacketType::Initial,
-                            EncryptionLevel::Handshake => crate::trace::PacketType::Handshake,
-                            EncryptionLevel::ZeroRtt => crate::trace::PacketType::ZeroRtt,
-                            EncryptionLevel::OneRtt => crate::trace::PacketType::OneRtt,
-                        },
-                        packet_number: Some(output.packet_number.value),
-                        key_phase: trace_key_generation,
-                    },
-                    datagram_id: None,
-                },
-            );
-        }
-        if self.poll_idle_timeout(now)? {
-            return Err(Error::Retired);
-        }
-        let pending = self.pending.take().ok_or(Error::InvalidConfig)?;
-        let outcome = async {
-            let network_accepted = self.begin_network_result(&pending, accepted)?;
-            if accepted {
-                let sent_path = self.path.reservation_identity(pending.path);
-                self.sent
-                    .adapter_accepted_on_path(pending.sent, now, output.ecn, sent_path)?;
-                if output.level == Level::Initial
-                    && !output.early
-                    && let Some(client) = &mut self.version_negotiation
-                {
-                    client.on_initial_accepted();
-                }
-                let ack_eliciting = self
-                    .sent
-                    .sent_packet(output.packet_number)
-                    .ok_or(Error::InvalidConfig)?
-                    .ack_eliciting;
-                self.idle
-                    .on_accepted_send(ack_eliciting, now, self.idle_pto()?)?;
-                if sent_path == self.ecn_tx.identity() {
-                    self.ecn_tx.accepted(
-                        sent_path,
-                        output.packet_number,
-                        output.ecn,
-                        now,
-                        self.key_pto()?,
-                    )?;
-                }
-                self.path.adapter_accepted(pending.path, now)?;
-                if let Some(slot) = pending.application_slot {
-                    self.application_packets[slot] = Some(ApplicationPacket {
-                        number: output.packet_number.value,
-                        early: output.early,
-                    });
-                    self.application_probe_permit = false;
-                }
-                if pending.ping {
-                    self.ping_probe = None;
-                }
-                if let Some(reference) = pending.reference {
-                    self.flights.accepted(reference, now)?;
-                }
-                if pending.was_probe {
-                    self.probe = None;
-                    self.crypto_probe_permit = false;
-                }
-                if pending.handshake_done {
-                    self.handshake_done_pending = false;
-                }
-                if pending.crypto_len > 0 {
-                    self.offsets[index(output.level)] = self.offsets[index(output.level)]
-                        .checked_add(pending.crypto_len as u64)
-                        .filter(|n| *n <= packet::MAX_VARINT)
-                        .ok_or(Error::Capacity)?;
-                    self.pending_tls = None;
-                    self.queued_flight = None;
-                }
-                let seen = &mut self.received[index(output.level)];
-                if pending.ack_largest == seen.largest && pending.ack_bits == seen.bits {
-                    seen.ack_pending = false;
-                }
-            } else {
-                self.sent.cancel(pending.sent)?;
-                self.path.cancel(pending.path)?;
-                if let Some(reference) = pending.reference {
-                    self.flights.cancelled(reference)?;
-                }
-            }
-            self.finish_network_result(&pending, network_accepted)?;
-            self.driver.adapter_result(pending.ticket)?;
-            if let Some(token) = pending.close {
-                let (round, mut levels, prior_accepted) =
-                    self.close_round.take().ok_or(Error::InvalidConfig)?;
-                if round != token {
-                    return Err(Error::InvalidConfig);
-                }
-                if accepted {
-                    levels &= !(1 << index(output.level));
-                }
-                if accepted && levels != 0 {
-                    self.close_round = Some((token, levels, true));
-                } else {
-                    self.lifecycle
-                        .adapter_result(token, accepted || prior_accepted, now)?;
-                }
-            }
-            self.sent.reclaim_completed_prefix(space(output.level))?;
-            self.now = self.now.max(now);
-            if accepted && self.side == Side::Client && output.level == Level::Handshake {
-                self.discard_requested[0] = true;
-            }
-            self.apply_client_retry().await?;
-            self.apply_key_discards().await?;
-            self.refresh_timer()?;
-            Ok(())
-        }
-        .await;
-        if outcome.is_err() {
-            self.retire();
-        }
-        outcome
     }
 }
 

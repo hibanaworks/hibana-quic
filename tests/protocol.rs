@@ -331,9 +331,9 @@ fn actual_key_services_reject_use_before_install_at_hibana_endpoint() {
             let program = tls::tls_program::<{ tls::TLS_CLIENT }>();
             let mut endpoint = rv.enter(sid, &program).unwrap();
             if level == 1 {
-                ready(endpoint.send::<tls::OpenHandshake>(&descriptor)).is_err()
+                ready(endpoint.send::<tls::handshake::OpenHandshake>(&descriptor)).is_err()
             } else {
-                ready(endpoint.send::<tls::OpenOneRtt>(&descriptor)).is_err()
+                ready(endpoint.send::<tls::unconfirmed::OpenOneRtt>(&descriptor)).is_err()
             }
         };
         assert!(

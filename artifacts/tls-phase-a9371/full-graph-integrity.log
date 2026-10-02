@@ -1,0 +1,108 @@
+warning: variant `FixedZero` is never constructed
+  --> src/driver/path.rs:78:5
+   |
+77 | enum PeerTarget {
+   |      ---------- variant in this enum
+78 |     FixedZero,
+   |     ^^^^^^^^^
+   |
+   = note: `PeerTarget` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `bind_zero_cid_path_transmit` is never used
+   --> src/driver/path.rs:397:19
+    |
+166 | impl Driver<'_> {
+    | --------------- method in this implementation
+...
+397 |     pub(crate) fn bind_zero_cid_path_transmit(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `recovery_cancel` is never used
+   --> src/handshake_endpoint/recovery_actor.rs:121:25
+    |
+ 66 | impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
+    | -------------------------------------------------------------------------------------- method in this implementation
+...
+121 |     pub(super) async fn recovery_cancel(
+    |                         ^^^^^^^^^^^^^^^
+
+warning: method `stream_cancel` is never used
+   --> src/handshake_endpoint/stream_actor.rs:226:25
+    |
+ 31 | impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
+    | -------------------------------------------------------------------------------------- method in this implementation
+...
+226 |     pub(super) async fn stream_cancel(
+    |                         ^^^^^^^^^^^^^
+
+warning: method `tls_seal_early` is never used
+   --> src/handshake_endpoint/tls_actor.rs:255:25
+    |
+ 13 | impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
+    | -------------------------------------------------------------------------------------- method in this implementation
+...
+255 |     pub(super) async fn tls_seal_early(
+    |                         ^^^^^^^^^^^^^^
+
+warning: type alias `Reservation` is never used
+  --> src/handshake_endpoint/path.rs:17:17
+   |
+17 | pub(super) type Reservation = path_owner::PendingTransmit;
+   |                 ^^^^^^^^^^^
+
+warning: methods `active_path_identity` and `transmit_address` are never used
+   --> src/handshake_endpoint/path.rs:119:19
+    |
+ 95 | impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
+    | -------------------------------------------------------------------------------------- methods in this implementation
+...
+119 |     pub(super) fn active_path_identity(&self) -> PathIdentity {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+142 |     pub(super) fn transmit_address(&self) -> Option<Address> {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: function `retirement` is never used
+   --> src/roles/protocol_stream.rs:227:4
+    |
+227 | fn retirement<const C: u8, const O: u8>() -> g::Program<Retirement<C, O>> {
+    |    ^^^^^^^^^^
+
+warning: function `cancel_before_publication` is never used
+   --> src/roles/datagram.rs:502:15
+    |
+502 | pub(crate) fn cancel_before_publication(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `hibana-quic` (lib) generated 9 warnings
+   Compiling hibana-quic v0.1.0 (/workspace/scratch/0915e8fbff81/hibana-quic)
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/const_dsl/event_relations.rs:29:22
+    |
+ 29 |         let marker = markers.at(marker_idx);
+    |                      ^^^^^^^^^^^^^^^^^^^^^^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g.rs:182:5
+    |
+182 |     const SOURCE: ProgramSourceData<CAPACITY> = ProgramSourceData::lower::<Steps>();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/const_dsl/scope_ranges/route.rs:17:22
+    |
+ 17 |         || !matches!(first.scope_id.kind(), Some(ScopeKind::Route))
+    |                      ^^^^^^^^^^^^^^^^^^^^^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g.rs:182:5
+    |
+182 |     const SOURCE: ProgramSourceData<CAPACITY> = ProgramSourceData::lower::<Steps>();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+memory_limit_stop=true; rss_kib= 2637548
+measured_elapsed_seconds= 52.95
+measured_peak_process_group_rss_kib= 2637548
+measured_max_child_rss_kib= 32864
+measured_exit_status= -15

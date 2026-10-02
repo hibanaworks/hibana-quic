@@ -4,7 +4,7 @@
 //! Planned publication or a copied reservation ID is never acceptance.
 use super::{
     packet_protection::Descriptor,
-    path_owner::{Control, Destination, PendingTransmit},
+    path_owner::{Control, Destination, PREFERRED_ADVERTISEMENT_BYTES, PendingTransmit},
     recovery_owner::SendTicket,
     sealed_packet::SealedPacket,
     stream_owner::{PreparedFrame, TransmissionId},
@@ -39,6 +39,8 @@ pub struct ProtectedDatagram<const N: usize> {
     recovery: SendTicket,
     stream: Option<TransmissionId>,
     ecn: Codepoint,
+    source_cid: Option<Destination>,
+    handshake_crypto: Option<HandshakeFragment>,
 }
 impl<const N: usize> Drop for ProtectedDatagram<N> {
     fn drop(&mut self) {
@@ -114,6 +116,15 @@ impl<const N: usize> ProtectedDatagram<N> {
         if packets.next().is_some() {
             return Err(Error::Header);
         }
+        let source_cid = match packet.header {
+            crate::packet::Header::Long { source_id, .. } => {
+                if source_id != pending.source_cid().as_bytes() {
+                    return Err(Error::Binding);
+                }
+                Some(pending.source_cid())
+            }
+            _ => None,
+        };
         let destination_id = match packet.header {
             crate::packet::Header::Long { destination_id, .. }
             | crate::packet::Header::Short { destination_id, .. } => destination_id,
@@ -180,6 +191,7 @@ impl<const N: usize> ProtectedDatagram<N> {
         let mut control_count = 0usize;
         let mut app_count = 0usize;
         let mut flight_count = 0usize;
+        let mut handshake_crypto = None;
         let mut ack_eliciting = false;
         let mut padded = false;
         for frame in
@@ -201,6 +213,9 @@ impl<const N: usize> ProtectedDatagram<N> {
                         || !binding.matches_crypto(offset, data)
                     {
                         return Err(Error::Binding);
+                    }
+                    if level == EncryptionLevel::Handshake {
+                        handshake_crypto = HandshakeFragment::prefix(offset, data);
                     }
                     flight_count += 1;
                 }
@@ -288,6 +303,8 @@ impl<const N: usize> ProtectedDatagram<N> {
             recovery,
             stream: application.map(|a| a.0),
             ecn,
+            source_cid,
+            handshake_crypto,
         })
     }
 }
@@ -340,15 +357,80 @@ impl StreamCompletion {
         self.accepted
     }
 }
+/// Bounded outgoing EE prefix retained only from exact flight-bound CRYPTO
+/// bytes authenticated by the sealing owner. The engine currently supplies
+/// FlightCommand::Store bytes, so this proves actual transmitted bytes, not a
+/// separate theorem that the TLS Provider originally emitted them.
+const ADVERTISEMENT_BYTES: usize = PREFERRED_ADVERTISEMENT_BYTES;
+struct HandshakeFragment {
+    offset: usize,
+    len: usize,
+    bytes: [u8; ADVERTISEMENT_BYTES],
+}
+impl HandshakeFragment {
+    fn prefix(offset: u64, data: &[u8]) -> Option<Self> {
+        let offset = usize::try_from(offset).ok()?;
+        if offset >= ADVERTISEMENT_BYTES || data.is_empty() {
+            return None;
+        }
+        let len = data.len().min(ADVERTISEMENT_BYTES - offset);
+        let mut result = Self {
+            offset,
+            len,
+            bytes: [0; ADVERTISEMENT_BYTES],
+        };
+        result.bytes[..len].copy_from_slice(&data[..len]);
+        Some(result)
+    }
+}
+impl Drop for HandshakeFragment {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
+/// Affine evidence minted at the actual successful UDP boundary. Constructors
+/// and fragment storage stay private to this module; Path can only inspect it.
+pub(crate) struct AcceptedAdvertisement {
+    generation: u64,
+    source_cid: Option<Destination>,
+    handshake_crypto: Option<HandshakeFragment>,
+}
+impl core::fmt::Debug for AcceptedAdvertisement {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AcceptedAdvertisement")
+            .field("generation", &self.generation)
+            .field("source_cid", &self.source_cid)
+            .field(
+                "crypto_range",
+                &self.handshake_crypto.as_ref().map(|p| (p.offset, p.len)),
+            )
+            .finish_non_exhaustive()
+    }
+}
+impl AcceptedAdvertisement {
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub(crate) const fn source_cid(&self) -> Option<Destination> {
+        self.source_cid
+    }
+    pub(crate) fn handshake_crypto(&self) -> Option<(usize, &[u8])> {
+        self.handshake_crypto
+            .as_ref()
+            .map(|p| (p.offset, &p.bytes[..p.len]))
+    }
+}
 #[derive(Debug)]
 pub struct PathCompletion {
     pending: PendingTransmit,
     accepted_at: Option<u64>,
-    initial_advertised: bool,
+    advertisement: Option<AcceptedAdvertisement>,
 }
 impl PathCompletion {
-    pub(crate) fn into_parts(self) -> (PendingTransmit, Option<u64>, bool) {
-        (self.pending, self.accepted_at, self.initial_advertised)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (PendingTransmit, Option<u64>, Option<AcceptedAdvertisement>) {
+        (self.pending, self.accepted_at, self.advertisement)
     }
 }
 #[must_use = "every actual adapter outcome must reach each owning domain"]
@@ -362,13 +444,17 @@ pub struct Completions {
 /// guard. It is not exposed to external callers as an acceptance constructor.
 pub(crate) fn complete<const N: usize>(
     pending: PendingTransmit,
-    protected: ProtectedDatagram<N>,
+    mut protected: ProtectedDatagram<N>,
     accepted_at: Option<u64>,
-    initial_advertised: bool,
 ) -> Result<Completions, Error> {
     if !protected.matches(&pending) {
         return Err(Error::Binding);
     }
+    let advertisement = accepted_at.map(|_| AcceptedAdvertisement {
+        generation: protected.path_descriptor.generation,
+        source_cid: protected.source_cid,
+        handshake_crypto: protected.handshake_crypto.take(),
+    });
     Ok(Completions {
         recovery: RecoveryCompletion {
             ticket: protected.recovery,
@@ -383,7 +469,7 @@ pub(crate) fn complete<const N: usize>(
         path: PathCompletion {
             pending,
             accepted_at,
-            initial_advertised: accepted_at.is_some() && initial_advertised,
+            advertisement,
         },
     })
 }
@@ -433,7 +519,7 @@ pub(crate) fn cancel_before_publication(
         path: PathCompletion {
             pending,
             accepted_at: None,
-            initial_advertised: false,
+            advertisement: None,
         },
     })
 }

@@ -1,5 +1,7 @@
 # Interop repair following run 37007877505
 
+Historical document preserved from source `004a324`. It does not qualify the current full-owner tree; see the current README.
+
 The preceding exact source 4a16640720403421b6649cbe56263fdc25e9c5da passed the two Neqo baseline cells and one of four candidate cells. Both server cases failed before handshake with a zero-length peer CID. The transfer client completed all 10 MiB and closed near the unchanged runner deadline.
 
 This snapshot supports the actual empty peer CID on a fixed authenticated tuple, preserving accounting and CID frame validation. Three encrypted paired tests pass, including negative cases, with zero measured allocations. An unchanged old binary fails the independently certificate-verifying Mozilla-library peer with CID length zero; the repaired binary completes a 1 MiB transfer with exact hash, verified certificate/hostname/time and Closed lifecycle. This wrapper evidence is distinct from official CLI and simulator evidence.

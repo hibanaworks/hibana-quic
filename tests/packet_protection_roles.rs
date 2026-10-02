@@ -156,7 +156,10 @@ fn real_aead_outcomes_nonce_guard_shared_integrity_budget_and_retirement_do_not_
             corrupt[0] ^= 1;
             sender
                 .send(Command::Open {
-                    packet: sealed,
+                    // Receive admission starts from copied wire bytes, not the
+                    // affine provenance of this endpoint's protected output.
+                    packet: Packet::new(sealed.packet_number(), sealed.header(), sealed.body())
+                        .unwrap(),
                     budget: IntegrityBudget::new(),
                 })
                 .await
@@ -540,7 +543,9 @@ fn actor_owned_retry_rekey_preserves_nonce_guard_and_returns_same_integrity_budg
                 )
                 .unwrap();
             assert_eq!(&body[..n], b"after retry");
-            let (opened, budget) = client.open(sealed, budget).await.unwrap();
+            let received =
+                Packet::new(sealed.packet_number(), sealed.header(), sealed.body()).unwrap();
+            let (opened, budget) = client.open(received, budget).await.unwrap();
             let opened = opened.unwrap();
             assert_eq!(opened.packet.body(), b"after retry");
             assert_eq!(opened.receipt.packet_number(), 10);

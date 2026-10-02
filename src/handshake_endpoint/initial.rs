@@ -38,7 +38,9 @@ pub trait InitialKeyProtection:
         header: &[u8],
         body: &mut [u8],
         len: usize,
-    ) -> impl Future<Output = Result<(), Error>>;
+    ) -> impl Future<
+        Output = Result<crate::roles::sealed_packet::SealedPacket<INITIAL_PACKET_BYTES>, Error>,
+    >;
     fn rekey(&mut self, destination: &[u8], side: Side) -> impl Future<Output = Result<(), Error>>;
     fn retire(&mut self) -> impl Future<Output = Result<(), Error>>;
     /// Close admission on abort/cancellation. The enclosing actor aggregate
@@ -123,7 +125,7 @@ impl InitialKeyProtection for InitialProtection<'_, '_> {
         header: &[u8],
         body: &mut [u8],
         len: usize,
-    ) -> Result<(), Error> {
+    ) -> Result<crate::roles::sealed_packet::SealedPacket<INITIAL_PACKET_BYTES>, Error> {
         let packet = Packet::new(pn, header, body.get(..len).ok_or(Error::Capacity)?)?;
         let packet = self
             .transmit
@@ -134,7 +136,7 @@ impl InitialKeyProtection for InitialProtection<'_, '_> {
             .map_err(Error::Protection)??;
         let destination = body.get_mut(..packet.body().len()).ok_or(Error::Capacity)?;
         destination.copy_from_slice(packet.body());
-        Ok(())
+        Ok(packet)
     }
     async fn rekey(&mut self, destination: &[u8], side: Side) -> Result<(), Error> {
         self.receive
@@ -221,8 +223,12 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
     pub async fn retire_owned(&mut self) -> Result<(), Error> {
         let mut guard = CancelOnDrop::new(self);
         let result = async {
+            guard.endpoint.retire_early_owner().await?;
             guard.endpoint.initial.retire().await?;
             guard.endpoint.retire_tls().await?;
+            guard.endpoint.retire_recovery().await?;
+            guard.endpoint.retire_stream_owner().await?;
+            guard.endpoint.retire_path_owner().await?;
             Ok::<(), Error>(())
         }
         .await;
@@ -266,35 +272,19 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         guard.complete = true;
         result
     }
-    pub async fn transmit_early_application(
-        &mut self,
-        encoded: &[u8],
-        out: &mut [u8],
-    ) -> Result<Option<Transmit>, Error> {
-        let mut guard = CancelOnDrop::new(self);
-        let result = guard
-            .endpoint
-            .transmit_early_application_impl(encoded, out)
-            .await;
-        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
-            guard.endpoint.retire();
-        }
-        guard.complete = true;
-        result
-    }
+
     /// Await packet-key roles while processing one datagram. Cancellation
     /// abandons this connection; retain input and retry only after Busy.
-    pub async fn receive_with_metadata<A: ApplicationHandler>(
+    pub async fn receive_with_metadata(
         &mut self,
         datagram: &[u8],
         scratch: &mut [u8],
         metadata: ecn::Metadata,
-        handler: &mut A,
     ) -> Result<Received, Error> {
         let mut guard = CancelOnDrop::new(self);
         let result = guard
             .endpoint
-            .receive_with_metadata_impl(datagram, scratch, metadata, handler)
+            .receive_with_metadata_impl(datagram, scratch, metadata)
             .await;
         if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
             guard.endpoint.retire();
@@ -302,64 +292,18 @@ impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, '
         guard.complete = true;
         result
     }
-    /// Await Initial AEAD and header protection under unique actor ownership.
-    /// Cancellation abandons this connection and every pending reservation.
-    pub async fn transmit(&mut self, out: &mut [u8]) -> Result<Option<Transmit>, Error> {
-        let mut guard = CancelOnDrop::new(self);
-        let result = guard.endpoint.transmit_impl(out).await;
-        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
-            guard.endpoint.retire();
-        }
-        guard.complete = true;
-        result
-    }
-    pub async fn transmit_application(
-        &mut self,
-        encoded_frames: &[u8],
-        out: &mut [u8],
-    ) -> Result<Option<Transmit>, Error> {
-        let mut guard = CancelOnDrop::new(self);
-        let result = guard
-            .endpoint
-            .transmit_application_impl(encoded_frames, out)
-            .await;
-        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
-            guard.endpoint.retire();
-        }
-        guard.complete = true;
-        result
-    }
-    /// Reporting adapter completion can retire or replace actor-owned Initial
-    /// keys, so it is asynchronous even though accounting itself is numerical.
-    pub async fn adapter_result(
-        &mut self,
-        output: Transmit,
-        accepted: bool,
-        now: u64,
-    ) -> Result<(), Error> {
-        let mut guard = CancelOnDrop::new(self);
-        let result = guard
-            .endpoint
-            .adapter_result_impl(output, accepted, now)
-            .await;
-        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
-            guard.endpoint.retire();
-        }
-        guard.complete = true;
-        result
-    }
-    pub async fn receive_from<A: ApplicationHandler>(
+
+    pub async fn receive_from(
         &mut self,
         datagram: &[u8],
         scratch: &mut [u8],
         address: crate::path::Address,
         codepoint: Option<Codepoint>,
-        handler: &mut A,
     ) -> Result<Received, Error> {
         let mut guard = CancelOnDrop::new(self);
         let result = guard
             .endpoint
-            .receive_from_impl(datagram, scratch, address, codepoint, handler)
+            .receive_from_impl(datagram, scratch, address, codepoint)
             .await;
         if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
             guard.endpoint.retire();

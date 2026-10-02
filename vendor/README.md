@@ -1,11 +1,19 @@
 # Audited local dependency snapshots
 
-`hibana/` is the complete tracked upstream source at commit
-`3aef31ba015c75ea824b8b41f5603b03f5dd336b`, independently observed as the head of
-`development/dots-causality` after the user requested the updated branch.
-No local patch is applied. Cargo package metadata and `hibana-provenance.json`
-pin that exact revision and every source file. Its runtime source matches the
-previously verified selector correction, now incorporated upstream with proofs.
+`hibana/` is the complete tracked source at published commit
+`a9371bea437bbc1f4303ceeb3fc833f605efe730` on
+`perf/certified-route-metadata-20261002`, based on the user-selected
+`development/dots-causality` revision `3aef31ba015c75ea824b8b41f5603b03f5dd336b`.
+All 833 files and executable modes match that Git tree, with no extras or local
+edits. Cargo metadata and `hibana-provenance.json` pin the exact source.
+
+The three immutable metadata lookup optimizations have pre-implementation Lean
+and Z3 evidence, differential tests, and passing upstream Kani/final-form CI:
+https://github.com/hibanaworks/hibana/actions/runs/37052293598 . Their proof and
+measurement artifacts are retained inside the upstream snapshot. This update
+contains no external rolled-route correctness repair and does not resolve the
+known legal-trace offer failures. Consumer runtime and compile-capacity checks
+on this revision must be recorded separately from the previous 3aef results.
 
 The prior base-plus-local-patch snapshot and its provenance are retained under
 `artifacts/upstream-history/`; original reproduction, pre-fix Lean+Z3 chronology,

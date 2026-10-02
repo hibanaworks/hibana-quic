@@ -8,6 +8,8 @@ use core::cell::RefCell;
 use hibana::{Endpoint, EndpointError};
 
 pub enum Command<const N: usize> {
+    /// Actual TLS replay claim, consumed only by the initial Install exchange.
+    Activate(super::super::tls_owner::EarlyReplayGrant),
     Receive(AuthenticatedPacket<N>),
     Checked(PathChecked),
     Finish(EarlyReady),
@@ -99,6 +101,7 @@ impl<const N: usize> Drop for Clear<'_, N> {
 }
 #[derive(Debug)]
 pub enum ServiceError {
+    Bootstrap(Fault),
     Hibana(EndpointError),
     HibanaStep { label: u8, source: EndpointError },
     CommandsClosed,
@@ -171,7 +174,7 @@ pub async fn run_borrowed<
 async fn command_role<const C: u8, const N: usize, const Q: usize, const R: usize>(
     endpoint: &mut Endpoint<'_, C>,
     generation: u64,
-    mut commands: Receiver<'_, '_, Command<N>, Q>,
+    commands: Receiver<'_, '_, Command<N>, Q>,
     mut replies: Sender<'_, '_, Reply<N>, R>,
     exchange: &Exchange<N>,
 ) -> Result<(), ServiceError> {
@@ -192,6 +195,15 @@ async fn command_role<const C: u8, const N: usize, const Q: usize, const R: usiz
         .send(exchange.take_reply(installed)?)
         .await
         .map_err(|_| ServiceError::RepliesClosed)?;
+    command_work(endpoint, generation, commands, replies, exchange).await
+}
+async fn command_work<const C: u8, const N: usize, const Q: usize, const R: usize>(
+    endpoint: &mut Endpoint<'_, C>,
+    generation: u64,
+    mut commands: Receiver<'_, '_, Command<N>, Q>,
+    mut replies: Sender<'_, '_, Reply<N>, R>,
+    exchange: &Exchange<N>,
+) -> Result<(), ServiceError> {
     let mut sequence = 1;
     loop {
         let command = commands
@@ -380,7 +392,7 @@ async fn client_reply<const C: u8, const N: usize, const R: usize>(
 }
 async fn owner_role<const O: u8, const RX: usize, const CONTROL: usize, const N: usize>(
     endpoint: &mut Endpoint<'_, O>,
-    mut state: State<'_, RX, CONTROL, N>,
+    state: State<'_, RX, CONTROL, N>,
     exchange: &Exchange<N>,
 ) -> Result<(), ServiceError> {
     let generation = state.generation;
@@ -402,6 +414,14 @@ async fn owner_role<const O: u8, const RX: usize, const CONTROL: usize, const N:
             label: p::INSTALLED,
             source,
         })?;
+    owner_work(endpoint, state, exchange).await
+}
+async fn owner_work<const O: u8, const RX: usize, const CONTROL: usize, const N: usize>(
+    endpoint: &mut Endpoint<'_, O>,
+    mut state: State<'_, RX, CONTROL, N>,
+    exchange: &Exchange<N>,
+) -> Result<(), ServiceError> {
+    let generation = state.generation;
     let mut sequence = 1;
     loop {
         let branch = endpoint.offer().await?;
@@ -663,6 +683,14 @@ impl<'a, 's, const N: usize, const Q: usize, const R: usize> Client<'a, 's, N, Q
     pub const fn snapshot(&self) -> Snapshot {
         self.snapshot
     }
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+    /// Cancellation closes both halves; it is not a projected Retired exchange.
+    pub fn close(&mut self) {
+        self.commands.close();
+        self.replies.close();
+    }
     pub async fn request(&mut self, command: Command<N>) -> Result<Outcome<N>, ServiceError> {
         let descriptor = Descriptor {
             generation: self.generation,
@@ -684,16 +712,20 @@ impl<'a, 's, const N: usize, const Q: usize, const R: usize> Client<'a, 's, N, Q
         self.snapshot = reply.snapshot;
         Ok(reply.outcome)
     }
-    pub async fn retire(mut self) -> Result<(), ServiceError> {
+    pub async fn retire_snapshot(mut self) -> Result<Snapshot, ServiceError> {
         if !matches!(self.request(Command::Retire).await?, Outcome::Retired) {
             return Err(ServiceError::UnexpectedRetirementOutcome);
         }
-        Ok(())
+        Ok(self.snapshot)
+    }
+    pub async fn retire(self) -> Result<(), ServiceError> {
+        self.retire_snapshot().await.map(|_| ())
     }
 }
 
 fn command_label<const N: usize>(command: &Command<N>) -> u8 {
     match command {
+        Command::Activate(_) => p::INSTALL,
         Command::Receive(_) => p::RECEIVE,
         Command::Checked(_) => p::CHECKED,
         Command::Finish(_) => p::FINISH,
@@ -702,4 +734,169 @@ fn command_label<const N: usize>(command: &Command<N>) -> u8 {
         Command::Inspect => p::INSPECT,
         Command::Retire => p::RETIRE_REQUESTED,
     }
+}
+
+/// The packet actor can retain this affine capability before TLS decides 0-RTT.
+/// Activation transfers the genuine claim through the existing Install boundary;
+/// no unclaimed resource owner can fabricate an Installed quarantine.
+pub struct Starter<'a, 's, const N: usize, const Q: usize, const R: usize> {
+    commands: Sender<'a, 's, Command<N>, Q>,
+    replies: Receiver<'a, 's, Reply<N>, R>,
+    generation: u64,
+}
+impl<'a, 's, const N: usize, const Q: usize, const R: usize> Starter<'a, 's, N, Q, R> {
+    pub fn new(
+        commands: Sender<'a, 's, Command<N>, Q>,
+        replies: Receiver<'a, 's, Reply<N>, R>,
+        generation: u64,
+    ) -> Self {
+        Self {
+            commands,
+            replies,
+            generation,
+        }
+    }
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn close(&mut self) {
+        self.commands.close();
+        self.replies.close();
+    }
+    pub async fn activate(
+        mut self,
+        grant: super::super::tls_owner::EarlyReplayGrant,
+    ) -> Result<Client<'a, 's, N, Q, R>, ServiceError> {
+        if grant.generation() != self.generation || grant.early_generation() != self.generation {
+            return Err(ServiceError::Bootstrap(Fault::WrongGeneration));
+        }
+        self.commands
+            .send(Command::Activate(grant))
+            .await
+            .map_err(|_| ServiceError::CommandsClosed)?;
+        Client::connect(self.commands, self.replies, self.generation).await
+    }
+}
+/// The service boundary distinguishes unused resource cancellation from the
+/// actual projected terminal exchange. This observation is not role authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceCompletion {
+    /// Both activated actors completed their projected Retired exchange.
+    Retired,
+    /// The activation receive closed before any Install was attempted. Storage
+    /// was wiped locally; no projected retirement or TLS claim was fabricated.
+    UnactivatedCancelled,
+}
+
+/// Production bootstrap: caller storage is owned here from the first poll, but
+/// claim-backed quarantine is created only after actual TLS acceptance.
+/// Closing the unused starter returns `UnactivatedCancelled`. Once an actual
+/// activation command is received, all failures remain `Err`, including mailbox
+/// closure and projected retirement failures.
+pub async fn run_unclaimed_borrowed<
+    const C: u8,
+    const O: u8,
+    const RX: usize,
+    const CONTROL: usize,
+    const N: usize,
+    const Q: usize,
+    const R: usize,
+>(
+    client: &mut Endpoint<'_, C>,
+    owner: &mut Endpoint<'_, O>,
+    storage: Storage<'_, RX, CONTROL>,
+    mut commands: Receiver<'_, '_, Command<N>, Q>,
+    replies: Sender<'_, '_, Reply<N>, R>,
+    exchange: &mut Exchange<N>,
+) -> Result<ServiceCompletion, ServiceError> {
+    if !exchange.is_empty() {
+        return Err(ServiceError::OccupiedSlot);
+    }
+    let generation = storage.generation;
+    let exchange = &*exchange;
+    let _clear = Clear(exchange);
+    // This is a local resource boundary before either projected actor starts.
+    // Queued activation drains even if the sender closed, so cancellation after
+    // publication cannot be mistaken for unused storage teardown.
+    let activation = match commands.recv().await {
+        Ok(command @ Command::Activate(_)) => command,
+        Ok(_) => return Err(ServiceError::UnexpectedCommand),
+        Err(_) => {
+            drop(storage);
+            return Ok(ServiceCompletion::UnactivatedCancelled);
+        }
+    };
+    let mut client = core::pin::pin!(unclaimed_command_role(
+        client, generation, activation, commands, replies, exchange
+    ));
+    let mut owner = core::pin::pin!(unclaimed_owner_role(owner, storage, exchange));
+    runtime::TaskSet::new([client.as_mut(), owner.as_mut()]).await?;
+    Ok(ServiceCompletion::Retired)
+}
+async fn unclaimed_command_role<const C: u8, const N: usize, const Q: usize, const R: usize>(
+    endpoint: &mut Endpoint<'_, C>,
+    generation: u64,
+    activation: Command<N>,
+    commands: Receiver<'_, '_, Command<N>, Q>,
+    mut replies: Sender<'_, '_, Reply<N>, R>,
+    exchange: &Exchange<N>,
+) -> Result<(), ServiceError> {
+    let descriptor = Descriptor {
+        generation,
+        sequence: 0,
+    };
+    let wire = encode(descriptor);
+    exchange.put(Request {
+        descriptor,
+        command: activation,
+    })?;
+    endpoint
+        .send::<p::Install>(&wire)
+        .await
+        .map_err(|source| ServiceError::HibanaStep {
+            label: p::INSTALL,
+            source,
+        })?;
+    same(endpoint.recv::<p::Installed>().await?, wire)?;
+    replies
+        .send(exchange.take_reply(descriptor)?)
+        .await
+        .map_err(|_| ServiceError::RepliesClosed)?;
+    command_work(endpoint, generation, commands, replies, exchange).await
+}
+async fn unclaimed_owner_role<
+    const O: u8,
+    const RX: usize,
+    const CONTROL: usize,
+    const N: usize,
+>(
+    endpoint: &mut Endpoint<'_, O>,
+    storage: Storage<'_, RX, CONTROL>,
+    exchange: &Exchange<N>,
+) -> Result<(), ServiceError> {
+    let descriptor = Descriptor {
+        generation: storage.generation,
+        sequence: 0,
+    };
+    let wire = endpoint.recv::<p::Install>().await?;
+    same(wire, encode(descriptor))?;
+    let request = exchange.take(wire)?;
+    same(encode(request.descriptor), wire)?;
+    let Command::Activate(grant) = request.command else {
+        return Err(ServiceError::UnexpectedCommand);
+    };
+    let state = storage.claim::<N>(grant).map_err(ServiceError::Bootstrap)?;
+    exchange.reply(Reply {
+        descriptor,
+        snapshot: state.snapshot(),
+        outcome: Outcome::Installed,
+    })?;
+    endpoint
+        .send::<p::Installed>(&wire)
+        .await
+        .map_err(|source| ServiceError::HibanaStep {
+            label: p::INSTALLED,
+            source,
+        })?;
+    owner_work(endpoint, state, exchange).await
 }

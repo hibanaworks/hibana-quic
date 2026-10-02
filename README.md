@@ -4,34 +4,29 @@ A standard QUIC v1 implementation using Hibana internally. No existing QUIC
 transport engine is a product dependency. **Not a complete QUIC endpoint or
 release candidate.** HTTP/3 and QUIC v2 are outside the requested acceptance set.
 
-## Async architecture checkpoint (2026-10-02)
+## Current architecture-refactor checkpoint
 
-Initial protection now runs in actual projected async key roles using direct
-`send`, `recv`, and `offer` awaits, composed with `g::par` and rolled request
-routes. The Linux host drives one epoll/eventfd reactor for UDP and deadlines.
-The runtime and mailboxes use fixed caller-owned task/buffer storage.
+The live tree has replaced the endpoint's synchronous Driver path with owned
+async TLS, Recovery, Path, Stream and optional Early services. The TLS global
+now describes consuming Initial, Handshake, Unconfirmed, Confirmed and
+Handshake-retired application continuations. See `docs/tls-phase-ownership.md`.
 
-This is a **partial migration**: non-Initial TLS/control paths still use the
-legacy synchronous Driver in a separate session. Whole-connection choreography,
-all legacy synchronous test fixtures, and embedded deployment remain unfinished.
-The frozen historical interoperability checkpoint `7a58d80` passed four distinct
-handshake/transfer cells in three runs; those results do not qualify this source.
+This new full-owner tree is **not yet runtime-qualified or interoperable**.
+Some older integration fixtures still target removed APIs. The complete staged
+TLS projection exceeds this workspace's compiler-memory limit, and a separate
+legal rolled-route trace still fails Hibana `offer()`. Selected owner/prefix
+runtime tests are scoped evidence, not a substitute for the full projection.
+The performance-only vendor update does not repair that correctness issue.
 
-Focused checks for this checkpoint:
+The latest passing formal pilot remains the historical `033af6e` snapshot:
+handshake and transfer in both directions, four distinct cells out of 40,
+one recorded repetition on that version. Its result cannot qualify this refactor:
+https://github.com/hibanaworks/hibana-quic/actions/runs/37015561449 .
 
-```sh
-cargo test --locked --lib --test runtime_async --test mailbox_async --test packet_protection_roles --test async_initial_endpoint
-cargo test --locked --manifest-path reference-tls/Cargo.toml --test async_bounded_wire
-cargo test --locked --manifest-path adapters/host/Cargo.toml --bin hq
-cargo build --locked --release --manifest-path adapters/host/Cargo.toml --bin hq
-python3 ci/audit_source.py --check
-```
+## Implemented capabilities and historical evidence
 
-Older aggregate test commands below describe the full target, not a current
-all-target pass: synchronous endpoint fixtures still need async migration.
-Pico fitting is deferred while interoperability is prioritized.
-
-## Working now
+The following capabilities were implemented and tested at earlier checkpoints;
+all affected end-to-end gates must be rerun after the current ownership cutover.
 
 - Bounded v1 packet/frame codecs, all base frame shapes, PN restoration and
   malformed-input limits
@@ -61,12 +56,19 @@ is recorded separately from the required container-runner matrix.
 
 ## Verification
 
-Rust 1.95 or newer. The Hibana source is vendored without local patches from the user-selected
-`development/dots-causality` head `3aef31ba015c75ea824b8b41f5603b03f5dd336b`.
+Rust 1.95 or newer. Hibana is vendored without local edits from the proof-gated
+performance branch at `a9371bea437bbc1f4303ceeb3fc833f605efe730`, based on the
+user-selected `development/dots-causality` revision
+`3aef31ba015c75ea824b8b41f5603b03f5dd336b`. This performance-only update does not
+include the external rolled-route repair or resolve the known offer failures.
 `vendor/hibana-provenance.json` and Cargo package metadata pin that exact source.
 The earlier proof-gated local correction is now incorporated upstream; its
 history remains in `artifacts/hibana-offer-repro/` and `artifacts/upstream-history/`.
 See `vendor/README.md` for scope.
+
+The commands below are the intended complete gates. They currently expose
+unmigrated test APIs and compiler-capacity failures; they are not a record of
+a passing run on this tree.
 
 ```sh
 cargo test --locked
@@ -110,6 +112,7 @@ any interop case has run. Current complete gate statuses are in
    independently verified result JSON/file content/required pcap assertions
 4. Full QUIC/TLS no-allocation closure, allocation counter and target link
 5. Actual Pico board/driver/entropy and HIL, RAM/stack/flash/time measurements
+   (deferred behind full-owner interoperability by the user)
 6. Required negative tests, proof audit, dependency/license audit
 
 See `docs/assumptions.md`, `docs/tls-decision.md`,

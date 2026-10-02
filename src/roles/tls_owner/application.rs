@@ -1,4 +1,9 @@
-//! Literal application local continuations. The projected arm set owns phase admission.
+//! Literal Handshake-retired application continuations, including the explicit
+//! residual server early-receive/cleanup lifetime. This one owner retains the
+//! whole Provider; it never shares keys or an Endpoint with another local.
+//! The graph admits narrow residual requests, while the Provider's actual key
+//! destruction prevents use after DiscardEarly. Handshake crypto, early sending,
+//! and repeated confirmation remain inadmissible in this continuation.
 use super::*;
 use crate::roles::protocol_tls_phases::application as p;
 
@@ -14,10 +19,10 @@ pub(super) async fn command<
     commands: &mut Receiver<'_, '_, Command<N>, Q>,
     replies: &mut Sender<'_, '_, Reply<N, P>, R>,
     exchange: &Exchange<N, P>,
-    next: &mut u64,
+    authority: CommandAuthority<Application>,
     retirement_reply: &mut Option<Reply<N, P>>,
-) -> Result<CommandExit, Error> {
-    let mut sequence = *next;
+) -> Result<CommandExit<core::convert::Infallible>, Error> {
+    let mut sequence = authority.sequence;
     loop {
         let command = commands.recv().await.map_err(|_| Error::CommandsClosed)?;
         let descriptor = Descriptor {
@@ -200,6 +205,60 @@ pub(super) async fn command<
                 };
                 same(observed, wire)?;
             }
+            command @ Command::OpenEarly(_) => {
+                exchange.put_request(Request {
+                    descriptor,
+                    command,
+                })?;
+                endpoint.send::<p::OpenEarly>(&wire).await?;
+                let branch = endpoint.offer().await?;
+                let observed = match branch.label() {
+                    p::EARLY_OPENED => branch.recv::<p::EarlyOpened>().await?,
+                    p::EARLY_OPEN_REJECTED => branch.recv::<p::EarlyOpenRejected>().await?,
+                    label => return Err(Error::UnexpectedLabel(label)),
+                };
+                same(observed, wire)?;
+            }
+            command @ Command::EarlyHeaderMask { .. } => {
+                exchange.put_request(Request {
+                    descriptor,
+                    command,
+                })?;
+                endpoint.send::<p::EarlyHeaderMask>(&wire).await?;
+                let branch = endpoint.offer().await?;
+                let observed = match branch.label() {
+                    p::EARLY_HEADER_MASK_READY => branch.recv::<p::EarlyHeaderMaskReady>().await?,
+                    p::EARLY_HEADER_MASK_REJECTED => {
+                        branch.recv::<p::EarlyHeaderMaskRejected>().await?
+                    }
+                    label => return Err(Error::UnexpectedLabel(label)),
+                };
+                same(observed, wire)?;
+            }
+            command @ Command::TakeEarlyReplayClaim => {
+                exchange.put_request(Request {
+                    descriptor,
+                    command,
+                })?;
+                endpoint.send::<p::TakeEarlyReplayClaim>(&wire).await?;
+                let branch = endpoint.offer().await?;
+                let observed = match branch.label() {
+                    p::EARLY_REPLAY_CLAIM_READY => {
+                        branch.recv::<p::EarlyReplayClaimReady>().await?
+                    }
+                    p::NO_EARLY_REPLAY_CLAIM => branch.recv::<p::NoEarlyReplayClaim>().await?,
+                    label => return Err(Error::UnexpectedLabel(label)),
+                };
+                same(observed, wire)?;
+            }
+            command @ Command::DiscardEarly => {
+                exchange.put_request(Request {
+                    descriptor,
+                    command,
+                })?;
+                endpoint.send::<p::DiscardEarly>(&wire).await?;
+                same(endpoint.recv::<p::EarlyDiscarded>().await?, wire)?;
+            }
             command @ Command::Retire => {
                 exchange.put_request(Request {
                     descriptor,
@@ -231,9 +290,10 @@ pub(super) async fn command<
 pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, O>,
     generation: u64,
-    provider: &mut T,
+    mut authority: OwnerAuthority<Application, T>,
     exchange: &Exchange<N, P>,
-) -> Result<OwnerExit, Error> {
+) -> Result<OwnerExit<core::convert::Infallible>, Error> {
+    let provider = &mut authority.provider;
     loop {
         let branch = endpoint.offer().await?;
         let completed;
@@ -253,15 +313,22 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                     let Command::ReceiveCrypto { level, bytes } = command else {
                         return Err(Error::UnexpectedCommand);
                     };
+                    let previous_early = provider.early_status();
                     let was_handshaking = provider.is_handshaking();
                     match provider.receive(level, bytes.as_bytes()) {
                         Ok(()) => {
                             let finished = (was_handshaking && !provider.is_handshaking())
                                 .then(|| FinishedReceipt::from_provider(descriptor, provider));
+                            let early_rejected = (previous_early != EarlyStatus::Rejected
+                                && provider.early_status() == EarlyStatus::Rejected)
+                                .then_some(EarlyRejectedGrant { generation });
                             exchange.put_reply(
                                 provider,
                                 descriptor,
-                                Outcome::CryptoAccepted { finished },
+                                Outcome::CryptoAccepted {
+                                    finished,
+                                    early_rejected,
+                                },
                             )?;
                             true
                         }
@@ -476,6 +543,10 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                                         level: Level::OneRtt,
                                         packet_number: pn,
                                         key_generation: opened.generation,
+                                        plaintext_digest:
+                                            crate::roles::sealed_packet::plaintext_digest(
+                                                &body[..opened.len],
+                                            ),
                                     },
                                 },
                             )?;
@@ -511,6 +582,8 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                     };
                     let pn = packet.packet_number();
                     let plaintext_len = packet.body().len();
+                    let plaintext_digest =
+                        crate::roles::sealed_packet::plaintext_digest(packet.body());
                     let mut body = Zeroizing::new([0; N]);
                     body[..plaintext_len].copy_from_slice(packet.body());
                     let header = packet.header();
@@ -528,7 +601,18 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                             }
                             let packet = Packet::new(pn, header, &body[..len])
                                 .map_err(|_| Error::PacketBounds)?;
-                            exchange.put_reply(provider, descriptor, Outcome::Sealed(packet))?;
+                            exchange.put_reply(
+                                provider,
+                                descriptor,
+                                Outcome::Sealed(
+                                    crate::roles::sealed_packet::SealedPacket::from_owner(
+                                        packet,
+                                        descriptor,
+                                        crypto::KeyKind::OneRtt,
+                                        plaintext_digest,
+                                    ),
+                                ),
+                            )?;
                             true
                         }
                         Err(e) => {
@@ -593,16 +677,18 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                     if descriptor.generation != generation {
                         return Err(Error::Correlation);
                     }
-                    let Command::ValidatedAck {
-                        sent_pn,
-                        received_generation,
-                        now,
-                        pto,
-                    } = command
-                    else {
+                    let Command::ValidatedAck { grant, now, pto } = command else {
                         return Err(Error::UnexpectedCommand);
                     };
-                    match provider.acknowledge_one_rtt(sent_pn, received_generation, now, pto) {
+                    if grant.generation() != generation {
+                        return Err(Error::Correlation);
+                    }
+                    match provider.acknowledge_one_rtt(
+                        grant.sent_packet_number(),
+                        grant.received_key_generation(),
+                        now,
+                        pto,
+                    ) {
                         Ok(()) => {
                             exchange.put_reply(provider, descriptor, Outcome::AckApplied)?;
                             true
@@ -651,6 +737,163 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                     endpoint.send::<p::UpdateRejected>(&wire).await?;
                 }
             }
+            p::OPEN_EARLY => {
+                let wire = branch.recv::<p::OpenEarly>().await?;
+                completed = wire;
+                // All large packet/transcript locals die before suspension.
+                let succeeded = {
+                    let Request {
+                        descriptor,
+                        command,
+                    } = exchange.take_request(wire)?;
+                    if descriptor.generation != generation {
+                        return Err(Error::Correlation);
+                    }
+                    let Command::OpenEarly(packet) = command else {
+                        return Err(Error::UnexpectedCommand);
+                    };
+                    let pn = packet.packet_number();
+                    let len = packet.body().len();
+                    let mut body = Zeroizing::new([0; N]);
+                    body[..len].copy_from_slice(packet.body());
+                    let header = packet.header();
+                    match provider.open_early(pn, header, &mut body[..len]) {
+                        Ok(len) => {
+                            if len > N {
+                                return Err(Error::PacketBounds);
+                            }
+                            if provider.early_generation() != Some(generation) {
+                                return Err(Error::Correlation);
+                            }
+                            let packet = Packet::new(pn, header, &body[..len])
+                                .map_err(|_| Error::PacketBounds)?;
+                            exchange.put_reply(
+                                provider,
+                                descriptor,
+                                Outcome::EarlyOpened(OpenedEarlyPacket {
+                                    packet,
+                                    receipt: EarlyOpenReceipt {
+                                        descriptor,
+                                        packet_number: pn,
+                                        plaintext_digest:
+                                            crate::roles::sealed_packet::plaintext_digest(
+                                                &body[..len],
+                                            ),
+                                    },
+                                }),
+                            )?;
+                            true
+                        }
+                        Err(e) => {
+                            drop(packet);
+                            exchange.put_reply(provider, descriptor, Outcome::Failed(e))?;
+                            false
+                        }
+                    }
+                };
+                if succeeded {
+                    endpoint.send::<p::EarlyOpened>(&wire).await?;
+                } else {
+                    endpoint.send::<p::EarlyOpenRejected>(&wire).await?;
+                }
+            }
+            p::EARLY_HEADER_MASK => {
+                let wire = branch.recv::<p::EarlyHeaderMask>().await?;
+                completed = wire;
+                // All large packet/transcript locals die before suspension.
+                let succeeded = {
+                    let Request {
+                        descriptor,
+                        command,
+                    } = exchange.take_request(wire)?;
+                    if descriptor.generation != generation {
+                        return Err(Error::Correlation);
+                    }
+                    let Command::EarlyHeaderMask { local, sample } = command else {
+                        return Err(Error::UnexpectedCommand);
+                    };
+                    match provider.early_header_mask(local, &sample) {
+                        Ok(mask) => {
+                            exchange.put_reply(provider, descriptor, Outcome::HeaderMask(mask))?;
+                            true
+                        }
+                        Err(e) => {
+                            exchange.put_reply(provider, descriptor, Outcome::Failed(e))?;
+                            false
+                        }
+                    }
+                };
+                if succeeded {
+                    endpoint.send::<p::EarlyHeaderMaskReady>(&wire).await?;
+                } else {
+                    endpoint.send::<p::EarlyHeaderMaskRejected>(&wire).await?;
+                }
+            }
+            p::TAKE_EARLY_REPLAY_CLAIM => {
+                let wire = branch.recv::<p::TakeEarlyReplayClaim>().await?;
+                completed = wire;
+                let claimed = {
+                    let Request {
+                        descriptor,
+                        command,
+                    } = exchange.take_request(wire)?;
+                    if descriptor.generation != generation {
+                        return Err(Error::Correlation);
+                    }
+                    let Command::TakeEarlyReplayClaim = command else {
+                        return Err(Error::UnexpectedCommand);
+                    };
+                    if let Some(claim) = provider.take_early_replay_claim() {
+                        let limits = provider
+                            .remembered_early_limits()
+                            .ok_or(Error::Correlation)?;
+                        let early_generation =
+                            provider.early_generation().ok_or(Error::Correlation)?;
+                        if claim.generation() != early_generation {
+                            return Err(Error::Correlation);
+                        }
+                        let grant = EarlyReplayGrant {
+                            generation,
+                            early_generation,
+                            claim,
+                            limits,
+                        };
+                        exchange.put_reply(
+                            provider,
+                            descriptor,
+                            Outcome::EarlyReplayClaim(grant),
+                        )?;
+                        true
+                    } else {
+                        exchange.put_reply(provider, descriptor, Outcome::NoEarlyReplayClaim)?;
+                        false
+                    }
+                };
+                if claimed {
+                    endpoint.send::<p::EarlyReplayClaimReady>(&wire).await?;
+                } else {
+                    endpoint.send::<p::NoEarlyReplayClaim>(&wire).await?;
+                }
+            }
+            p::DISCARD_EARLY => {
+                let wire = branch.recv::<p::DiscardEarly>().await?;
+                completed = wire;
+                {
+                    let Request {
+                        descriptor,
+                        command,
+                    } = exchange.take_request(wire)?;
+                    if descriptor.generation != generation {
+                        return Err(Error::Correlation);
+                    }
+                    let Command::DiscardEarly = command else {
+                        return Err(Error::UnexpectedCommand);
+                    };
+                    provider.discard_early_keys();
+                    exchange.put_reply(provider, descriptor, Outcome::EarlyDiscarded)?;
+                }
+                endpoint.send::<p::EarlyDiscarded>(&wire).await?;
+            }
             p::RETIRE_REQUESTED => {
                 let wire = branch.recv::<p::RetireRequested>().await?;
                 {
@@ -671,6 +914,8 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                 }
                 endpoint.send::<p::RetirementPrepared>(&wire).await?;
                 same(endpoint.recv::<p::ResultTaken>().await?, wire)?;
+                // Drop the owned provider before the root announces final retirement.
+                drop(authority);
                 return Ok(OwnerExit::Retiring(wire));
             }
             label => return Err(Error::UnexpectedLabel(label)),

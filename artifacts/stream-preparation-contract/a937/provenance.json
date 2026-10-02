@@ -1,0 +1,12 @@
+{
+  "vendor_revision": "a9371bea437bbc1f4303ceeb3fc833f605efe730",
+  "vendor_change": "published performance-only; swapped by parent",
+  "runtime_result": "1 passed, 1 failed; unchanged later CancelPrepared offer PhaseInvariant",
+  "files": {
+    "hibana-quic/src/roles/protocol_stream.rs": "b268e912106d2897feb2f50b51026df88d9c54e411d99d2dde24bc56b74e5a1b",
+    "hibana-quic/tests/stream_elastic_reentry.rs": "52ce7c824c76d2b61b37dec53e6921becab4d369703ad1e6b04ca41e20765d26",
+    "artifacts/stream-preparation-contract/a937/stream_elastic_reentry": "56d5403c042dcafc57afd5bb8500a0a175b76e41f44044b4f13e3e9eedcb52fe",
+    "artifacts/stream-preparation-contract/a937/elastic-reentry.log": "8fe83cac665accc3e8e8ee855a88fb901a08578dac7b0850376bdadd9f3a2efb",
+    "artifacts/stream-preparation-contract/a937/elastic-reentry-metrics.json": "906189e753ca0bb5a6ab71276fe6ef4e9a7d971dc72e133f244750ebaba2d75b"
+  }
+}

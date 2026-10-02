@@ -14,10 +14,10 @@ pub(super) async fn command<
     commands: &mut Receiver<'_, '_, Command<N>, Q>,
     replies: &mut Sender<'_, '_, Reply<N, P>, R>,
     exchange: &Exchange<N, P>,
-    next: &mut u64,
+    authority: CommandAuthority<Initial>,
     retirement_reply: &mut Option<Reply<N, P>>,
-) -> Result<CommandExit, Error> {
-    let mut sequence = *next;
+) -> Result<CommandExit<CommandAuthority<Handshake>>, Error> {
+    let mut sequence = authority.sequence;
     loop {
         let command = commands.recv().await.map_err(|_| Error::CommandsClosed)?;
         let descriptor = Descriptor {
@@ -271,8 +271,7 @@ pub(super) async fn command<
             .map_err(|_| Error::RepliesClosed)?;
         sequence = sequence.checked_add(1).ok_or(Error::SequenceExhausted)?;
         if advance {
-            *next = sequence;
-            return Ok(CommandExit::Advanced(wire));
+            return Ok(CommandExit::Advanced(wire, authority.advance(sequence)));
         }
         runtime::yield_now().await;
     }
@@ -281,9 +280,10 @@ pub(super) async fn command<
 pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, O>,
     generation: u64,
-    provider: &mut T,
+    mut authority: OwnerAuthority<Initial, T>,
     exchange: &Exchange<N, P>,
-) -> Result<OwnerExit, Error> {
+) -> Result<OwnerExit<OwnerAuthority<Handshake, T>>, Error> {
+    let provider = &mut authority.provider;
     loop {
         let branch = endpoint.offer().await?;
         let completed;
@@ -304,15 +304,22 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                     let Command::ReceiveCrypto { level, bytes } = command else {
                         return Err(Error::UnexpectedCommand);
                     };
+                    let previous_early = provider.early_status();
                     let was_handshaking = provider.is_handshaking();
                     match provider.receive(level, bytes.as_bytes()) {
                         Ok(()) => {
                             let finished = (was_handshaking && !provider.is_handshaking())
                                 .then(|| FinishedReceipt::from_provider(descriptor, provider));
+                            let early_rejected = (previous_early != EarlyStatus::Rejected
+                                && provider.early_status() == EarlyStatus::Rejected)
+                                .then_some(EarlyRejectedGrant { generation });
                             exchange.put_reply(
                                 provider,
                                 descriptor,
-                                Outcome::CryptoAccepted { finished },
+                                Outcome::CryptoAccepted {
+                                    finished,
+                                    early_rejected,
+                                },
                             )?;
                             true
                         }
@@ -534,6 +541,10 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                                     receipt: EarlyOpenReceipt {
                                         descriptor,
                                         packet_number: pn,
+                                        plaintext_digest:
+                                            crate::roles::sealed_packet::plaintext_digest(
+                                                &body[..len],
+                                            ),
                                     },
                                 }),
                             )?;
@@ -569,6 +580,8 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                     };
                     let pn = packet.packet_number();
                     let plaintext_len = packet.body().len();
+                    let plaintext_digest =
+                        crate::roles::sealed_packet::plaintext_digest(packet.body());
                     let mut body = Zeroizing::new([0; N]);
                     body[..plaintext_len].copy_from_slice(packet.body());
                     let header = packet.header();
@@ -580,7 +593,18 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                             }
                             let packet = Packet::new(pn, header, &body[..len])
                                 .map_err(|_| Error::PacketBounds)?;
-                            exchange.put_reply(provider, descriptor, Outcome::Sealed(packet))?;
+                            exchange.put_reply(
+                                provider,
+                                descriptor,
+                                Outcome::Sealed(
+                                    crate::roles::sealed_packet::SealedPacket::from_owner(
+                                        packet,
+                                        descriptor,
+                                        crypto::KeyKind::ZeroRtt,
+                                        plaintext_digest,
+                                    ),
+                                ),
+                            )?;
                             true
                         }
                         Err(e) => {
@@ -643,10 +667,24 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                         return Err(Error::UnexpectedCommand);
                     };
                     if let Some(claim) = provider.take_early_replay_claim() {
+                        let limits = provider
+                            .remembered_early_limits()
+                            .ok_or(Error::Correlation)?;
+                        let early_generation =
+                            provider.early_generation().ok_or(Error::Correlation)?;
+                        if claim.generation() != early_generation {
+                            return Err(Error::Correlation);
+                        }
+                        let grant = EarlyReplayGrant {
+                            generation,
+                            early_generation,
+                            claim,
+                            limits,
+                        };
                         exchange.put_reply(
                             provider,
                             descriptor,
-                            Outcome::EarlyReplayClaim(claim),
+                            Outcome::EarlyReplayClaim(grant),
                         )?;
                         true
                     } else {
@@ -699,13 +737,15 @@ pub(super) async fn provider<T: Provider, const O: u8, const N: usize, const P: 
                 }
                 endpoint.send::<p::RetirementPrepared>(&wire).await?;
                 same(endpoint.recv::<p::ResultTaken>().await?, wire)?;
+                // Drop the owned provider before the root announces final retirement.
+                drop(authority);
                 return Ok(OwnerExit::Retiring(wire));
             }
             label => return Err(Error::UnexpectedLabel(label)),
         }
         same(endpoint.recv::<p::ResultTaken>().await?, completed)?;
         if let Some(wire) = advance {
-            return Ok(OwnerExit::Advanced(wire));
+            return Ok(OwnerExit::Advanced(wire, authority.advance()));
         }
         runtime::yield_now().await;
     }

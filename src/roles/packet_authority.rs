@@ -133,6 +133,69 @@ impl RetryPeerCid {
     }
 }
 
+/// Distinct domain permissions split from one actual committed Retry.
+/// CommittedRetry and all three public grants are affine: a domain cannot
+/// recreate another domain's permission from copied identity observations.
+pub struct RetryGrants {
+    pub path: RetryPeerCid,
+    pub recovery: RecoveryRetryGrant,
+    pub stream: StreamRetryGrant,
+}
+#[derive(Clone, Copy, Debug)]
+struct RetryIdentity {
+    generation: u64,
+    source: super::path_owner::Destination,
+    original: super::path_owner::Destination,
+    client: super::path_owner::Destination,
+}
+/// Permission for Recovery to reset only this committed Retry's state.
+#[derive(Debug)]
+pub struct RecoveryRetryGrant {
+    identity: RetryIdentity,
+}
+/// Permission for Stream to requeue its own accepted early references.
+#[derive(Debug)]
+pub struct StreamRetryGrant {
+    identity: RetryIdentity,
+}
+macro_rules! retry_identity_accessors {
+    ($grant:ident) => {
+        impl $grant {
+            pub const fn generation(&self) -> u64 {
+                self.identity.generation
+            }
+            pub fn source_cid(&self) -> &[u8] {
+                self.identity.source.as_bytes()
+            }
+            pub fn original_destination_cid(&self) -> &[u8] {
+                self.identity.original.as_bytes()
+            }
+            pub fn client_source_cid(&self) -> &[u8] {
+                self.identity.client.as_bytes()
+            }
+        }
+    };
+}
+retry_identity_accessors!(RecoveryRetryGrant);
+retry_identity_accessors!(StreamRetryGrant);
+/// The RX coordinator calls this immediately after ClientRetry's integrity and
+/// local-policy commit. No status boolean or parsed-but-unchecked Retry enters.
+pub(crate) fn split_retry(generation: u64, retry: crate::retry::CommittedRetry) -> RetryGrants {
+    use super::path_owner::Destination;
+    let identity = RetryIdentity {
+        generation,
+        source: Destination::new(retry.source_id()).expect("committed Retry CID bound"),
+        original: Destination::new(retry.original_destination_id())
+            .expect("committed Retry CID bound"),
+        client: Destination::new(retry.client_source_id()).expect("committed Retry CID bound"),
+    };
+    RetryGrants {
+        path: RetryPeerCid::from_committed(generation, retry),
+        recovery: RecoveryRetryGrant { identity },
+        stream: StreamRetryGrant { identity },
+    }
+}
+
 /// Copying an ID cannot reopen a finished packet or duplicate an effect.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PacketTicket {
@@ -411,6 +474,9 @@ pub struct Arena<const P: usize, const E: usize> {
     state: RefCell<State<P, E>>,
 }
 impl<const P: usize, const E: usize> Arena<P, E> {
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
     pub const fn new(generation: u64) -> Self {
         Self {
             generation,

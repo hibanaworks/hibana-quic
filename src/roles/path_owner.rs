@@ -25,6 +25,9 @@ use subtle::ConstantTimeEq;
 pub const PATHS: usize = 2;
 pub const LOCAL_CIDS: usize = 8;
 pub const PEER_CIDS: usize = 16;
+/// Maximum complete outgoing EncryptedExtensions prefix retained for local
+/// preferred-address advertisement evidence. Larger profiles fail closed.
+pub const PREFERRED_ADVERTISEMENT_BYTES: usize = 4096;
 const CONTROLS: usize = LOCAL_CIDS + PEER_CIDS;
 
 /// A wire CID including the fixed zero-length form, which never enters a
@@ -144,9 +147,12 @@ pub enum Error {
     HandshakeNotInstalled,
     AlreadyInstalled,
     PreferredAdvertisementRequired,
+    InvalidAdvertisement,
     PeerInitialNotLearned,
     PeerCidMismatch,
     RetryNotAllowed,
+    AbandonmentPending,
+    PendingAdapter,
     Path(path::Error),
     Cid(CidError),
     Migration(migration::Error),
@@ -188,6 +194,13 @@ pub enum Control {
         sequence: u64,
     },
 }
+/// A copied size quote, never a reservation or permission to publish a frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControlQuote {
+    pub path: PathIdentity,
+    pub frame_bytes: usize,
+    pub minimum_datagram_bytes: u64,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReliableControl {
     Advertise(LocalCidHandle),
@@ -199,6 +212,7 @@ struct ControlRecord {
     ready: bool,
     acknowledged: bool,
     sent: [Option<u64>; 4],
+    lost: [bool; 4],
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PendingRecord {
@@ -237,6 +251,9 @@ impl PendingTransmit {
     pub const fn destination(&self) -> Destination {
         self.record.destination
     }
+    pub const fn source_cid(&self) -> Destination {
+        self.local_cid
+    }
     pub const fn control(&self) -> Option<Control> {
         self.record.control
     }
@@ -245,7 +262,7 @@ impl PendingTransmit {
         AdapterCompletion {
             record: self.record,
             accepted_at: None,
-            initial_advertised: false,
+            advertisement: None,
         }
     }
     /// Calls the real adapter with the reserved exact tuple and byte count.
@@ -260,7 +277,6 @@ impl PendingTransmit {
             return Err(super::datagram::Error::Binding);
         }
         let bytes = protected.bytes();
-        let mut initial_advertised = false;
         let valid = (|| {
             if bytes.len() as u64 != self.bytes() {
                 return false;
@@ -285,7 +301,6 @@ impl PendingTransmit {
                         if source_id != self.local_cid.as_bytes() {
                             return false;
                         }
-                        initial_advertised = true;
                         destination_id
                     }
                     crate::packet::Header::Short { destination_id, .. } => destination_id,
@@ -310,7 +325,7 @@ impl PendingTransmit {
         } else {
             None
         };
-        super::datagram::complete(self, protected, accepted_at, initial_advertised)
+        super::datagram::complete(self, protected, accepted_at)
     }
 }
 pub struct Datagram<'a> {
@@ -328,15 +343,15 @@ pub trait UdpAdapter {
 pub struct AdapterCompletion {
     record: PendingRecord,
     accepted_at: Option<u64>,
-    initial_advertised: bool,
+    advertisement: Option<super::datagram::AcceptedAdvertisement>,
 }
 impl From<super::datagram::PathCompletion> for AdapterCompletion {
     fn from(completion: super::datagram::PathCompletion) -> Self {
-        let (pending, accepted_at, initial_advertised) = completion.into_parts();
+        let (pending, accepted_at, advertisement) = completion.into_parts();
         Self {
             record: pending.record,
             accepted_at,
-            initial_advertised,
+            advertisement,
         }
     }
 }
@@ -365,6 +380,14 @@ impl ResetCandidate {
 /// Actual QUIC confirmation, not a copied handshake-status flag. Servers
 /// obtain it from verified client Finished; clients from authenticated 1-RTT
 /// HANDSHAKE_DONE. The TLS/key owner consumes it before enabling key updates.
+/// ```compile_fail
+/// use hibana_quic::roles::path_owner::HandshakeConfirmation;
+/// let forged = HandshakeConfirmation { generation: 9 };
+/// ```
+/// ```compile_fail
+/// use hibana_quic::roles::path_owner::HandshakeConfirmation;
+/// fn duplicate(grant: HandshakeConfirmation) { let first = grant; let second = grant; }
+/// ```
 #[derive(Debug)]
 pub struct HandshakeConfirmation {
     generation: u64,
@@ -394,6 +417,36 @@ impl RecoveryResetGrant {
         self.active
     }
 }
+/// One actual failed or reclaimed path. Its private serial identifies the live
+/// cleanup barrier; neither a copied identity nor a snapshot can retire a slot.
+#[derive(Debug)]
+pub struct PathAbandoned {
+    generation: u64,
+    path: PathIdentity,
+    serial: u64,
+}
+impl PathAbandoned {
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub const fn path(&self) -> PathIdentity {
+        self.path
+    }
+    pub(crate) const fn serial(&self) -> u64 {
+        self.serial
+    }
+}
+struct Abandonment {
+    path: PathIdentity,
+    serial: u64,
+    resume: AbandonResume,
+}
+enum AbandonResume {
+    Retire,
+    Timeout(Option<Decision>),
+    Terminal,
+    Frame(authority::AuthenticatedPacket, PathFrame, PathContext),
+}
 /// Opaque current-deadline observation, minted only by the owner. A mutation
 /// invalidates earlier observations, including ones whose numeric deadline
 /// happens to be unchanged. Time passage alone does not grant mutation authority.
@@ -410,6 +463,18 @@ impl TimerObservation {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Snapshot {
+    pub generation: u64,
+    pub role: Role,
+    pub original_path: PathIdentity,
+    pub initial_address: Address,
+    pub local_cid: Destination,
+    pub issued_cids: [Option<Destination>; LOCAL_CIDS],
+    pub routable_cids: [Option<Destination>; LOCAL_CIDS],
+    /// Length/encoding observations only; reservation rechecks the live binding.
+    pub destinations: [Option<Destination>; PATHS],
+    pub deadline: Option<u64>,
+    pub validation_deadline: Option<u64>,
+    pub confirmed: bool,
     pub active: PathIdentity,
     pub paths: [Option<(PathIdentity, path::Snapshot)>; PATHS],
     pub installed: bool,
@@ -420,6 +485,8 @@ pub struct Snapshot {
     pub pending_controls: usize,
     pub preferred_advertisement_pending: bool,
     pub next_control_path: Option<PathIdentity>,
+    pub control_quote: Option<ControlQuote>,
+    pub abandoning: Option<PathIdentity>,
 }
 
 #[derive(Clone, Copy)]
@@ -438,12 +505,14 @@ pub struct State<'s, R> {
     local_initial: Option<LocalCidHandle>,
     preferred_local: Option<LocalCidHandle>,
     preferred_advertised: bool,
+    preferred_evidence: advertisement::Evidence,
     peer_slots: Option<&'s mut [PeerCidSlot<2>; PEER_CIDS]>,
     peer: Option<PeerCidTable<'s, 2>>,
     learned_peer_initial: Option<Destination>,
     initial_received_destination: Option<Destination>,
     original_bootstrap: Destination,
     retry_seen: bool,
+    server_retry: Option<(Destination, Destination)>,
     zero_peer: bool,
     zero_peer_token: Option<ResetToken>,
     zero_peer_used: bool,
@@ -454,6 +523,10 @@ pub struct State<'s, R> {
     original: PathIdentity,
     migration: Migration,
     recovery_reset: Option<RecoveryResetGrant>,
+    abandonment: Option<Abandonment>,
+    abandonment_grant: Option<PathAbandoned>,
+    abandonment_serial: u64,
+    terminal: bool,
     bindings: [Option<PeerCidHandle>; PATHS],
     inbound: [Option<Destination>; PATHS],
     preferred: Option<(Address, PeerCidHandle)>,
@@ -537,12 +610,14 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
             local_initial,
             preferred_local,
             preferred_advertised: false,
+            preferred_evidence: advertisement::Evidence::new(),
             peer_slots: Some(resources.peer_cids),
             peer: None,
             learned_peer_initial: None,
             initial_received_destination: None,
             original_bootstrap: config.bootstrap_destination,
             retry_seen: false,
+            server_retry: None,
             zero_peer: false,
             zero_peer_token: None,
             zero_peer_used: false,
@@ -553,6 +628,10 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
             original,
             migration,
             recovery_reset: None,
+            abandonment: None,
+            abandonment_grant: None,
+            abandonment_serial: 0,
+            terminal: false,
             bindings: [None; PATHS],
             inbound: [None; PATHS],
             preferred: None,
@@ -567,11 +646,41 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
     }
     fn snapshot(&self) -> Snapshot {
         let mut paths = [None; PATHS];
+        let mut destinations = [None; PATHS];
         for path in self.paths.identities() {
+            destinations[usize::from(path.slot)] = self.destination(path).ok().map(|(cid, _)| cid);
             paths[usize::from(path.slot)] =
                 self.paths.snapshot(path).ok().map(|state| (path, state));
         }
+        let mut issued_cids = [None; LOCAL_CIDS];
+        let mut routable_cids = [None; LOCAL_CIDS];
+        if self.config.local_cid.is_zero() {
+            issued_cids[0] = Some(self.config.local_cid);
+            routable_cids[0] = Some(self.config.local_cid);
+        } else {
+            for (index, cid) in self.local.issued_ids().enumerate() {
+                issued_cids[index] = Some(cid.into());
+                if self.local.route(cid.as_bytes()).is_some() {
+                    routable_cids[index] = Some(cid.into());
+                }
+            }
+        }
         Snapshot {
+            generation: self.config.generation,
+            role: self.config.role,
+            original_path: self.original,
+            initial_address: self.config.initial,
+            local_cid: self.config.local_cid,
+            issued_cids,
+            routable_cids,
+            destinations,
+            deadline: self.timer().map(|t| t.deadline()),
+            validation_deadline: self
+                .paths
+                .identities()
+                .filter_map(|p| self.paths.validation_deadline(p).ok().flatten())
+                .min(),
+            confirmed: self.confirmed,
             active: self.migration.active(),
             paths,
             installed: self.installed,
@@ -592,6 +701,8 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
             preferred_advertisement_pending: self.preferred_local.is_some()
                 && !self.preferred_advertised,
             next_control_path: self.next_control_path(),
+            control_quote: self.control_quote(),
+            abandoning: self.abandonment.as_ref().map(|a| a.path),
         }
     }
     fn clock(&mut self, now: u64) -> Result<(), Error> {
@@ -615,6 +726,7 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
             ready: true,
             acknowledged: false,
             sent: [None; 4],
+            lost: [false; 4],
         });
         Ok(())
     }
@@ -815,9 +927,114 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
         }
         Ok(())
     }
-    fn retire_path(&mut self, path: PathIdentity) -> Result<(), Error> {
+    fn preflight_cleanup(&self, path: PathIdentity) -> Result<(), Error> {
         self.paths.snapshot(path)?;
-        if path == self.migration.active() {
+        let index = usize::from(path.slot);
+        let retiring = self.bindings[index].filter(|handle| {
+            !self
+                .bindings
+                .iter()
+                .enumerate()
+                .any(|(i, binding)| i != index && *binding == Some(*handle))
+        });
+        let Some(peer) = self.peer.as_ref() else {
+            return if retiring.is_none() {
+                Ok(())
+            } else {
+                Err(Error::HandshakeNotInstalled)
+            };
+        };
+        if let Some(handle) = retiring {
+            match peer.get(handle) {
+                Ok(_) | Err(CidError::Retired) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let mut required = [None; PEER_CIDS];
+        let mut count = 0;
+        for handle in peer.pending_retirements().chain(retiring) {
+            let kind = ReliableControl::Retire(handle);
+            if self.controls.iter().flatten().any(|r| r.kind == kind)
+                || required[..count].contains(&Some(handle))
+            {
+                continue;
+            }
+            if count == required.len() {
+                return Err(Error::Capacity);
+            }
+            required[count] = Some(handle);
+            count += 1;
+        }
+        if count > self.controls.iter().filter(|r| r.is_none()).count() {
+            return Err(Error::Capacity);
+        }
+        Ok(())
+    }
+    fn begin_abandonment(
+        &mut self,
+        path: PathIdentity,
+        resume: AbandonResume,
+    ) -> Result<(), Error> {
+        self.preflight_cleanup(path)?;
+        if self.abandonment.is_some() {
+            return Err(Error::AbandonmentPending);
+        }
+        if self.pending.iter().any(Option::is_some) {
+            return Err(Error::PendingAdapter);
+        }
+        let serial = self
+            .abandonment_serial
+            .checked_add(1)
+            .ok_or(Error::SequenceExhausted)?;
+        self.abandonment_serial = serial;
+        self.abandonment = Some(Abandonment {
+            path,
+            serial,
+            resume,
+        });
+        self.abandonment_grant = Some(PathAbandoned {
+            generation: self.config.generation,
+            path,
+            serial,
+        });
+        Ok(())
+    }
+    fn abandonment_outcome(&mut self) -> Result<Outcome, Error> {
+        Ok(Outcome::AbandonmentRequired(
+            self.abandonment_grant
+                .take()
+                .ok_or(Error::InvalidDescriptor)?,
+        ))
+    }
+    fn finish_abandonment(
+        &mut self,
+        completion: super::recovery_owner::AbandonmentComplete,
+    ) -> Result<Outcome, Error> {
+        let pending = self.abandonment.as_ref().ok_or(Error::InvalidDescriptor)?;
+        if completion.generation() != self.config.generation
+            || completion.path() != pending.path
+            || completion.serial() != pending.serial
+        {
+            return Err(Error::InvalidDescriptor);
+        }
+        self.terminal = matches!(pending.resume, AbandonResume::Terminal);
+        self.cleanup_path(completion.path())?;
+        let pending = self.abandonment.take().ok_or(Error::InvalidDescriptor)?;
+        match pending.resume {
+            AbandonResume::Retire => Ok(Outcome::PathRetired),
+            AbandonResume::Terminal => Ok(Outcome::PathUnavailable),
+            AbandonResume::Timeout(decision) => Ok(Outcome::Expired {
+                decision,
+                recovery_reset: self.recovery_reset.take(),
+            }),
+            AbandonResume::Frame(packet, frame, context) => {
+                self.apply_frame(packet, frame, context)
+            }
+        }
+    }
+    fn cleanup_path(&mut self, path: PathIdentity) -> Result<(), Error> {
+        self.preflight_cleanup(path)?;
+        if path == self.migration.active() && !self.terminal {
             return Err(Error::InvalidConfig);
         }
         let index = usize::from(path.slot);
@@ -881,7 +1098,11 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
         Err(Error::Entropy)
     }
     fn next_control_path(&self) -> Option<PathIdentity> {
-        if !self.confirmed || self.pending.iter().any(Option::is_some) {
+        if !self.confirmed
+            || self.abandonment.is_some()
+            || self.terminal
+            || self.pending.iter().any(Option::is_some)
+        {
             return None;
         }
         for path in self.paths.identities() {
@@ -910,6 +1131,66 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
                 && self.destination(*path).is_ok()
         })
     }
+    fn control_quote(&self) -> Option<ControlQuote> {
+        let path = self.next_control_path()?;
+        let expansion = self.paths.pending_response(path).ok().flatten().is_some()
+            || self
+                .paths
+                .probe_deadline(path)
+                .ok()
+                .flatten()
+                .is_some_and(|at| self.now >= at);
+        if expansion {
+            return Some(ControlQuote {
+                path,
+                frame_bytes: 9,
+                minimum_datagram_bytes: if self.paths.snapshot(path).ok()?.available_bytes
+                    >= path::MINIMUM_MTU
+                {
+                    path::MINIMUM_MTU
+                } else {
+                    0
+                },
+            });
+        }
+        let record = self
+            .controls
+            .iter()
+            .flatten()
+            .find(|r| r.ready && !r.acknowledged)?;
+        if record.sent.iter().all(Option::is_some) && !record.lost.contains(&true) {
+            return None;
+        }
+        let frame_bytes = match record.kind {
+            ReliableControl::Advertise(handle) => {
+                let cid = self.local.get(handle).ok()?;
+                crate::packet::frame_encoded_len(&crate::packet::Frame::NewConnectionId {
+                    sequence: cid.sequence,
+                    retire_prior_to: cid.retire_prior_to,
+                    id: cid.cid.as_bytes(),
+                    reset_token: cid.token.as_ref()?.as_bytes(),
+                })
+                .ok()?
+            }
+            ReliableControl::Retire(handle) => {
+                let destination = self.destination(path).ok()?.0;
+                let sequence = self
+                    .peer
+                    .as_ref()?
+                    .retirement_sequence(handle, Cid::new(destination.as_bytes()).ok()?)
+                    .ok()?;
+                crate::packet::frame_encoded_len(&crate::packet::Frame::RetireConnectionId {
+                    sequence,
+                })
+                .ok()?
+            }
+        };
+        Some(ControlQuote {
+            path,
+            frame_bytes,
+            minimum_datagram_bytes: 0,
+        })
+    }
     fn reserve(
         &mut self,
         descriptor: Descriptor,
@@ -919,6 +1200,12 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
         control: bool,
         now: u64,
     ) -> Result<PendingTransmit, Error> {
+        if self.abandonment.is_some() {
+            return Err(Error::AbandonmentPending);
+        }
+        if self.terminal {
+            return Err(migration::Error::NoViablePath.into());
+        }
         self.clock(now)?;
         if descriptor.generation != self.config.generation {
             return Err(Error::WrongGeneration);
@@ -954,7 +1241,7 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
                     .position(|r| r.is_some_and(|r| r.ready && !r.acknowledged))
                     .ok_or(Error::Capacity)?;
                 let record = self.controls[slot].ok_or(Error::InvalidDescriptor)?;
-                if record.sent.iter().all(Option::is_some) {
+                if record.sent.iter().all(Option::is_some) && !record.lost.contains(&true) {
                     return Err(Error::Capacity);
                 }
                 let value = match record.kind {
@@ -1027,21 +1314,37 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
             } else {
                 self.bootstrap_used = Some((record.destination, record.address));
             }
-            if completion.initial_advertised
-                && let Some(local) = self.local_initial
-            {
-                self.local.mark_advertised(local)?;
+            if let Err(error) = self.record_advertisement(completion.advertisement) {
+                // The UDP send really happened, so its bytes stay accounted.
+                // Invalid local EE evidence is terminal, not a retryable
+                // rejection that could resume an inconsistent reservation.
+                self.pending[index] = None;
+                self.terminal = true;
+                return Err(error);
             }
             if let Some(slot) = record.reliable {
                 let control = self.controls[slot]
                     .as_mut()
                     .ok_or(Error::InvalidDescriptor)?;
-                let sent = control
+                let index = control
                     .sent
-                    .iter_mut()
-                    .find(|pn| pn.is_none())
+                    .iter()
+                    .position(Option::is_none)
+                    .or_else(|| {
+                        control
+                            .sent
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| control.lost[*i])
+                            .min_by_key(|(_, pn)| **pn)
+                            .map(|(i, _)| i)
+                    })
                     .ok_or(Error::Capacity)?;
-                *sent = Some(record.packet.value);
+                // Four useful accepted copies are retained. If all history
+                // slots are occupied, replace only the oldest declared-lost
+                // copy, never a still outstanding transmission.
+                control.sent[index] = Some(record.packet.value);
+                control.lost[index] = false;
                 control.ready = false;
                 if let ReliableControl::Advertise(handle) = control.kind {
                     self.local.mark_advertised(handle)?;
@@ -1051,6 +1354,35 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
             self.paths.adapter_rejected(record.reservation)?;
         }
         self.pending[index] = None;
+        Ok(())
+    }
+    fn record_advertisement(
+        &mut self,
+        advertisement: Option<super::datagram::AcceptedAdvertisement>,
+    ) -> Result<(), Error> {
+        if let Some(advertisement) = advertisement {
+            if advertisement.generation() != self.config.generation {
+                return Err(Error::WrongGeneration);
+            }
+            if let Some(source) = advertisement.source_cid() {
+                if source != self.config.local_cid {
+                    return Err(Error::InvalidAdvertisement);
+                }
+                if let Some(local) = self.local_initial {
+                    self.local.mark_advertised(local)?;
+                }
+            }
+            if !self.preferred_advertised
+                && let Some(preferred) = self.config.preferred_server
+                && let Some((offset, bytes)) = advertisement.handshake_crypto()
+                && self.preferred_evidence.accept(offset, bytes, preferred)?
+            {
+                self.local
+                    .mark_advertised(self.preferred_local.ok_or(Error::InvalidConfig)?)?;
+                self.preferred_advertised = true;
+                self.preferred_evidence.clear();
+            }
+        }
         Ok(())
     }
     fn reset(&self, candidate: ResetCandidate) -> bool {
@@ -1069,6 +1401,9 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
         })
     }
     fn timer(&self) -> Option<TimerObservation> {
+        if self.abandonment.is_some() || self.terminal {
+            return None;
+        }
         let mut deadline = None;
         for path in self.paths.identities() {
             let probe = if self.confirmed
@@ -1110,11 +1445,24 @@ impl<'s, R: RngCore + CryptoRng> State<'s, R> {
         }
         self.clock(now)?;
         let mut result = None;
-        while let Some(path) = self.paths.expire(now)? {
-            self.pending[usize::from(path.slot)] = None;
-            let decision = self.migration.failed(path, &self.paths)?;
+        if self.abandonment.is_some() {
+            return Err(Error::AbandonmentPending);
+        }
+        if self.pending.iter().any(Option::is_some) {
+            return Err(Error::PendingAdapter);
+        }
+        if let Some(path) = self.paths.expire(now)? {
+            let decision = match self.migration.failed(path, &self.paths) {
+                Ok(decision) => decision,
+                Err(migration::Error::NoViablePath) => {
+                    self.begin_abandonment(path, AbandonResume::Terminal)?;
+                    return Ok(None);
+                }
+                Err(error) => return Err(error.into()),
+            };
             self.apply_decision(decision)?;
             result = Some(decision);
+            self.begin_abandonment(path, AbandonResume::Timeout(result))?;
         }
         Ok(result)
     }
@@ -1127,6 +1475,42 @@ impl<R> Drop for State<'_, R> {
 }
 
 impl<R: RngCore + CryptoRng> State<'_, R> {
+    fn server_retry(&mut self, token: crate::retry::ValidatedToken) -> Result<(), Error> {
+        if self.config.role != Role::Server
+            || self.server_retry.is_some()
+            || self.installed
+            || self.learned_peer_initial.is_some()
+            || self.last_datagram.is_some()
+            || self.pending.iter().any(Option::is_some)
+        {
+            return Err(Error::RetryNotAllowed);
+        }
+        let address = match self.config.initial.remote {
+            core::net::SocketAddr::V4(address) => crate::retry::ClientAddress::V4 {
+                ip: address.ip().octets(),
+                port: address.port(),
+            },
+            core::net::SocketAddr::V6(address) => crate::retry::ClientAddress::V6 {
+                ip: address.ip().octets(),
+                port: address.port(),
+            },
+        };
+        if token.address() != address
+            || token.original_destination_id() != self.original_bootstrap.as_bytes()
+        {
+            return Err(Error::WrongDestination);
+        }
+        let source = Destination::new(token.client_source_id())?;
+        let destination = Destination::new(token.retry_source_id())?;
+        if self.paths.snapshot(self.original)?.address != self.config.initial {
+            return Err(Error::InvalidDescriptor);
+        }
+        self.paths.address_validated(self.original)?;
+        // The next authenticated Initial must prove these exact SCIDs before
+        // learning the peer CID or using Retry's destination as a routing alias.
+        self.server_retry = Some((source, destination));
+        Ok(())
+    }
     fn learn_peer_cid<const P: usize, const E: usize>(
         &mut self,
         arena: &authority::Arena<P, E>,
@@ -1138,6 +1522,13 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
         }
         if facts.space() != PacketNumberSpace::Initial {
             return Err(Error::WrongLevel);
+        }
+        if self.initial_received_destination.is_none()
+            && self
+                .server_retry
+                .is_some_and(|expected| expected != (source, destination))
+        {
+            return Err(Error::PeerCidMismatch);
         }
         if self.config.role == Role::Client {
             if destination != self.config.local_cid {
@@ -1276,6 +1667,9 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
         packet: Option<(u64, bool)>,
         kind: IngressKind,
     ) -> Result<PathIdentity, Error> {
+        if self.abandonment.is_some() {
+            return Err(Error::AbandonmentPending);
+        }
         // An authenticated receive can wait in a mailbox while another
         // operation advances the owner clock. Its observed arrival timestamp
         // is immutable, but processing must never rewind numerical timers.
@@ -1343,7 +1737,8 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
                 .paths
                 .identities()
                 .find(|path| *path != active && Some(*path) != fallback);
-            if reclaim.is_none()
+            if self.paths.identities().count() == PATHS
+                && reclaim.is_none()
                 && packet.is_some_and(|(pn, non_probing)| {
                     non_probing
                         && self
@@ -1358,8 +1753,11 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
                 self.apply_decision(decision)?;
                 reclaim = Some(active);
             }
-            if let Some(path) = reclaim {
-                self.retire_path(path)?;
+            if self.paths.identities().count() == PATHS
+                && let Some(path) = reclaim
+            {
+                self.begin_abandonment(path, AbandonResume::Retire)?;
+                return Err(Error::AbandonmentPending);
             }
             self.paths
                 .insert(context.address, InitialValidation::Unvalidated, self.now)?
@@ -1414,6 +1812,14 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
         grant: authority::PathGrant,
     ) -> Result<Outcome, Error> {
         let (packet, frame, context) = arena.consume_path(grant)?;
+        self.apply_frame(packet, frame, context)
+    }
+    fn apply_frame(
+        &mut self,
+        packet: authority::AuthenticatedPacket,
+        frame: PathFrame,
+        context: PathContext,
+    ) -> Result<Outcome, Error> {
         if packet.generation() != self.config.generation {
             return Err(Error::WrongGeneration);
         }
@@ -1433,7 +1839,17 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
         } else {
             IngressKind::Ordinary
         };
-        let path = self.ingress_packet(context, census, kind)?;
+        let path = match self.ingress_packet(context, census, kind) {
+            Ok(path) => path,
+            Err(Error::AbandonmentPending) if self.abandonment_grant.is_some() => {
+                self.abandonment
+                    .as_mut()
+                    .ok_or(Error::InvalidDescriptor)?
+                    .resume = AbandonResume::Frame(packet, frame, context);
+                return self.abandonment_outcome();
+            }
+            Err(error) => return Err(error),
+        };
         let mut decision = Decision::Unchanged;
         let mut validated = None;
         match frame {
@@ -1526,6 +1942,16 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
         }
         Ok(())
     }
+    fn probe_timeout(
+        &mut self,
+        grant: super::recovery_owner::PathProbeTimeoutGrant,
+    ) -> Result<(), Error> {
+        if grant.generation() != self.config.generation {
+            return Err(Error::WrongGeneration);
+        }
+        self.paths.ensure_probe_timeout(grant.pto_us())?;
+        Ok(())
+    }
     fn pto(&mut self, grant: super::recovery_owner::PathPtoGrant) -> Result<(), Error> {
         if grant.generation() != self.config.generation {
             return Err(Error::WrongGeneration);
@@ -1541,29 +1967,43 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
         }
         Ok(())
     }
-    fn lost(&mut self, packet: super::recovery_owner::PathLostPacket) -> Result<(), Error> {
+    fn lost(
+        &mut self,
+        packet: super::recovery_owner::PathLostPacket,
+    ) -> Result<Option<super::recovery_owner::PathLossSettled>, Error> {
         if packet.generation() != self.config.generation {
             return Err(Error::WrongGeneration);
         }
+        if let Some((path, serial)) = packet.abandonment_binding()
+            && self
+                .abandonment
+                .as_ref()
+                .is_none_or(|pending| pending.path != path || pending.serial != serial)
+        {
+            return Err(Error::InvalidDescriptor);
+        }
         if packet.packet().space != PacketNumberSpace::ApplicationData {
-            return Ok(());
+            return Ok(packet.settle());
         }
         for record in self.controls.iter_mut().flatten() {
             if record.acknowledged {
                 continue;
             }
-            for sent in &mut record.sent {
+            for (index, sent) in record.sent.iter().enumerate() {
                 if *sent == Some(packet.packet().value) {
-                    *sent = None;
+                    // Keep useful late-ACK identity until bounded history needs
+                    // its oldest lost slot for a genuinely accepted retry.
+                    record.lost[index] = true;
                     record.ready = true;
                 }
             }
         }
-        Ok(())
+        Ok(packet.settle())
     }
 }
 
 pub enum Command {
+    ServerRetry(crate::retry::ValidatedToken),
     LearnPeerCid(authority::InitialPeerCid),
     ApplyRetry(authority::RetryPeerCid),
     EarlyPreflight(super::early_owner::PathCheck),
@@ -1573,6 +2013,7 @@ pub enum Command {
     Ack(super::recovery_owner::PathAck),
     Lost(super::recovery_owner::PathLostPacket),
     Pto(super::recovery_owner::PathPtoGrant),
+    ProbeTimeout(super::recovery_owner::PathProbeTimeoutGrant),
     Reserve {
         path: PathIdentity,
         bytes: u64,
@@ -1595,10 +2036,12 @@ pub enum Command {
     IssueCid,
     Handshake(super::connection_authority::PathReady),
     RetirePath(PathIdentity),
+    AbandonComplete(super::recovery_owner::AbandonmentComplete),
     Inspect,
     Retire,
 }
 pub enum Outcome {
+    ServerRetryValidated,
     PeerCidLearned,
     RetryApplied,
     EarlyChecked(super::early_owner::PathChecked),
@@ -1627,8 +2070,10 @@ pub enum Outcome {
         tls_confirmation: Option<HandshakeConfirmation>,
     },
     AckApplied,
-    LossApplied,
+    LossApplied(Option<super::recovery_owner::PathLossSettled>),
+    AbandonmentRequired(PathAbandoned),
     PtoApplied,
+    ProbeTimeoutUpdated,
     Reserved(PendingTransmit),
     AdapterCompleted,
     Reset(bool),
@@ -1642,6 +2087,7 @@ pub enum Outcome {
         tls_confirmation: Option<HandshakeConfirmation>,
     },
     PathRetired,
+    PathUnavailable,
     Snapshot,
     Rejected(Error),
     Retired,
@@ -1825,6 +2271,13 @@ async fn command_role<const C: u8, const Q: usize, const S: usize>(
             Command::Reserve { .. } | Command::ReserveControl { .. }
         );
         match command {
+            command @ Command::ServerRetry(_) => {
+                exchange.put(Request {
+                    descriptor,
+                    command,
+                })?;
+                endpoint.send::<p::ServerRetry>(&wire).await?;
+            }
             command @ Command::LearnPeerCid(_) => {
                 exchange.put(Request {
                     descriptor,
@@ -1880,6 +2333,13 @@ async fn command_role<const C: u8, const Q: usize, const S: usize>(
                     command,
                 })?;
                 endpoint.send::<p::Lost>(&wire).await?;
+            }
+            command @ Command::ProbeTimeout(_) => {
+                exchange.put(Request {
+                    descriptor,
+                    command,
+                })?;
+                endpoint.send::<p::ProbeTimeout>(&wire).await?;
             }
             command @ Command::Pto(_) => {
                 exchange.put(Request {
@@ -1965,10 +2425,16 @@ async fn command_role<const C: u8, const Q: usize, const S: usize>(
                 endpoint.send::<p::RetirementAcknowledged>(&wire).await?;
                 return Ok(());
             }
-            Command::AdapterComplete(_) => return Err(ServiceError::UnexpectedCommand),
+            Command::AdapterComplete(_) | Command::AbandonComplete(_) => {
+                return Err(ServiceError::UnexpectedCommand);
+            }
         }
         let branch = endpoint.offer().await?;
+        let abandoning = branch.label() == p::ABANDONMENT_REQUIRED;
         let (observed, reserved) = match branch.label() {
+            p::ABANDONMENT_REQUIRED if !reservation => {
+                (branch.recv::<p::AbandonmentRequired>().await?, false)
+            }
             p::APPLIED if !reservation => (branch.recv::<p::Applied>().await?, false),
             p::RESERVED if reservation => (branch.recv::<p::Reserved>().await?, true),
             p::REJECTED => (branch.recv::<p::Rejected>().await?, false),
@@ -1983,6 +2449,54 @@ async fn command_role<const C: u8, const Q: usize, const S: usize>(
         sequence = sequence
             .checked_add(1)
             .ok_or(ServiceError::SequenceExhausted)?;
+        if abandoning {
+            loop {
+                let command = commands
+                    .recv()
+                    .await
+                    .map_err(|_| ServiceError::CommandsClosed)?;
+                let descriptor = Descriptor {
+                    generation,
+                    sequence,
+                };
+                let wire = encode(descriptor);
+                let finishing = matches!(command, Command::AbandonComplete(_));
+                if !finishing && !matches!(command, Command::Lost(_)) {
+                    return Err(ServiceError::UnexpectedCommand);
+                }
+                exchange.put(Request {
+                    descriptor,
+                    command,
+                })?;
+                if finishing {
+                    endpoint.send::<p::AbandonComplete>(&wire).await?;
+                } else {
+                    endpoint.send::<p::Lost>(&wire).await?;
+                }
+                let observed = if finishing {
+                    endpoint.recv::<p::Applied>().await?
+                } else {
+                    let branch = endpoint.offer().await?;
+                    match branch.label() {
+                        p::APPLIED => branch.recv::<p::Applied>().await?,
+                        p::REJECTED => branch.recv::<p::Rejected>().await?,
+                        label => return Err(ServiceError::UnexpectedLabel(label)),
+                    }
+                };
+                same(observed, wire)?;
+                replies
+                    .send(exchange.take_reply(descriptor)?)
+                    .await
+                    .map_err(|_| ServiceError::RepliesClosed)?;
+                endpoint.send::<p::ResultTaken>(&wire).await?;
+                sequence = sequence
+                    .checked_add(1)
+                    .ok_or(ServiceError::SequenceExhausted)?;
+                if finishing {
+                    break;
+                }
+            }
+        }
         if reserved {
             let command = commands
                 .recv()
@@ -2045,6 +2559,7 @@ async fn owner_role<R: RngCore + CryptoRng, const O: u8, const P: usize, const E
         let branch = endpoint.offer().await?;
         let label = branch.label();
         let wire = match label {
+            p::SERVER_RETRY => branch.recv::<p::ServerRetry>().await?,
             p::LEARN_PEER_CID => branch.recv::<p::LearnPeerCid>().await?,
             p::APPLY_RETRY => branch.recv::<p::ApplyRetry>().await?,
             p::EARLY_PREFLIGHT => branch.recv::<p::EarlyPreflight>().await?,
@@ -2053,6 +2568,7 @@ async fn owner_role<R: RngCore + CryptoRng, const O: u8, const P: usize, const E
             p::FRAME => branch.recv::<p::Frame>().await?,
             p::ACK => branch.recv::<p::Ack>().await?,
             p::LOST => branch.recv::<p::Lost>().await?,
+            p::PROBE_TIMEOUT => branch.recv::<p::ProbeTimeout>().await?,
             p::PTO => branch.recv::<p::Pto>().await?,
             p::CHECK_RESET => branch.recv::<p::CheckReset>().await?,
             p::OBSERVE_TIMER => branch.recv::<p::ObserveTimer>().await?,
@@ -2090,13 +2606,16 @@ async fn owner_role<R: RngCore + CryptoRng, const O: u8, const P: usize, const E
         let reservation = matches!(label, p::RESERVE | p::RESERVE_CONTROL);
         let outcome = state.execute(label, descriptor, request.command, arena)?;
         let reserved = matches!(outcome, Outcome::Reserved(_));
+        let abandoning = matches!(outcome, Outcome::AbandonmentRequired(_));
         let rejected = outcome.is_rejected();
         exchange.reply(Reply {
             descriptor,
             snapshot: state.snapshot(),
             outcome,
         })?;
-        if reserved {
+        if abandoning {
+            endpoint.send::<p::AbandonmentRequired>(&wire).await?;
+        } else if reserved {
             endpoint.send::<p::Reserved>(&wire).await?;
         } else if rejected {
             endpoint.send::<p::Rejected>(&wire).await?;
@@ -2109,6 +2628,47 @@ async fn owner_role<R: RngCore + CryptoRng, const O: u8, const P: usize, const E
         sequence = sequence
             .checked_add(1)
             .ok_or(ServiceError::SequenceExhausted)?;
+        if abandoning {
+            loop {
+                let branch = endpoint.offer().await?;
+                let label = branch.label();
+                let wire = match label {
+                    p::LOST => branch.recv::<p::Lost>().await?,
+                    p::ABANDON_COMPLETE => branch.recv::<p::AbandonComplete>().await?,
+                    label => return Err(ServiceError::UnexpectedLabel(label)),
+                };
+                let request = exchange.take(wire)?;
+                let descriptor = Descriptor {
+                    generation,
+                    sequence,
+                };
+                same(encode(request.descriptor), encode(descriptor))?;
+                let outcome = state.execute(label, descriptor, request.command, arena)?;
+                let rejected = outcome.is_rejected();
+                // An invalid completion terminates this actor. It cannot leave
+                // the mandatory cleanup continuation or release a reusable slot.
+                if label == p::ABANDON_COMPLETE && (rejected || state.abandonment.is_some()) {
+                    return Err(ServiceError::UnexpectedCommand);
+                }
+                exchange.reply(Reply {
+                    descriptor,
+                    snapshot: state.snapshot(),
+                    outcome,
+                })?;
+                if rejected {
+                    endpoint.send::<p::Rejected>(&wire).await?;
+                } else {
+                    endpoint.send::<p::Applied>(&wire).await?;
+                }
+                same(endpoint.recv::<p::ResultTaken>().await?, wire)?;
+                sequence = sequence
+                    .checked_add(1)
+                    .ok_or(ServiceError::SequenceExhausted)?;
+                if label == p::ABANDON_COMPLETE {
+                    break;
+                }
+            }
+        }
         if reserved {
             // The successful reserve branch cannot roll back into unrelated
             // work until this exact adapter callback is consumed.
@@ -2147,6 +2707,19 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
         command: Command,
         arena: &authority::Arena<P, E>,
     ) -> Result<Outcome, ServiceError> {
+        if self.terminal {
+            return Ok(Outcome::Rejected(Error::Migration(
+                migration::Error::NoViablePath,
+            )));
+        }
+        if self.abandonment.is_some()
+            && !matches!(
+                &command,
+                Command::Inspect | Command::Lost(_) | Command::AbandonComplete(_)
+            )
+        {
+            return Ok(Outcome::Rejected(Error::AbandonmentPending));
+        }
         let mutable = !matches!(
             command,
             Command::Inspect
@@ -2163,6 +2736,9 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
             return Ok(Outcome::Rejected(Error::SequenceExhausted));
         };
         let result = match (label, command) {
+            (p::SERVER_RETRY, Command::ServerRetry(token)) => self
+                .server_retry(token)
+                .map(|()| Outcome::ServerRetryValidated),
             (p::LEARN_PEER_CID, Command::LearnPeerCid(grant)) => self
                 .learn_peer_cid(arena, grant)
                 .map(|()| Outcome::PeerCidLearned),
@@ -2176,7 +2752,7 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
             (p::EARLY_RELEASE, Command::EarlyRelease(release)) => Ok(self.early_release(release)),
             (p::FRAME, Command::Frame(grant)) => self.frame(arena, grant),
             (p::ACK, Command::Ack(ack)) => self.acknowledge(ack).map(|()| Outcome::AckApplied),
-            (p::LOST, Command::Lost(packet)) => self.lost(packet).map(|()| Outcome::LossApplied),
+            (p::LOST, Command::Lost(packet)) => self.lost(packet).map(Outcome::LossApplied),
             (
                 p::RESERVE,
                 Command::Reserve {
@@ -2207,15 +2783,24 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
             (p::ADAPTER_COMPLETE, Command::AdapterComplete(completion)) => self
                 .complete(completion)
                 .map(|()| Outcome::AdapterCompleted),
+            (p::PROBE_TIMEOUT, Command::ProbeTimeout(grant)) => self
+                .probe_timeout(grant)
+                .map(|()| Outcome::ProbeTimeoutUpdated),
             (p::PTO, Command::Pto(grant)) => self.pto(grant).map(|()| Outcome::PtoApplied),
             (p::CHECK_RESET, Command::CheckReset(candidate)) => {
                 Ok(Outcome::Reset(self.reset(candidate)))
             }
             (p::OBSERVE_TIMER, Command::ObserveTimer) => Ok(Outcome::Timer(self.timer())),
             (p::TIMEOUT, Command::Timeout { timer, now }) => {
-                self.timeout(timer, now).map(|decision| Outcome::Expired {
-                    decision,
-                    recovery_reset: self.recovery_reset.take(),
+                self.timeout(timer, now).and_then(|decision| {
+                    if self.abandonment_grant.is_some() {
+                        self.abandonment_outcome()
+                    } else {
+                        Ok(Outcome::Expired {
+                            decision,
+                            recovery_reset: self.recovery_reset.take(),
+                        })
+                    }
                 })
             }
             (p::ISSUE_CID, Command::IssueCid) => self.issue_cid().map(Outcome::Issued),
@@ -2225,7 +2810,15 @@ impl<R: RngCore + CryptoRng> State<'_, R> {
                 })
             }
             (p::RETIRE_PATH, Command::RetirePath(path)) => {
-                self.retire_path(path).map(|()| Outcome::PathRetired)
+                if path == self.migration.active() {
+                    Err(Error::InvalidConfig)
+                } else {
+                    self.begin_abandonment(path, AbandonResume::Retire)
+                        .and_then(|()| self.abandonment_outcome())
+                }
+            }
+            (p::ABANDON_COMPLETE, Command::AbandonComplete(completion)) => {
+                self.finish_abandonment(completion)
             }
             (p::INSPECT, Command::Inspect) => Ok(Outcome::Snapshot),
             _ => return Err(ServiceError::UnexpectedCommand),
@@ -2298,6 +2891,9 @@ impl<'c, 's, const Q: usize, const S: usize> Client<'c, 's, Q, S> {
     }
     pub const fn snapshot(&self) -> Snapshot {
         self.snapshot
+    }
+    pub const fn generation(&self) -> u64 {
+        self.generation
     }
     pub async fn request(&mut self, command: Command) -> Result<Outcome, ClientError> {
         if self.awaiting_adapter != matches!(command, Command::AdapterComplete(_)) {
@@ -2391,3 +2987,11 @@ pub(crate) mod tests;
 mod test_auth;
 
 mod early;
+
+mod advertisement;
+
+#[cfg(test)]
+pub(crate) mod tls_authority_fixture;
+
+#[cfg(test)]
+pub(crate) mod cancellation_fixture;

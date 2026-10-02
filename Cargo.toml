@@ -46,6 +46,10 @@ required-features = ["target-link-smoke"]
 
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"
-branch = "development/dots-causality"
-revision = "3aef31ba015c75ea824b8b41f5603b03f5dd336b"
+branch = "perf/certified-route-metadata-20261002"
+revision = "a9371bea437bbc1f4303ceeb3fc833f605efe730"
+upstream-base = "3aef31ba015c75ea824b8b41f5603b03f5dd336b"
 local-patches = false
+
+[dev-dependencies]
+actor-test-allocator = { path = "tests/support/actor-test-allocator" }

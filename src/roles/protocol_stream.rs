@@ -95,12 +95,15 @@ pub const SELECTION_CANCELLED: u8 = 81;
 pub type SelectionCancelled = g::Msg<{ SELECTION_CANCELLED }, [u8; 16]>;
 pub const PUBLICATION_SETTLED: u8 = 82;
 pub type PublicationSettled = g::Msg<{ PUBLICATION_SETTLED }, [u8; 16]>;
+pub const RETRY: u8 = 83;
+pub type Retry = g::Msg<{ RETRY }, [u8; 16]>;
 pub type ReplyFlow<const C: u8, const O: u8, M> =
     g::Seq<g::Send<O, C, M>, g::Send<C, O, ResultTaken>>;
-pub type Operation<const C: u8, const O: u8, M> = g::Seq<
-    g::Send<C, O, M>,
-    g::Seq<g::Route<g::Send<O, C, Applied>, g::Send<O, C, Rejected>>, g::Send<C, O, ResultTaken>>,
->;
+/// The owner chooses its outcome only after the concrete request arrives.
+/// The client must acknowledge that result before this operation can reenter.
+pub type OperationResult<const C: u8, const O: u8> =
+    g::Seq<g::Route<g::Send<O, C, Applied>, g::Send<O, C, Rejected>>, g::Send<C, O, ResultTaken>>;
+pub type Operation<const C: u8, const O: u8, M> = g::Seq<g::Send<C, O, M>, OperationResult<C, O>>;
 pub type CompletionAttempts<const C: u8, const O: u8> = g::Route<
     Operation<C, O, AdapterAccepted>,
     g::Route<Operation<C, O, AdapterRejected>, Operation<C, O, CancelTransmission>>,
@@ -127,35 +130,44 @@ pub type Retirement<const C: u8, const O: u8> = g::Seq<
     g::Send<C, O, RetireRequested>,
     g::Seq<g::Send<O, C, Retired>, g::Send<C, O, RetirementAcknowledged>>,
 >;
-pub type ActiveWork<const C: u8, const O: u8> = g::Route<
+/// Only these requests have the same result and return to the same active
+/// roll. Preparation and retirement keep their own mandatory continuations.
+pub type ActiveRequests<const C: u8, const O: u8> = g::Route<
     g::Route<
-        g::Route<
-            g::Route<Operation<C, O, Probe>, Operation<C, O, Deliver>>,
-            g::Route<Operation<C, O, DeliverEarly>, Operation<C, O, Acknowledge>>,
-        >,
-        g::Route<
-            g::Route<Operation<C, O, Lost>, Operation<C, O, Open>>,
-            g::Route<Operation<C, O, Send>, Operation<C, O, Read>>,
-        >,
+        g::Route<g::Send<C, O, Probe>, g::Send<C, O, Deliver>>,
+        g::Route<g::Send<C, O, DeliverEarly>, g::Send<C, O, Acknowledge>>,
     >,
     g::Route<
         g::Route<
-            g::Route<Operation<C, O, Consume>, Operation<C, O, AcknowledgeReset>>,
-            g::Route<Operation<C, O, Reset>, Operation<C, O, Stop>>,
+            g::Route<g::Send<C, O, Lost>, g::Send<C, O, Open>>,
+            g::Route<g::Send<C, O, Send>, g::Send<C, O, Read>>,
         >,
         g::Route<
-            g::Route<Operation<C, O, RetireStream>, Operation<C, O, Inspect>>,
-            g::Route<PrepareFlow<C, O, Prepare>, g::Send<C, O, RetireRequested>>,
+            g::Route<g::Send<C, O, Consume>, g::Send<C, O, AcknowledgeReset>>,
+            g::Route<
+                g::Route<g::Send<C, O, Reset>, g::Send<C, O, Stop>>,
+                g::Route<g::Send<C, O, RetireStream>, g::Send<C, O, Inspect>>,
+            >,
         >,
     >,
 >;
-pub type BootstrapWork<const C: u8, const O: u8> = g::Route<
+pub type ActiveWork<const C: u8, const O: u8> = g::Route<
+    g::Seq<ActiveRequests<C, O>, OperationResult<C, O>>,
+    g::Route<PrepareFlow<C, O, Prepare>, g::Send<C, O, RetireRequested>>,
+>;
+/// Admission requests select a different continuation and are deliberately
+/// outside the requests that share an ordinary result exchange.
+pub type BootstrapRequests<const C: u8, const O: u8> = g::Route<
+    g::Route<g::Send<C, O, Probe>, g::Send<C, O, Deliver>>,
     g::Route<
-        g::Route<Operation<C, O, Probe>, Operation<C, O, Deliver>>,
-        g::Route<Operation<C, O, Acknowledge>, Operation<C, O, Lost>>,
+        g::Route<g::Send<C, O, Acknowledge>, g::Send<C, O, Lost>>,
+        g::Route<g::Send<C, O, Retry>, g::Send<C, O, Inspect>>,
     >,
+>;
+pub type BootstrapWork<const C: u8, const O: u8> = g::Route<
+    g::Seq<BootstrapRequests<C, O>, OperationResult<C, O>>,
     g::Route<
-        g::Route<Operation<C, O, Inspect>, g::Send<C, O, PeerReady>>,
+        g::Send<C, O, PeerReady>,
         g::Route<g::Send<C, O, EarlySendReady>, g::Send<C, O, RetireRequested>>,
     >,
 >;
@@ -164,7 +176,10 @@ pub type EarlyWork<const C: u8, const O: u8> = g::Route<
         g::Route<Operation<C, O, Probe>, Operation<C, O, Deliver>>,
         g::Route<
             Operation<C, O, Acknowledge>,
-            g::Route<Operation<C, O, Lost>, Operation<C, O, Inspect>>,
+            g::Route<
+                g::Route<Operation<C, O, Lost>, Operation<C, O, Retry>>,
+                Operation<C, O, Inspect>,
+            >,
         >,
     >,
     g::Route<
@@ -199,15 +214,15 @@ fn reply<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]>>()
 -> g::Program<ReplyFlow<C, O, M>> {
     g::seq(g::send::<O, C, M>(), g::send::<C, O, ResultTaken>())
 }
+fn operation_result<const C: u8, const O: u8>() -> g::Program<OperationResult<C, O>> {
+    g::seq(
+        g::route(g::send::<O, C, Applied>(), g::send::<O, C, Rejected>()),
+        g::send::<C, O, ResultTaken>(),
+    )
+}
 fn operation<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]>>()
 -> g::Program<Operation<C, O, M>> {
-    g::seq(
-        g::send::<C, O, M>(),
-        g::seq(
-            g::route(g::send::<O, C, Applied>(), g::send::<O, C, Rejected>()),
-            g::send::<C, O, ResultTaken>(),
-        ),
-    )
+    g::seq(g::send::<C, O, M>(), operation_result::<C, O>())
 }
 fn retirement<const C: u8, const O: u8>() -> g::Program<Retirement<C, O>> {
     g::seq(
@@ -251,39 +266,37 @@ pub(crate) fn prepare<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]
 }
 pub fn stream_choreography<const C: u8, const O: u8>() -> g::Program<StreamFlow<C, O>> {
     let active = || {
-        g::seq(
+        let requests = g::route(
+            g::route(
+                g::route(g::send::<C, O, Probe>(), g::send::<C, O, Deliver>()),
+                g::route(
+                    g::send::<C, O, DeliverEarly>(),
+                    g::send::<C, O, Acknowledge>(),
+                ),
+            ),
             g::route(
                 g::route(
-                    g::route(
-                        g::route(operation::<C, O, Probe>(), operation::<C, O, Deliver>()),
-                        g::route(
-                            operation::<C, O, DeliverEarly>(),
-                            operation::<C, O, Acknowledge>(),
-                        ),
-                    ),
-                    g::route(
-                        g::route(operation::<C, O, Lost>(), operation::<C, O, Open>()),
-                        g::route(operation::<C, O, Send>(), operation::<C, O, Read>()),
-                    ),
+                    g::route(g::send::<C, O, Lost>(), g::send::<C, O, Open>()),
+                    g::route(g::send::<C, O, Send>(), g::send::<C, O, Read>()),
                 ),
                 g::route(
                     g::route(
-                        g::route(
-                            operation::<C, O, Consume>(),
-                            operation::<C, O, AcknowledgeReset>(),
-                        ),
-                        g::route(operation::<C, O, Reset>(), operation::<C, O, Stop>()),
+                        g::send::<C, O, Consume>(),
+                        g::send::<C, O, AcknowledgeReset>(),
                     ),
                     g::route(
-                        g::route(
-                            operation::<C, O, RetireStream>(),
-                            operation::<C, O, Inspect>(),
-                        ),
-                        g::route(
-                            prepare::<C, O, Prepare>(),
-                            g::send::<C, O, RetireRequested>(),
-                        ),
+                        g::route(g::send::<C, O, Reset>(), g::send::<C, O, Stop>()),
+                        g::route(g::send::<C, O, RetireStream>(), g::send::<C, O, Inspect>()),
                     ),
+                ),
+            ),
+        );
+        g::seq(
+            g::route(
+                g::seq(requests, operation_result::<C, O>()),
+                g::route(
+                    prepare::<C, O, Prepare>(),
+                    g::send::<C, O, RetireRequested>(),
                 ),
             )
             .roll(),
@@ -293,13 +306,17 @@ pub fn stream_choreography<const C: u8, const O: u8>() -> g::Program<StreamFlow<
             ),
         )
     };
-    let bootstrap = g::route(
+    let bootstrap_requests = g::route(
+        g::route(g::send::<C, O, Probe>(), g::send::<C, O, Deliver>()),
         g::route(
-            g::route(operation::<C, O, Probe>(), operation::<C, O, Deliver>()),
-            g::route(operation::<C, O, Acknowledge>(), operation::<C, O, Lost>()),
+            g::route(g::send::<C, O, Acknowledge>(), g::send::<C, O, Lost>()),
+            g::route(g::send::<C, O, Retry>(), g::send::<C, O, Inspect>()),
         ),
+    );
+    let bootstrap = g::route(
+        g::seq(bootstrap_requests, operation_result::<C, O>()),
         g::route(
-            g::route(operation::<C, O, Inspect>(), g::send::<C, O, PeerReady>()),
+            g::send::<C, O, PeerReady>(),
             g::route(
                 g::send::<C, O, EarlySendReady>(),
                 g::send::<C, O, RetireRequested>(),
@@ -312,7 +329,10 @@ pub fn stream_choreography<const C: u8, const O: u8>() -> g::Program<StreamFlow<
             g::route(operation::<C, O, Probe>(), operation::<C, O, Deliver>()),
             g::route(
                 operation::<C, O, Acknowledge>(),
-                g::route(operation::<C, O, Lost>(), operation::<C, O, Inspect>()),
+                g::route(
+                    g::route(operation::<C, O, Lost>(), operation::<C, O, Retry>()),
+                    operation::<C, O, Inspect>(),
+                ),
             ),
         ),
         g::route(

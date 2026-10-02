@@ -12,8 +12,11 @@
 //! AND TLS is no longer handshaking. A server can derive those keys before it
 //! authenticates the client's Finished, so key availability alone is insufficient.
 //!
-//! hibana 3aef31b roll continuations do not seal old reentry. Sequential role
-//! continuations and consumed capabilities enforce past-phase finality. At a
+//! The vendored elastic-roll continuations do not seal old reentry. Sequential role
+//! continuations and consumed private capabilities enforce past-phase finality
+//! in the production `tls_owner` locals. The Provider moves by value between
+//! those capabilities, and the obsolete `protocol_tls` path re-exports this
+//! graph; there is no independent flat or universal owner implementation. At a
 //! boundary use the already-announced grant's direct recv, not offer at a roll
 //! tail (which previews the old phase). No phase enum or generic event exists.
 use hibana::{
@@ -489,6 +492,30 @@ pub mod application {
     pub type Retired = g::Msg<{ RETIRED }, [u8; 16]>;
     pub const RETIREMENT_ACKNOWLEDGED: u8 = 220;
     pub type RetirementAcknowledged = g::Msg<{ RETIREMENT_ACKNOWLEDGED }, [u8; 16]>;
+    // Server receive keys can outlive Handshake keys. These narrow residual
+    // operations never admit Handshake use, early sending, or reconfirmation.
+    pub const OPEN_EARLY: u8 = 227;
+    pub type OpenEarly = g::Msg<{ OPEN_EARLY }, [u8; 16]>;
+    pub const EARLY_HEADER_MASK: u8 = 228;
+    pub type EarlyHeaderMask = g::Msg<{ EARLY_HEADER_MASK }, [u8; 16]>;
+    pub const TAKE_EARLY_REPLAY_CLAIM: u8 = 229;
+    pub type TakeEarlyReplayClaim = g::Msg<{ TAKE_EARLY_REPLAY_CLAIM }, [u8; 16]>;
+    pub const DISCARD_EARLY: u8 = 230;
+    pub type DiscardEarly = g::Msg<{ DISCARD_EARLY }, [u8; 16]>;
+    pub const EARLY_OPENED: u8 = 231;
+    pub type EarlyOpened = g::Msg<{ EARLY_OPENED }, [u8; 16]>;
+    pub const EARLY_OPEN_REJECTED: u8 = 232;
+    pub type EarlyOpenRejected = g::Msg<{ EARLY_OPEN_REJECTED }, [u8; 16]>;
+    pub const EARLY_REPLAY_CLAIM_READY: u8 = 233;
+    pub type EarlyReplayClaimReady = g::Msg<{ EARLY_REPLAY_CLAIM_READY }, [u8; 16]>;
+    pub const NO_EARLY_REPLAY_CLAIM: u8 = 234;
+    pub type NoEarlyReplayClaim = g::Msg<{ NO_EARLY_REPLAY_CLAIM }, [u8; 16]>;
+    pub const EARLY_DISCARDED: u8 = 235;
+    pub type EarlyDiscarded = g::Msg<{ EARLY_DISCARDED }, [u8; 16]>;
+    pub const EARLY_HEADER_MASK_READY: u8 = 236;
+    pub type EarlyHeaderMaskReady = g::Msg<{ EARLY_HEADER_MASK_READY }, [u8; 16]>;
+    pub const EARLY_HEADER_MASK_REJECTED: u8 = 237;
+    pub type EarlyHeaderMaskRejected = g::Msg<{ EARLY_HEADER_MASK_REJECTED }, [u8; 16]>;
 }
 
 pub const HANDSHAKE_KEY_GRANT: u8 = 221;
@@ -1910,108 +1937,107 @@ fn confirmed_retirement<const C: u8, const T: u8>() -> g::Program<ConfirmedRetir
         g::send::<C, T, confirmed::RetirementAcknowledged>(),
     )
 }
-pub type ApplicationWork<const C: u8, const T: u8> = g::Roll<
+pub type ApplicationTrafficWork<const C: u8, const T: u8> = g::Route<
     g::Route<
         g::Route<
-            g::Route<
-                BinaryFlow<
-                    C,
-                    T,
-                    { application::CRYPTO_INPUT },
-                    { application::CRYPTO_ACCEPTED },
-                    { application::CRYPTO_REJECTED },
-                    { application::RESULT_TAKEN },
-                >,
-                BinaryFlow<
-                    C,
-                    T,
-                    { application::FLIGHT_REQUESTED },
-                    { application::FLIGHT_READY },
-                    { application::AWAIT_INPUT },
-                    { application::RESULT_TAKEN },
-                >,
+            BinaryFlow<
+                C,
+                T,
+                { application::CRYPTO_INPUT },
+                { application::CRYPTO_ACCEPTED },
+                { application::CRYPTO_REJECTED },
+                { application::RESULT_TAKEN },
             >,
-            g::Route<
-                BinaryFlow<
-                    C,
-                    T,
-                    { application::OPEN_ONE_RTT },
-                    { application::ONE_RTT_OPENED },
-                    { application::ONE_RTT_OPEN_REJECTED },
-                    { application::RESULT_TAKEN },
-                >,
-                g::Route<
-                    BinaryFlow<
-                        C,
-                        T,
-                        { application::SEAL_ONE_RTT },
-                        { application::ONE_RTT_SEALED },
-                        { application::ONE_RTT_SEAL_REJECTED },
-                        { application::RESULT_TAKEN },
-                    >,
-                    BinaryFlow<
-                        C,
-                        T,
-                        { application::ONE_RTT_HEADER_MASK },
-                        { application::HEADER_MASK_READY },
-                        { application::HEADER_MASK_REJECTED },
-                        { application::RESULT_TAKEN },
-                    >,
-                >,
+            BinaryFlow<
+                C,
+                T,
+                { application::FLIGHT_REQUESTED },
+                { application::FLIGHT_READY },
+                { application::AWAIT_INPUT },
+                { application::RESULT_TAKEN },
             >,
         >,
         g::Route<
-            g::Route<
-                BinaryFlow<
-                    C,
-                    T,
-                    { application::VALIDATED_ACK },
-                    { application::ACK_APPLIED },
-                    { application::ACK_REJECTED },
-                    { application::RESULT_TAKEN },
-                >,
-                BinaryFlow<
-                    C,
-                    T,
-                    { application::MAINTAIN_KEYS },
-                    { application::KEYS_MAINTAINED },
-                    { application::MAINTENANCE_REJECTED },
-                    { application::RESULT_TAKEN },
-                >,
+            BinaryFlow<
+                C,
+                T,
+                { application::OPEN_ONE_RTT },
+                { application::ONE_RTT_OPENED },
+                { application::ONE_RTT_OPEN_REJECTED },
+                { application::RESULT_TAKEN },
             >,
             g::Route<
                 BinaryFlow<
                     C,
                     T,
-                    { application::INITIATE_UPDATE },
-                    { application::KEY_UPDATED },
-                    { application::UPDATE_REJECTED },
+                    { application::SEAL_ONE_RTT },
+                    { application::ONE_RTT_SEALED },
+                    { application::ONE_RTT_SEAL_REJECTED },
                     { application::RESULT_TAKEN },
                 >,
-                g::Route<
-                    LoanFlow<
-                        C,
-                        T,
-                        { application::LOAN_INTEGRITY },
-                        { application::INTEGRITY_GRANTED },
-                        { application::LOAN_UNAVAILABLE },
-                        { application::INTEGRITY_RETURNED },
-                        { application::INTEGRITY_RESTORED },
-                        { application::RESULT_TAKEN },
-                    >,
-                    UnaryFlow<
-                        C,
-                        T,
-                        { application::RETIRE_REQUESTED },
-                        { application::RETIREMENT_PREPARED },
-                        { application::RESULT_TAKEN },
-                    >,
+                BinaryFlow<
+                    C,
+                    T,
+                    { application::ONE_RTT_HEADER_MASK },
+                    { application::HEADER_MASK_READY },
+                    { application::HEADER_MASK_REJECTED },
+                    { application::RESULT_TAKEN },
+                >,
+            >,
+        >,
+    >,
+    g::Route<
+        g::Route<
+            BinaryFlow<
+                C,
+                T,
+                { application::VALIDATED_ACK },
+                { application::ACK_APPLIED },
+                { application::ACK_REJECTED },
+                { application::RESULT_TAKEN },
+            >,
+            BinaryFlow<
+                C,
+                T,
+                { application::MAINTAIN_KEYS },
+                { application::KEYS_MAINTAINED },
+                { application::MAINTENANCE_REJECTED },
+                { application::RESULT_TAKEN },
+            >,
+        >,
+        g::Route<
+            BinaryFlow<
+                C,
+                T,
+                { application::INITIATE_UPDATE },
+                { application::KEY_UPDATED },
+                { application::UPDATE_REJECTED },
+                { application::RESULT_TAKEN },
+            >,
+            g::Route<
+                LoanFlow<
+                    C,
+                    T,
+                    { application::LOAN_INTEGRITY },
+                    { application::INTEGRITY_GRANTED },
+                    { application::LOAN_UNAVAILABLE },
+                    { application::INTEGRITY_RETURNED },
+                    { application::INTEGRITY_RESTORED },
+                    { application::RESULT_TAKEN },
+                >,
+                UnaryFlow<
+                    C,
+                    T,
+                    { application::RETIRE_REQUESTED },
+                    { application::RETIREMENT_PREPARED },
+                    { application::RESULT_TAKEN },
                 >,
             >,
         >,
     >,
 >;
-pub fn application_work<const C: u8, const T: u8>() -> g::Program<ApplicationWork<C, T>> {
+fn application_traffic_work<const C: u8, const T: u8>() -> g::Program<ApplicationTrafficWork<C, T>>
+{
     g::route(
         g::route(
             g::route(
@@ -2111,8 +2137,101 @@ pub fn application_work<const C: u8, const T: u8>() -> g::Program<ApplicationWor
             ),
         ),
     )
+}
+/// Residual server early-receive/cleanup lifetime, independent of Handshake
+/// key retirement. The graph admits these specific requests after that boundary;
+/// the sole Provider owns and destroys actual early keys. Once discarded, opens
+/// and header masks fail with KeysUnavailable; no copied presence flag grants use.
+pub type RetainedEarlyReceiveWork<const C: u8, const T: u8> = g::Route<
+    g::Route<
+        BinaryFlow<
+            C,
+            T,
+            { application::OPEN_EARLY },
+            { application::EARLY_OPENED },
+            { application::EARLY_OPEN_REJECTED },
+            { application::RESULT_TAKEN },
+        >,
+        BinaryFlow<
+            C,
+            T,
+            { application::EARLY_HEADER_MASK },
+            { application::EARLY_HEADER_MASK_READY },
+            { application::EARLY_HEADER_MASK_REJECTED },
+            { application::RESULT_TAKEN },
+        >,
+    >,
+    g::Route<
+        BinaryFlow<
+            C,
+            T,
+            { application::TAKE_EARLY_REPLAY_CLAIM },
+            { application::EARLY_REPLAY_CLAIM_READY },
+            { application::NO_EARLY_REPLAY_CLAIM },
+            { application::RESULT_TAKEN },
+        >,
+        UnaryFlow<
+            C,
+            T,
+            { application::DISCARD_EARLY },
+            { application::EARLY_DISCARDED },
+            { application::RESULT_TAKEN },
+        >,
+    >,
+>;
+fn retained_early_receive_work<const C: u8, const T: u8>()
+-> g::Program<RetainedEarlyReceiveWork<C, T>> {
+    g::route(
+        g::route(
+            binary::<
+                C,
+                T,
+                { application::OPEN_EARLY },
+                { application::EARLY_OPENED },
+                { application::EARLY_OPEN_REJECTED },
+                { application::RESULT_TAKEN },
+            >(),
+            binary::<
+                C,
+                T,
+                { application::EARLY_HEADER_MASK },
+                { application::EARLY_HEADER_MASK_READY },
+                { application::EARLY_HEADER_MASK_REJECTED },
+                { application::RESULT_TAKEN },
+            >(),
+        ),
+        g::route(
+            binary::<
+                C,
+                T,
+                { application::TAKE_EARLY_REPLAY_CLAIM },
+                { application::EARLY_REPLAY_CLAIM_READY },
+                { application::NO_EARLY_REPLAY_CLAIM },
+                { application::RESULT_TAKEN },
+            >(),
+            unary::<
+                C,
+                T,
+                { application::DISCARD_EARLY },
+                { application::EARLY_DISCARDED },
+                { application::RESULT_TAKEN },
+            >(),
+        ),
+    )
+}
+/// A single exclusive Provider local serializes both narrow operation groups.
+/// Separate `par` futures must not share the Provider or Endpoint. Other owners
+/// remain independently composed by the connection's outer `g::par`.
+pub type ApplicationWork<const C: u8, const T: u8> =
+    g::Roll<g::Route<ApplicationTrafficWork<C, T>, RetainedEarlyReceiveWork<C, T>>>;
+pub fn application_work<const C: u8, const T: u8>() -> g::Program<ApplicationWork<C, T>> {
+    g::route(
+        application_traffic_work::<C, T>(),
+        retained_early_receive_work::<C, T>(),
+    )
     .roll()
 }
+
 pub type ApplicationRetirement<const C: u8, const T: u8> =
     g::Seq<g::Send<T, C, application::Retired>, g::Send<C, T, application::RetirementAcknowledged>>;
 fn application_retirement<const C: u8, const T: u8>() -> g::Program<ApplicationRetirement<C, T>> {

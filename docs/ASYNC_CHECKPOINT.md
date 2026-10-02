@@ -1,5 +1,7 @@
 # Async Initial / host reactor checkpoint
 
+Historical document preserved from source `004a324`. It does not qualify the current full-owner tree; see the current README.
+
 The Initial cryptographic keys are owned by real async Hibana roles. Their local sides perform direct send/recv/offer awaits; the two directional services share a global par with rolled typed requests. Host UDP, listener admission, resumption spacing and timer deadlines run through one epoll/eventfd reactor. Fixed mailboxes and core runtime do not allocate.
 
 Remaining migration: Handshake/1RTT TLS ownership and receive/ACK/stream control still use the prior synchronous Driver in a separate session. This checkpoint is not maximal Hibana integration, full protocol conformance, a completed 40-cell matrix, or a Pico fit claim. Old synchronous integration fixtures remain in source and are pending migration.

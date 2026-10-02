@@ -19,11 +19,14 @@ RAW = WORK / 'raw'
 TARGET = WORK / 'target'
 SAFE = ROOT / 'ci-safe-results/actor-diagnostic'
 TOOLCHAIN = '1.95.0'
-VENDOR_SHA = '3aef31ba015c75ea824b8b41f5603b03f5dd336b'
+VENDOR_SHA = 'a9371bea437bbc1f4303ceeb3fc833f605efe730'
 COMPILE_SECONDS = 270
 TEST_SECONDS = 15
 # These are existing real graph tests. No generated reduced grammar, cfg edits,
-# ignored-test changes, assertion rewrites, or vendored Hibana changes are used.
+# ignored-test changes or runtime source rewrites are used by this runner.
+# The prior raw Inspect assertion overclaimed elastic roll semantics; its
+# historical source is preserved, with the actual local-boundary obligation
+# tested explicitly in preparation_boundary instead.
 TARGETS = {
     'early_owner_no_alloc': [
         'first_retire_requires_no_dummy_work_and_no_allocations',
@@ -35,7 +38,8 @@ TARGETS = {
         'q1_owner_moves_and_copies_early_intent_without_heap',
         'cancelling_after_command_publication_revokes_the_admission_capability',
         'projected_bootstrap_has_no_application_open_edge',
-        'projected_preparation_cannot_escape_without_owner_settlement_suffix',
+        'projected_factored_requests_keep_outcomes_and_stage_exits',
+        'projected_common_result_and_receipt_cannot_be_skipped',
     ],
     'protocol': [
         'independent_guarded_tx_and_timer_progress_while_rx_is_parked',
@@ -56,6 +60,10 @@ TARGETS = {
         'roles::path_owner::tests::q1_projected_reservation_branch_waits_for_exact_callback_then_retires',
         'roles::stream_owner::tests::q1_preparation_scope_retries_stale_cancel_without_releasing_next_frame',
         'roles::early_owner::tests::first_finished_then_repeated_inspection_and_retirement_needs_no_dummy_packet',
+        'roles::stream_owner::preparation_boundary::prepared_selection_rejects_ordinary_mailbox_inspect_and_revokes_capability',
+        'roles::stream_owner::preparation_boundary::reserved_transmission_rejects_ordinary_mailbox_inspect_and_revokes_capability',
+        'roles::stream_owner::preparation_boundary::cancelling_ordinary_mailbox_request_revokes_prepared_and_reserved_capabilities',
+        'roles::stream_owner::preparation_boundary::genuine_prepublication_cancellation_settles_reserved_scope_and_preserves_data',
     ],
 }
 KNOWN_FAILURES = set(TARGETS['early_owner_no_alloc'][:2])

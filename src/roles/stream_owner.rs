@@ -18,6 +18,7 @@ use crate::{
 };
 use core::cell::RefCell;
 use hibana::{Endpoint, EndpointError};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 mod controls;
 use controls::*;
@@ -94,6 +95,7 @@ impl From<packet_authority::Error> for Fault {
 pub struct PreparedId {
     generation: u64,
     sequence: u64,
+    binding: [u8; 32],
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransmissionId {
@@ -141,6 +143,7 @@ pub struct ReadResult<const N: usize> {
 pub const MAX_STREAM_VIEWS: usize = 32;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Snapshot {
+    pub role: Role,
     pub ready: bool,
     pub closed: bool,
     pub pending_transmission: bool,
@@ -149,6 +152,10 @@ pub struct Snapshot {
     pub send_references: usize,
     pub control_count: usize,
     pub early_intent: bool,
+    /// Caller-owned journal storage is configured, even before TLS admission.
+    pub early_send_configured: bool,
+    /// The actual TLS-install grant is retained by the owner.
+    pub early_send_installed: bool,
     pub early_import_required: bool,
     pub probe_budget: u8,
     pub local_limits: Limits,
@@ -187,6 +194,7 @@ pub enum Command<const N: usize> {
     Probe(super::recovery_owner::StreamPtoGrant),
     EarlyReady(EarlyReady),
     EarlySendReady(super::tls_owner::EarlySendReady),
+    Retry(packet_authority::StreamRetryGrant),
     DeliverEarly(super::early_owner::AppRelease<N>),
     Deliver(packet_authority::DeliveryGrant<N>),
     Acknowledge(super::recovery_owner::StreamAck),
@@ -246,6 +254,7 @@ pub enum Command<const N: usize> {
 pub enum Outcome<const N: usize> {
     Installed,
     Applied,
+    LossApplied(Option<super::recovery_owner::StreamLossSettled>),
     Opened(StreamHandle),
     Read(ReadResult<N>),
     ResetAcknowledged(u64),
@@ -357,6 +366,7 @@ impl<'s, const RX: usize, const TX: usize, const C: usize, const R: usize> State
             *to = Some(handle);
         }
         Snapshot {
+            role: self.role,
             ready: self.ready(),
             closed: self.closed,
             pending_transmission: self.pending.is_some(),
@@ -370,6 +380,8 @@ impl<'s, const RX: usize, const TX: usize, const C: usize, const R: usize> State
                 .filter(|c| c.kind.is_some())
                 .count(),
             early_intent: self.early.as_ref().is_some_and(|j| j.has_intent()),
+            early_send_configured: self.early_slots.is_some() || self.early.is_some(),
+            early_send_installed: self.early_send_authority.is_some(),
             early_import_required: self.peer_authority.is_some()
                 && self.early.is_some()
                 && self.early_authority.is_none(),
@@ -684,6 +696,14 @@ impl<'s, const RX: usize, const TX: usize, const C: usize, const R: usize> State
         let id = PreparedId {
             generation: self.generation,
             sequence: self.sequence,
+            binding: {
+                let mut digest = Sha256::new();
+                digest.update(b"hibana-quic stream preparation v1\0");
+                digest.update([u8::from(early), u8::from(probe)]);
+                digest.update((bytes.len as u64).to_be_bytes());
+                digest.update(bytes.as_bytes());
+                digest.finalize().into()
+            },
         };
         self.sequence = next;
         self.pending = Some(PendingTx::Prepared(id, selection, probe));
@@ -783,6 +803,19 @@ impl<'s, const RX: usize, const TX: usize, const C: usize, const R: usize> State
     ) -> Result<Outcome<N>, Fault> {
         match command {
             Command::PeerReady(grant) => self.peer_ready(grant)?,
+            Command::Retry(grant) => {
+                self.idle()?;
+                if grant.generation() != self.generation {
+                    return Err(Fault::WrongGeneration);
+                }
+                if self.role != Role::Client || self.peer_authority.is_some() {
+                    return Err(Fault::NotReady);
+                }
+                if let Some(journal) = self.early.as_mut() {
+                    journal.retry_accepted()?;
+                }
+                self.probe_authority = None;
+            }
             Command::Probe(grant) => {
                 self.idle()?;
                 if grant.generation() != self.generation {
@@ -869,6 +902,7 @@ impl<'s, const RX: usize, const TX: usize, const C: usize, const R: usize> State
                 }
                 self.queue.on_packet_lost(packet);
                 self.controls.on_packet_lost(packet);
+                return Ok(Outcome::LossApplied(grant.settle()));
             }
             Command::Open { bidirectional } => {
                 self.application_ready()?;
@@ -1129,6 +1163,7 @@ impl<const N: usize> Command<N> {
             Self::Probe(_) => p::PROBE,
             Self::EarlyReady(_) => p::EARLY_READY,
             Self::EarlySendReady(_) => p::EARLY_SEND_READY,
+            Self::Retry(_) => p::RETRY,
             Self::DeliverEarly(_) => p::DELIVER_EARLY,
             Self::Deliver(_) => p::DELIVER,
             Self::Acknowledge(_) => p::ACKNOWLEDGE,
@@ -1162,6 +1197,8 @@ impl<const N: usize> Command<N> {
 }
 /// The outer session retains the endpoints until every composed role finishes.
 /// State moves into the owner and is destroyed on cancellation or service error.
+/// N must hold one TX chunk and its encoded STREAM header. RX is independent:
+/// each Read reply copies at most N bytes from the caller-owned receive ring.
 pub async fn run_borrowed<
     const CLIENT: u8,
     const OWNER: u8,
@@ -1495,6 +1532,7 @@ async fn command_role<const C: u8, const N: usize, const Q: usize, const R: usiz
             p::DELIVER => endpoint.send::<p::Deliver>(&wire).await?,
             p::ACKNOWLEDGE => endpoint.send::<p::Acknowledge>(&wire).await?,
             p::LOST => endpoint.send::<p::Lost>(&wire).await?,
+            p::RETRY => endpoint.send::<p::Retry>(&wire).await?,
             p::INSPECT => endpoint.send::<p::Inspect>(&wire).await?,
             p::RETIRE_REQUESTED => {
                 return client_routed_retirement(endpoint, &mut replies, exchange, descriptor)
@@ -1551,6 +1589,7 @@ async fn command_role<const C: u8, const N: usize, const Q: usize, const R: usiz
             p::DELIVER => endpoint.send::<p::Deliver>(&wire).await?,
             p::ACKNOWLEDGE => endpoint.send::<p::Acknowledge>(&wire).await?,
             p::LOST => endpoint.send::<p::Lost>(&wire).await?,
+            p::RETRY => endpoint.send::<p::Retry>(&wire).await?,
             p::INSPECT => endpoint.send::<p::Inspect>(&wire).await?,
             p::ENQUEUE_EARLY => endpoint.send::<p::EnqueueEarly>(&wire).await?,
             p::INSPECT_EARLY => endpoint.send::<p::InspectEarly>(&wire).await?,
@@ -1892,6 +1931,7 @@ async fn stream_role<
             p::DELIVER => branch.recv::<p::Deliver>().await?,
             p::ACKNOWLEDGE => branch.recv::<p::Acknowledge>().await?,
             p::LOST => branch.recv::<p::Lost>().await?,
+            p::RETRY => branch.recv::<p::Retry>().await?,
             p::INSPECT => branch.recv::<p::Inspect>().await?,
             p::EARLY_SEND_READY => branch.recv::<p::EarlySendReady>().await?,
             p::PEER_READY => branch.recv::<p::PeerReady>().await?,
@@ -1938,6 +1978,7 @@ async fn stream_role<
             p::DELIVER => branch.recv::<p::Deliver>().await?,
             p::ACKNOWLEDGE => branch.recv::<p::Acknowledge>().await?,
             p::LOST => branch.recv::<p::Lost>().await?,
+            p::RETRY => branch.recv::<p::Retry>().await?,
             p::INSPECT => branch.recv::<p::Inspect>().await?,
             p::ENQUEUE_EARLY => branch.recv::<p::EnqueueEarly>().await?,
             p::INSPECT_EARLY => branch.recv::<p::InspectEarly>().await?,
@@ -2107,6 +2148,12 @@ impl<'c, 's, const N: usize, const Q: usize, const R: usize> Client<'c, 's, N, Q
     pub async fn peer_ready(&mut self, grant: PeerReady) -> Result<(), ClientError> {
         self.applied(Command::PeerReady(grant)).await
     }
+    pub async fn retry(
+        &mut self,
+        grant: packet_authority::StreamRetryGrant,
+    ) -> Result<(), ClientError> {
+        self.applied(Command::Retry(grant)).await
+    }
     pub async fn early_send_ready(
         &mut self,
         grant: super::tls_owner::EarlySendReady,
@@ -2153,8 +2200,11 @@ impl<'c, 's, const N: usize, const Q: usize, const R: usize> Client<'c, 's, N, Q
     pub async fn lost(
         &mut self,
         grant: super::recovery_owner::LostPacket,
-    ) -> Result<(), ClientError> {
-        self.applied(Command::Lost(grant)).await
+    ) -> Result<Option<super::recovery_owner::StreamLossSettled>, ClientError> {
+        match self.call(Command::Lost(grant)).await? {
+            Outcome::LossApplied(settlement) => Ok(settlement),
+            _ => self.unexpected(),
+        }
     }
     pub async fn open(&mut self, bidirectional: bool) -> Result<StreamHandle, ClientError> {
         match self.call(Command::Open { bidirectional }).await? {
@@ -2299,7 +2349,10 @@ impl<'c, 's, const N: usize, const Q: usize, const R: usize> Client<'c, 's, N, Q
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 pub(crate) mod test_evidence;
+
+#[cfg(test)]
+mod preparation_boundary;

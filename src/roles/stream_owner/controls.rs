@@ -329,3 +329,79 @@ impl<const N: usize, const REFS: usize> Controls<N, REFS> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accounting::AckRange;
+    fn table<'a>(slots: &'a mut [StreamSlot<8>]) -> StreamTable<'a, 8> {
+        StreamTable::new(
+            slots,
+            Role::Client,
+            1,
+            Limits::ZERO,
+            Limits {
+                max_data: 100,
+                max_streams_uni: 1,
+                stream_data_uni: 100,
+                ..Limits::ZERO
+            },
+        )
+        .unwrap()
+    }
+    #[test]
+    fn controls_retransmit_until_any_copy_is_acked() {
+        let mut slots = [StreamSlot::EMPTY];
+        let mut table = table(&mut slots);
+        let mut controls = Controls::<2, 3>::new();
+        controls.push(ControlKind::MaxData(100)).unwrap();
+        let first = controls.reserve(0, 7).unwrap();
+        controls.report(&mut table, first, true).unwrap();
+        assert_eq!(controls.next(false), None);
+        assert_eq!(controls.next(true), Some(0));
+        let second = controls.reserve(0, 9).unwrap();
+        controls.report(&mut table, second, true).unwrap();
+        let ranges = [AckRange { start: 7, end: 7 }];
+        controls.acknowledge(&mut table, &ranges).unwrap();
+        assert!(controls.entries[0].kind.is_none());
+        assert!(controls.refs.iter().all(|r| r.state == RefState::Free));
+        assert_eq!(controls.next(true), None);
+    }
+    #[test]
+    fn old_control_ack_does_not_release_newer_credit() {
+        let mut slots = [StreamSlot::EMPTY];
+        let mut table = table(&mut slots);
+        let mut controls = Controls::<2, 3>::new();
+        controls.push(ControlKind::MaxData(100)).unwrap();
+        let first = controls.reserve(0, 7).unwrap();
+        controls.report(&mut table, first, true).unwrap();
+        controls.push(ControlKind::MaxData(200)).unwrap();
+        let second = controls.reserve(1, 8).unwrap();
+        controls.report(&mut table, second, true).unwrap();
+        controls
+            .acknowledge(&mut table, &[AckRange { start: 7, end: 7 }])
+            .unwrap();
+        assert_eq!(controls.entries[1].kind, Some(ControlKind::MaxData(200)));
+        assert_eq!(controls.next(true), Some(1));
+    }
+    #[test]
+    fn control_capacity_and_adapter_rejection_keep_pending_value() {
+        let mut slots = [StreamSlot::EMPTY];
+        let mut table = table(&mut slots);
+        let mut controls = Controls::<1, 1>::new();
+        controls.push(ControlKind::MaxData(100)).unwrap();
+        controls.push(ControlKind::MaxData(200)).unwrap(); // Coalesce only unsent state.
+        let tx = controls.reserve(0, 1).unwrap();
+        assert_eq!(
+            controls.push(ControlKind::MaxData(300)),
+            Err(streams::Error::Capacity)
+        );
+        assert_eq!(
+            controls.acknowledge(&mut table, &[AckRange { start: 1, end: 1 }]),
+            Err(streams::Error::UnsentAcknowledgment)
+        );
+        controls.report(&mut table, tx, false).unwrap();
+        assert_eq!(controls.next(false), Some(0));
+        assert_eq!(controls.entries[0].kind, Some(ControlKind::MaxData(200)));
+    }
+}
