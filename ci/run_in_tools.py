@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 
 ROOT = Path(os.environ['ROOT']).resolve()
 RUNNER = ROOT / '.ci-work/runner'
@@ -32,6 +33,38 @@ CONSOLE_CLASSES = {'ModuleNotFoundError': 'python-dependency', 'unrecognized arg
 
 def console_classes(text):
     return sorted({label for pattern, label in CONSOLE_CLASSES.items() if pattern.lower() in text.lower()})
+
+def code_frame(filename, line, function):
+    # Source locations only. No source lines, locals, exception messages or data.
+    path = Path(filename)
+    if path.is_relative_to(RUNNER):
+        module = 'runner/' + str(path.relative_to(RUNNER))
+    elif path.is_relative_to(ROOT / 'ci'):
+        module = 'ci/' + str(path.relative_to(ROOT / 'ci'))
+    else:
+        match = re.search(r'/python[0-9]+\.[0-9]+/(?:site-packages/)?([A-Za-z0-9_./-]+\.py)$', filename)
+        module = match.group(1) if match else 'external-source-withheld'
+    return {'source': module, 'line': int(line), 'function': function}
+
+def traceback_evidence(text):
+    clean = re.sub(r'\x1B[@-_][0-?]*[ -/]*[@-~]', '', text)
+    records, current = [], None
+    for line in clean.splitlines():
+        if line.strip() == 'Traceback (most recent call last):':
+            current = {'frames': []}
+        elif current is not None:
+            frame = re.fullmatch(r'\s*File "([^"\n]+)", line ([0-9]+), in ([A-Za-z0-9_<>]+)\s*', line)
+            if frame and len(current['frames']) < 24:
+                current['frames'].append(code_frame(*frame.groups()))
+            error = re.match(r'^([A-Za-z_][A-Za-z0-9_.]{0,99})(?::|$)', line)
+            if error:
+                current['exception_type'] = error.group(1)[:100]
+                records.append(current)
+                current = None
+    if current and current['frames']:
+        current['exception_type'] = 'unparsed-withheld'
+        records.append(current)
+    return records[-4:]
 
 def docker_metadata():
     # Only fixed fields/classifications are published, never subprocess output.
@@ -144,6 +177,11 @@ def phase(name, client, server, candidate):
         if console.exists():
             text = console.read_text(errors='replace')
             record['console_error_classes'] = console_classes(text)
+            record['runner_tracebacks'] = traceback_evidence(text)
+            record['runner_progress'] = {
+                'server_compliance_passed': server + ' server compliant.' in text,
+                'client_compliance_passed': client + ' client compliant.' in text,
+                'announced_cases': sorted(name for name in EXPECTED if 'Running test case: ' + name in text)}
         record['duration_seconds'] = round(time.monotonic() - started, 3)
         # Hash/count evidence only. Packet captures, qlogs, certificate/private-key
         # fixtures, raw application logs and all TLS key logs are never uploaded.
@@ -188,5 +226,6 @@ if __name__ == '__main__':
     try:
         raise SystemExit(main())
     except Exception as error:
-        write('infrastructure-failure.json', {'status': 'NOT_PASSED', 'error_type': type(error).__name__})
+        write('infrastructure-failure.json', {'status': 'NOT_PASSED', 'error_type': type(error).__name__,
+            'frames': [code_frame(f.filename, f.lineno, f.name) for f in traceback.extract_tb(error.__traceback__)][-24:]})
         raise

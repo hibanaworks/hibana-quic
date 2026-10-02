@@ -81,20 +81,21 @@ export SIM_IMAGE
 docker pull --platform linux/amd64 "$RUST_IMAGE"
 docker pull --platform linux/amd64 "$ENDPOINT_IMAGE"
 docker pull --platform linux/amd64 "$UBUNTU_IMAGE"
+docker pull --platform linux/amd64 "$PYTHON_IMAGE"
+echo 'Building and smoke-testing analysis tools before endpoint compilation'
+docker build --platform linux/amd64 --build-arg UBUNTU_IMAGE="$UBUNTU_IMAGE" --build-arg PYTHON_IMAGE="$PYTHON_IMAGE" -f ci/runner-tools.Dockerfile -t hibana-pilot-tools .ci-work/runner
 echo 'Building unchanged pinned Neqo QNS endpoint'
 docker build --platform linux/amd64 --build-arg CARGO_BUILD_JOBS=2 -f .ci-work/neqo/qns/Dockerfile -t hibana-pilot-neqo .ci-work/neqo
 echo 'Building bounded endpoint from audited source'
 docker build --platform linux/amd64 --build-arg RUST_IMAGE="$RUST_IMAGE" --build-arg ENDPOINT_IMAGE="$ENDPOINT_IMAGE" -f interop/qns/Dockerfile -t hibana-pilot-bounded .
-echo 'Building analysis tools with reference-runner requirements'
-docker build --platform linux/amd64 --build-arg UBUNTU_IMAGE="$UBUNTU_IMAGE" -f ci/runner-tools.Dockerfile -t hibana-pilot-tools .ci-work/runner
 NEQO_IMAGE=$(docker image inspect hibana-pilot-neqo --format '{{.Id}}')
 BOUNDED_IMAGE=$(docker image inspect hibana-pilot-bounded --format '{{.Id}}')
 TOOLS_IMAGE=$(docker image inspect hibana-pilot-tools --format '{{.Id}}')
-export NEQO_IMAGE BOUNDED_IMAGE TOOLS_IMAGE RUNNER_REVISION NEQO_REVISION HIBANA_REVISION RUST_IMAGE ENDPOINT_IMAGE UBUNTU_IMAGE
+export NEQO_IMAGE BOUNDED_IMAGE TOOLS_IMAGE RUNNER_REVISION NEQO_REVISION HIBANA_REVISION RUST_IMAGE ENDPOINT_IMAGE UBUNTU_IMAGE PYTHON_IMAGE
 python3 - <<'PY'
 import json,os
 from pathlib import Path
-keys=['RUNNER_REVISION','NEQO_REVISION','HIBANA_REVISION','SIM_IMAGE','NEQO_IMAGE','BOUNDED_IMAGE','TOOLS_IMAGE','RUST_IMAGE','ENDPOINT_IMAGE','UBUNTU_IMAGE','DOCKER_ENGINE_VERSION','DOCKER_CLI_DEB_SHA256','DOCKER_ENGINE_DEB_SHA256']
+keys=['RUNNER_REVISION','NEQO_REVISION','HIBANA_REVISION','SIM_IMAGE','NEQO_IMAGE','BOUNDED_IMAGE','TOOLS_IMAGE','RUST_IMAGE','ENDPOINT_IMAGE','UBUNTU_IMAGE','PYTHON_IMAGE','DOCKER_ENGINE_VERSION','DOCKER_CLI_DEB_SHA256','DOCKER_ENGINE_DEB_SHA256']
 Path('ci-safe-results/pins.json').write_text(json.dumps({k:os.environ[k] for k in keys},indent=2)+'\n')
 PY
 # Keep /tmp at the identical path: upstream explicitly creates Docker bind
