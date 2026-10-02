@@ -14,8 +14,46 @@ RUNNER = ROOT / '.ci-work/runner'
 SAFE = ROOT / 'ci-safe-results'
 RAW = ROOT / '.ci-work/raw'
 EXPECTED = {'handshake', 'transfer'}
-SAFE_VALIDATION_ERRORS = {'wrong QUIC version', 'wrong matrix direction', 'missing result row', 'unexpected/duplicate case', 'case abbreviation mismatch', 'missing case'}
-CONSOLE_CLASSES = {'ModuleNotFoundError': 'python-dependency', 'unrecognized arguments:': 'runner-cli-arguments', 'No such file or directory': 'missing-tool-or-file', 'Cannot connect to the Docker daemon': 'docker-daemon-unavailable', 'Error response from daemon': 'docker-environment', 'no matching manifest': 'container-image-platform', 'permission denied': 'permission-denied', 'tshark not found': 'tshark-unavailable'}
+SAFE_VALIDATION_ERRORS = {'wrong QUIC version', 'wrong matrix direction', 'missing result row', 'unexpected/duplicate case', 'case abbreviation mismatch', 'missing case', 'unknown case result'}
+CONSOLE_CLASSES = {'ModuleNotFoundError': 'python-dependency', 'unrecognized arguments:': 'runner-cli-arguments', 'No such file or directory': 'missing-tool-or-file', 'Cannot connect to the Docker daemon': 'docker-daemon-unavailable', 'Error response from daemon': 'docker-environment', 'no matching manifest': 'container-image-platform', 'permission denied': 'permission-denied', 'tshark not found': 'tshark-unavailable',
+    'not compliant.': 'implementation-compliance-failed',
+    'pull access denied': 'image-pull-denied', 'no such image': 'image-unavailable',
+    'invalid reference format': 'image-reference-invalid',
+    'unable to get image': 'image-resolution-failed',
+    'client version': 'docker-api-client-version',
+    'unknown flag': 'docker-cli-flag', 'additional property': 'compose-schema',
+    'must be a mapping': 'compose-schema', 'invalid interpolation': 'compose-interpolation',
+    'failed to create network': 'docker-network-create',
+    'pool overlaps': 'docker-network-overlap', 'ipv6 is disabled': 'docker-ipv6-disabled',
+    'failed to create task': 'container-task-create', 'oci runtime': 'container-runtime',
+    'executable file not found': 'container-executable',
+    'address already in use': 'address-in-use', 'operation not permitted': 'operation-not-permitted'}
+
+def console_classes(text):
+    return sorted({label for pattern, label in CONSOLE_CLASSES.items() if pattern.lower() in text.lower()})
+
+def docker_metadata():
+    # Only fixed fields/classifications are published, never subprocess output.
+    proc = subprocess.run(['docker', 'version', '--format', '{{json .Server}}'],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+    record = {'version_exit_code': proc.returncode,
+        'error_classes': console_classes(proc.stderr), 'effective_uid': os.geteuid(),
+        'runner_owner_uid': RUNNER.stat().st_uid,
+        'socket_gid': Path('/var/run/docker.sock').stat().st_gid,
+        'process_groups': os.getgroups()}
+    if proc.returncode == 0:
+        data = json.loads(proc.stdout)
+        record['server'] = {key: data.get(key) for key in ('Version', 'ApiVersion', 'MinAPIVersion', 'GitCommit')}
+    record['images'] = {}
+    for key in ('NEQO_IMAGE', 'BOUNDED_IMAGE', 'SIM_IMAGE'):
+        image = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', os.environ[key]],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+        value = image.stdout.strip()
+        record['images'][key] = {'exit_code': image.returncode,
+            'id': value if re.fullmatch(r'sha256:[a-f0-9]{64}', value) else None,
+            'error_classes': console_classes(image.stderr)}
+    write('docker-preflight.json', record)
+    require(proc.returncode == 0 and all(v['exit_code'] == 0 and v['id'] for v in record['images'].values()), 'docker preflight failed')
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -39,11 +77,14 @@ def checked_result(path, client, server):
         name, result, abbr = entry.get('name'), entry.get('result'), entry.get('abbr')
         require(name in EXPECTED and name not in seen, 'unexpected/duplicate case')
         require(data.get('tests', {}).get(abbr, {}).get('name') == name, 'case abbreviation mismatch')
+        require(result in (None, 'succeeded', 'failed', 'unsupported'), 'unknown case result')
         seen.add(name)
         normalized.append({'name': name, 'result': result, 'abbr': abbr})
     require(seen == EXPECTED, 'missing case')
     return {'quic_version': '0x1', 'client': client, 'server': server,
             'results': normalized, 'original_json_sha256': sha(path),
+            'non_null_case_results': sum(item['result'] is not None for item in normalized),
+            'unexecuted_case_results': sum(item['result'] is None for item in normalized),
             'passed': all(item['result'] == 'succeeded' for item in normalized)}
 
 def setup_workdir(name, candidate):
@@ -73,7 +114,7 @@ def phase(name, client, server, candidate):
     env['COMPOSE_PROJECT_NAME'] = 'hibana-pilot'
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     cmd = [sys.executable, str(RUNNER / 'run.py'), '-s', server, '-c', client,
-           '-t', 'handshake,transfer', '-n', client + ',' + server,
+           '-d', '-t', 'handshake,transfer', '-n', client + ',' + server,
            '-j', str(output), '-l', str(logs)]
     record = {'phase': name, 'client': client, 'server': server, 'status': 'NOT_RUN'}
     started = time.monotonic()
@@ -101,7 +142,7 @@ def phase(name, client, server, candidate):
             record['cleanup_error_type'] = type(error).__name__
         if console.exists():
             text = console.read_text(errors='replace')
-            record['console_error_classes'] = sorted({label for pattern,label in CONSOLE_CLASSES.items() if pattern.lower() in text.lower()})
+            record['console_error_classes'] = console_classes(text)
         record['duration_seconds'] = round(time.monotonic() - started, 3)
         # Hash/count evidence only. Packet captures, qlogs, certificate/private-key
         # fixtures, raw application logs and all TLS key logs are never uploaded.
@@ -122,6 +163,7 @@ def main():
         'python_packages': subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'], text=True).splitlines()})
     require(subprocess.check_output(['git', '-C', str(RUNNER), 'rev-parse', 'HEAD'], text=True).strip() == os.environ['RUNNER_REVISION'], 'runner pin mismatch')
     require(not subprocess.check_output(['git', '-C', str(RUNNER), 'status', '--porcelain'], text=True).strip(), 'runner checkout changed')
+    docker_metadata()
     records = []
     baseline = phase('neqo-baseline', 'neqo', 'neqo', False)
     records.append(baseline)
@@ -134,6 +176,8 @@ def main():
         'scope': 'one unmodified runner pilot: Neqo baseline plus two-case bounded subset each direction',
         'runner_source_unchanged': clean, 'phases': [r['phase'] for r in records],
         'case_results': sum(len(r.get('results', [])) for r in records),
+        'non_null_case_results': sum(r.get('non_null_case_results', 0) for r in records),
+        'unexecuted_case_results': sum(r.get('unexecuted_case_results', 0) for r in records),
         'full_runner_gate_passed': False,
         'not_claimed': ['remaining runner cases', 'three release attempts', 'Pico hardware', 'whole-host zero allocation'],
         'withheld': ['TLS secrets/key logs', 'private certificate keys', 'tickets', 'raw logs', 'raw packet captures']})
