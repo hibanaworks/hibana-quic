@@ -7,8 +7,8 @@ pub use hibana_quic::ecn::Codepoint;
 use hibana_quic::path::Address;
 use nix::libc;
 use nix::sys::socket::{
-    ControlMessage, ControlMessageOwned, MsgFlags, SockaddrStorage, recvmsg, sendmsg, setsockopt,
-    sockopt,
+    ControlMessage, ControlMessageOwned, MsgFlags, SockaddrStorage, getsockopt, recvmsg, sendmsg,
+    setsockopt, sockopt,
 };
 use std::{
     io::{self, IoSlice, IoSliceMut},
@@ -20,9 +20,11 @@ use std::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Received {
     pub len: usize,
+    /// IPv4-mapped dual-stack peers are reported as native IPv4 addresses.
     pub source: SocketAddr,
     /// Actual destination IP from packet info, with this socket's bound port.
     /// Scoped IPv6 destinations include the receiving interface's scope ID.
+    /// IPv4-mapped dual-stack destinations are reported as native IPv4.
     pub local: SocketAddr,
     /// None is unavailable metadata, never fabricated Not-ECT evidence.
     pub ecn: Option<Codepoint>,
@@ -31,6 +33,7 @@ pub struct Received {
 pub struct UdpMetadataSocket {
     socket: UdpSocket,
     control: Vec<u8>,
+    dual_stack: bool,
 }
 
 impl UdpMetadataSocket {
@@ -38,20 +41,24 @@ impl UdpMetadataSocket {
     pub(crate) fn socket(&self) -> &UdpSocket {
         &self.socket
     }
-    /// Enable native packet-info and IPv4 TOS or IPv6 Traffic Class reception.
+    /// Enable packet-info and IPv4 TOS or IPv6 Traffic Class reception.
     /// Errors are reported rather than inventing address or ECN metadata.
-    /// IPv4-mapped dual-stack delivery is not a qualified profile here.
+    /// Dual-stack IPv4 delivery is canonicalized to native IPv4 endpoints.
     pub fn new(socket: UdpSocket) -> io::Result<Self> {
-        if socket.local_addr()?.is_ipv4() {
+        let ipv4 = socket.local_addr()?.is_ipv4();
+        let dual_stack = !ipv4 && !getsockopt(&socket, sockopt::Ipv6V6Only)?;
+        if ipv4 || dual_stack {
             setsockopt(&socket, sockopt::IpRecvTos, &true)?;
             setsockopt(&socket, sockopt::Ipv4PacketInfo, &true)?;
-        } else {
+        }
+        if !ipv4 {
             setsockopt(&socket, sockopt::Ipv6RecvTClass, &true)?;
             setsockopt(&socket, sockopt::Ipv6RecvPacketInfo, &true)?;
         }
         Ok(Self {
             socket,
             control: nix::cmsg_space!(u8, i32, libc::in_pktinfo, libc::in6_pktinfo),
+            dual_stack,
         })
     }
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -92,12 +99,8 @@ impl UdpMetadataSocket {
         } else {
             return Err(invalid("non-IP UDP source address"));
         };
-        if bound.is_ipv4() != source.is_ipv4()
-            || matches!(source, SocketAddr::V6(a) if a.ip().to_ipv4_mapped().is_some())
-        {
-            return Err(invalid("non-native UDP source address"));
-        }
-        let (local, ecn) = decode_metadata(bound, message.cmsgs()?)?;
+        let source = canonical_source(bound, source, self.dual_stack)?;
+        let (local, ecn) = decode_metadata(bound, source.is_ipv4(), message.cmsgs()?)?;
         Ok(Received {
             len: message.bytes,
             source,
@@ -108,12 +111,14 @@ impl UdpMetadataSocket {
 
     /// Send from the exact local endpoint in a path tuple. A wildcard binding
     /// permits concrete local IP selection; a concrete binding permits only its
-    /// own IP. The family and bound port must match. The kernel checks whether
+    /// own IP. The wire family and bound port must match; IPv4 paths may use a
+    /// dual-stack IPv6 binding. The kernel checks whether
     /// the selected source/interface is usable; failures never trigger fallback.
     /// Source selection and ECN both apply only to this datagram.
     pub fn send_from(&self, bytes: &[u8], address: Address, ecn: Codepoint) -> io::Result<usize> {
-        validate_source(self.socket.local_addr()?, address)?;
-        let destination = SockaddrStorage::from(address.remote);
+        let bound = self.socket.local_addr()?;
+        validate_source(bound, address)?;
+        let destination = send_destination(bound, address.remote, self.dual_stack)?;
         let iov = [IoSlice::new(bytes)];
         let bits = ecn.bits();
         let class = i32::from(bits);
@@ -169,17 +174,14 @@ impl UdpMetadataSocket {
         destination: SocketAddr,
         ecn: Codepoint,
     ) -> io::Result<usize> {
-        if self.socket.local_addr()?.is_ipv4() != destination.is_ipv4() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "native address family mismatch",
-            ));
-        }
-        let destination = SockaddrStorage::from(destination);
+        let ipv4 = destination.is_ipv4();
+        let destination =
+            send_destination(self.socket.local_addr()?, destination, self.dual_stack)?;
         let iov = [IoSlice::new(bytes)];
         let bits = ecn.bits();
         let class = i32::from(bits);
-        let control = if destination.as_sockaddr_in().is_some() {
+        // A mapped sockaddr still sends an IPv4 packet: its ECN uses IP_TOS.
+        let control = if ipv4 {
             ControlMessage::Ipv4Tos(&bits)
         } else {
             ControlMessage::Ipv6TClass(&class)
@@ -206,22 +208,86 @@ fn scoped(ip: Ipv6Addr) -> bool {
     ip.is_unicast_link_local() || (ip.is_multicast() && ip.octets()[1] & 0x0f != 0x0e)
 }
 
-fn validate_source(bound: SocketAddr, address: Address) -> io::Result<()> {
-    let local = address.local;
-    if bound.is_ipv4() != local.is_ipv4() || local.is_ipv4() != address.remote.is_ipv4() {
+fn canonical_address(address: SocketAddr) -> Option<SocketAddr> {
+    if let SocketAddr::V6(address) = address
+        && let Some(ip) = address.ip().to_ipv4_mapped()
+    {
+        // IPv4 has no equivalent scope or flow label. Never silently drop one.
+        return (address.scope_id() == 0 && address.flowinfo() == 0)
+            .then(|| SocketAddr::from((ip, address.port())));
+    }
+    Some(address)
+}
+
+fn supports_family(bound: SocketAddr, ipv4: bool) -> bool {
+    canonical_address(bound).is_some_and(|canonical| canonical.is_ipv4() == ipv4)
+        || (ipv4
+            && matches!(bound, SocketAddr::V6(a)
+                if a.ip().is_unspecified() && a.scope_id() == 0 && a.flowinfo() == 0))
+}
+
+fn canonical_source(
+    bound: SocketAddr,
+    source: SocketAddr,
+    dual_stack: bool,
+) -> io::Result<SocketAddr> {
+    if bound.is_ipv4() != source.is_ipv4() {
+        return Err(invalid("UDP source sockaddr family contradicts binding"));
+    }
+    let source = canonical_address(source)
+        .ok_or_else(|| invalid("ambiguous IPv4-mapped UDP source address"))?;
+    if !supports_family(bound, source.is_ipv4())
+        || (bound.is_ipv6() && source.is_ipv4() && !dual_stack)
+    {
+        return Err(invalid("UDP source wire family contradicts binding"));
+    }
+    Ok(source)
+}
+
+fn send_destination(
+    bound: SocketAddr,
+    destination: SocketAddr,
+    dual_stack: bool,
+) -> io::Result<SockaddrStorage> {
+    if canonical_address(destination) != Some(destination)
+        || !supports_family(bound, destination.is_ipv4())
+    {
         return Err(invalid_input("native address family mismatch"));
     }
+    if let (SocketAddr::V6(_), SocketAddr::V4(destination)) = (bound, destination) {
+        if !dual_stack {
+            return Err(invalid_input("IPv4 destination on IPv6-only UDP binding"));
+        }
+        // Linux uses a mapped IPv6 sockaddr with IPv4 IP_PKTINFO/IP_TOS for
+        // this wire family. Do not choose ancillary types from sockaddr family.
+        return Ok(SockaddrStorage::from(SocketAddrV6::new(
+            destination.ip().to_ipv6_mapped(),
+            destination.port(),
+            0,
+            0,
+        )));
+    }
+    Ok(SockaddrStorage::from(destination))
+}
+
+fn validate_source(bound: SocketAddr, address: Address) -> io::Result<()> {
+    let local = address.local;
+    if !supports_family(bound, local.is_ipv4()) || local.is_ipv4() != address.remote.is_ipv4() {
+        return Err(invalid_input("native address family mismatch"));
+    }
+    let canonical_bound = canonical_address(bound)
+        .ok_or_else(|| invalid_input("ambiguous IPv4-mapped UDP binding"))?;
     if bound.port() != local.port() || local.port() == 0 {
         return Err(invalid_input("source port does not match UDP binding"));
     }
     if local.ip().is_unspecified() || local.ip().is_multicast() {
         return Err(invalid_input("source address must be concrete unicast"));
     }
-    if !bound.ip().is_unspecified() && bound.ip() != local.ip() {
+    if !canonical_bound.ip().is_unspecified() && canonical_bound.ip() != local.ip() {
         return Err(invalid_input("source address does not match UDP binding"));
     }
     match (bound, local, address.remote) {
-        (SocketAddr::V4(_), SocketAddr::V4(local), _) if local.ip().is_broadcast() => {
+        (_, SocketAddr::V4(local), _) if local.ip().is_broadcast() => {
             return Err(invalid_input("broadcast source address"));
         }
         (SocketAddr::V6(bound), SocketAddr::V6(local), SocketAddr::V6(remote)) => {
@@ -246,14 +312,20 @@ fn validate_source(bound: SocketAddr, address: Address) -> io::Result<()> {
 
 fn decode_metadata(
     bound: SocketAddr,
+    ipv4: bool,
     messages: impl IntoIterator<Item = ControlMessageOwned>,
 ) -> io::Result<(SocketAddr, Option<Codepoint>)> {
+    let canonical_bound =
+        canonical_address(bound).ok_or_else(|| invalid("ambiguous IPv4-mapped UDP binding"))?;
+    if !supports_family(bound, ipv4) {
+        return Err(invalid("UDP packet wire family contradicts binding"));
+    }
     let mut destination = None;
     let mut ecn = None;
     for message in messages {
         let packet_info = match message {
             ControlMessageOwned::Ipv4PacketInfo(info) => {
-                if !bound.is_ipv4() || info.ipi_ifindex <= 0 {
+                if !ipv4 || info.ipi_ifindex <= 0 {
                     return Err(invalid("invalid IPv4 packet-info family or interface"));
                 }
                 let ip = Ipv4Addr::from(info.ipi_addr.s_addr.to_ne_bytes());
@@ -267,24 +339,27 @@ fn decode_metadata(
                     return Err(invalid("invalid IPv6 packet-info family or interface"));
                 }
                 let ip = Ipv6Addr::from(info.ipi6_addr.s6_addr);
-                if ip.to_ipv4_mapped().is_some() {
-                    return Err(invalid("IPv4-mapped packet info is not supported"));
-                }
                 let scope = if scoped(ip) { info.ipi6_ifindex } else { 0 };
                 (
-                    SocketAddr::V6(SocketAddrV6::new(ip, bound.port(), 0, scope)),
+                    canonical_address(SocketAddr::V6(SocketAddrV6::new(
+                        ip,
+                        bound.port(),
+                        0,
+                        scope,
+                    )))
+                    .ok_or_else(|| invalid("ambiguous IPv4-mapped packet info"))?,
                     info.ipi6_ifindex,
                 )
             }
             ControlMessageOwned::Ipv4Tos(tos) => {
-                if !bound.is_ipv4() {
+                if !ipv4 {
                     return Err(invalid("non-native IPv4 ECN metadata"));
                 }
                 record_ecn(&mut ecn, tos)?;
                 continue;
             }
             ControlMessageOwned::Ipv6TClass(class) => {
-                if !bound.is_ipv6() {
+                if ipv4 {
                     return Err(invalid("non-native IPv6 ECN metadata"));
                 }
                 record_ecn(&mut ecn, traffic_class(class)?)?;
@@ -292,8 +367,12 @@ fn decode_metadata(
             }
             _ => continue,
         };
+        if packet_info.0.is_ipv4() != ipv4 {
+            return Err(invalid("packet-info family contradicts UDP source"));
+        }
         if packet_info.0.ip().is_unspecified()
-            || (!bound.ip().is_unspecified() && packet_info.0.ip() != bound.ip())
+            || (!canonical_bound.ip().is_unspecified()
+                && packet_info.0.ip() != canonical_bound.ip())
         {
             return Err(invalid("packet-info destination contradicts UDP binding"));
         }
@@ -310,7 +389,7 @@ fn decode_metadata(
     }
     let local = match destination {
         Some((local, _)) => local,
-        None if !bound.ip().is_unspecified() => bound,
+        None if !canonical_bound.ip().is_unspecified() => canonical_bound,
         None => {
             return Err(invalid(
                 "missing destination metadata for wildcard UDP binding",
@@ -420,6 +499,7 @@ mod tests {
         let mut receiver = UdpMetadataSocket {
             socket: raw,
             control: nix::cmsg_space!(u8, i32),
+            dual_stack: false,
         };
         sender
             .send_to(
@@ -513,6 +593,249 @@ mod tests {
     }
 
     #[test]
+    fn dual_stack_alternating_wire_families_preserve_exact_tuple_and_ecn() {
+        let mut server = UdpMetadataSocket::new(UdpSocket::bind("[::]:0").unwrap()).unwrap();
+        assert!(server.dual_stack);
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut v4 = socket(false);
+        let mut v6 = socket(true);
+        let mut bytes = [0; 64];
+        for code in [
+            Codepoint::NotEct,
+            Codepoint::Ect0,
+            Codepoint::Ect1,
+            Codepoint::Ce,
+            Codepoint::NotEct,
+        ] {
+            for ip in ["127.0.0.1", "::1", "127.0.0.2"] {
+                let destination =
+                    SocketAddr::new(ip.parse().unwrap(), server.local_addr().unwrap().port());
+                let client = if destination.is_ipv4() {
+                    &mut v4
+                } else {
+                    &mut v6
+                };
+                client.send_to(b"request", destination, code).unwrap();
+                let request = server.recv_from(&mut bytes).unwrap();
+                assert_eq!(request.source, client.local_addr().unwrap());
+                assert_eq!(request.local, destination);
+                assert_eq!(request.ecn, Some(code));
+                assert_eq!(&bytes[..request.len], b"request");
+                assert_eq!(
+                    server
+                        .send_from(
+                            b"response",
+                            Address {
+                                local: request.local,
+                                remote: request.source,
+                            },
+                            code
+                        )
+                        .unwrap(),
+                    8
+                );
+                let response = client.recv_from(&mut bytes).unwrap();
+                assert_eq!(response.source, destination);
+                assert_eq!(response.local, request.source);
+                assert_eq!(response.ecn, Some(code));
+                assert_eq!(&bytes[..response.len], b"response");
+            }
+        }
+    }
+
+    #[test]
+    fn mapped_concrete_binding_uses_canonical_ipv4_tuple() {
+        let mut server =
+            UdpMetadataSocket::new(UdpSocket::bind("[::ffff:127.0.0.2]:0").unwrap()).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let destination = SocketAddr::from((
+            Ipv4Addr::new(127, 0, 0, 2),
+            server.local_addr().unwrap().port(),
+        ));
+        let mut client = socket(false);
+        client
+            .send_to(b"request", destination, Codepoint::Ce)
+            .unwrap();
+        let mut bytes = [0; 64];
+        let request = server.recv_from(&mut bytes).unwrap();
+        assert_eq!(request.local, destination);
+        assert_eq!(request.source, client.local_addr().unwrap());
+        assert_eq!(request.ecn, Some(Codepoint::Ce));
+        server
+            .send_from(
+                b"response",
+                Address {
+                    local: request.local,
+                    remote: request.source,
+                },
+                Codepoint::Ect1,
+            )
+            .unwrap();
+        let response = client.recv_from(&mut bytes).unwrap();
+        assert_eq!(response.source, destination);
+        assert_eq!(response.local, request.source);
+        assert_eq!(response.ecn, Some(Codepoint::Ect1));
+        assert_eq!(&bytes[..response.len], b"response");
+        let wrong_local = SocketAddr::from((Ipv4Addr::LOCALHOST, destination.port()));
+        assert_eq!(
+            server
+                .send_from(
+                    b"x",
+                    Address {
+                        local: wrong_local,
+                        remote: request.source,
+                    },
+                    Codepoint::NotEct
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn dual_stack_send_to_uses_ipv4_ecn_for_canonical_ipv4_destination() {
+        let sender = UdpMetadataSocket::new(UdpSocket::bind("[::]:0").unwrap()).unwrap();
+        let mut receiver = socket(false);
+        for code in [
+            Codepoint::Ce,
+            Codepoint::NotEct,
+            Codepoint::Ect0,
+            Codepoint::Ect1,
+        ] {
+            sender
+                .send_to(b"x", receiver.local_addr().unwrap(), code)
+                .unwrap();
+            let received = receiver.recv_from(&mut [0; 8]).unwrap();
+            assert_eq!(received.ecn, Some(code));
+            assert_eq!(received.source.ip(), Ipv4Addr::LOCALHOST);
+            assert_eq!(received.source.port(), sender.local_addr().unwrap().port());
+            assert_eq!(received.local, receiver.local_addr().unwrap());
+        }
+    }
+
+    #[test]
+    fn ipv6_only_socket_rejects_ipv4_without_changing_its_policy() {
+        use nix::sys::socket::{AddressFamily, SockFlag, SockType, bind};
+        let raw = nix::sys::socket::socket(
+            AddressFamily::Inet6,
+            SockType::Datagram,
+            SockFlag::empty(),
+            None,
+        )
+        .unwrap();
+        setsockopt(&raw, sockopt::Ipv6V6Only, &true).unwrap();
+        bind(
+            raw.as_raw_fd(),
+            &SockaddrStorage::from("[::]:0".parse::<SocketAddr>().unwrap()),
+        )
+        .unwrap();
+        let mut server = UdpMetadataSocket::new(UdpSocket::from(raw)).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        assert!(!server.dual_stack);
+        assert!(getsockopt(&server.socket, sockopt::Ipv6V6Only).unwrap());
+        let local = SocketAddr::from((Ipv4Addr::LOCALHOST, server.local_addr().unwrap().port()));
+        let remote = "127.0.0.1:9001".parse().unwrap();
+        assert_eq!(
+            server
+                .send_from(b"x", Address { local, remote }, Codepoint::Ect0)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            server
+                .send_to(b"x", remote, Codepoint::Ect0)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let mut client = socket(true);
+        let destination = SocketAddr::from((Ipv6Addr::LOCALHOST, local.port()));
+        client.send_to(b"x", destination, Codepoint::Ce).unwrap();
+        let request = server.recv_from(&mut [0; 8]).unwrap();
+        assert_eq!(request.local, destination);
+        assert_eq!(request.source, client.local_addr().unwrap());
+        assert_eq!(request.ecn, Some(Codepoint::Ce));
+        server
+            .send_from(
+                b"x",
+                Address {
+                    local: request.local,
+                    remote: request.source,
+                },
+                Codepoint::Ect1,
+            )
+            .unwrap();
+        let response = client.recv_from(&mut [0; 8]).unwrap();
+        assert_eq!(response.source, destination);
+        assert_eq!(response.ecn, Some(Codepoint::Ect1));
+    }
+
+    #[test]
+    fn dual_stack_source_policy_preserves_port_concrete_and_family_checks() {
+        let bound = "[::]:9000".parse().unwrap();
+        let remote = "127.0.0.1:9001".parse().unwrap();
+        for ip in ["127.0.0.1", "127.0.0.2"] {
+            assert!(
+                validate_source(
+                    bound,
+                    Address {
+                        local: SocketAddr::new(ip.parse().unwrap(), 9000),
+                        remote,
+                    }
+                )
+                .is_ok()
+            );
+        }
+        for local in [
+            "127.0.0.1:0",
+            "127.0.0.1:9002",
+            "0.0.0.0:9000",
+            "224.0.0.1:9000",
+            "255.255.255.255:9000",
+            "[::1]:9000",
+            "[::ffff:127.0.0.1]:9000",
+        ] {
+            assert!(
+                validate_source(
+                    bound,
+                    Address {
+                        local: local.parse().unwrap(),
+                        remote
+                    }
+                )
+                .is_err()
+            );
+        }
+        let local = "127.0.0.1:9000".parse().unwrap();
+        for remote in ["[::1]:9001", "[::ffff:127.0.0.1]:9001"] {
+            assert!(
+                validate_source(
+                    bound,
+                    Address {
+                        local,
+                        remote: remote.parse().unwrap()
+                    }
+                )
+                .is_err()
+            );
+        }
+        assert!(send_destination(bound, "[::1]:9001".parse().unwrap(), true).is_ok());
+        assert!(send_destination(bound, "[::ffff:127.0.0.1]:9001".parse().unwrap(), true).is_err());
+        assert!(validate_source("[::1]:9000".parse().unwrap(), Address { local, remote }).is_err());
+        assert!(
+            validate_source("[::%7]:9000".parse().unwrap(), Address { local, remote }).is_err()
+        );
+    }
+
+    #[test]
     fn wildcard_without_destination_metadata_fails_explicitly() {
         for v6 in [false, true] {
             let sender = socket(v6);
@@ -521,6 +844,7 @@ mod tests {
             let mut receiver = UdpMetadataSocket {
                 socket: raw,
                 control: nix::cmsg_space!(u8, i32, libc::in_pktinfo, libc::in6_pktinfo),
+                dual_stack: v6,
             };
             let mut destination = sender.local_addr().unwrap();
             destination.set_port(receiver.local_addr().unwrap().port());
@@ -556,7 +880,7 @@ mod tests {
     fn ipv6_scoped_destination_uses_actual_receiving_interface() {
         let wildcard = "[::]:9000".parse().unwrap();
         for ip in ["fe80::42", "ff02::42"] {
-            let (local, ecn) = decode_metadata(wildcard, [ipv6_info(ip, 7)]).unwrap();
+            let (local, ecn) = decode_metadata(wildcard, false, [ipv6_info(ip, 7)]).unwrap();
             assert_eq!(
                 local,
                 SocketAddr::V6(SocketAddrV6::new(ip.parse().unwrap(), 9000, 0, 7))
@@ -564,12 +888,119 @@ mod tests {
             assert_eq!(ecn, None);
         }
         for ip in ["::1", "2001:db8::42", "ff0e::42"] {
-            let (local, _) = decode_metadata(wildcard, [ipv6_info(ip, 7)]).unwrap();
+            let (local, _) = decode_metadata(wildcard, false, [ipv6_info(ip, 7)]).unwrap();
             assert_eq!(
                 local,
                 SocketAddr::V6(SocketAddrV6::new(ip.parse().unwrap(), 9000, 0, 0))
             );
         }
+    }
+
+    #[test]
+    fn mapped_source_canonicalization_rejects_ambiguous_or_mismatched_endpoints() {
+        let bound = "[::]:9000".parse().unwrap();
+        let mapped = "[::ffff:127.0.0.1]:9001".parse().unwrap();
+        assert_eq!(
+            canonical_source(bound, mapped, true).unwrap(),
+            "127.0.0.1:9001".parse().unwrap()
+        );
+        let scoped = SocketAddr::V6(SocketAddrV6::new(
+            "::ffff:127.0.0.1".parse().unwrap(),
+            9001,
+            0,
+            7,
+        ));
+        let flow = SocketAddr::V6(SocketAddrV6::new(
+            "::ffff:127.0.0.1".parse().unwrap(),
+            9001,
+            1,
+            0,
+        ));
+        for (bound, source, dual_stack) in [
+            (bound, mapped, false),
+            (bound, scoped, true),
+            (bound, flow, true),
+            (bound, "127.0.0.1:9001".parse().unwrap(), true),
+            ("0.0.0.0:9000".parse().unwrap(), mapped, false),
+            ("[::1]:9000".parse().unwrap(), mapped, true),
+            ("[::%7]:9000".parse().unwrap(), mapped, true),
+            (
+                "[::ffff:127.0.0.1]:9000".parse().unwrap(),
+                "[::1]:9001".parse().unwrap(),
+                true,
+            ),
+        ] {
+            assert_eq!(
+                canonical_source(bound, source, dual_stack)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
+    fn mapped_metadata_requires_agreeing_wire_family_destination_and_interface() {
+        let bound = "[::]:9000".parse().unwrap();
+        let expected = "127.0.0.2:9000".parse().unwrap();
+        for messages in [
+            vec![ipv6_info("::ffff:127.0.0.2", 7)],
+            vec![ipv4_info("127.0.0.2", 7)],
+            vec![ipv6_info("::ffff:127.0.0.2", 7), ipv4_info("127.0.0.2", 7)],
+            vec![ipv4_info("127.0.0.2", 7), ipv6_info("::ffff:127.0.0.2", 7)],
+        ] {
+            assert_eq!(
+                decode_metadata(bound, true, messages).unwrap(),
+                (expected, None)
+            );
+        }
+        for bits in [0, 1, 2, 3, 0xba] {
+            assert_eq!(
+                decode_metadata(
+                    bound,
+                    true,
+                    [
+                        ipv6_info("::ffff:127.0.0.2", 7),
+                        ipv4_info("127.0.0.2", 7),
+                        ControlMessageOwned::Ipv4Tos(bits),
+                    ]
+                )
+                .unwrap(),
+                (expected, Some(Codepoint::from_ip_tos(bits)))
+            );
+        }
+        for messages in [
+            vec![],
+            vec![ControlMessageOwned::Ipv4Tos(2)],
+            vec![ipv6_info("::1", 7)],
+            vec![ipv6_info("::ffff:0.0.0.0", 7)],
+            vec![ipv6_info("::ffff:127.0.0.2", 0)],
+            vec![ipv4_info("127.0.0.2", 0)],
+            vec![ipv4_info("127.0.0.2", -1)],
+            vec![ipv6_info("::ffff:127.0.0.2", 7), ipv4_info("127.0.0.1", 7)],
+            vec![ipv6_info("::ffff:127.0.0.2", 7), ipv4_info("127.0.0.2", 8)],
+            vec![ipv6_info("::ffff:127.0.0.2", 7), ipv6_info("::1", 7)],
+            vec![
+                ipv6_info("::ffff:127.0.0.2", 7),
+                ControlMessageOwned::Ipv6TClass(2),
+            ],
+            vec![
+                ipv6_info("::ffff:127.0.0.2", 7),
+                ControlMessageOwned::Ipv4Tos(2),
+                ControlMessageOwned::Ipv4Tos(3),
+            ],
+        ] {
+            assert_eq!(
+                decode_metadata(bound, true, messages).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        let concrete = "[::ffff:127.0.0.2]:9000".parse().unwrap();
+        assert_eq!(
+            decode_metadata(concrete, true, []).unwrap(),
+            (expected, None)
+        );
+        assert!(decode_metadata(concrete, true, [ipv4_info("127.0.0.1", 7)]).is_err());
     }
 
     #[test]
@@ -629,12 +1060,19 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                decode_metadata(bound, messages).unwrap_err().kind(),
+                decode_metadata(bound, bound.is_ipv4(), messages)
+                    .unwrap_err()
+                    .kind(),
                 io::ErrorKind::InvalidData
             );
         }
         assert_eq!(
-            decode_metadata(v4, [ipv4_info("127.0.0.2", 1), ipv4_info("127.0.0.2", 1)]).unwrap(),
+            decode_metadata(
+                v4,
+                true,
+                [ipv4_info("127.0.0.2", 1), ipv4_info("127.0.0.2", 1)]
+            )
+            .unwrap(),
             ("127.0.0.2:9000".parse().unwrap(), None),
         );
     }
@@ -746,6 +1184,30 @@ mod tests {
             receiver.recv_from(&mut [0; 64]).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+    #[test]
+    fn mapped_payload_and_ancillary_truncation_fail_closed() {
+        for truncate_control in [false, true] {
+            let sender = socket(false);
+            let mut receiver = UdpMetadataSocket::new(UdpSocket::bind("[::]:0").unwrap()).unwrap();
+            receiver
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            if truncate_control {
+                receiver.control = Vec::new();
+            }
+            let destination =
+                SocketAddr::from((Ipv4Addr::LOCALHOST, receiver.local_addr().unwrap().port()));
+            sender
+                .send_to(&[9; 32], destination, Codepoint::Ce)
+                .unwrap();
+            let mut bytes = [0; 64];
+            let len = if truncate_control { 64 } else { 4 };
+            assert_eq!(
+                receiver.recv_from(&mut bytes[..len]).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
     }
     #[test]
     fn malformed_or_conflicting_metadata_fails_closed() {

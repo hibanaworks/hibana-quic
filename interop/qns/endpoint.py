@@ -73,8 +73,12 @@ def main():
             subprocess.run(['/wait-for-it.sh', 'sim:57832', '-s', '-t', '30'], check=True)
         Path('/logs').mkdir(exist_ok=True)
         print('qlog/keylog emission is not implemented; no files are fabricated', file=sys.stderr)
+        # Diagnostic mode emits fixed public counters only, on existing activity;
+        # it adds no protocol timer/wakeup and never exports TLS secret material.
+        child_env = os.environ.copy()
+        child_env['HIBANA_QUIC_DIAGNOSTICS'] = '1'
         with open(f"/logs/{os.environ['ROLE']}.log", 'ab', buffering=0) as log:
-            return subprocess.run(args, stdout=log, stderr=log, check=False).returncode
+            return subprocess.run(args, stdout=log, stderr=log, check=False, env=child_env).returncode
     except (OSError, subprocess.CalledProcessError) as error:
         print(f'endpoint execution failed: {error}', file=sys.stderr)
         return 1

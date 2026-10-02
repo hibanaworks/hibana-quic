@@ -1855,6 +1855,106 @@ fn header_is_retired(header: Header<'_>, retired: &[Vec<u8>]) -> bool {
         .iter()
         .any(|id| id.as_slice() == header_destination(header))
 }
+/// Opt-in numeric/enum-only diagnostics on existing activity. This logger
+/// never schedules a wake or a timer; doing so could hide an idle-wake defect.
+struct ProgressLog {
+    enabled: bool,
+    last_us: Option<u64>,
+}
+impl ProgressLog {
+    fn new() -> Self {
+        Self {
+            enabled: std::env::var_os("HIBANA_QUIC_DIAGNOSTICS").is_some_and(|value| value == "1"),
+            last_us: None,
+        }
+    }
+    fn due(&mut self, elapsed_us: u64) -> bool {
+        if !self.enabled
+            || self
+                .last_us
+                .is_some_and(|last| elapsed_us.saturating_sub(last) < 1_000_000)
+        {
+            return false;
+        }
+        self.last_us = Some(elapsed_us);
+        true
+    }
+    fn listener(&mut self, reactor: &HostReactor, elapsed_us: u64, budget: Duration) {
+        if !self.due(elapsed_us) {
+            return;
+        }
+        self.emit(
+            reactor,
+            "server",
+            "listener",
+            elapsed_us,
+            0,
+            0,
+            "Listening",
+            false,
+            false,
+            budget.as_micros() as i128,
+            -1,
+        );
+    }
+    fn connection(
+        &mut self,
+        reactor: &HostReactor,
+        endpoint: &Endpoint<'_, '_, '_, '_, '_, '_>,
+        report: &Report,
+        elapsed_us: u64,
+    ) {
+        if !self.due(elapsed_us) {
+            return;
+        }
+        let role = if report.side == Side::Client {
+            "client"
+        } else {
+            "server"
+        };
+        let lifecycle = match endpoint.connection_state() {
+            ConnectionState::Active => "Active",
+            ConnectionState::Closing => "Closing",
+            ConnectionState::Draining => "Draining",
+            ConnectionState::Closed => "Closed",
+        };
+        self.emit(
+            reactor,
+            role,
+            "connection",
+            elapsed_us,
+            report.files,
+            report.body_progress,
+            lifecycle,
+            endpoint.handshake_complete(),
+            endpoint.pending_application_work(),
+            endpoint.next_deadline().map_or(-1, i128::from),
+            endpoint.close_deadline().map_or(-1, i128::from),
+        );
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn emit(
+        &self,
+        reactor: &HostReactor,
+        role: &str,
+        stage: &str,
+        elapsed_us: u64,
+        files: usize,
+        body_bytes: u64,
+        lifecycle: &str,
+        handshake_complete: bool,
+        pending_work: bool,
+        next_deadline_us: i128,
+        close_deadline_us: i128,
+    ) {
+        let stats = reactor.statistics();
+        eprintln!(
+            "{{\"event\":\"hq_progress\",\"role\":\"{role}\",\"stage\":\"{stage}\",\"elapsed_us\":{elapsed_us},\"files_completed\":{files},\"body_bytes\":{body_bytes},\"lifecycle\":\"{lifecycle}\",\"handshake_complete\":{handshake_complete},\"pending_work\":{pending_work},\"next_deadline_us\":{next_deadline_us},\"close_deadline_us\":{close_deadline_us},\"reactor_polls\":{},\"reactor_waits\":{},\"reactor_socket_events\":{},\"reactor_timer_events\":{},\"reactor_wake_events\":{}}}",
+            stats.polls, stats.waits, stats.socket_events, stats.timer_events, stats.wake_events
+        );
+    }
+}
+
 struct InitialAdmission {
     len: usize,
     peer: SocketAddr,
@@ -1893,6 +1993,7 @@ async fn receive_activity(
     input: &mut [u8],
     alternate: &mut [u8],
     deadline: Instant,
+    hard_deadline: Instant,
     runnable: bool,
     prefer_alternate: bool,
 ) -> io::Result<Option<UdpReceived>> {
@@ -1904,7 +2005,7 @@ async fn receive_activity(
                 None => std::future::pending().await,
             }
         });
-        let mut timer = pin!(reactor.sleep_until(deadline));
+        let mut timer = pin!(reactor.sleep_until(deadline.min(hard_deadline)));
         let mut ready_work = pin!(async {
             if runnable {
                 yield_now().await;
@@ -1913,8 +2014,10 @@ async fn receive_activity(
             }
         });
         poll_fn(|cx| {
-            if let Poll::Ready(result) = timer.as_mut().poll(cx) {
-                return Poll::Ready(result.map(|()| None));
+            // A hard wall deadline forbids more admission. A soft transport
+            // deadline must not starve a queued ACK that can unblock its work.
+            if Instant::now() >= hard_deadline {
+                return Poll::Ready(Ok(None));
             }
             if prefer_alternate {
                 if let Poll::Ready(result) = secondary.as_mut().poll(cx) {
@@ -1931,6 +2034,11 @@ async fn receive_activity(
                     return Poll::Ready(result.map(|metadata| Some((metadata, true))));
                 }
             }
+            // Each outer connection iteration advances endpoint.timer(), even
+            // under continuous readable traffic; one bounded receive comes first.
+            if let Poll::Ready(result) = timer.as_mut().poll(cx) {
+                return Poll::Ready(result.map(|()| None));
+            }
             if ready_work.as_mut().poll(cx).is_ready() {
                 return Poll::Ready(Ok(None));
             }
@@ -1938,6 +2046,9 @@ async fn receive_activity(
         })
         .await?
     };
+    if Instant::now() >= hard_deadline {
+        return Ok(None);
+    }
     if let Some((metadata, from_alternate)) = received {
         if from_alternate {
             input[..metadata.len].copy_from_slice(&alternate[..metadata.len]);
@@ -2125,10 +2236,12 @@ async fn await_initial(
     retired: &[Vec<u8>],
     version_listener: &mut VersionNegotiationListener,
 ) -> Result<InitialAdmission> {
+    let mut diagnostics = ProgressLog::new();
     let mut dispatcher = retry_lifetime.map(RetryDispatcher::new).transpose()?;
     let mut output = [0; version_negotiation::MAX_RESPONSE_BYTES];
     loop {
         yield_now().await;
+        diagnostics.listener(reactor, now(start), timeout);
         if start.elapsed() >= timeout {
             return Err("deadline waiting for a fresh v1 Initial".into());
         }
@@ -2138,6 +2251,7 @@ async fn await_initial(
             None,
             input,
             &mut [],
+            start + timeout,
             start + timeout,
             false,
             false,
@@ -2920,6 +3034,8 @@ async fn exchange_connected(
     if side == Side::Client && endpoint.tls().early_status() == EarlyStatus::Offered {
         app.queue_early(&mut endpoint, &mut report)?;
     }
+    let mut diagnostics = ProgressLog::new();
+    diagnostics.connection(reactor, &endpoint, &report, now(start));
     if let Some((first, codepoint)) = first {
         let r = endpoint
             .receive_from(first, &mut scratch, initial_address, codepoint)
@@ -2938,6 +3054,7 @@ async fn exchange_connected(
     let mut completed_at = None;
     'connection: loop {
         yield_now().await;
+        diagnostics.connection(reactor, &endpoint, &report, now(start));
         report.early.decision = endpoint.tls().early_status();
         report.early.offered |= !matches!(report.early.decision, EarlyStatus::Disabled);
         report.early.admitted_packets = endpoint.admitted_early_packets();
@@ -3238,12 +3355,18 @@ async fn exchange_connected(
             &mut input,
             &mut alternate_input,
             deadline,
+            start + budget,
             progress || !drained,
             report.received % 2 == 1,
         )
         .await;
         match incoming {
             Ok(Some(received)) => {
+                // Do not process a datagram if the absolute wall deadline was
+                // crossed during the final readiness/syscall turn.
+                if start.elapsed() >= budget {
+                    continue;
+                }
                 let address = Address {
                     local: received.local,
                     remote: received.source,
@@ -3338,6 +3461,25 @@ mod tests {
         path_components(target).unwrap()
     }
     #[test]
+    fn progress_diagnostics_are_opt_in_and_activity_rate_bounded() {
+        let mut disabled = ProgressLog {
+            enabled: false,
+            last_us: None,
+        };
+        assert!(!disabled.due(0));
+        assert!(!disabled.due(u64::MAX));
+        let mut enabled = ProgressLog {
+            enabled: true,
+            last_us: None,
+        };
+        assert!(enabled.due(0));
+        assert!(!enabled.due(999_999));
+        assert!(enabled.due(1_000_000));
+        assert!(!enabled.due(1_999_999));
+        assert!(enabled.due(2_000_000));
+    }
+
+    #[test]
     fn host_root_future_storage_is_measured_without_constructing_it() {
         fn produced_bytes<T>(_make: impl FnOnce() -> T) -> usize {
             std::mem::size_of::<T>()
@@ -3385,6 +3527,80 @@ mod tests {
     }
 
     #[test]
+    fn readable_udp_progresses_even_when_soft_transport_deadline_is_overdue() {
+        let reactor = HostReactor::new().unwrap();
+        let socket = reactor
+            .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
+            .unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.send_to(b"queued ACK data", socket.local_addr().unwrap())
+            .unwrap();
+        let mut input = [0; 32];
+        let mut alternate = [0; 32];
+        let received = reactor
+            .block_on(receive_activity(
+                &reactor,
+                &socket,
+                None,
+                &mut input,
+                &mut alternate,
+                Instant::now(),
+                Instant::now() + Duration::from_secs(1),
+                false,
+                false,
+            ))
+            .unwrap()
+            .unwrap();
+        let received = received.expect("an overdue soft deadline must not starve readable UDP");
+        assert_eq!(&input[..received.len], b"queued ACK data");
+    }
+
+    #[test]
+    fn expired_hard_deadline_does_not_admit_or_consume_readable_udp() {
+        let reactor = HostReactor::new().unwrap();
+        let socket = reactor
+            .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
+            .unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.send_to(b"hard wall", socket.local_addr().unwrap())
+            .unwrap();
+        let mut input = [0; 32];
+        let mut alternate = [0; 32];
+        let expired = Instant::now();
+        let received = reactor
+            .block_on(receive_activity(
+                &reactor,
+                &socket,
+                None,
+                &mut input,
+                &mut alternate,
+                expired,
+                expired,
+                false,
+                false,
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(received.is_none());
+        let received = reactor
+            .block_on(receive_activity(
+                &reactor,
+                &socket,
+                None,
+                &mut input,
+                &mut alternate,
+                expired,
+                Instant::now() + Duration::from_secs(1),
+                false,
+                false,
+            ))
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(&input[..received.len], b"hard wall");
+    }
+
+    #[test]
     fn async_path_selection_retains_actual_buffer_and_cancels_other_receive() {
         let reactor = HostReactor::new().unwrap();
         let primary = reactor
@@ -3409,6 +3625,7 @@ mod tests {
                     &mut input,
                     &mut alternate,
                     Instant::now() + Duration::from_secs(1),
+                    Instant::now() + Duration::from_secs(1),
                     false,
                     false,
                 )
@@ -3423,6 +3640,7 @@ mod tests {
                     Some(&preferred),
                     &mut input,
                     &mut alternate,
+                    Instant::now() + Duration::from_secs(1),
                     Instant::now() + Duration::from_secs(1),
                     false,
                     true,
@@ -3439,6 +3657,7 @@ mod tests {
                     &mut input,
                     &mut alternate,
                     Instant::now() + Duration::from_millis(2),
+                    Instant::now() + Duration::from_secs(1),
                     false,
                     false,
                 )

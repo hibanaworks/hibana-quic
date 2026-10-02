@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import socket
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location('qns_endpoint', Path(__file__).parents[1] / 'interop/qns/endpoint.py')
 module = importlib.util.module_from_spec(spec)
@@ -13,6 +14,17 @@ def resolve(host, port, **kwargs):
 class EndpointCommand(unittest.TestCase):
     def env(self, **extra):
         return dict(ROLE='client', TESTCASE='transfer', REQUESTS='https://server/a https://server/b', **extra)
+    def test_diagnostics_are_opt_in_for_child_without_changing_arguments(self):
+        env = {'ROLE':'server', 'TESTCASE':'handshake'}
+        expected = module.command(env, resolve)
+        with mock.patch.dict(module.os.environ, env, clear=True), \
+             mock.patch.object(module.Path, 'mkdir'), \
+             mock.patch('builtins.open', mock.mock_open()), \
+             mock.patch.object(module.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run:
+            self.assertEqual(module.main(), 0)
+        self.assertEqual(run.call_args.args[0], expected)
+        self.assertEqual(run.call_args.kwargs['env']['HIBANA_QUIC_DIAGNOSTICS'], '1')
+        self.assertEqual(run.call_args.kwargs['env']['ROLE'], 'server')
     def test_verified_origin_and_all_requests(self):
         args = module.command(self.env(), resolve)
         self.assertEqual(args.count('--request'), 2)
