@@ -1136,6 +1136,68 @@ impl<'a, const BYTES: usize> SendQueue<'a, BYTES> {
         };
         Ok(self.handle(slot))
     }
+    /// Replay rejected intent under fresh (possibly smaller) authenticated
+    /// credit. Copy at most one admitted chunk; the journal retains the suffix.
+    /// Zero credit/capacity fails before opening or mutating any stream.
+    pub(crate) fn import_replay_prefix<const RX: usize>(
+        &mut self,
+        table: &mut StreamTable<'_, RX>,
+        connection: u64,
+        stream_id: u64,
+        existing: Option<StreamHandle>,
+        bytes: &[u8],
+    ) -> Result<(StreamHandle, usize), Error> {
+        table.check_open()?;
+        if table.connection != connection || table.role != Role::Client || bytes.is_empty() {
+            return Err(Error::InvalidTransition);
+        }
+        if !self
+            .chunks
+            .iter()
+            .any(|c| c.state.stream.is_none() && c.state.generation < u64::MAX)
+        {
+            return Err(Error::Capacity);
+        }
+        let credit = if let Some(handle) = existing {
+            if handle.id() != stream_id {
+                return Err(Error::InvalidTransition);
+            }
+            let credit = table.send_credit(handle)?;
+            credit.connection_available.min(credit.stream_available)
+        } else {
+            if stream_id != table.opened[0] * 4 {
+                return Err(Error::InvalidTransition);
+            }
+            if table.opened[0] >= table.peer.max_streams_bidi {
+                return Err(Error::StreamLimit);
+            }
+            let promises = table
+                .peer_promised_slots(table.local.max_streams_bidi, table.local.max_streams_uni)?;
+            if promises + table.local_live_count() >= table.reusable_slots()
+                || !table
+                    .slots
+                    .iter()
+                    .any(|s| !s.state.live && s.state.generation < u64::MAX)
+            {
+                return Err(Error::Capacity);
+            }
+            (table.peer.max_data - table.send_reserved).min(table.peer.stream_data_bidi_remote)
+        };
+        let len = bytes
+            .len()
+            .min(BYTES)
+            .min(usize::try_from(credit).unwrap_or(usize::MAX));
+        if len == 0 {
+            return Err(Error::FlowControl);
+        }
+        let stream = match existing {
+            Some(h) => h,
+            None => table.open_local(true)?,
+        };
+        self.enqueue(table, stream, &bytes[..len], len == bytes.len())?;
+        Ok((stream, len))
+    }
+
     /// Reconcile a complete early request after the authenticated TLS decision.
     /// The early journal retains its bytes until this succeeds. Import in stream
     /// order before any ordinary stream opens or 1-RTT ACK is processed. Rejected

@@ -6,3 +6,6 @@ pub mod udp;
 
 #[cfg(target_os = "linux")]
 pub mod path_socket;
+
+#[cfg(target_os = "linux")]
+pub mod async_io;

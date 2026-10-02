@@ -35,9 +35,16 @@ pub fn exercise() {
         validated.verify_certificate_verify(ECDSA_SECP256R1_SHA256, &[0x43; 32], SIGNATURE),
         Err(Error::CertificateVerify)
     );
+    // RSA-PSS/SHA256 is implemented, but this validated key and signature are
+    // ECDSA. Keep the actual algorithm/key mismatch as an authentication failure.
     assert_eq!(
         validated.verify_certificate_verify(0x0804, &[0x42; 32], SIGNATURE),
-        Err(Error::UnsupportedSignatureScheme(0x0804))
+        Err(Error::CertificateVerify)
+    );
+    // SHA384 remains outside the explicitly supported signature profile.
+    assert_eq!(
+        validated.verify_certificate_verify(0x0805, &[0x42; 32], SIGNATURE),
+        Err(Error::UnsupportedSignatureScheme(0x0805))
     );
     assert!(
         verifier

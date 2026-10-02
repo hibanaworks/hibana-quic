@@ -11,7 +11,7 @@ description = "Host adapters for the bounded hibana-quic TLS/transport profile; 
 resolver = "3"
 
 [dependencies]
-nix = { version = "=0.31.3", default-features = false, features = ["socket", "net", "uio"] }
+nix = { version = "=0.31.3", default-features = false, features = ["socket", "net", "uio", "event"] }
 hibana-quic = { path = "../.." }
 hibana = { path = "../../vendor/hibana", default-features = false }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["alloc"] }
@@ -59,3 +59,11 @@ path = "../../reference-tls/tests/idle_wire.rs"
 [[test]]
 name = "version_negotiation_wire"
 path = "../../reference-tls/tests/version_negotiation_wire.rs"
+
+[[test]]
+name = "early_tls"
+path = "../../reference-tls/tests/early_tls.rs"
+
+[[test]]
+name = "early_wire"
+path = "../../reference-tls/tests/early_wire.rs"

@@ -14,10 +14,13 @@
 
 mod early;
 mod path;
-pub use early::{EarlyBufferTicket, EarlyKeyUseTicket, EarlyReceiveTicket, EarlyReleaseTicket};
+pub use early::{
+    EarlyBufferTicket, EarlyControlBufferTicket, EarlyControlReleaseTicket, EarlyIntentTicket,
+    EarlyKeyUseTicket, EarlyPeerCloseTicket, EarlyReceiveTicket, EarlyReleaseTicket,
+};
 pub use path::{
     CidAdvertisementTicket, CidInstallTicket, CidRetirementTicket, PathAcceptedTicket, PathEffect,
-    PathEffectTicket, PathReservationTicket,
+    PathEffectTicket, PathReservationTicket, TimerTicket,
 };
 
 use crate::protocol::{
@@ -355,6 +358,7 @@ impl<'r> Driver<'r> {
         if self.last_timer.is_some_and(|last| now < last) {
             return Err(DriverError::ClockWentBackwards);
         }
+        self.path.supersede_timer()?;
         self.execute(|roles| {
             poll_ready(roles.timer.send::<TimerExpired>(&now))?;
             if poll_ready(roles.recovery.recv::<TimerExpired>())? != now {

@@ -146,6 +146,7 @@ impl Migration {
     pub fn handshake_confirmed(&mut self) {
         self.confirmed = true;
     }
+    pub fn largest_non_probing(&self) -> Option<u64> { self.largest_non_probing }
     pub fn active(&self) -> PathIdentity {
         self.active
     }

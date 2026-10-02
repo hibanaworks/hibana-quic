@@ -1,4 +1,4 @@
-//! Bounded policy and quarantine primitives for a future 0-RTT integration.
+//! Bounded policy and quarantine primitives for the 0-RTT integration.
 //!
 //! These helpers do not negotiate TLS, authenticate tickets/packets, allocate
 //! packet numbers, acknowledge data, or establish Finished. Their caller must
@@ -16,6 +16,7 @@ pub const REMEMBERED_BYTES: usize = 73;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Parameters(crate::parameters::Error),
+    Packet(crate::packet::Error),
     InvalidLimits,
     InvalidFreshness,
     ChangedLimits,
@@ -411,6 +412,73 @@ impl<'a, const N: usize> ReplayLedger<'a, N> {
     }
 }
 
+// RESET final size has the same high-water/final-size effect as an empty FIN
+// at that offset, but no payload bytes or application FIN are released.
+struct StreamEffect<'a> {
+    id: u64,
+    offset: u64,
+    fin: bool,
+    data: &'a [u8],
+}
+fn stream_effect(frame: crate::packet::Frame<'_>) -> Result<Option<StreamEffect<'_>>, Error> {
+    use crate::packet::Frame;
+    let effect = match frame {
+        Frame::Stream {
+            id,
+            offset,
+            fin,
+            data,
+        } => StreamEffect {
+            id,
+            offset,
+            fin,
+            data,
+        },
+        Frame::ResetStream { id, final_size, .. } => StreamEffect {
+            id,
+            offset: final_size,
+            fin: true,
+            data: &[],
+        },
+        Frame::StopSending { id, .. } | Frame::MaxStreamData { id, .. } => {
+            if id & 3 != 0 {
+                return Err(Error::StreamId);
+            }
+            StreamEffect {
+                id,
+                offset: 0,
+                fin: false,
+                data: &[],
+            }
+        }
+        Frame::StreamDataBlocked { id, .. } => StreamEffect {
+            id,
+            offset: 0,
+            fin: false,
+            data: &[],
+        },
+        _ => return Ok(None),
+    };
+    Ok(Some(effect))
+}
+fn packet_admission_error(error: crate::packet::Error) -> Error {
+    match error {
+        crate::packet::Error::LimitExceeded(_) => Error::Capacity,
+        error => Error::Packet(error),
+    }
+}
+fn early_packet_frames(payload: &[u8]) -> Result<crate::packet::FrameIter<'_>, Error> {
+    crate::packet::FrameIter::new(
+        payload,
+        crate::packet::EncryptionLevel::ZeroRtt,
+        crate::packet::ParseLimits {
+            max_frames: 128,
+            ..crate::packet::ParseLimits::default()
+        },
+    )
+    .map_err(packet_admission_error)
+}
+
 /// Caller-owned byte/coverage storage. Its complete memory cost is bounded by
 /// two BYTES arrays plus metadata; there is no allocator or self-reference.
 pub struct QuarantineSlot<const BYTES: usize> {
@@ -422,6 +490,7 @@ pub struct QuarantineSlot<const BYTES: usize> {
     opened_in_table: bool,
     released_highest: u64,
     fin_released: bool,
+    reset: bool,
     bytes: [u8; BYTES],
     present: [u8; BYTES],
 }
@@ -435,6 +504,7 @@ impl<const BYTES: usize> QuarantineSlot<BYTES> {
         opened_in_table: false,
         released_highest: 0,
         fin_released: false,
+        reset: false,
         bytes: [0; BYTES],
         present: [0; BYTES],
     };
@@ -449,6 +519,7 @@ impl<const BYTES: usize> QuarantineSlot<BYTES> {
         self.opened_in_table = false;
         self.released_highest = 0;
         self.fin_released = false;
+        self.reset = false;
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -522,6 +593,135 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
     pub fn charged(&self) -> u64 {
         self.charged
     }
+    /// Read-only whole-packet admission check. At most 128 decoded frames are
+    /// examined with bounded pairwise passes; there is no storage clone. A
+    /// Capacity error means valid local resource pressure: drop without ACK or
+    /// mutation. StreamId/FlowControl/FinalSize/ConflictingOverlap are protocol
+    /// failures, and Packet retains malformed/forbidden-frame diagnostics.
+    ///
+    /// Hold all other owners unchanged between this check and the sequential
+    /// STREAM/RESET_STREAM commits. Also reserve deferred control capacity before any commit.
+    pub fn preflight_authenticated_packet(
+        &self,
+        generation: u64,
+        payload: &[u8],
+    ) -> Result<(), Error> {
+        if generation != self.generation {
+            return Err(Error::StaleGeneration);
+        }
+        if self.phase == Phase::Rejected {
+            return Err(Error::State);
+        }
+        // Validate even a malformed tail before considering any admission.
+        for frame in early_packet_frames(payload)? {
+            frame.map_err(packet_admission_error)?;
+        }
+        let mut unique_new = 0;
+        let mut charged = self.charged;
+        for (index, frame) in early_packet_frames(payload)?.enumerate() {
+            let Some(StreamEffect {
+                id,
+                offset,
+                fin,
+                data,
+            }) = stream_effect(frame.map_err(packet_admission_error)?)?
+            else {
+                continue;
+            };
+            if id > MAX || id & 1 != 0 {
+                return Err(Error::StreamId);
+            }
+            let uni = id & 2 != 0;
+            if id / 4 + 1
+                > if uni {
+                    self.limits.streams_uni
+                } else {
+                    self.limits.streams_bidi
+                }
+            {
+                return Err(Error::FlowControl);
+            }
+            let end = offset
+                .checked_add(data.len() as u64)
+                .ok_or(Error::FlowControl)?;
+            let limit = if uni {
+                self.limits.stream_uni
+            } else {
+                self.limits.stream_bidi_remote
+            };
+            if end > limit || end > BYTES as u64 {
+                return Err(Error::FlowControl);
+            }
+            let slot = self.slots.iter().find(|slot| slot.id == Some(id));
+            let old_highest = slot.map_or(0, |slot| slot.highest);
+            if slot.is_some_and(|slot| {
+                slot.final_size
+                    .is_some_and(|size| end > size || fin && end != size)
+            }) || fin && end < old_highest
+            {
+                return Err(Error::FinalSize);
+            }
+            let start = usize::try_from(offset).map_err(|_| Error::FlowControl)?;
+            if slot.is_some_and(|slot| {
+                data.iter()
+                    .enumerate()
+                    .any(|(i, byte)| slot.present[start + i] == 1 && slot.bytes[start + i] != *byte)
+            }) {
+                return Err(Error::ConflictingOverlap);
+            }
+            let mut first = true;
+            let mut highest = end.max(old_highest);
+            for (other_index, other) in early_packet_frames(payload)?.enumerate() {
+                let Some(StreamEffect {
+                    id: other_id,
+                    offset: other_offset,
+                    fin: other_fin,
+                    data: other_data,
+                }) = stream_effect(other.map_err(packet_admission_error)?)?
+                else {
+                    continue;
+                };
+                if other_id != id || other_index == index {
+                    continue;
+                }
+                let other_end = other_offset
+                    .checked_add(other_data.len() as u64)
+                    .ok_or(Error::FlowControl)?;
+                first &= other_index > index;
+                highest = highest.max(other_end);
+                if fin && (other_end > end || other_fin && other_end != end)
+                    || other_fin && end > other_end
+                {
+                    return Err(Error::FinalSize);
+                }
+                let overlap_start = offset.max(other_offset);
+                let overlap_end = end.min(other_end);
+                for byte_offset in overlap_start..overlap_end {
+                    let released = slot
+                        .is_some_and(|slot| slot.reset || slot.present[byte_offset as usize] == 2);
+                    if !released
+                        && data[(byte_offset - offset) as usize]
+                            != other_data[(byte_offset - other_offset) as usize]
+                    {
+                        return Err(Error::ConflictingOverlap);
+                    }
+                }
+            }
+            if first {
+                unique_new += usize::from(slot.is_none());
+                charged = charged
+                    .checked_add(highest - old_highest)
+                    .ok_or(Error::FlowControl)?;
+                if charged > self.limits.max_data {
+                    return Err(Error::FlowControl);
+                }
+            }
+        }
+        if unique_new > self.slots.iter().filter(|slot| slot.id.is_none()).count() {
+            return Err(Error::Capacity);
+        }
+        Ok(())
+    }
     /// Supply only authenticated and whole-packet-validated client STREAM data.
     /// Authentication failure must never call this. Every local error is atomic.
     pub fn buffer_authenticated_stream(
@@ -577,6 +777,9 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
         {
             return Err(Error::FinalSize);
         }
+        if slot.reset {
+            return Ok(());
+        }
         let start = usize::try_from(offset).map_err(|_| Error::FlowControl)?;
         if bytes
             .iter()
@@ -609,6 +812,62 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
             slot.fin_pending = !slot.fin_released;
         }
         self.charged = charged;
+        Ok(())
+    }
+    /// Admit RESET_STREAM against remembered credit before marking its early
+    /// packet seen. Its final size charges the same receive high-water ledger as
+    /// STREAM, while all withheld bytes are wiped. The deferred control store
+    /// separately retains its actual error code for the post-Finished table
+    /// transition. Later valid STREAM frames cannot revive discarded data.
+    pub fn buffer_authenticated_reset(
+        &mut self,
+        generation: u64,
+        stream_id: u64,
+        final_size: u64,
+    ) -> Result<(), Error> {
+        self.buffer_authenticated_stream(generation, stream_id, final_size, &[], true)?;
+        let slot = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.id == Some(stream_id))
+            .ok_or(Error::State)?;
+        slot.reset = true;
+        slot.bytes.zeroize();
+        slot.present.fill(2);
+        slot.fin_pending = false;
+        slot.marker_pending = false;
+        Ok(())
+    }
+    /// Reserve remembered stream identity/credit for a deferred control before
+    /// admission. Non-stream controls have no quarantine accounting effect.
+    /// MAX_STREAM_DATA grants our sending credit; its numeric maximum does not
+    /// consume this receive ledger. The authenticated referenced stream does.
+    pub fn buffer_authenticated_control(
+        &mut self,
+        generation: u64,
+        frame: crate::packet::Frame<'_>,
+    ) -> Result<(), Error> {
+        if generation != self.generation {
+            return Err(Error::StaleGeneration);
+        }
+        if self.phase == Phase::Rejected {
+            return Err(Error::State);
+        }
+        if matches!(frame, crate::packet::Frame::Stream { .. }) {
+            return Ok(());
+        }
+        if let crate::packet::Frame::ResetStream { id, final_size, .. } = frame {
+            return self.buffer_authenticated_reset(generation, id, final_size);
+        }
+        if let Some(StreamEffect {
+            id,
+            offset,
+            fin,
+            data,
+        }) = stream_effect(frame)?
+        {
+            self.buffer_authenticated_stream(generation, id, offset, data, fin)?;
+        }
         Ok(())
     }
     /// Only the real TLS owner may report its verified client Finished here.
@@ -1080,5 +1339,474 @@ mod tests {
             b.buffer_authenticated_stream(1, 0, 0, b"x", false),
             Err(Error::StaleGeneration)
         );
+    }
+    #[test]
+    fn packet_preflight_validates_cross_frame_high_water_final_size_and_overlap_atomically() {
+        use crate::packet::{self, Frame};
+        let mut replay = ReplayStorage::<1>::new();
+        let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
+        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let cases = [
+            (
+                [
+                    Frame::Stream {
+                        id: 0,
+                        offset: 0,
+                        fin: false,
+                        data: b"ab",
+                    },
+                    Frame::Stream {
+                        id: 0,
+                        offset: 1,
+                        fin: false,
+                        data: b"X",
+                    },
+                ],
+                Err(Error::ConflictingOverlap),
+            ),
+            (
+                [
+                    Frame::Stream {
+                        id: 0,
+                        offset: 0,
+                        fin: true,
+                        data: b"ab",
+                    },
+                    Frame::Stream {
+                        id: 0,
+                        offset: 2,
+                        fin: false,
+                        data: b"c",
+                    },
+                ],
+                Err(Error::FinalSize),
+            ),
+            (
+                [
+                    Frame::Stream {
+                        id: 0,
+                        offset: 0,
+                        fin: true,
+                        data: b"ab",
+                    },
+                    Frame::Stream {
+                        id: 0,
+                        offset: 0,
+                        fin: true,
+                        data: b"a",
+                    },
+                ],
+                Err(Error::FinalSize),
+            ),
+            (
+                [
+                    Frame::Stream {
+                        id: 0,
+                        offset: 3,
+                        fin: true,
+                        data: b"def",
+                    },
+                    Frame::Stream {
+                        id: 0,
+                        offset: 0,
+                        fin: false,
+                        data: b"abc",
+                    },
+                ],
+                Ok(()),
+            ),
+        ];
+        for (frames, expected) in cases {
+            let mut bytes = [0; 64];
+            let mut n = 0;
+            for frame in frames {
+                n += packet::encode_frame(&frame, &mut bytes[n..]).unwrap();
+            }
+            assert_eq!(q.preflight_authenticated_packet(7, &bytes[..n]), expected);
+            assert_eq!(q.charged(), 0);
+            assert!(q.slots.iter().all(|s| s.id.is_none()));
+            if expected.is_ok() {
+                for frame in frames {
+                    let Frame::Stream {
+                        id,
+                        offset,
+                        fin,
+                        data,
+                    } = frame
+                    else {
+                        unreachable!()
+                    };
+                    q.buffer_authenticated_stream(7, id, offset, data, fin)
+                        .unwrap();
+                }
+            }
+        }
+        assert_eq!(q.charged(), 6);
+        let mut bytes = [0; 64];
+        let n = packet::encode_frame(
+            &Frame::Stream {
+                id: 0,
+                offset: 0,
+                fin: true,
+                data: b"abcdef",
+            },
+            &mut bytes,
+        )
+        .unwrap();
+        q.preflight_authenticated_packet(7, &bytes[..n]).unwrap();
+        q.finish_after_verified_handshake(7).unwrap();
+        let release = q.next_release().unwrap().unwrap().ticket;
+        q.complete_release(release).unwrap();
+        let n = packet::encode_frame(
+            &Frame::Stream {
+                id: 0,
+                offset: 0,
+                fin: true,
+                data: b"xxxxxx",
+            },
+            &mut bytes,
+        )
+        .unwrap();
+        q.preflight_authenticated_packet(7, &bytes[..n]).unwrap();
+        assert_eq!(q.charged(), 6);
+    }
+    #[test]
+    fn packet_preflight_bounds_frames_and_preserves_protocol_error_classification() {
+        let mut replay = ReplayStorage::<1>::new();
+        let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
+        let q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        assert_eq!(
+            q.preflight_authenticated_packet(7, &[1; 129]),
+            Err(Error::Capacity)
+        );
+        assert!(matches!(
+            q.preflight_authenticated_packet(7, &[1, 0x1e]),
+            Err(Error::Packet(_))
+        ));
+        assert_eq!(
+            q.preflight_authenticated_packet(8, &[1]),
+            Err(Error::StaleGeneration)
+        );
+        let mut bytes = [0; 64];
+        let n = crate::packet::encode_frame(
+            &crate::packet::Frame::Stream {
+                id: 0,
+                offset: 8,
+                fin: false,
+                data: b"x",
+            },
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(
+            q.preflight_authenticated_packet(7, &bytes[..n]),
+            Err(Error::FlowControl)
+        );
+        assert_eq!(q.charged(), 0);
+    }
+    #[test]
+    fn packet_preflight_charges_each_stream_maximum_once_then_all_commits_succeed() {
+        use crate::packet::{self, Frame};
+        let mut replay = ReplayStorage::<1>::new();
+        let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
+        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let frames = [
+            Frame::Stream {
+                id: 0,
+                offset: 4,
+                fin: true,
+                data: b"efgh",
+            },
+            Frame::Stream {
+                id: 0,
+                offset: 0,
+                fin: false,
+                data: b"abcdef",
+            },
+            Frame::Stream {
+                id: 2,
+                offset: 0,
+                fin: true,
+                data: b"12345678",
+            },
+            Frame::Stream {
+                id: 0,
+                offset: 0,
+                fin: true,
+                data: b"abcdefgh",
+            },
+        ];
+        let mut bytes = [0; 128];
+        let mut n = 0;
+        for frame in frames {
+            n += packet::encode_frame(&frame, &mut bytes[n..]).unwrap();
+        }
+        q.preflight_authenticated_packet(7, &bytes[..n]).unwrap();
+        assert_eq!(q.charged(), 0);
+        for frame in frames {
+            let Frame::Stream {
+                id,
+                offset,
+                fin,
+                data,
+            } = frame
+            else {
+                unreachable!()
+            };
+            q.buffer_authenticated_stream(7, id, offset, data, fin)
+                .unwrap();
+        }
+        assert_eq!(q.charged(), 16);
+        q.preflight_authenticated_packet(7, &bytes[..n]).unwrap();
+    }
+    #[test]
+    fn successful_pair_preflight_guarantees_both_sequential_stream_commits() {
+        use crate::packet::{self, Frame};
+        let mut admitted = 0;
+        // Exhaustive bounded pairs vary both offsets/lengths/FINs, overlap
+        // contents and same-versus-distinct streams. This checks the admission
+        // implication against the actual mutating implementation.
+        for encoded_case in 0usize..(9 * 9 * 4 * 4 * 2 * 2 * 2 * 2) {
+            let mut case = encoded_case;
+            let mut take = |radix| {
+                let value = case % radix;
+                case /= radix;
+                value
+            };
+            let offsets = [take(9), take(9)];
+            let lengths = [take(4), take(4)];
+            let fins = [take(2) != 0, take(2) != 0];
+            let conflict = take(2) != 0;
+            let other_stream = take(2) != 0;
+            let mut data = [[0; 4]; 2];
+            for which in 0..2 {
+                for (i, byte) in data[which].iter_mut().take(lengths[which]).enumerate() {
+                    *byte = b'a' + (offsets[which] + i) as u8;
+                }
+            }
+            if conflict {
+                data[1][0] ^= 1;
+            }
+            let frames = [
+                Frame::Stream {
+                    id: 0,
+                    offset: offsets[0] as u64,
+                    fin: fins[0],
+                    data: &data[0][..lengths[0]],
+                },
+                Frame::Stream {
+                    id: if other_stream { 2 } else { 0 },
+                    offset: offsets[1] as u64,
+                    fin: fins[1],
+                    data: &data[1][..lengths[1]],
+                },
+            ];
+            let mut payload = [0; 32];
+            let mut n = 0;
+            for frame in frames {
+                n += packet::encode_frame(&frame, &mut payload[n..]).unwrap();
+            }
+            let mut replay = ReplayStorage::<1>::new();
+            let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
+            let mut q =
+                Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+            let result = q.preflight_authenticated_packet(7, &payload[..n]);
+            assert_eq!(q.charged(), 0);
+            assert!(q.slots.iter().all(|slot| slot.id.is_none()));
+            if result.is_ok() {
+                admitted += 1;
+                for frame in frames {
+                    let Frame::Stream {
+                        id,
+                        offset,
+                        fin,
+                        data,
+                    } = frame
+                    else {
+                        unreachable!()
+                    };
+                    q.buffer_authenticated_stream(7, id, offset, data, fin)
+                        .unwrap();
+                }
+            }
+        }
+        assert!(admitted > 1000);
+    }
+    #[test]
+    fn reset_admission_uses_remembered_credit_and_final_size_without_releasing_withheld_data() {
+        use crate::packet::{self, Frame};
+        let mut replay = ReplayStorage::<1>::new();
+        let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
+        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let mut payload = [0; 64];
+        for frame in [
+            Frame::ResetStream {
+                id: 0,
+                error_code: 1,
+                final_size: 9,
+            },
+            Frame::ResetStream {
+                id: 4,
+                error_code: 2,
+                final_size: 0,
+            },
+        ] {
+            let n = packet::encode_frame(&frame, &mut payload).unwrap();
+            assert_eq!(
+                q.preflight_authenticated_packet(7, &payload[..n]),
+                Err(Error::FlowControl)
+            );
+            assert_eq!(q.charged(), 0);
+        }
+        q.buffer_authenticated_stream(7, 0, 0, b"secret", false)
+            .unwrap();
+        assert_eq!(q.buffer_authenticated_reset(7, 0, 5), Err(Error::FinalSize));
+        q.buffer_authenticated_reset(7, 0, 8).unwrap();
+        assert_eq!(q.charged(), 8);
+        assert!(q.slots[0].bytes.iter().all(|byte| *byte == 0));
+        q.buffer_authenticated_stream(7, 0, 0, b"ignored!", true)
+            .unwrap();
+        assert!(q.slots[0].bytes.iter().all(|byte| *byte == 0));
+        assert_eq!(q.buffer_authenticated_reset(7, 0, 7), Err(Error::FinalSize));
+        let n = packet::encode_frame(
+            &Frame::ResetStream {
+                id: 0,
+                error_code: 3,
+                final_size: 7,
+            },
+            &mut payload,
+        )
+        .unwrap();
+        assert_eq!(
+            q.preflight_authenticated_packet(7, &payload[..n]),
+            Err(Error::FinalSize)
+        );
+        q.buffer_authenticated_reset(7, 2, 8).unwrap();
+        assert_eq!(q.charged(), 16);
+        q.finish_after_verified_handshake(7).unwrap();
+        assert!(q.next_release().unwrap().is_none());
+    }
+    #[test]
+    fn reset_and_stream_pair_preflight_matches_real_commits_in_both_orders() {
+        use crate::packet::{self, Frame};
+        let mut admitted = 0;
+        for final_size in 0..10 {
+            for offset in 0..10 {
+                for len in 0..4 {
+                    for fin in [false, true] {
+                        for reset_first in [false, true] {
+                            let stream = Frame::Stream {
+                                id: 0,
+                                offset,
+                                fin,
+                                data: &b"abcd"[..len],
+                            };
+                            let reset = Frame::ResetStream {
+                                id: 0,
+                                error_code: 3,
+                                final_size,
+                            };
+                            let frames = if reset_first {
+                                [reset, stream]
+                            } else {
+                                [stream, reset]
+                            };
+                            let mut payload = [0; 32];
+                            let mut n = 0;
+                            for frame in frames {
+                                n += packet::encode_frame(&frame, &mut payload[n..]).unwrap();
+                            }
+                            let mut replay = ReplayStorage::<1>::new();
+                            let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
+                            let mut q = Quarantine::new(
+                                POLICY,
+                                limits(),
+                                claim(&mut replay, 7),
+                                &mut slots,
+                            )
+                            .unwrap();
+                            let result = q.preflight_authenticated_packet(7, &payload[..n]);
+                            assert_eq!(q.charged(), 0);
+                            if result.is_ok() {
+                                admitted += 1;
+                                for frame in frames {
+                                    match frame {
+                                        Frame::Stream {
+                                            id,
+                                            offset,
+                                            fin,
+                                            data,
+                                        } => q
+                                            .buffer_authenticated_stream(7, id, offset, data, fin)
+                                            .unwrap(),
+                                        Frame::ResetStream { id, final_size, .. } => {
+                                            q.buffer_authenticated_reset(7, id, final_size).unwrap()
+                                        }
+                                        _ => unreachable!(),
+                                    }
+                                }
+                                assert_eq!(q.charged(), final_size);
+                                q.finish_after_verified_handshake(7).unwrap();
+                                assert!(q.next_release().unwrap().is_none());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(admitted > 100);
+    }
+    #[test]
+    fn deferred_stream_controls_enforce_remembered_count_and_direction_before_finished() {
+        use crate::packet::{self, Frame};
+        let mut replay = ReplayStorage::<1>::new();
+        let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
+        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let mut payload = [0; 64];
+        for id in [1, 2, 3, 4, 6] {
+            for frame in [
+                Frame::StopSending { id, error_code: 1 },
+                Frame::MaxStreamData { id, maximum: 900 },
+            ] {
+                let n = packet::encode_frame(&frame, &mut payload).unwrap();
+                assert!(q.preflight_authenticated_packet(7, &payload[..n]).is_err());
+                assert!(q.buffer_authenticated_control(7, frame).is_err());
+                assert!(q.slots.iter().all(|slot| slot.id.is_none()));
+            }
+        }
+        for id in [1, 3, 4, 6] {
+            let frame = Frame::StreamDataBlocked { id, limit: 8 };
+            let n = packet::encode_frame(&frame, &mut payload).unwrap();
+            assert!(q.preflight_authenticated_packet(7, &payload[..n]).is_err());
+            assert!(q.buffer_authenticated_control(7, frame).is_err());
+        }
+        for frame in [
+            Frame::StopSending {
+                id: 0,
+                error_code: 1,
+            },
+            Frame::MaxStreamData {
+                id: 0,
+                maximum: 900,
+            },
+            Frame::StreamDataBlocked { id: 2, limit: 8 },
+        ] {
+            let n = packet::encode_frame(&frame, &mut payload).unwrap();
+            q.preflight_authenticated_packet(7, &payload[..n]).unwrap();
+            q.buffer_authenticated_control(7, frame).unwrap();
+        }
+        // Control references open remembered stream identities but do not
+        // consume receive bytes; a MAX_STREAM_DATA maximum grants send credit.
+        assert_eq!(q.charged(), 0);
+        assert_eq!(q.slots.iter().filter(|slot| slot.id.is_some()).count(), 2);
+        assert!(q.next_release().is_err());
+        q.finish_after_verified_handshake(7).unwrap();
+        for id in [0, 2] {
+            let view = q.next_release().unwrap().unwrap();
+            assert_eq!(view.stream_id, id);
+            assert!(view.bytes.is_empty() && !view.fin);
+            let ticket = view.ticket;
+            q.complete_release(ticket).unwrap();
+        }
     }
 }

@@ -223,6 +223,16 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
         }
     }
 
+    /// Immediate reservation capacity, excluding retained terminal history.
+    /// Used to avoid arming an already-due optional probe that cannot be queued.
+    pub fn remaining_capacity(&self) -> usize {
+        if self.retired {
+            0
+        } else {
+            self.records.iter().filter(|r| r.is_none()).count()
+        }
+    }
+
     /// Reserve a history slot and its future in-flight counter capacity before
     /// exposing any packet to the adapter. `in_flight` is a caller-supplied RFC
     /// 9002 classification (ACK-eliciting or containing PADDING), not merely
@@ -372,8 +382,14 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
     /// Original packet protection kind; 0-RTT and 1-RTT share a PN space but
     /// an ACK of early traffic must not grant a 1-RTT key-update authority.
     pub fn sent_kind(&self, packet: PacketNumber) -> Option<PacketKind> {
-        if self.retired { return None; }
-        self.records.iter().flatten().find(|r| r.packet == packet).map(|r| r.kind)
+        if self.retired {
+            return None;
+        }
+        self.records
+            .iter()
+            .flatten()
+            .find(|r| r.packet == packet)
+            .map(|r| r.kind)
     }
 
     pub fn accepted_ecn_counts(&self, space: PacketNumberSpace) -> MarkedPackets {
@@ -603,6 +619,29 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
     /// validated the ACK that established largest_acked. The candidate itself
     /// may be Sent, Lost or Acknowledged, but never merely allocated.
     pub fn count_later_sent(&self, packet: PacketNumber, largest_acked: u64) -> u64 {
+        self.count_later_sent_matching(packet, largest_acked, None)
+    }
+
+    /// As `count_later_sent`, restricted to the candidate's immutable accepted
+    /// path. An old or missing path is never replaced by today's active path.
+    pub fn count_later_sent_on_path(
+        &self,
+        packet: PacketNumber,
+        largest_acked: u64,
+        path: PathIdentity,
+    ) -> u64 {
+        if self.sent_path(packet) != Some(path) {
+            return 0;
+        }
+        self.count_later_sent_matching(packet, largest_acked, Some(path))
+    }
+
+    fn count_later_sent_matching(
+        &self,
+        packet: PacketNumber,
+        largest_acked: u64,
+        path: Option<PathIdentity>,
+    ) -> u64 {
         let index = packet.space as usize;
         if self.retired
             || packet.value < self.floor[index]
@@ -623,6 +662,7 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
             .flatten()
             .filter(|record| {
                 record.packet.space == packet.space
+                    && path.is_none_or(|p| record.path == Some(p))
                     && record.packet.value > packet.value
                     && record.packet.value <= largest_acked
                     && matches!(
@@ -1062,6 +1102,56 @@ mod tests {
                 end: packet.value,
             }],
         )
+    }
+
+    #[test]
+    fn packet_threshold_counts_exact_original_path_and_generation() {
+        let old = PathIdentity {
+            connection_generation: 9,
+            slot: 0,
+            path_generation: 1,
+        };
+        let current = PathIdentity {
+            path_generation: 2,
+            ..old
+        };
+        let mut ledger = SentLedger::<8>::new(9);
+        let candidate = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
+        ledger
+            .adapter_accepted_on_path(candidate, 0, Codepoint::NotEct, old)
+            .unwrap();
+        let mut largest = 0;
+        for i in 1..=3 {
+            let sent = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
+            ledger
+                .adapter_accepted_on_path(sent, i, Codepoint::NotEct, current)
+                .unwrap();
+            largest = sent.packet().value;
+        }
+        assert_eq!(ledger.count_later_sent(candidate.packet(), largest), 3);
+        assert_eq!(
+            ledger.count_later_sent_on_path(candidate.packet(), largest, old),
+            0
+        );
+        assert_eq!(
+            ledger.count_later_sent_on_path(candidate.packet(), largest, current),
+            0
+        );
+        let same = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
+        ledger
+            .adapter_accepted_on_path(same, 4, Codepoint::NotEct, old)
+            .unwrap();
+        assert_eq!(
+            ledger.count_later_sent_on_path(candidate.packet(), same.packet().value, old),
+            1
+        );
+        ledger.declare_lost(same.packet()).unwrap();
+        ack(&mut ledger, same.packet()).unwrap();
+        assert_eq!(
+            ledger.count_later_sent_on_path(candidate.packet(), same.packet().value, old),
+            1
+        );
+        assert_eq!(ledger.sent_path(candidate.packet()), Some(old));
     }
 
     #[test]

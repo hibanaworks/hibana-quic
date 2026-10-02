@@ -70,6 +70,9 @@ pub struct Config {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitialValidation {
     Unvalidated,
+    /// A client is not subject to the server amplification limit. This removes
+    /// only that send restriction; it supplies no address or MTU evidence.
+    ClientUnvalidated,
     /// The peer's address is already validated by handshake/token processing.
     /// A changed path still requires a full-sized challenge before `mtu` is true.
     AddressValidated,
@@ -117,6 +120,11 @@ pub struct ResponseHandle {
     path: PathIdentity,
     serial: u64,
 }
+impl ResponseHandle {
+    pub const fn path(self) -> PathIdentity {
+        self.path
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Validated {
     pub path: PathIdentity,
@@ -127,6 +135,7 @@ pub struct Validated {
 pub struct Snapshot {
     pub address: Address,
     pub address_validated: bool,
+    pub available_bytes: u64,
     pub mtu_validated: bool,
     pub failed: bool,
     pub received: u64,
@@ -154,6 +163,7 @@ struct Record<const SENDS: usize, const CONTROLS: usize> {
     id: PathIdentity,
     address: Address,
     budget: PathBudget<SENDS>,
+    address_validated: bool,
     probes: [Option<Probe>; CONTROLS],
     responses: [Option<Response>; CONTROLS],
     next_serial: u64,
@@ -258,6 +268,10 @@ impl<'a, const S: usize, const C: usize> Paths<'a, S, C> {
             id,
             address,
             budget,
+            address_validated: matches!(
+                validation,
+                InitialValidation::AddressValidated | InitialValidation::AddressAndMtuValidated
+            ),
             probes: [None; C],
             responses: [None; C],
             next_serial: 0,
@@ -281,7 +295,8 @@ impl<'a, const S: usize, const C: usize> Paths<'a, S, C> {
         let r = self.record(path)?;
         Ok(Snapshot {
             address: r.address,
-            address_validated: r.budget.is_validated(),
+            address_validated: r.address_validated,
+            available_bytes: r.budget.available_bytes(),
             mtu_validated: r.mtu_validated,
             failed: r.failed,
             received: r.budget.received_bytes(),
@@ -521,6 +536,7 @@ impl<'a, const S: usize, const C: usize> Paths<'a, S, C> {
                 }
             }
             r.budget.mark_validated()?;
+            r.address_validated = true;
             r.probes.fill(None);
             r.mtu_validated |= probe.expanded;
             r.validating = !r.mtu_validated;
@@ -553,6 +569,34 @@ impl<'a, const S: usize, const C: usize> Paths<'a, S, C> {
         }
         Ok(None)
     }
+    /// Keep at least three times the larger old/new-path PTO. Increasing the
+    /// estimate extends live validation deadlines without shortening any window.
+    pub fn ensure_probe_timeout(&mut self, pto: u64) -> Result<(), Error> {
+        if pto <= self.config.probe_interval_us {
+            return Ok(());
+        }
+        let timeout = pto
+            .checked_mul(3)
+            .ok_or(Error::DeadlineOverflow)?
+            .max(self.config.validation_timeout_us);
+        let delta = timeout - self.config.validation_timeout_us;
+        if self
+            .slots
+            .iter()
+            .filter_map(|s| s.record.as_ref())
+            .any(|r| r.validating && r.deadline_us.checked_add(delta).is_none())
+        {
+            return Err(Error::DeadlineOverflow);
+        }
+        for r in self.slots.iter_mut().filter_map(|s| s.record.as_mut()) {
+            if r.validating {
+                r.deadline_us += delta;
+            }
+        }
+        self.config.probe_interval_us = pto;
+        self.config.validation_timeout_us = timeout;
+        Ok(())
+    }
     /// Reprobe a previously validated path to counter off-path forwarding
     /// (RFC9000 §9.3.3). Existing validation evidence is preserved while probing.
     /// Pending probes make this a caller sequencing error rather than silently
@@ -572,6 +616,46 @@ impl<'a, const S: usize, const C: usize> Paths<'a, S, C> {
         r.deadline_us = deadline;
         r.validating = true;
         Ok(())
+    }
+    /// Bootstrap only from the handshake's actual address/MTU evidence. This is
+    /// not an alternative for validating a migrated address.
+    pub fn handshake_validated(&mut self, path: PathIdentity) -> Result<(), Error> {
+        let r = self.active_mut(path)?;
+        if r.probes.iter().flatten().any(|p| p.pending.is_some()) {
+            return Err(Error::PendingProbe);
+        }
+        r.budget.mark_validated()?;
+        r.address_validated = true;
+        r.mtu_validated = true;
+        r.validating = false;
+        r.probes.fill(None);
+        Ok(())
+    }
+    pub fn identities(&self) -> impl Iterator<Item = PathIdentity> + '_ {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.record.as_ref().map(|r| r.id))
+    }
+    pub fn validation_deadline(&self, path: PathIdentity) -> Result<Option<u64>, Error> {
+        let r = self.record(path)?;
+        Ok((r.validating && !r.failed).then_some(r.deadline_us))
+    }
+    pub fn probe_deadline(&self, path: PathIdentity) -> Result<Option<u64>, Error> {
+        let r = self.record(path)?;
+        Ok((r.validating
+            && !r.failed
+            && r.attempts < self.config.max_attempts
+            && !r.probes.iter().flatten().any(|p| p.pending.is_some()))
+        .then_some(r.next_probe_us))
+    }
+    /// Release caller-owned records at terminal connection retirement while
+    /// preserving slot epochs. Reinitialization cannot revive old descriptors.
+    pub fn retire_all(&mut self) {
+        for slot in self.slots.iter_mut() {
+            if let Some(mut record) = slot.record.take() {
+                record.budget.retire();
+            }
+        }
     }
     pub fn retire(&mut self, path: PathIdentity) -> Result<(), Error> {
         self.record(path)?;
@@ -981,6 +1065,29 @@ mod tests {
         }
         assert_eq!(p.queue_response(a, [8; 8]), Err(Error::Capacity));
     }
+    #[test]
+    fn terminal_cleanup_reuses_caller_storage_without_reviving_pending_descriptors() {
+        let mut slots = [PathSlot::<2, 3>::empty()];
+        let mut paths = Paths::new(&mut slots, 7, CONFIG).unwrap();
+        let old = paths
+            .insert(address(1), InitialValidation::AddressValidated, 0)
+            .unwrap();
+        let pending = paths
+            .reserve_probe(old, 1200, 0, &mut Random::default())
+            .unwrap();
+        paths.retire_all();
+        paths.retire_all();
+        assert_eq!(paths.snapshot(old), Err(Error::StalePath));
+        assert_eq!(paths.adapter_accepted(pending, 0), Err(Error::StalePath));
+        let mut next = Paths::new(&mut slots, 8, CONFIG).unwrap();
+        let current = next
+            .insert(address(1), InitialValidation::AddressValidated, 0)
+            .unwrap();
+        assert_eq!(current.path_generation, old.path_generation + 1);
+        assert_eq!(next.adapter_rejected(pending), Err(Error::StalePath));
+        assert_eq!(next.response(challenge(pending), 0).unwrap(), None);
+    }
+
     #[test]
     fn reused_slot_and_new_connection_reject_stale_descriptors_and_responses() {
         let mut slots = [PathSlot::<2, 3>::empty()];

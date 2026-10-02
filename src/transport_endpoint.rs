@@ -15,13 +15,18 @@
 //! RESET retransmission. PTO probes retain data and use fresh packet numbers;
 //! they do not declare all old packets lost. The engine reports exact packet/time
 //! threshold losses back to the bounded data/control owners. Recovery and
-//! congestion policy remain engine-owned; 0-RTT, migration and partial-chunk
-//! packetization are not implemented here. Host interop and Pico execution require
-//! separate evidence from this component's unit tests.
+//! congestion policy remain engine-owned. Optional early-request journaling and
+//! Finished-gated replay/reconciliation use caller-owned storage. Address-aware
+//! receive/transmit forwards to the engine's managed-path profile; full migration
+//! qualification remains separate. Host interop and Pico execution require
+//! evidence beyond these component tests.
 
 use crate::{
     accounting::PacketNumberSpace,
-    handshake_endpoint::{self, ApplicationHandler, HandshakeEndpoint, Received, Side, Transmit},
+    handshake_endpoint::{
+        self, ApplicationHandler, HandshakeEndpoint, InitialKeyProtection, InitialProtection,
+        Received, Side, Transmit,
+    },
     packet::{self, AckRanges, Frame},
     streams::{
         self, ChunkHandle, Limits, PacketReference, ReadView, Role, SendChunk, SendQueue,
@@ -383,11 +388,25 @@ struct Handler<
 impl<const RX: usize, const TX: usize, const C: usize, const R: usize> ApplicationHandler
     for Handler<'_, '_, RX, TX, C, R>
 {
-    fn early_decision(&mut self, decision: crate::early_send::Decision, limits: Limits) -> Result<(), streams::Error> {
-        let Some(journal) = self.early.as_mut() else { return Ok(()); };
+    fn early_decision(
+        &mut self,
+        decision: crate::early_send::Decision,
+        limits: Limits,
+        authority: &mut crate::early_send::ImportAuthority<'_, '_>,
+    ) -> Result<(), streams::Error> {
+        let Some(journal) = self.early.as_mut() else {
+            return Ok(());
+        };
         self.table.apply_peer_initial_limits(limits)?;
-        journal.decide(decision).map_err(|_| streams::Error::InvalidTransition)?;
-        reconcile_intents(journal,self.table,self.queue)
+        if journal.is_offering() {
+            journal
+                .decide(decision)
+                .map_err(|_| streams::Error::InvalidTransition)?;
+        }
+        if !journal.has_intent() {
+            return Ok(());
+        }
+        reconcile_intents(journal, self.table, self.queue, authority)
     }
     fn frame(&mut self, frame: Frame<'_>) -> Result<(), streams::Error> {
         match frame {
@@ -473,13 +492,27 @@ impl<const RX: usize, const TX: usize, const C: usize, const R: usize> Applicati
     }
 }
 
-fn reconcile_intents<const RX:usize,const TX:usize>(journal:&mut crate::early_send::Journal<'_,TX>,table:&mut StreamTable<'_,RX>,queue:&mut SendQueue<'_,TX>)->Result<(),streams::Error>{
-    let Some(decision)=journal.decision()else{return Ok(())};
-    loop { match journal.import_next(table,queue) {
-        Ok(Some(_))=>{},Ok(None)=>return Ok(()),
-        Err(streams::Error::FlowControl|streams::Error::StreamLimit|streams::Error::Capacity) if decision==crate::early_send::Decision::Rejected=>return Ok(()),
-        Err(error)=>return Err(error),
-    }}
+fn reconcile_intents<const RX: usize, const TX: usize>(
+    journal: &mut crate::early_send::Journal<'_, TX>,
+    table: &mut StreamTable<'_, RX>,
+    queue: &mut SendQueue<'_, TX>,
+    authority: &mut crate::early_send::ImportAuthority<'_, '_>,
+) -> Result<(), streams::Error> {
+    let Some(decision) = journal.decision() else {
+        return Ok(());
+    };
+    loop {
+        match authority.import_next(journal, table, queue) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(()),
+            Err(
+                streams::Error::FlowControl
+                | streams::Error::StreamLimit
+                | streams::Error::Capacity,
+            ) if decision == crate::early_send::Decision::Rejected => return Ok(()),
+            Err(error) => return Err(error),
+        }
+    }
 }
 #[derive(Clone, Copy)]
 enum ApplicationReservation {
@@ -503,8 +536,9 @@ pub struct TransportEndpoint<
     const TX: usize,
     const CONTROLS: usize = 16,
     const CONTROL_REFS: usize = 64,
+    K: InitialKeyProtection = InitialProtection<'r, 's>,
 > {
-    engine: HandshakeEndpoint<'r, 's, T>,
+    engine: HandshakeEndpoint<'r, 's, T, K>,
     table: StreamTable<'s, RX>,
     queue: SendQueue<'s, TX>,
     early: Option<crate::early_send::Journal<'s, TX>>,
@@ -513,11 +547,113 @@ pub struct TransportEndpoint<
     application_probe: bool,
     now: u64,
 }
-impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, const R: usize>
-    TransportEndpoint<'r, 's, T, RX, TX, C, R>
+// The enclosing application owner is retired if a suspended operation is
+// abandoned. Engine cancellation alone cannot release stream admission state.
+struct CancelOnDrop<
+    'a,
+    'r,
+    's,
+    T: Provider,
+    const RX: usize,
+    const TX: usize,
+    const C: usize,
+    const R: usize,
+    K: InitialKeyProtection,
+> {
+    endpoint: &'a mut TransportEndpoint<'r, 's, T, RX, TX, C, R, K>,
+    complete: bool,
+}
+impl<
+    T: Provider,
+    const RX: usize,
+    const TX: usize,
+    const C: usize,
+    const R: usize,
+    K: InitialKeyProtection,
+> Drop for CancelOnDrop<'_, '_, '_, T, RX, TX, C, R, K>
 {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.endpoint.retire_on_error();
+            self.endpoint.pending = None;
+        }
+    }
+}
+impl<
+    'r,
+    's,
+    T: Provider,
+    const RX: usize,
+    const TX: usize,
+    const C: usize,
+    const R: usize,
+    K: InitialKeyProtection,
+> TransportEndpoint<'r, 's, T, RX, TX, C, R, K>
+{
+    /// Cancellation of a suspended packet operation retires this connection.
+    pub async fn receive_from(
+        &mut self,
+        datagram: &[u8],
+        scratch: &mut [u8],
+        address: crate::path::Address,
+        codepoint: Option<crate::ecn::Codepoint>,
+    ) -> Result<Received, Error> {
+        let mut guard = CancelOnDrop {
+            endpoint: self,
+            complete: false,
+        };
+        let result = guard
+            .endpoint
+            .receive_from_impl(datagram, scratch, address, codepoint)
+            .await;
+        guard.complete = true;
+        result
+    }
+    pub async fn receive_with_metadata(
+        &mut self,
+        datagram: &[u8],
+        scratch: &mut [u8],
+        metadata: crate::ecn::Metadata,
+    ) -> Result<Received, Error> {
+        let mut guard = CancelOnDrop {
+            endpoint: self,
+            complete: false,
+        };
+        let result = guard
+            .endpoint
+            .receive_with_metadata_impl(datagram, scratch, metadata)
+            .await;
+        guard.complete = true;
+        result
+    }
+    pub async fn transmit(&mut self, out: &mut [u8]) -> Result<Option<Transmit>, Error> {
+        let mut guard = CancelOnDrop {
+            endpoint: self,
+            complete: false,
+        };
+        let result = guard.endpoint.transmit_impl(out).await;
+        guard.complete = true;
+        result
+    }
+    pub async fn adapter_result(
+        &mut self,
+        output: Transmit,
+        accepted: bool,
+        now: u64,
+    ) -> Result<(), Error> {
+        let mut guard = CancelOnDrop {
+            endpoint: self,
+            complete: false,
+        };
+        let result = guard
+            .endpoint
+            .adapter_result_impl(output, accepted, now)
+            .await;
+        guard.complete = true;
+        result
+    }
     pub fn new(
-        engine: HandshakeEndpoint<'r, 's, T>,
+        engine: HandshakeEndpoint<'r, 's, T, K>,
         local_limits: Limits,
         slots: &'s mut [StreamSlot<RX>],
         send_chunks: &'s mut [SendChunk<TX>],
@@ -551,40 +687,156 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         result.install_peer_limits()?;
         Ok(result)
     }
-    pub fn configure_early_send(&mut self,slots:&'s mut [crate::early_send::RequestSlot<TX>])->Result<(),Error>{
-        if self.engine.side()!=Side::Client||self.early.is_some()||self.pending.is_some()||self.table.live_count()!=0||self.engine.tls().early_status()!=crate::early_data::EarlyStatus::Offered{return Err(Error::InvalidConfiguration);}
-        let limits=self.engine.tls().remembered_early_limits().ok_or(Error::InvalidConfiguration)?;
-        self.early=Some(crate::early_send::Journal::new(self.engine.generation(),limits,slots).map_err(Error::Early)?);Ok(())
+    /// Explicitly authorize sending replay-safe complete requests early AND
+    /// resending their retained intent over 1-RTT if the peer rejects early data.
+    pub fn configure_early_send(
+        &mut self,
+        slots: &'s mut [crate::early_send::RequestSlot<TX>],
+    ) -> Result<(), Error> {
+        if self.connection_state() != crate::lifecycle::State::Active
+            || self.engine.is_retired()
+            || self.engine.side() != Side::Client
+            || self.early.is_some()
+            || self.pending.is_some()
+            || self.table.live_count() != 0
+            || self.engine.tls().early_status() != crate::early_data::EarlyStatus::Offered
+        {
+            return Err(Error::InvalidConfiguration);
+        }
+        let limits = self
+            .engine
+            .tls()
+            .remembered_early_limits()
+            .ok_or(Error::InvalidConfiguration)?;
+        self.early = Some(
+            crate::early_send::Journal::new(self.engine.generation(), limits, slots)
+                .map_err(Error::Early)?,
+        );
+        Ok(())
     }
-    pub fn enqueue_early_request(&mut self,bytes:&[u8])->Result<crate::early_send::Handle,Error>{
-        self.early.as_mut().ok_or(Error::InvalidConfiguration)?.enqueue(bytes).map_err(Error::Early)
+    pub fn enqueue_early_request(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<crate::early_send::Handle, Error> {
+        if self.connection_state() != crate::lifecycle::State::Active
+            || self.engine.is_retired()
+            || !matches!(
+                self.engine.tls().early_status(),
+                crate::early_data::EarlyStatus::Offered
+                    | crate::early_data::EarlyStatus::AcceptedPendingFinished
+            )
+            || !self.engine.tls().has_early_keys()
+            || self.engine.tls().has_keys(crate::tls::Level::OneRtt)
+        {
+            return Err(Error::NotReady);
+        }
+        self.early
+            .as_mut()
+            .ok_or(Error::InvalidConfiguration)?
+            .enqueue(bytes)
+            .map_err(Error::Early)
     }
-    pub fn early_stream_id(&self,handle:crate::early_send::Handle)->Result<u64,Error>{Ok(self.early.as_ref().ok_or(Error::InvalidConfiguration)?.request(handle).map_err(Error::Early)?.stream_id)}
-    pub fn configure_early_receive(&mut self,policy:crate::early_data::ServerPolicy,slots:&'s mut [crate::early_data::QuarantineSlot<{handshake_endpoint::EARLY_REQUEST_BYTES}>])->Result<(),Error>{self.engine.configure_early_receive(policy,slots)?;Ok(())}
-    fn transmit_early(&mut self,out:&mut[u8])->Result<Option<Transmit>,Error>{
-        let Some(journal)=self.early.as_mut()else{return Ok(None)};
-        let Some(handle)=journal.next_transmit(self.application_probe)else{return Ok(None)};
-        let request=journal.request(handle).map_err(Error::Early)?;
-        let mut encoded=[0u8;handshake_endpoint::MAX_APPLICATION_FRAME_BYTES];
-        let n=packet::encode_frame(&Frame::Stream{id:request.stream_id,offset:0,fin:true,data:request.bytes},&mut encoded)?;
-        let Some(output)=self.engine.transmit_early_application(&encoded[..n],out)?else{return Ok(None)};
-        let ticket=match journal.reserve(handle,output.packet_number.value){Ok(t)=>t,Err(e)=>{self.engine.adapter_result(output,false,self.now)?;return Err(Error::Early(e))}};
-        self.pending=Some(Pending{output,application:Some(ApplicationReservation::Early(ticket))});self.application_probe=false;Ok(Some(output))
+    pub fn early_stream_id(&self, handle: crate::early_send::Handle) -> Result<u64, Error> {
+        if self.connection_state() != crate::lifecycle::State::Active || self.engine.is_retired() {
+            return Err(Error::NotReady);
+        }
+        Ok(self
+            .early
+            .as_ref()
+            .ok_or(Error::InvalidConfiguration)?
+            .request(handle)
+            .map_err(Error::Early)?
+            .stream_id)
+    }
+    pub fn configure_early_receive(
+        &mut self,
+        policy: crate::early_data::ServerPolicy,
+        slots: &'s mut [crate::early_data::QuarantineSlot<
+            { handshake_endpoint::EARLY_REQUEST_BYTES },
+        >],
+    ) -> Result<(), Error> {
+        self.engine.configure_early_receive(policy, slots)?;
+        Ok(())
+    }
+    /// Required with STREAM storage for the full early control profile. Both
+    /// stores are caller-owned; bounded capacity pressure drops without ACK.
+    pub fn configure_early_controls(
+        &mut self,
+        slots: &'s mut [crate::early_control::Slot<{ handshake_endpoint::EARLY_CONTROL_BYTES }>],
+    ) -> Result<(), Error> {
+        let result = self.engine.configure_early_controls(slots);
+        self.after_engine(result)
+    }
+    async fn transmit_early(&mut self, out: &mut [u8]) -> Result<Option<Transmit>, Error> {
+        let Some(journal) = self.early.as_ref() else {
+            return Ok(None);
+        };
+        let Some(handle) = journal.next_transmit(self.application_probe) else {
+            return Ok(None);
+        };
+        let request = journal.request(handle).map_err(Error::Early)?;
+        let mut encoded = [0u8; handshake_endpoint::MAX_APPLICATION_FRAME_BYTES];
+        let n = packet::encode_frame(
+            &Frame::Stream {
+                id: request.stream_id,
+                offset: 0,
+                fin: true,
+                data: request.bytes,
+            },
+            &mut encoded,
+        )?;
+        let result = self.engine.transmit_early_application(&encoded[..n], out);
+        let Some(output) = self.after_engine(result)? else {
+            return Ok(None);
+        };
+        let reservation = self
+            .early
+            .as_mut()
+            .ok_or(Error::InvalidConfiguration)?
+            .reserve(handle, output.packet_number.value);
+        let ticket = match reservation {
+            Ok(t) => t,
+            Err(e) => {
+                let result = self.engine.adapter_result(output, false, self.now).await;
+                self.after_engine(result)?;
+                return Err(Error::Early(e));
+            }
+        };
+        self.pending = Some(Pending {
+            output,
+            application: Some(ApplicationReservation::Early(ticket)),
+        });
+        self.application_probe = false;
+        Ok(Some(output))
     }
     fn install_peer_limits(&mut self) -> Result<(), Error> {
         if self.engine.is_retired() {
-            self.table.close();
+            self.close_application_state();
             return Err(Error::Engine(handshake_endpoint::Error::Retired));
         }
         if let Some(limits) = self.engine.verified_peer_limits() {
             self.table.apply_peer_initial_limits(limits)?;
         }
-        if let Some(journal)=self.early.as_mut(){ reconcile_intents(journal,&mut self.table,&mut self.queue)?; }
+        if self.early.as_ref().is_some_and(|j| j.has_intent()) {
+            let mut handler = Handler {
+                table: &mut self.table,
+                queue: &mut self.queue,
+                controls: &mut self.controls,
+                early: &mut self.early,
+            };
+            let result = self.engine.reconcile_early_client(&mut handler);
+            if result.is_err() {
+                self.engine.retire();
+            }
+            self.after_engine(result)?;
+        }
         Ok(())
     }
     fn drain_losses(&mut self) {
         while let Some(packet) = self.engine.take_lost_application_packet() {
-            if let Some(journal)=self.early.as_mut(){journal.packet_lost(packet);}
+            if let Some(journal) = self.early.as_mut() {
+                journal.packet_lost(packet);
+            }
             self.queue.on_packet_lost(packet);
             self.controls.on_packet_lost(packet);
         }
@@ -604,10 +856,30 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         }
         Ok(())
     }
+    fn after_engine<U>(
+        &mut self,
+        result: Result<U, handshake_endpoint::Error>,
+    ) -> Result<U, Error> {
+        if self.engine.is_retired() && self.connection_state() == crate::lifecycle::State::Active {
+            self.engine.retire();
+        }
+        if self.engine.is_retired() || self.connection_state() != crate::lifecycle::State::Active {
+            self.close_application_state();
+            if self.connection_state() != crate::lifecycle::State::Closing {
+                self.pending = None;
+            }
+        }
+        result.map_err(Error::Engine)
+    }
+    fn close_application_state(&mut self) {
+        self.table.close();
+        if let Some(journal) = self.early.as_mut() {
+            journal.retire();
+        }
+    }
     fn retire_on_error(&mut self) {
         self.engine.retire();
-        if let Some(journal)=self.early.as_mut(){journal.retire();}
-        self.table.close();
+        self.close_application_state();
     }
     /// Outstanding application-owned bytes/control references or an unreported
     /// adapter submission. TLS/control output should additionally be drained via
@@ -616,12 +888,37 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         self.connection_state() == crate::lifecycle::State::Active
             && (self.pending.is_some()
                 || self.early.as_ref().is_some_and(|j| j.has_intent())
+                || self.engine.has_pending_early_release()
                 || self.queue.queued_chunks() != 0
                 || self
                     .controls
                     .entries
                     .iter()
                     .any(|control| control.kind.is_some()))
+    }
+    /// Opt-in metadata-only trace; storage remains caller owned.
+    pub fn enable_trace(
+        &mut self,
+        buffer: &'s mut [u8],
+    ) -> Result<(), handshake_endpoint::TraceSetupError> {
+        self.engine.enable_trace(buffer)
+    }
+    pub fn trace_status(&self) -> Option<handshake_endpoint::TraceStatus> {
+        self.engine.trace_status()
+    }
+    pub fn trace_pending(&self) -> &[u8] {
+        self.engine.trace_pending()
+    }
+    pub fn consume_trace(&mut self, bytes: usize) -> Result<(), crate::trace::Error> {
+        self.engine.consume_trace(bytes)
+    }
+    pub fn mark_trace_sink_failed(&mut self) {
+        self.engine.mark_trace_sink_failed();
+    }
+    /// Distinct authenticated 0-RTT packets admitted in this generation;
+    /// not a Finished or application-delivery count.
+    pub fn admitted_early_packets(&self) -> u64 {
+        self.engine.admitted_early_packets()
     }
     pub fn receive_key_generation(&self) -> u64 {
         self.engine.tls().receive_key_generation()
@@ -634,7 +931,8 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
     }
     pub fn initiate_key_update(&mut self) -> Result<(), Error> {
         self.idle()?;
-        self.engine.initiate_key_update()?;
+        let result = self.engine.initiate_key_update();
+        self.after_engine(result)?;
         Ok(())
     }
     pub fn tls(&self) -> &T {
@@ -651,18 +949,20 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
     }
     pub fn initiate_close(&mut self, reason: crate::lifecycle::CloseReason) -> Result<(), Error> {
         self.idle()?;
-        self.engine.close(reason)?;
-        self.table.close();
+        let result = self.engine.close(reason);
+        self.after_engine(result)?;
+        self.close_application_state();
         Ok(())
     }
     pub fn transmit_permitted(&mut self, output: Transmit, now: u64) -> Result<bool, Error> {
         if self.pending.is_none_or(|pending| pending.output != output) {
             return Ok(false);
         }
-        let permitted = self.engine.transmit_permitted(output, now)?;
+        let result = self.engine.transmit_permitted(output, now);
+        let permitted = self.after_engine(result)?;
         if !permitted && self.engine.connection_state() == crate::lifecycle::State::Closed {
             self.pending = None;
-            self.table.close();
+            self.close_application_state();
         }
         Ok(permitted)
     }
@@ -677,11 +977,20 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
     }
     pub fn open(&mut self, bidirectional: bool) -> Result<StreamHandle, Error> {
         self.ready()?;
-        if self.early.as_ref().is_some_and(|j| j.has_intent()) { return Err(Error::Busy); }
+        if self.early.as_ref().is_some_and(|j| j.has_intent()) {
+            return Err(Error::Busy);
+        }
         Ok(self.table.open_local(bidirectional)?)
     }
     pub fn send(&mut self, stream: StreamHandle, bytes: &[u8], fin: bool) -> Result<(), Error> {
         self.ready()?;
+        if self
+            .early
+            .as_ref()
+            .is_some_and(|j| j.has_pending_stream(stream.id()))
+        {
+            return Err(Error::Busy);
+        }
         self.queue.enqueue(&mut self.table, stream, bytes, fin)?;
         Ok(())
     }
@@ -796,7 +1105,8 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
             self.controls.can_push(&[kind])?;
         }
         self.table.retire(stream)?;
-        self.engine.stream_retired(stream.id())?;
+        let result = self.engine.stream_retired(stream.id());
+        self.after_engine(result)?;
         if let Some(kind) = new_credit {
             match self.table.grant_max_streams(bidirectional, previous + 1) {
                 Ok(()) => self.controls.push(kind)?,
@@ -806,9 +1116,27 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         }
         Ok(())
     }
+    pub fn enable_network(
+        &mut self,
+        config: handshake_endpoint::NetworkConfig,
+        resources: handshake_endpoint::NetworkResources<'s>,
+        rng: &'s mut dyn handshake_endpoint::NetworkRandom,
+    ) -> Result<(), Error> {
+        self.idle()?;
+        let result = self.engine.enable_network(config, resources, rng);
+        self.after_engine(result)?;
+        Ok(())
+    }
+    pub fn issued_local_cids(&self) -> impl Iterator<Item = crate::connection_id::Cid> + '_ {
+        self.engine.issued_local_cids()
+    }
+    pub fn network_path_state(&self) -> Option<(crate::ecn::PathIdentity, crate::path::Snapshot)> {
+        self.engine.network_path_state()
+    }
     pub fn enable_ecn(&mut self) -> Result<(), Error> {
         self.idle()?;
-        self.engine.enable_ecn()?;
+        let result = self.engine.enable_ecn();
+        self.after_engine(result)?;
         Ok(())
     }
     pub fn path_identity(&self) -> crate::ecn::PathIdentity {
@@ -817,7 +1145,11 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
     pub fn ecn_snapshot(&self) -> crate::ecn::Snapshot {
         self.engine.ecn_snapshot()
     }
-    pub fn receive(&mut self, datagram: &[u8], scratch: &mut [u8]) -> Result<Received, Error> {
+    pub async fn receive(
+        &mut self,
+        datagram: &[u8],
+        scratch: &mut [u8],
+    ) -> Result<Received, Error> {
         self.receive_with_metadata(
             datagram,
             scratch,
@@ -826,8 +1158,40 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
                 codepoint: None,
             },
         )
+        .await
     }
-    pub fn receive_with_metadata(
+    async fn receive_from_impl(
+        &mut self,
+        datagram: &[u8],
+        scratch: &mut [u8],
+        address: crate::path::Address,
+        codepoint: Option<crate::ecn::Codepoint>,
+    ) -> Result<Received, Error> {
+        self.idle()?;
+        if self.connection_state() == crate::lifecycle::State::Active {
+            self.install_peer_limits()?;
+        }
+        let mut handler = Handler {
+            table: &mut self.table,
+            queue: &mut self.queue,
+            controls: &mut self.controls,
+            early: &mut self.early,
+        };
+        let result = self
+            .engine
+            .receive_from(datagram, scratch, address, codepoint, &mut handler)
+            .await;
+        self.drain_losses();
+        if self.connection_state() != crate::lifecycle::State::Active {
+            self.close_application_state();
+        }
+        let report = result?;
+        if self.connection_state() == crate::lifecycle::State::Active {
+            self.install_peer_limits()?;
+        }
+        Ok(report)
+    }
+    async fn receive_with_metadata_impl(
         &mut self,
         datagram: &[u8],
         scratch: &mut [u8],
@@ -845,10 +1209,11 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         };
         let result = self
             .engine
-            .receive_with_metadata(datagram, scratch, metadata, &mut handler);
+            .receive_with_metadata(datagram, scratch, metadata, &mut handler)
+            .await;
         self.drain_losses();
         if self.connection_state() != crate::lifecycle::State::Active {
-            self.table.close();
+            self.close_application_state();
         }
         let report = result?;
         if self.connection_state() == crate::lifecycle::State::Active {
@@ -860,33 +1225,57 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         if self.connection_state() == crate::lifecycle::State::Active {
             // An unsubmitted output must not pin a connection past idle expiry.
             // Recovery remains serialized with its adapter completion while active.
-            if self.engine.poll_idle_timeout(now)? {
+            let result = self.engine.poll_idle_timeout(now);
+            if self.after_engine(result)? {
                 self.pending = None;
-                self.table.close();
+                self.close_application_state();
                 self.now = now;
                 return Ok(());
             }
             self.idle()?;
         }
-        self.engine.timer(now)?;
+        let result = self.engine.timer(now);
+        self.after_engine(result)?;
         self.drain_losses();
         self.now = now;
         if self.connection_state() == crate::lifecycle::State::Closed {
             self.pending = None;
-            self.table.close();
+            self.close_application_state();
         }
         self.application_probe |= self.engine.take_application_probe();
         Ok(())
     }
+    /// Continue a bounded Finished-gated quarantine drain. Returns whether
+    /// additional owned ranges remain; no network event is needed to resume.
+    pub fn drain_early_data(&mut self) -> Result<bool, Error> {
+        self.idle()?;
+        if self.connection_state() != crate::lifecycle::State::Active {
+            return Ok(false);
+        }
+        let mut handler = Handler {
+            table: &mut self.table,
+            queue: &mut self.queue,
+            controls: &mut self.controls,
+            early: &mut self.early,
+        };
+        let result = self.engine.release_early(&mut handler);
+        if result.is_err() {
+            self.engine.retire();
+        }
+        self.after_engine(result)?;
+        Ok(self.engine.has_pending_early_release())
+    }
     pub fn next_deadline(&self) -> Option<u64> {
         self.engine.next_deadline()
     }
-    pub fn transmit(&mut self, out: &mut [u8]) -> Result<Option<Transmit>, Error> {
+    async fn transmit_impl(&mut self, out: &mut [u8]) -> Result<Option<Transmit>, Error> {
         self.idle()?;
+        self.drain_early_data()?;
         if self.connection_state() == crate::lifecycle::State::Active {
             self.install_peer_limits()?;
         }
-        let engine_output = self.engine.transmit(out)?;
+        let result = self.engine.transmit(out).await;
+        let engine_output = self.after_engine(result)?;
         self.drain_losses();
         if let Some(output) = engine_output {
             self.pending = Some(Pending {
@@ -896,7 +1285,15 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
             return Ok(Some(output));
         }
         if !self.engine.handshake_complete() {
-            if matches!(self.engine.tls().early_status(),crate::early_data::EarlyStatus::Offered|crate::early_data::EarlyStatus::AcceptedPendingFinished) && self.engine.tls().has_early_keys() && !self.engine.tls().has_keys(crate::tls::Level::OneRtt) { return self.transmit_early(out); }
+            if matches!(
+                self.engine.tls().early_status(),
+                crate::early_data::EarlyStatus::Offered
+                    | crate::early_data::EarlyStatus::AcceptedPendingFinished
+            ) && self.engine.tls().has_early_keys()
+                && !self.engine.tls().has_keys(crate::tls::Level::OneRtt)
+            {
+                return self.transmit_early(out).await;
+            }
             return Ok(None);
         }
         self.install_peer_limits()?;
@@ -936,9 +1333,11 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         } else {
             return Ok(None);
         };
-        let application_output = self
+        let result = self
             .engine
-            .transmit_application(&plaintext[..length], out)?;
+            .transmit_application(&plaintext[..length], out)
+            .await;
+        let application_output = self.after_engine(result)?;
         self.drain_losses();
         let Some(output) = application_output else {
             return Ok(None);
@@ -962,12 +1361,14 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         let reference = match reference {
             Ok(r) => r,
             Err(streams::Error::Capacity) => {
-                self.engine.adapter_result(output, false, self.now)?;
+                let result = self.engine.adapter_result(output, false, self.now).await;
+                self.after_engine(result)?;
                 self.drain_losses();
                 return Ok(None);
             }
             Err(e) => {
-                self.engine.adapter_result(output, false, self.now)?;
+                let result = self.engine.adapter_result(output, false, self.now).await;
+                self.after_engine(result)?;
                 self.drain_losses();
                 return Err(e.into());
             }
@@ -979,7 +1380,7 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         });
         Ok(Some(output))
     }
-    pub fn adapter_result(
+    async fn adapter_result_impl(
         &mut self,
         output: Transmit,
         accepted: bool,
@@ -989,18 +1390,21 @@ impl<'r, 's, T: Provider, const RX: usize, const TX: usize, const C: usize, cons
         if pending.output != output {
             return Err(Error::Busy);
         }
-        if let Err(error) = self.engine.adapter_result(output, accepted, now) {
+        if let Err(error) = self.engine.adapter_result(output, accepted, now).await {
             if self.engine.connection_state() == crate::lifecycle::State::Closed {
                 self.pending = None;
-                self.table.close();
+                self.close_application_state();
             }
             return Err(error.into());
         }
         self.drain_losses();
         let result = match pending.application {
-            Some(ApplicationReservation::Early(reference)) => {
-                self.early.as_mut().ok_or(streams::Error::InvalidTransition)?.adapter_result(reference,accepted).map_err(|_|streams::Error::InvalidTransition)
-            }
+            Some(ApplicationReservation::Early(reference)) => self
+                .early
+                .as_mut()
+                .ok_or(streams::Error::InvalidTransition)?
+                .adapter_result(reference, accepted)
+                .map_err(|_| streams::Error::InvalidTransition),
             Some(ApplicationReservation::Stream(reference)) => {
                 if accepted {
                     self.queue.commit_transmission(&mut self.table, reference)

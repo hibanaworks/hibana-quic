@@ -232,6 +232,34 @@ impl<'a> LocalCidTable<'a> {
         })
     }
 
+    /// Install the authenticated peer limit before generating further IDs.
+    pub fn set_peer_limit_verified(&mut self, limit: u64) -> Result<(), CidError> {
+        validate_limit(limit)?;
+        let active = self
+            .slots
+            .iter()
+            .filter_map(|s| s.entry.as_ref())
+            .filter(|e| !e.retired && e.sequence >= self.retire_prior_to)
+            .count() as u64;
+        if active > limit {
+            return Err(CidError::ActiveLimit);
+        }
+        self.peer_active_limit = limit;
+        Ok(())
+    }
+    pub fn can_issue(&self) -> bool {
+        self.available_history() > 0
+            && (self
+                .slots
+                .iter()
+                .filter_map(|s| s.entry.as_ref())
+                .filter(|e| !e.retired && e.sequence >= self.retire_prior_to)
+                .count() as u64)
+                < self.peer_active_limit
+    }
+    pub fn available_history(&self) -> usize {
+        self.slots.iter().filter(|s| s.entry.is_none()).count()
+    }
     /// Reserve sequence zero before advertising the initial source CID.
     /// Tokens must be unpredictable and unique across connections too; this
     /// table only enforces uniqueness within the current connection lifetime.
@@ -350,6 +378,15 @@ impl<'a> LocalCidTable<'a> {
         })
     }
 
+    /// Public routing aliases ever issued in this bounded connection lifetime,
+    /// including retired IDs. A host listener may retain them across draining
+    /// so late packets cannot be mistaken for a fresh connection. No tokens.
+    pub fn issued_ids(&self) -> impl Iterator<Item = Cid> + '_ {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.entry.as_ref().map(|entry| entry.cid))
+    }
+
     /// Route by actual packet DCID. A match is not packet authentication.
     pub fn route(&self, destination: &[u8]) -> Option<LocalCidHandle> {
         self.slots
@@ -397,12 +434,7 @@ impl<'a> LocalCidTable<'a> {
         sequence: u64,
         packet_dcid: &[u8],
     ) -> Result<bool, CidError> {
-        if self
-            .highest_advertised_sequence
-            .is_none_or(|highest| sequence > highest)
-        {
-            return Err(CidError::UnknownSequence);
-        }
+        self.check_retirement(sequence, packet_dcid)?;
         let index = self
             .slots
             .iter()
@@ -422,6 +454,27 @@ impl<'a> LocalCidTable<'a> {
         let changed = !entry.retired;
         entry.retired = true;
         Ok(changed)
+    }
+
+    /// Read-only receive-time admission. A deferred RETIRE must pass this check
+    /// before it is retained: later advertisements cannot legalize the frame.
+    pub fn check_retirement(&self, sequence: u64, packet_dcid: &[u8]) -> Result<(), CidError> {
+        if self
+            .highest_advertised_sequence
+            .is_none_or(|highest| sequence > highest)
+        {
+            return Err(CidError::UnknownSequence);
+        }
+        let entry = self
+            .slots
+            .iter()
+            .filter_map(|slot| slot.entry.as_ref())
+            .find(|entry| entry.sequence == sequence)
+            .ok_or(CidError::UnknownSequence)?;
+        if entry.cid.as_bytes() == packet_dcid {
+            return Err(CidError::CurrentDestinationCid);
+        }
+        Ok(())
     }
 
     /// IDs still accepted for routing, including IDs below the requested floor.
@@ -536,6 +589,33 @@ impl<'a, const ADDRESSES: usize> PeerCidTable<'a, ADDRESSES> {
             slots,
             active_limit,
             retire_prior_to: 0,
+        })
+    }
+
+    /// Private admission simulation in separate caller storage. Handles from
+    /// this copy must never authorize a real send or reset-token decision.
+    /// Replays retained early controls under the remembered (possibly smaller)
+    /// active CID limit without mutating the live table.
+    pub(crate) fn admission_copy<'b>(
+        &self,
+        slots: &'b mut [PeerCidSlot<ADDRESSES>],
+        active_limit: u64,
+    ) -> Result<PeerCidTable<'b, ADDRESSES>, CidError> {
+        validate_limit(active_limit)?;
+        if slots.len() != self.slots.len() {
+            return Err(CidError::InvalidCapacity);
+        }
+        let limit = self.active_limit.min(active_limit);
+        if self.active().count() as u64 > limit {
+            return Err(CidError::ActiveLimit);
+        }
+        slots.copy_from_slice(self.slots);
+        Ok(PeerCidTable {
+            table: self.table,
+            connection_generation: self.connection_generation,
+            slots,
+            active_limit: limit,
+            retire_prior_to: self.retire_prior_to,
         })
     }
 
@@ -950,6 +1030,61 @@ mod tests {
         let mut result = [0; 21];
         result[5..].fill(value);
         result
+    }
+
+    #[test]
+    fn deferred_retirement_cannot_be_legalized_by_a_later_advertisement() {
+        let mut slots = [LocalCidSlot::EMPTY; 4];
+        let mut table = LocalCidTable::new(1, 7, &mut slots, 2).unwrap();
+        let initial = table.issue_initial(cid(0), None).unwrap();
+        table.mark_advertised(initial.handle).unwrap();
+        let next = table.issue(cid(1), token(1), 0).unwrap();
+        let admission = table.check_retirement(1, cid(0).as_bytes());
+        assert_eq!(admission, Err(CidError::UnknownSequence));
+        assert_eq!(table.routing_count(), 2);
+        table.mark_advertised(next.handle).unwrap();
+        assert_eq!(table.check_retirement(1, cid(0).as_bytes()), Ok(()));
+        assert_eq!(admission, Err(CidError::UnknownSequence));
+        assert_eq!(
+            table.check_retirement(1, cid(1).as_bytes()),
+            Err(CidError::CurrentDestinationCid)
+        );
+    }
+
+    #[test]
+    fn early_admission_copy_enforces_remembered_cumulative_credit_without_effects() {
+        let mut slots = [PeerCidSlot::<2>::EMPTY; 8];
+        let mut table = PeerCidTable::new(1, 7, &mut slots, 4, cid(0)).unwrap();
+        let mut scratch = [PeerCidSlot::<2>::EMPTY; 8];
+        {
+            let mut admission = table.admission_copy(&mut scratch, 2).unwrap();
+            admission
+                .accept_new_authenticated(1, 0, cid(1), token(1))
+                .unwrap();
+            assert_eq!(
+                admission.accept_new_authenticated(2, 0, cid(2), token(2)),
+                Err(CidError::ActiveLimit)
+            );
+            admission
+                .accept_new_authenticated(2, 1, cid(2), token(2))
+                .unwrap();
+            assert_eq!(admission.active().count(), 2);
+            assert_eq!(
+                admission.accept_new_authenticated(1, 1, cid(3), token(1)),
+                Err(CidError::ConflictingSequence)
+            );
+        }
+        assert_eq!(table.active().count(), 1);
+        table
+            .accept_new_authenticated(1, 0, cid(1), token(1))
+            .unwrap();
+        table
+            .accept_new_authenticated(2, 0, cid(2), token(2))
+            .unwrap();
+        assert!(matches!(
+            table.admission_copy(&mut scratch, 2),
+            Err(CidError::ActiveLimit)
+        ));
     }
 
     #[test]

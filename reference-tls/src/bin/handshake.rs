@@ -2,8 +2,13 @@
 //! No HTTP, transfer, migration, complete recovery, or runner testcase support is implied.
 #![forbid(unsafe_code)]
 
+#[path = "support/handshake_io.rs"]
+mod handshake_io;
+#[path = "support/initial_roles.rs"]
+mod initial_roles;
 #[path = "../../../adapters/host/src/pem.rs"]
 mod pem;
+use handshake_io::{EXPIRED, HostReactor, HostSocket, before_deadline, deadline, receive_until};
 use pem::{certificates, private_key};
 
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
@@ -11,7 +16,9 @@ use hibana_quic::{
     carrier::{CarrierStorage, LocalCarrier},
     driver::{Driver, Roles},
     handshake::CryptoBuffer,
-    handshake_endpoint::{Config, HandshakeEndpoint, Side},
+    handshake_endpoint::{
+        Config, HandshakeEndpoint, InitialKeyProtection, InitialProtection, Side,
+    },
     packet::{Header, LongType, PacketIter, encode_varint},
     protocol::*,
 };
@@ -25,6 +32,7 @@ use std::{
     io,
     net::{SocketAddr, UdpSocket},
     path::PathBuf,
+    pin::pin,
     process::ExitCode,
     time::{Duration, Instant},
 };
@@ -132,21 +140,6 @@ fn parameters(local: &[u8], original: Option<&[u8]>) -> Result<Vec<u8>> {
 fn now(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
-fn timeout(socket: &UdpSocket, start: Instant, budget: Duration) -> Result<()> {
-    let remaining = budget
-        .checked_sub(start.elapsed())
-        .ok_or_else(|| "handshake deadline expired; no success reported".to_owned())?;
-    if remaining.is_zero() {
-        return Err("handshake deadline expired; no success reported".into());
-    }
-    let interval = Some(remaining.min(Duration::from_millis(50)));
-    socket
-        .set_read_timeout(interval)
-        .map_err(|e| format!("UDP read deadline: {e}"))?;
-    socket
-        .set_write_timeout(interval)
-        .map_err(|e| format!("UDP write deadline: {e}"))
-}
 fn transient(error: &io::Error) -> bool {
     matches!(
         error.kind(),
@@ -239,14 +232,32 @@ fn serve(
     key: PrivateKeyDer<'static>,
     budget: Duration,
 ) -> Result<Report> {
+    let reactor = HostReactor::new().map_err(|e| format!("reactor setup: {e}"))?;
+    let socket = reactor
+        .register_udp(socket)
+        .map_err(|e| format!("UDP registration: {e}"))?;
+    let mut execution = pin!(serve_async(&reactor, &socket, chain, key, budget));
+    reactor
+        .block_on(execution.as_mut())
+        .map_err(|e| format!("reactor: {e}"))?
+}
+async fn serve_async(
+    reactor: &HostReactor,
+    socket: &HostSocket<'_>,
+    chain: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+    budget: Duration,
+) -> Result<Report> {
     let start = Instant::now();
     let mut incoming = [0_u8; UDP_BYTES];
     // Read a syntactically valid v1 Initial to discover its real original DCID.
     // This is untrusted routing input; authentication happens in the core.
+    let overall_deadline = deadline(start, budget)?;
     let (len, peer, original) = loop {
-        timeout(&socket, start, budget)?;
-        match socket.recv_from(&mut incoming) {
-            Ok((len, peer)) => {
+        hibana_quic::runtime::yield_now().await;
+        match receive_until(reactor, socket, &mut incoming, overall_deadline).await {
+            Ok(Some(received)) => {
+                let (len, peer) = (received.len, received.source);
                 if len < 1200 {
                     continue;
                 }
@@ -265,6 +276,7 @@ fn serve(
                     break (len, peer, destination_id.to_vec());
                 }
             }
+            Ok(None) => return Err(EXPIRED.into()),
             Err(error) if transient(&error) => continue,
             Err(error) => return Err(format!("UDP initial receive: {error}")),
         }
@@ -272,7 +284,8 @@ fn serve(
     let local = random::<8>()?;
     let tls = RustlsProvider::server(chain, key, parameters(&local, Some(&original))?)
         .map_err(|e| format!("server TLS configuration: {e:?}"))?;
-    exchange(
+    exchange_async(
+        reactor,
         socket,
         peer,
         Side::Server,
@@ -283,6 +296,7 @@ fn serve(
         start,
         budget,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -297,11 +311,63 @@ fn exchange(
     start: Instant,
     budget: Duration,
 ) -> Result<Report> {
+    let reactor = HostReactor::new().map_err(|e| format!("reactor setup: {e}"))?;
+    let socket = reactor
+        .register_udp(socket)
+        .map_err(|e| format!("UDP registration: {e}"))?;
+    let mut execution = pin!(exchange_async(
+        &reactor, &socket, peer, side, local, original, tls, first, start, budget,
+    ));
+    reactor
+        .block_on(execution.as_mut())
+        .map_err(|e| format!("reactor: {e}"))?
+}
+#[allow(clippy::too_many_arguments)]
+async fn exchange_async(
+    reactor: &HostReactor,
+    socket: &HostSocket<'_>,
+    peer: SocketAddr,
+    side: Side,
+    local: [u8; 8],
+    original: Vec<u8>,
+    tls: RustlsProvider,
+    first: Option<&[u8]>,
+    start: Instant,
+    budget: Duration,
+) -> Result<Report> {
     let generation = u64::from_be_bytes(random::<8>()?);
+    let keys =
+        hibana_quic::crypto::initial_keys(&original).map_err(|e| format!("Initial keys: {e:?}"))?;
+    initial_roles::with_initial(keys, side, generation, async move |initial| {
+        exchange_connected(
+            reactor, socket, peer, side, local, original, tls, first, start, budget, generation,
+            initial,
+        )
+        .await
+    })
+    .await
+}
+#[allow(clippy::too_many_arguments)]
+async fn exchange_connected(
+    reactor: &HostReactor,
+    socket: &HostSocket<'_>,
+    peer: SocketAddr,
+    side: Side,
+    local: [u8; 8],
+    original: Vec<u8>,
+    tls: RustlsProvider,
+    first: Option<&[u8]>,
+    start: Instant,
+    budget: Duration,
+    generation: u64,
+    initial: InitialProtection<'_, '_>,
+) -> Result<Report> {
     let sid = SessionId::new(1);
     let queues = CarrierStorage::<8, 16, { hibana_quic::protocol::SERVICE_PORTS }>::new();
     let mut slab = [0_u8; 32 * 1024];
-    let mut kit_storage = SessionKitStorage::<LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>>::uninit();
+    let mut kit_storage = SessionKitStorage::<
+        LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>,
+    >::uninit();
     let kit = kit_storage.init();
     let rv = kit
         .rendezvous(
@@ -352,8 +418,9 @@ fn exchange(
         original_destination_id: &original,
         generation,
     };
-    let mut endpoint = HandshakeEndpoint::new(config, tls, Driver::new(generation, roles), crypto)
-        .map_err(|e| format!("endpoint configuration: {e:?}"))?;
+    let mut endpoint =
+        HandshakeEndpoint::new(config, tls, Driver::new(generation, roles), crypto, initial)
+            .map_err(|e| format!("endpoint configuration: {e:?}"))?;
     let mut report = Report {
         side,
         peer,
@@ -369,17 +436,19 @@ fn exchange(
     if let Some(bytes) = first {
         let result = endpoint
             .receive(bytes, &mut scratch)
+            .await
             .map_err(|e| endpoint_error("initial receive", &endpoint, e))?;
         report.received += 1;
         report.authenticated += result.authenticated as u64;
         report.discarded += result.discarded as u64;
     }
+    let overall_deadline = deadline(start, budget)?;
     loop {
+        hibana_quic::runtime::yield_now().await;
         if start.elapsed() >= budget {
             endpoint.retire();
             return Err("handshake deadline expired; no success reported".into());
         }
-        timeout(&socket, start, budget)?;
         endpoint
             .timer(now(start))
             .map_err(|e| endpoint_error("monotonic timer", &endpoint, e))?;
@@ -387,22 +456,35 @@ fn exchange(
         for _ in 0..MAX_OUTPUT_PER_TURN {
             let Some(tx) = endpoint
                 .transmit(&mut outgoing)
+                .await
                 .map_err(|e| endpoint_error("transmit", &endpoint, e))?
             else {
                 drained = true;
                 break;
             };
-            match socket.send_to(&outgoing[..tx.len], peer) {
+            match before_deadline(
+                reactor,
+                overall_deadline,
+                socket.send_to(
+                    &outgoing[..tx.len],
+                    peer,
+                    hibana_quic::ecn::Codepoint::NotEct,
+                ),
+            )
+            .await
+            {
                 Ok(written) if written == tx.len => {
                     // UDP acceptance is reported only after a successful send.
                     endpoint
                         .adapter_result(tx, true, now(start))
+                        .await
                         .map_err(|e| endpoint_error("adapter acceptance", &endpoint, e))?;
                     report.sent += 1;
                 }
                 outcome => {
                     endpoint
                         .adapter_result(tx, false, now(start))
+                        .await
                         .map_err(|e| endpoint_error("adapter rejection", &endpoint, e))?;
                     endpoint.retire();
                     return Err(format!("UDP datagram was not accepted: {outcome:?}"));
@@ -422,17 +504,23 @@ fn exchange(
         if endpoint.is_retired() {
             return Err("peer closed before handshake completion".into());
         }
-        timeout(&socket, start, budget)?;
-        match socket.recv_from(&mut incoming) {
-            Ok((len, source)) if source == peer => {
+        let wake_at = endpoint
+            .next_deadline()
+            .and_then(|micros| start.checked_add(Duration::from_micros(micros)))
+            .map_or(overall_deadline, |at| at.min(overall_deadline));
+        match receive_until(reactor, socket, &mut incoming, wake_at).await {
+            Ok(Some(received)) if received.source == peer => {
+                let len = received.len;
                 let result = endpoint
                     .receive(&incoming[..len], &mut scratch)
+                    .await
                     .map_err(|e| endpoint_error("receive", &endpoint, e))?;
                 report.received += 1;
                 report.authenticated += result.authenticated as u64;
                 report.discarded += result.discarded as u64;
             }
-            Ok(_) => { /* Single connection: no implicit migration. */ }
+            Ok(Some(_)) => { /* Single connection: no implicit migration. */ }
+            Ok(None) => {}
             Err(error) if transient(&error) => {}
             Err(error) => {
                 endpoint.retire();
@@ -441,9 +529,9 @@ fn exchange(
         }
     }
 }
-fn endpoint_error(
+fn endpoint_error<K: InitialKeyProtection>(
     stage: &str,
-    endpoint: &HandshakeEndpoint<'_, '_, RustlsProvider>,
+    endpoint: &HandshakeEndpoint<'_, '_, RustlsProvider, K>,
     error: hibana_quic::handshake_endpoint::Error,
 ) -> String {
     match endpoint.tls().last_tls_error() {

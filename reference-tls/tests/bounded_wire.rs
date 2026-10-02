@@ -148,6 +148,17 @@ impl hibana_quic::handshake_endpoint::ApplicationHandler for MaxDataHandler {
 
 #[test]
 fn bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero() {
+    run_bounded_wire(None);
+}
+#[test]
+fn real_trace_covers_authenticated_packets_keys_and_rejects_phantom_sends() {
+    run_bounded_wire(Some(32768));
+}
+#[test]
+fn trace_capacity_loss_is_sticky_and_never_changes_transport_outcome() {
+    run_bounded_wire(Some(512));
+}
+fn run_bounded_wire(trace_capacity: Option<usize>) {
     let id = identity();
     let anchors = [trust_anchor_from_der(&id.root).unwrap()];
     let chain = [id.leaf.as_ref()];
@@ -162,6 +173,8 @@ fn bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero(
     let mut cm = [[0; hibana_quic::handshake::bitmap_bytes(8192)]; 3];
     let mut sd = [[0; 8192]; 3];
     let mut sm = [[0; hibana_quic::handshake::bitmap_bytes(8192)]; 3];
+    let mut client_trace = [0; 32768];
+    let mut server_trace = [0; 32768];
     TRACK.with(|c| c.set(Some(0)));
     {
         let client_tls = BoundedTls::client(
@@ -194,8 +207,12 @@ fn bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero(
         let p5 = service_program::<TIMER>();
         let cq = CarrierStorage::<8, 16, { hibana_quic::protocol::SERVICE_PORTS }>::new();
         let sq = CarrierStorage::<8, 16, { hibana_quic::protocol::SERVICE_PORTS }>::new();
-        let mut ck = SessionKitStorage::<LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>>::uninit();
-        let mut sk = SessionKitStorage::<LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>>::uninit();
+        let mut ck = SessionKitStorage::<
+            LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>,
+        >::uninit();
+        let mut sk = SessionKitStorage::<
+            LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>,
+        >::uninit();
         let crv = ck
             .init()
             .rendezvous(&mut client_slab, cq.bind(SessionId::new(1)).unwrap())
@@ -257,10 +274,21 @@ fn bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero(
             server_crypto,
         )
         .unwrap();
+        if let Some(capacity) = trace_capacity {
+            client.enable_trace(&mut client_trace[..capacity]).unwrap();
+            server.enable_trace(&mut server_trace[..capacity]).unwrap();
+        }
         let mut out = [0; 1500];
         let mut scratch = [0; 1500];
         let first = client.transmit(&mut out).unwrap().unwrap();
         client.adapter_result(first, true, 0).unwrap();
+        let after_send = client.trace_status();
+        assert!(client.adapter_result(first, true, 0).is_err());
+        assert_eq!(
+            client.trace_status(),
+            after_send,
+            "stale callback fabricated a send"
+        );
         let original = out;
         out[first.len - 1] ^= 1;
         assert_eq!(
@@ -271,6 +299,12 @@ fn bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero(
             0
         );
         assert!(!server.is_retired());
+        if let Some(status) = server.trace_status() {
+            assert_eq!(
+                status.recorded_events, 0,
+                "corrupt ciphertext fabricated authenticated receive"
+            );
+        }
         assert_eq!(server.tls().failed_authentications(), 1);
         let deadline = client.next_deadline().unwrap();
         client.timer(deadline).unwrap();
@@ -355,13 +389,25 @@ fn bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero(
             .unwrap()
             .unwrap();
         client.adapter_result(update, true, now).unwrap();
+        let before_busy = server.trace_status();
         assert!(matches!(
             server.receive_with(&out[..update.len], &mut scratch, &mut sh),
             Err(hibana_quic::handshake_endpoint::Error::Busy)
         ));
         assert!(!server.is_retired());
+        assert_eq!(
+            server.trace_status(),
+            before_busy,
+            "Busy retry was logged as receive"
+        );
         assert_eq!(server.tls().key_generation(), 0);
+        let before_reject = server.trace_status();
         server.adapter_result(pending, false, now).unwrap();
+        assert_eq!(
+            server.trace_status(),
+            before_reject,
+            "rejected output fabricated a send"
+        );
         let received = server
             .receive_with(&out[..update.len], &mut scratch, &mut sh)
             .unwrap();
@@ -426,6 +472,30 @@ fn bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero(
             1,
             "retired generation fails one shared-budget attempt"
         );
+        // Produce a genuine threshold loss, distinct from the earlier PTO.
+        // Newer MAX_DATA values supersede the dropped control's information.
+        for value in 6..10 {
+            let dropped_or_delivered = client
+                .transmit_application(&[0x10, value], &mut out)
+                .unwrap()
+                .unwrap();
+            client
+                .adapter_result(dropped_or_delivered, true, now)
+                .unwrap();
+            if value != 6 {
+                server
+                    .receive_with(&out[..dropped_or_delivered.len], &mut scratch, &mut sh)
+                    .unwrap();
+                transfer(&mut server, &mut client, now);
+            }
+        }
+        if trace_capacity == Some(32768) {
+            assert!(
+                core::str::from_utf8(client.trace_pending())
+                    .unwrap()
+                    .contains("quic:packet_lost")
+            );
+        }
         // Real protected close/draining now runs inside the same allocator scope.
         use hibana_quic::lifecycle::{CloseReason, State as ConnectionState};
         client
@@ -447,6 +517,42 @@ fn bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero(
         server.timer(server.close_deadline().unwrap()).unwrap();
         assert_eq!(client.connection_state(), ConnectionState::Closed);
         assert_eq!(server.connection_state(), ConnectionState::Closed);
+        for endpoint in [&mut client, &mut server] {
+            match trace_capacity {
+                None => {
+                    assert!(endpoint.trace_status().is_none());
+                    assert!(endpoint.trace_pending().is_empty());
+                }
+                Some(capacity) => {
+                    let status = endpoint.trace_status().unwrap();
+                    if capacity == 32768 {
+                        assert!(!status.incomplete, "{status:?}");
+                        assert!(status.recorded_events > 8);
+                        let json = core::str::from_utf8(endpoint.trace_pending()).unwrap();
+                        assert!(json.contains("quic:packet_sent"));
+                        assert!(json.contains("quic:packet_received"));
+                        assert!(json.contains("quic:key_updated"));
+                        assert!(json.contains("remote_update"));
+                        assert!(json.contains("local_update"));
+                    } else {
+                        assert!(status.incomplete);
+                        assert!(status.lost_events > 0);
+                    }
+                    // Retirement retains bytes. Simulate a sink accepting short
+                    // writes; draining cannot erase a previous loss diagnostic.
+                    while !endpoint.trace_pending().is_empty() {
+                        let n = endpoint.trace_pending().len().min(7);
+                        endpoint.consume_trace(n).unwrap();
+                    }
+                    let drained = endpoint.trace_status().unwrap();
+                    assert_eq!(drained.incomplete, status.incomplete);
+                    assert_eq!(drained.recorded_events, status.recorded_events);
+                    assert_eq!(drained.lost_events, status.lost_events);
+                    endpoint.mark_trace_sink_failed();
+                    assert!(endpoint.trace_status().unwrap().incomplete);
+                }
+            }
+        }
     }
     let allocations = TRACK.with(|c| c.replace(None).unwrap());
     assert_eq!(allocations, 0, "bounded QUIC/TLS/Hibana flow allocated");

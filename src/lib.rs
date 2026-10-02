@@ -35,6 +35,7 @@ extern crate std;
 pub mod tls_rsa;
 
 pub mod early_data;
+pub mod early_control;
 pub mod connection_id;
 pub mod path;
 pub mod migration;
@@ -44,3 +45,11 @@ pub mod idle;
 pub mod early_send;
 
 pub mod version_negotiation;
+
+pub mod trace;
+
+pub mod runtime;
+
+pub mod mailbox;
+
+pub mod roles;

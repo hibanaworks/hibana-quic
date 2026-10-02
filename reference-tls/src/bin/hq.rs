@@ -1,5 +1,8 @@
 //! Linux development HTTP/0.9 adapter. Real bounded TLS + hibana-quic transport;
 //! host arguments, files and PEM setup allocate, file bodies are streamed.
+//! Initial keys use one projected async RX/TX choreography; UDP/timers await
+//! epoll/eventfd readiness. Non-Initial Driver control remains a partial legacy
+//! service. This is an experimental integration, not a full architecture claim.
 #![forbid(unsafe_code)]
 
 #[path = "../../../adapters/host/src/pem.rs"]
@@ -8,24 +11,44 @@ use pem::{certificates, private_key};
 #[cfg(not(target_os = "linux"))]
 compile_error!("hq's symlink-safe descriptor-relative file adapter requires Linux");
 
-use hibana::runtime::{SessionKitStorage, ids::SessionId};
+use hibana::{
+    g,
+    runtime::{SessionKitStorage, ids::SessionId, program::project},
+};
 use hibana_quic::{
     bounded_tls::{
-        BoundedTls, CipherPolicy, ClientConfig as BoundedClientConfig, ClientResumption,
-        ServerConfig as BoundedServerConfig, ServerResumption, SigningKey, Storage,
+        BoundedTls, CipherPolicy, ClientConfig as BoundedClientConfig, ClientEarlyData,
+        ClientResumption, ServerConfig as BoundedServerConfig, ServerEarlyData, ServerResumption,
+        SigningKey, Storage,
     },
     carrier::{CarrierStorage, LocalCarrier},
-    crypto::CipherSuite,
+    connection_id::{LocalCidSlot, PeerCidSlot},
+    crypto::{self, CipherSuite},
     driver::{Driver, Roles},
+    early_data::{
+        EarlyFreshness, EarlyStatus, QuarantineSlot, RememberedLimits, ReplayClaim, ReplayStorage,
+        ServerPolicy,
+    },
+    early_send::RequestSlot,
     ecn::{self, Codepoint},
     handshake::CryptoBuffer,
-    handshake_endpoint::{Config, Error as EngineError, HandshakeEndpoint, Side},
+    handshake_endpoint::{
+        Config, Error as EngineError, HandshakeEndpoint, INITIAL_PACKET_BYTES, InitialKeyClient,
+        InitialProtection, NetworkConfig, NetworkResources, PreferredServer, Side,
+    },
     lifecycle::{CloseReason, State as ConnectionState},
+    mailbox::Mailbox,
     packet::{Header, LongType, PacketIter, encode_varint},
+    path::{Address, PathSlot},
     protocol::*,
     retry::{self, ClientAddress, RetryTokens, TokenContext, ValidatedToken},
+    roles::{
+        packet_protection::{self, Command, Exchange, Reply},
+        protocol::key_choreography,
+    },
+    runtime::{TaskSet, yield_now},
     streams::{self, Limits, PacketReference, SendChunk, StreamHandle, StreamSlot},
-    tls,
+    tls::{self, Provider},
     tls_certificate::{Limits as CertificateLimits, UnixTime, trust_anchor_from_der},
     tls_schedule::Secret32,
     tls_ticket::{
@@ -35,18 +58,24 @@ use hibana_quic::{
     transport_endpoint::{Error as TransportError, TransportEndpoint},
     version_negotiation::{self, ListenerAction},
 };
-use hibana_quic_host::udp::UdpMetadataSocket;
+use hibana_quic_host::{
+    async_io::{AsyncUdp, Reactor},
+    udp::Received as UdpReceived,
+};
 use p256::pkcs8::DecodePrivateKey;
 use rand_core::{OsRng, RngCore};
 use rustls_pki_types::PrivateKeyDer;
 use std::{
     cell::Cell,
     fs::{self, File, OpenOptions},
+    future::{Future, poll_fn},
     io::{self, Read, Write},
     net::{SocketAddr, UdpSocket},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
+    pin::pin,
     process::ExitCode,
+    task::Poll,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -57,10 +86,12 @@ const CHUNK: usize = 1024;
 const MAX_TARGET: usize = 1000;
 const MAX_REQUESTS: usize = 4096;
 const UDP_BYTES: usize = 65535;
+type HostReactor = Reactor<4, 8>;
+type HostSocket<'a> = AsyncUdp<'a, 4, 8>;
 const O_DIRECTORY: i32 = 0o200000;
 const O_NOFOLLOW: i32 = 0o400000;
 const O_NONBLOCK: i32 = 0o4000;
-const USAGE: &str = "Experimental hq-interop HTTP/0.9 over real QUIC v1; bounded X25519/P256 with ECDSA TLS\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem --request /FILE [--request https://HOST:PORT/FILE ...] --downloads DIR [--timeout-seconds 120]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem --www DIR [--max-requests N] [--timeout-seconds 120]\n\nOne connection by default, at most four live streams, streamed file chunks. Explicit CA+hostname verification; no insecure mode. Server exits after --max-requests completed streams or two seconds of quiescence after a completed transfer. Existing downloads are never overwritten. Optional --cipher-suite default|aes128|chacha20 on either role sets an immutable TLS suite policy (default retains AES128+ChaCha20); singleton modes never negotiate the other suite. Optional --ecn on enables per-path ECT0 probing with actual kernel metadata (default off); received markings are always reported when available. Optional --key-update-after-bytes N on either role requests one update after positive N body bytes; update success additionally requires an authenticated peer phase change. Linux descriptor-relative file access rejects symlinks/traversal. Optional server --retry requires an address-bound opaque token before TLS allocation; --retry-lifetime-ms 1..=60000 sets its lifetime (default 10000). Bounded sequential dispatcher, no production listener capacity claim. Unsupported-version Initial-sized datagrams receive at most one stateless v1 Version Negotiation response, limited to 64 prepared responses per 1-second listener window; retained CIDs route first. Optional client --connections 2 transfers the first request, caches an authenticated ticket, closes/drains, then transfers every remaining request on a fresh connection; --require-resumption true (default for two) rejects full fallback. Optional --resumption-delay-ms 0..60000 delays the second connection. Server --max-connections 2 retains one ticket key across two peer-closed/drained connections; --max-requests is the total across both, with exactly one file on the first. Server ticket-policy controls are --ticket-lifetime-seconds 1..604800 (default60), --ticket-age-skew-ms 0..300000 (default10000), --ticket-policy-second STRING, and --rotate-ticket-key-after-first true|false; policy/key changes permit explicit full-authentication fallback tests. No HTTP/3, 0RTT, migration, qlog or keylog support is implied. Failures/timeouts exit nonzero.";
+const USAGE: &str = "Experimental hq-interop HTTP/0.9 over real QUIC v1; bounded X25519/P256 with ECDSA TLS\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem --request /FILE [--request https://HOST:PORT/FILE ...] --downloads DIR [--timeout-seconds 120]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem --www DIR [--max-requests N] [--timeout-seconds 120]\n\nOne connection by default, at most four live streams, streamed file chunks. Explicit CA+hostname verification; no insecure mode. Server exits after --max-requests completed streams or two seconds of quiescence after a completed transfer. Existing downloads are never overwritten. Optional --cipher-suite default|aes128|chacha20 on either role sets an immutable TLS suite policy (default retains AES128+ChaCha20); singleton modes never negotiate the other suite. Optional --ecn on enables per-path ECT0 probing with actual kernel metadata (default off); received markings are always reported when available. Optional --key-update-after-bytes N on either role requests one update after positive N body bytes; update success additionally requires an authenticated peer phase change. Linux descriptor-relative file access rejects symlinks/traversal. Optional server --retry requires an address-bound opaque token before TLS allocation; --retry-lifetime-ms 1..=60000 sets its lifetime (default 10000). Bounded sequential dispatcher, no production listener capacity claim. Initial protected-packet actor storage is 1536 bytes; larger peer Initial packets are discarded. Unsupported-version Initial-sized datagrams receive at most one stateless v1 Version Negotiation response, limited to 64 prepared responses per 1-second listener window; retained CIDs route first. Optional client --connections 2 transfers the first request, caches an authenticated ticket, closes/drains, then transfers every remaining request on a fresh connection; --require-resumption true (default for two) rejects full fallback. Optional --resumption-delay-ms 0..60000 delays the second connection. Server --max-connections 2 retains one ticket key across two peer-closed/drained connections; --max-requests is the total across both, with exactly one file on the first. Server ticket-policy controls are --ticket-lifetime-seconds 1..604800 (default60), --ticket-age-skew-ms 0..300000 (default10000), --ticket-policy-second STRING, and --rotate-ticket-key-after-first true|false; policy/key changes permit explicit full-authentication fallback tests. Optional server --preferred-address IP:PORT binds and advertises one same-family preferred address, with a fresh CID/reset token and actual path/MTU validation. Bounded NAT rebinding uses exact received socket metadata and validated paths; 0RTT stays disabled unless explicitly configured: client --early-data replay-safe-get authorizes sending and retrying those same GET requests, requires --connections 2, and accepts --expect-early accepted|rejected|either. Server --early-data buffered-get requires --max-connections 2 and an independent --early-age-skew-ms 0..60000; --reject-early-second true tests rejection without changing the early-capable profile. This profile advertises1024-byte initial request credit per stream while preserving4096-byte receive storage; normal mode limits are unchanged. Requests are withheld until Finished. No arbitrary active migration, HTTP/3, qlog or keylog support is implied. Failures/timeouts exit nonzero.";
 
 #[derive(Debug)]
 enum Options {
@@ -77,9 +108,11 @@ enum Options {
         connections: usize,
         require_resumption: bool,
         resumption_delay: Duration,
+        early: EarlyOptions,
     },
     Server {
         listen: SocketAddr,
+        preferred_address: Option<SocketAddr>,
         cert: PathBuf,
         key: PathBuf,
         www: PathBuf,
@@ -95,7 +128,98 @@ enum Options {
         ticket_age_skew_ms: u32,
         ticket_policy_second: Option<String>,
         rotate_ticket_key: bool,
+        early: EarlyOptions,
     },
+}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum EarlyMode {
+    #[default]
+    Disabled,
+    ReplaySafeGet,
+    BufferedGet,
+}
+impl EarlyMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ReplaySafeGet => "replay-safe-get",
+            Self::BufferedGet => "buffered-get",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ExpectedEarly {
+    #[default]
+    Either,
+    Accepted,
+    Rejected,
+}
+#[derive(Clone, Copy, Debug, Default)]
+struct EarlyOptions {
+    mode: EarlyMode,
+    expected: ExpectedEarly,
+    freshness: Option<EarlyFreshness>,
+    reject_second: bool,
+}
+fn parse_early_options<'a>(
+    flags: &mut Vec<(&'a str, &'a str)>,
+    side: Side,
+    connections: usize,
+) -> Result<EarlyOptions> {
+    let mut result = EarlyOptions::default();
+    if !flags.iter().any(|(k, _)| *k == "--early-data") {
+        return Ok(result);
+    }
+    result.mode = match (side, flag(flags, "--early-data")?) {
+        (_, "off") => return Ok(result),
+        (Side::Client, "replay-safe-get") => EarlyMode::ReplaySafeGet,
+        (Side::Server, "buffered-get") => EarlyMode::BufferedGet,
+        _ => {
+            return Err(
+                "--early-data requires replay-safe-get for clients or buffered-get for servers"
+                    .into(),
+            );
+        }
+    };
+    if connections != 2 {
+        return Err("early data requires an explicit two-connection workflow".into());
+    }
+    if side == Side::Client {
+        if flags.iter().any(|(k, _)| *k == "--expect-early") {
+            result.expected = match flag(flags, "--expect-early")? {
+                "either" => ExpectedEarly::Either,
+                "accepted" => ExpectedEarly::Accepted,
+                "rejected" => ExpectedEarly::Rejected,
+                _ => return Err("--expect-early must be accepted, rejected, or either".into()),
+            };
+        }
+    } else {
+        let skew = flag(flags, "--early-age-skew-ms")?
+            .parse::<u32>()
+            .map_err(|_| "invalid early age skew")?;
+        result.freshness =
+            Some(EarlyFreshness::new(skew).map_err(|_| "early age skew must be0..=60000ms")?);
+        result.reject_second = bool_flag(flags, "--reject-early-second", false)?;
+    }
+    Ok(result)
+}
+const EARLY_POLICY: ServerPolicy = ServerPolicy::BufferedReplaySafeRequests {
+    max_bytes: LIVE * CHUNK,
+    max_streams: LIVE,
+};
+struct EarlyStorage {
+    received: [QuarantineSlot<CHUNK>; LIVE],
+    controls: [hibana_quic::early_control::Slot<128>; 16],
+    requests: [RequestSlot<CHUNK>; LIVE],
+}
+impl EarlyStorage {
+    fn new() -> Self {
+        Self {
+            received: [const { QuarantineSlot::EMPTY }; LIVE],
+            controls: [const { hibana_quic::early_control::Slot::EMPTY }; 16],
+            requests: [const { RequestSlot::EMPTY }; LIVE],
+        }
+    }
 }
 #[derive(Debug)]
 struct Request {
@@ -214,7 +338,9 @@ fn parse_options(args: &[String]) -> Result<Options> {
                     "resumption options require --connections 2; delay must be <=60000ms".into(),
                 );
             }
+            let early = parse_early_options(&mut flags, Side::Client, connections)?;
             Options::Client {
+                early,
                 connections,
                 require_resumption,
                 resumption_delay: Duration::from_millis(delay_ms),
@@ -233,9 +359,24 @@ fn parse_options(args: &[String]) -> Result<Options> {
             if !targets.is_empty() {
                 return Err("--request is client-only".into());
             }
-            let listen = flag(&mut flags, "--listen")?
+            let listen: SocketAddr = flag(&mut flags, "--listen")?
                 .parse()
                 .map_err(|_| "--listen requires IP:PORT")?;
+            let preferred_address = if flags.iter().any(|(k, _)| *k == "--preferred-address") {
+                let value: SocketAddr = flag(&mut flags, "--preferred-address")?
+                    .parse()
+                    .map_err(|_| "preferred address requires IP:PORT")?;
+                if value.port() == 0
+                    || value.ip().is_unspecified()
+                    || value.is_ipv4() != listen.is_ipv4()
+                    || value == listen
+                {
+                    return Err("preferred address must be distinct, concrete, nonzero, and match the listen family".into());
+                }
+                Some(value)
+            } else {
+                None
+            };
             let cert = flag(&mut flags, "--cert")?.into();
             let key = flag(&mut flags, "--key")?.into();
             let www = flag(&mut flags, "--www")?.into();
@@ -293,7 +434,9 @@ fn parse_options(args: &[String]) -> Result<Options> {
             {
                 return Err("ticket policy options require --max-connections 2".into());
             }
+            let early = parse_early_options(&mut flags, Side::Server, max_connections)?;
             Options::Server {
+                early,
                 max_connections,
                 ticket_lifetime: ticket_lifetime as u32,
                 ticket_age_skew_ms: ticket_age_skew_ms as u32,
@@ -302,6 +445,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
                 require_retry,
                 retry_lifetime_us,
                 listen,
+                preferred_address,
                 cert,
                 key,
                 www,
@@ -773,6 +917,19 @@ impl ticket::ClientTicketStore for ObservedCache<'_, '_> {
         self.inserted.set(self.inserted.get().saturating_add(1));
         Ok(())
     }
+    fn insert_verified_early(
+        &mut self,
+        now_ms: u64,
+        received: ticket::ReceivedTicket<'_>,
+        psk: Secret32,
+        context: VerificationContext,
+        limits: RememberedLimits,
+    ) -> std::result::Result<(), ticket::Error> {
+        self.cache
+            .insert_verified_early(now_ms, received, psk, context, limits)?;
+        self.inserted.set(self.inserted.get().saturating_add(1));
+        Ok(())
+    }
 }
 #[derive(Clone, Copy, Debug)]
 struct TicketAgeObservation {
@@ -859,6 +1016,36 @@ impl ticket::ServerTicketStore for ObservedIssuer<'_, '_> {
             .set(Some(result.as_ref().map(|_| ()).map_err(|e| *e)));
         result
     }
+    fn supports_early(&self) -> bool {
+        ticket::ServerTicketStore::supports_early(self.key)
+    }
+    fn prepare_early(
+        &mut self,
+        rng: &mut dyn rand_core::CryptoRngCore,
+        now: u64,
+        lifetime: u32,
+        suite: u16,
+        binding: Binding,
+        limits: RememberedLimits,
+    ) -> std::result::Result<ticket::IssueToken, ticket::Error> {
+        let result = self
+            .key
+            .prepare_early(rng, now, lifetime, suite, binding, limits);
+        if result.is_ok() {
+            self.prepared_at = Some(now);
+        }
+        result
+    }
+    fn claim_early(
+        &mut self,
+        accepted: &mut ticket::AcceptedTicket,
+        generation: u64,
+        now_ms: u64,
+        freshness: EarlyFreshness,
+    ) -> std::result::Result<ReplayClaim, ticket::Error> {
+        self.key
+            .claim_early(accepted, generation, now_ms, freshness)
+    }
 }
 fn next_generation(generation: u64) -> Result<u64> {
     generation
@@ -876,6 +1063,7 @@ struct SessionOptions<'a> {
     require_ticket: bool,
     ticket_acceptance: Option<&'a Cell<Option<TicketAcceptance>>>,
     ticket_age: Option<&'a Cell<Option<TicketAgeObservation>>>,
+    early: EarlyOptions,
 }
 struct RunReport {
     connections: Vec<Report>,
@@ -887,7 +1075,19 @@ impl RunReport {
             return self.connections[0].json();
         }
         format!(
-            "{{\"status\":\"success\",\"scope\":\"two-connection-1rtt-resumption\",\"backend\":\"bounded-profile\",\"zero_rtt\":false,\"require_resumption\":{},\"resumed\":{},\"files_completed\":{},\"body_bytes\":{},\"connections\":[{}]}}",
+            "{{\"status\":\"success\",\"scope\":{},\"backend\":\"bounded-profile\",\"zero_rtt\":{},\"require_resumption\":{},\"resumed\":{},\"files_completed\":{},\"body_bytes\":{},\"connections\":[{}]}}",
+            json_string(
+                if self
+                    .connections
+                    .iter()
+                    .any(|r| r.early.mode != EarlyMode::Disabled)
+                {
+                    "two-connection-early-data-attempt"
+                } else {
+                    "two-connection-1rtt-resumption"
+                }
+            ),
+            self.connections.iter().any(|r| r.early.accepted()),
             self.require_resumption,
             self.connections[1].resumed,
             self.connections.iter().map(|r| r.files).sum::<usize>(),
@@ -953,6 +1153,15 @@ fn local_limits(side: Side) -> Limits {
         stream_data_uni: 0,
     }
 }
+fn profile_limits(side: Side, early: EarlyOptions) -> Limits {
+    let mut limits = local_limits(side);
+    if side == Side::Server && early.mode == EarlyMode::BufferedGet {
+        limits.max_data = (LIVE * CHUNK) as u64;
+        limits.stream_data_bidi_local = CHUNK as u64;
+        limits.stream_data_bidi_remote = CHUNK as u64;
+    }
+    limits
+}
 fn parameters(
     local: &[u8],
     original: Option<&[u8]>,
@@ -988,6 +1197,30 @@ fn parameters(
     }
     Ok(out)
 }
+fn append_preferred(parameters: &mut Vec<u8>, preferred: PreferredServer) -> Result<()> {
+    let mut value = [0u8; 61];
+    match preferred.address {
+        SocketAddr::V4(address) => {
+            value[..4].copy_from_slice(&address.ip().octets());
+            value[4..6].copy_from_slice(&address.port().to_be_bytes());
+        }
+        SocketAddr::V6(address) => {
+            value[6..22].copy_from_slice(&address.ip().octets());
+            value[22..24].copy_from_slice(&address.port().to_be_bytes());
+        }
+    }
+    let cid = preferred.connection_id.as_bytes();
+    value[24] = cid.len() as u8;
+    value[25..25 + cid.len()].copy_from_slice(cid);
+    value[25 + cid.len()..41 + cid.len()].copy_from_slice(preferred.reset_token.as_bytes());
+    let mut length = [0u8; 8];
+    let size = 41 + cid.len();
+    parameters.push(13);
+    let n = encode_varint(size as u64, &mut length).map_err(|e| format!("preferred TP: {e:?}"))?;
+    parameters.extend_from_slice(&length[..n]);
+    parameters.extend_from_slice(&value[..size]);
+    Ok(())
+}
 fn now(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
@@ -1005,8 +1238,45 @@ fn backpressure(error: &TransportError) -> bool {
         )
     )
 }
+#[derive(Default)]
+struct EarlyReport {
+    mode: EarlyMode,
+    offered: bool,
+    decision: EarlyStatus,
+    packets_sent: u64,
+    admitted_packets: u64,
+    requests_queued: usize,
+    request_bytes_queued: usize,
+}
+impl EarlyReport {
+    fn accepted(&self) -> bool {
+        self.decision == EarlyStatus::Accepted
+            && (self.packets_sent > 0 || self.admitted_packets > 0)
+    }
+    fn json(&self) -> String {
+        let decision = match self.decision {
+            EarlyStatus::Disabled => "not_offered",
+            EarlyStatus::Offered => "offered",
+            EarlyStatus::AcceptedPendingFinished => "pending_finished",
+            EarlyStatus::Accepted => "accepted",
+            EarlyStatus::Rejected => "rejected",
+        };
+        format!(
+            "{{\"mode\":{},\"offered\":{},\"decision\":{},\"packets_sent\":{},\"admitted_packets\":{},\"requests_queued\":{},\"request_bytes_queued\":{}}}",
+            json_string(self.mode.name()),
+            self.offered,
+            json_string(decision),
+            self.packets_sent,
+            self.admitted_packets,
+            self.requests_queued,
+            self.request_bytes_queued
+        )
+    }
+}
 struct Report {
+    early: EarlyReport,
     side: Side,
+    retained_cids: Vec<Vec<u8>>,
     files: usize,
     bytes: u64,
     sent: u64,
@@ -1020,6 +1290,11 @@ struct Report {
     send_key_generation: u64,
     receive_key_generation: u64,
     ecn: Option<ecn::Snapshot>,
+    initial_path: Option<Address>,
+    active_path: Option<Address>,
+    path_identity: Option<ecn::PathIdentity>,
+    path_changes: u64,
+    path_validated: bool,
     negotiated_group: Option<u16>,
     negotiated_suite: Option<u16>,
     cipher_policy: CipherPolicy,
@@ -1034,6 +1309,37 @@ struct Report {
     ticket_age: Option<TicketAgeObservation>,
 }
 impl Report {
+    fn observe_path(&mut self, snapshot: Option<(ecn::PathIdentity, hibana_quic::path::Snapshot)>) {
+        if let Some((id, state)) = snapshot {
+            if self.path_identity.is_some_and(|old| old != id) {
+                self.path_changes += 1;
+            }
+            self.path_identity = Some(id);
+            self.active_path = Some(state.address);
+            self.path_validated = state.address_validated && state.mtu_validated;
+        }
+    }
+    fn network_json(&self) -> String {
+        fn tuple(address: Option<Address>) -> String {
+            address.map_or_else(
+                || "null".into(),
+                |a| {
+                    format!(
+                        "{{\"local\":{},\"remote\":{}}}",
+                        json_string(&a.local.to_string()),
+                        json_string(&a.remote.to_string())
+                    )
+                },
+            )
+        }
+        format!(
+            "{{\"initial\":{},\"active\":{},\"active_path_changes\":{},\"address_and_mtu_validated\":{}}}",
+            tuple(self.initial_path),
+            tuple(self.active_path),
+            self.path_changes,
+            self.path_validated
+        )
+    }
     fn update_ready(&self) -> bool {
         self.key_update_after.is_none()
             || (self.key_update_at.is_some() && self.receive_key_generation > 0)
@@ -1052,7 +1358,7 @@ impl Report {
     }
     fn json(&self) -> String {
         format!(
-            "{{\"status\":\"success\",\"scope\":\"direct-http09-transfer\",\"backend\":\"bounded-profile\",\"certificate_verification_profile\":\"ECDSA-P256-SHA256+RSA-2048/3072/4096-SHA256\",\"bounded_server_signing_profile\":\"ECDSA-P256-SHA256\",\"negotiated_group\":{},\"mandatory_tls_algorithms_complete\":false,\"alpn\":\"hq-interop\",\"role\":\"{}\",\"files_completed\":{},\"body_bytes\":{},\"datagrams_sent\":{},\"datagrams_received\":{},\"authenticated_packets\":{},\"discarded_packets\":{},\"duration_ms\":{},\"key_update_after_bytes\":{},\"key_update_initiated_at_body_bytes\":{},\"send_key_generation\":{},\"authenticated_receive_key_generation\":{},\"ecn\":{},\"server_retry\":{},\"cipher_policy\":{},\"negotiated_suite\":{},\"connection_index\":{},\"connection_generation\":{},\"resumption_offered\":{},\"resumed\":{},\"handshake_mode\":{},\"tickets_cached\":{},\"lifecycle_closed\":{},\"ticket_acceptance\":{},\"ticket_age\":{},\"authentication\":{},\"certificate_chain_hostname_time_verified\":{},\"zero_rtt\":false}}",
+            "{{\"status\":\"success\",\"scope\":\"direct-http09-transfer\",\"backend\":\"bounded-profile\",\"certificate_verification_profile\":\"ECDSA-P256-SHA256+RSA-2048/3072/4096-SHA256\",\"bounded_server_signing_profile\":\"ECDSA-P256-SHA256\",\"negotiated_group\":{},\"mandatory_tls_algorithms_complete\":false,\"alpn\":\"hq-interop\",\"role\":\"{}\",\"files_completed\":{},\"body_bytes\":{},\"datagrams_sent\":{},\"datagrams_received\":{},\"authenticated_packets\":{},\"discarded_packets\":{},\"duration_ms\":{},\"key_update_after_bytes\":{},\"key_update_initiated_at_body_bytes\":{},\"send_key_generation\":{},\"authenticated_receive_key_generation\":{},\"ecn\":{},\"network\":{},\"server_retry\":{},\"cipher_policy\":{},\"negotiated_suite\":{},\"connection_index\":{},\"connection_generation\":{},\"resumption_offered\":{},\"resumed\":{},\"handshake_mode\":{},\"tickets_cached\":{},\"lifecycle_closed\":{},\"ticket_acceptance\":{},\"ticket_age\":{},\"authentication\":{},\"certificate_chain_hostname_time_verified\":{},\"zero_rtt\":{},\"early_data\":{}}}",
             self.negotiated_group
                 .map_or_else(|| "null".into(), |group| group.to_string()),
             if self.side == Side::Client {
@@ -1074,6 +1380,7 @@ impl Report {
             self.send_key_generation,
             self.receive_key_generation,
             self.ecn.map_or_else(|| "null".into(), ecn_json),
+            self.network_json(),
             self.retry.json(),
             json_string(cipher_policy_name(self.cipher_policy)),
             self.negotiated_suite
@@ -1108,7 +1415,9 @@ impl Report {
                 if self.resumed { "false" } else { "true" }
             } else {
                 "null"
-            }
+            },
+            self.early.accepted(),
+            self.early.json()
         )
     }
 }
@@ -1169,6 +1478,11 @@ struct ServerJob {
     fin_queued: bool,
     bytes: u64,
 }
+#[derive(Clone, Copy)]
+struct EarlyJob {
+    stream_id: u64,
+    request_index: usize,
+}
 struct App {
     side: Side,
     root: SafeRoot,
@@ -1176,13 +1490,16 @@ struct App {
     next_request: usize,
     max_requests: Option<usize>,
     clients: [Option<ClientJob>; LIVE],
+    early_pending: [Option<EarlyJob>; LIVE],
     servers: [Option<ServerJob>; LIVE],
 }
-type Endpoint<'r, 's, 'c, 't> = TransportEndpoint<'r, 's, BoundedTls<'c, 't>, RX, CHUNK, 64, 128>;
+type Endpoint<'r, 's, 'c, 't, 'i, 'q> =
+    TransportEndpoint<'r, 's, BoundedTls<'c, 't>, RX, CHUNK, 64, 128, InitialProtection<'i, 'q>>;
 impl App {
     fn active(&self) -> usize {
         if self.side == Side::Client {
             self.clients.iter().filter(|j| j.is_some()).count()
+                + self.early_pending.iter().filter(|j| j.is_some()).count()
         } else {
             self.servers.iter().filter(|j| j.is_some()).count()
         }
@@ -1195,7 +1512,11 @@ impl App {
                 self.max_requests.is_some_and(|n| report.files >= n)
             }
     }
-    fn advance(&mut self, ep: &mut Endpoint<'_, '_, '_, '_>, report: &mut Report) -> Result<bool> {
+    fn advance(
+        &mut self,
+        ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
+        report: &mut Report,
+    ) -> Result<bool> {
         if !ep.handshake_complete() {
             return Ok(false);
         }
@@ -1205,14 +1526,91 @@ impl App {
             self.server_advance(ep, report)
         }
     }
+    /// The explicit CLI policy authorizes this complete GET and its fallback
+    /// retry. Core journal ownership persists until Finished and ordinary import.
+    fn queue_early(
+        &mut self,
+        ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
+        report: &mut Report,
+    ) -> Result<()> {
+        for slot in &mut self.early_pending {
+            if self.next_request == self.requests.len() {
+                break;
+            }
+            let request = &self.requests[self.next_request];
+            let mut line = [0; CHUNK];
+            let len = 4 + request.target.len() + 2;
+            line[..4].copy_from_slice(b"GET ");
+            line[4..len - 2].copy_from_slice(request.target.as_bytes());
+            line[len - 2..len].copy_from_slice(b"\r\n");
+            let handle = match ep.enqueue_early_request(&line[..len]) {
+                Ok(handle) => handle,
+                Err(error) if backpressure(&error) => break,
+                Err(error) => {
+                    return Err(format!("queue explicitly authorized early GET: {error:?}"));
+                }
+            };
+            let stream_id = ep
+                .early_stream_id(handle)
+                .map_err(|e| format!("early stream identity: {e:?}"))?;
+            *slot = Some(EarlyJob {
+                stream_id,
+                request_index: self.next_request,
+            });
+            self.next_request += 1;
+            report.early.requests_queued += 1;
+            report.early.request_bytes_queued += len;
+        }
+        if report.early.requests_queued == 0 {
+            return Err("early mode queued no replay-safe GET".into());
+        }
+        Ok(())
+    }
+    fn adopt_early(&mut self, ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>) -> Result<bool> {
+        let mut progress = false;
+        for pending in &mut self.early_pending {
+            let Some(job) = *pending else {
+                continue;
+            };
+            let stream = match ep.streams().lookup(job.stream_id) {
+                Ok(stream) => stream,
+                Err(streams::Error::NotOpened) => continue,
+                Err(error) => return Err(format!("imported early stream: {error:?}")),
+            };
+            let Some(slot) = self.clients.iter_mut().find(|slot| slot.is_none()) else {
+                break;
+            };
+            let download = self
+                .root
+                .create(&self.requests[job.request_index].components)?;
+            *slot = Some(ClientJob {
+                stream,
+                download,
+                request: [0; CHUNK],
+                request_len: 0,
+                queued: true,
+                unconsumed: 0,
+                fin: false,
+                published: false,
+                bytes: 0,
+            });
+            *pending = None;
+            progress = true;
+        }
+        Ok(progress)
+    }
     fn client_advance(
         &mut self,
-        ep: &mut Endpoint<'_, '_, '_, '_>,
+        ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
         report: &mut Report,
     ) -> Result<bool> {
-        let mut progress = false;
+        let mut progress = self.adopt_early(ep)?;
+        let ordinary_open_allowed = self.early_pending.iter().all(Option::is_none);
         for index in 0..LIVE {
-            if self.clients[index].is_none() && self.next_request < self.requests.len() {
+            if ordinary_open_allowed
+                && self.clients[index].is_none()
+                && self.next_request < self.requests.len()
+            {
                 let h = match ep.open(true) {
                     Ok(h) => h,
                     Err(e) if backpressure(&e) => break,
@@ -1306,7 +1704,7 @@ impl App {
     }
     fn server_advance(
         &mut self,
-        ep: &mut Endpoint<'_, '_, '_, '_>,
+        ep: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
         report: &mut Report,
     ) -> Result<bool> {
         let mut progress = false;
@@ -1460,13 +1858,266 @@ fn header_is_retired(header: Header<'_>, retired: &[Vec<u8>]) -> bool {
 struct InitialAdmission {
     len: usize,
     peer: SocketAddr,
+    local_address: SocketAddr,
     original: Vec<u8>,
     ecn: Option<Codepoint>,
     token: Option<ValidatedToken>,
     retry: RetryStats,
 }
-fn await_initial(
-    socket: &mut UdpMetadataSocket,
+/// Deadline wins before another syscall attempt; cancelling a pending UDP
+/// operation removes its interest and leaves adapter accounting with the caller.
+async fn before_deadline<T>(
+    reactor: &HostReactor,
+    deadline: Instant,
+    operation: impl Future<Output = io::Result<T>>,
+) -> io::Result<T> {
+    let mut operation = pin!(operation);
+    let mut timer = pin!(reactor.sleep_until(deadline));
+    poll_fn(|cx| {
+        if let Poll::Ready(result) = timer.as_mut().poll(cx) {
+            return Poll::Ready(result.and(Err(io::ErrorKind::TimedOut.into())));
+        }
+        operation.as_mut().poll(cx)
+    })
+    .await
+}
+
+/// Select actual socket/timer futures. Dropping the losing receive cancels its
+/// readiness registration without consuming a datagram. The two owned buffers
+/// permit both sockets to remain armed; polling priority alternates per packet.
+#[allow(clippy::too_many_arguments)]
+async fn receive_activity(
+    reactor: &HostReactor,
+    socket: &HostSocket<'_>,
+    preferred: Option<&HostSocket<'_>>,
+    input: &mut [u8],
+    alternate: &mut [u8],
+    deadline: Instant,
+    runnable: bool,
+    prefer_alternate: bool,
+) -> io::Result<Option<UdpReceived>> {
+    let received = {
+        let mut primary = pin!(socket.recv_from(input));
+        let mut secondary = pin!(async {
+            match preferred {
+                Some(socket) => socket.recv_from(alternate).await,
+                None => std::future::pending().await,
+            }
+        });
+        let mut timer = pin!(reactor.sleep_until(deadline));
+        let mut ready_work = pin!(async {
+            if runnable {
+                yield_now().await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        });
+        poll_fn(|cx| {
+            if let Poll::Ready(result) = timer.as_mut().poll(cx) {
+                return Poll::Ready(result.map(|()| None));
+            }
+            if prefer_alternate {
+                if let Poll::Ready(result) = secondary.as_mut().poll(cx) {
+                    return Poll::Ready(result.map(|metadata| Some((metadata, true))));
+                }
+                if let Poll::Ready(result) = primary.as_mut().poll(cx) {
+                    return Poll::Ready(result.map(|metadata| Some((metadata, false))));
+                }
+            } else {
+                if let Poll::Ready(result) = primary.as_mut().poll(cx) {
+                    return Poll::Ready(result.map(|metadata| Some((metadata, false))));
+                }
+                if let Poll::Ready(result) = secondary.as_mut().poll(cx) {
+                    return Poll::Ready(result.map(|metadata| Some((metadata, true))));
+                }
+            }
+            if ready_work.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Ok(None));
+            }
+            Poll::Pending
+        })
+        .await?
+    };
+    if let Some((metadata, from_alternate)) = received {
+        if from_alternate {
+            input[..metadata.len].copy_from_slice(&alternate[..metadata.len]);
+        }
+        Ok(Some(metadata))
+    } else {
+        Ok(None)
+    }
+}
+
+/// One Initial RX/TX service from one global choreography. All four endpoint
+/// VALUES stay in this enclosing owner until both borrowed services finish.
+/// The client capabilities are connected only while their real actors run.
+#[allow(clippy::too_many_arguments)]
+async fn exchange(
+    reactor: &HostReactor,
+    socket: &HostSocket<'_>,
+    initial_address: Address,
+    preferred_socket: Option<&HostSocket<'_>>,
+    preferred_server: Option<PreferredServer>,
+    local: [u8; 8],
+    original: Vec<u8>,
+    tls: BoundedTls<'_, '_>,
+    admission: Option<ValidatedToken>,
+    retry_stats: RetryStats,
+    first: Option<(&[u8], Option<Codepoint>)>,
+    start: Instant,
+    budget: Duration,
+    key_update_after: Option<u64>,
+    use_ecn: bool,
+    app: App,
+    early_storage: EarlyStorage,
+    session: SessionOptions<'_>,
+) -> Result<Report> {
+    let generation = session.generation;
+    let destination = admission
+        .as_ref()
+        .map_or(original.as_slice(), ValidatedToken::retry_source_id);
+    let keys = crypto::initial_keys(destination).map_err(|e| format!("Initial keys: {e:?}"))?;
+    let (receive_key, transmit_key) = if app.side == Side::Client {
+        (keys.server, keys.client)
+    } else {
+        (keys.client, keys.server)
+    };
+    let carrier = CarrierStorage::<1, 16, 32>::new();
+    let mut slab = [0; 32768];
+    let mut storage = SessionKitStorage::uninit();
+    let kit = storage.init();
+    let sid = SessionId::new(2);
+    let rv = kit
+        .rendezvous(
+            &mut slab,
+            carrier
+                .bind(sid)
+                .map_err(|e| format!("Initial carrier: {e:?}"))?,
+        )
+        .map_err(|e| format!("Initial rendezvous: {e:?}"))?;
+    let global = g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>());
+    let p16 = project::<16, _>(&global);
+    let p17 = project::<17, _>(&global);
+    let p18 = project::<18, _>(&global);
+    let p19 = project::<19, _>(&global);
+    let mut e16 = rv
+        .enter(sid, &p16)
+        .map_err(|e| format!("Initial RX client: {e:?}"))?;
+    let mut e17 = rv
+        .enter(sid, &p17)
+        .map_err(|e| format!("Initial RX crypto: {e:?}"))?;
+    let mut e18 = rv
+        .enter(sid, &p18)
+        .map_err(|e| format!("Initial TX client: {e:?}"))?;
+    let mut e19 = rv
+        .enter(sid, &p19)
+        .map_err(|e| format!("Initial TX crypto: {e:?}"))?;
+    let mut rx_commands: [Option<Command<INITIAL_PACKET_BYTES>>; 1] = [None];
+    let mut rx_replies: [Option<Reply<INITIAL_PACKET_BYTES>>; 1] = [None];
+    let mut tx_commands: [Option<Command<INITIAL_PACKET_BYTES>>; 1] = [None];
+    let mut tx_replies: [Option<Reply<INITIAL_PACKET_BYTES>>; 1] = [None];
+    let rx_commands =
+        Mailbox::new(&mut rx_commands).map_err(|e| format!("Initial RX mailbox: {e:?}"))?;
+    let rx_replies =
+        Mailbox::new(&mut rx_replies).map_err(|e| format!("Initial RX replies: {e:?}"))?;
+    let tx_commands =
+        Mailbox::new(&mut tx_commands).map_err(|e| format!("Initial TX mailbox: {e:?}"))?;
+    let tx_replies =
+        Mailbox::new(&mut tx_replies).map_err(|e| format!("Initial TX replies: {e:?}"))?;
+    let (rx_client_send, rx_role_recv) = rx_commands
+        .split()
+        .map_err(|e| format!("Initial RX split: {e:?}"))?;
+    let (rx_role_send, rx_client_recv) = rx_replies
+        .split()
+        .map_err(|e| format!("Initial RX replies split: {e:?}"))?;
+    let (tx_client_send, tx_role_recv) = tx_commands
+        .split()
+        .map_err(|e| format!("Initial TX split: {e:?}"))?;
+    let (tx_role_send, tx_client_recv) = tx_replies
+        .split()
+        .map_err(|e| format!("Initial TX replies split: {e:?}"))?;
+    let mut rx_exchange = Exchange::new();
+    let mut tx_exchange = Exchange::new();
+    let mut report = None;
+    {
+        let application = async {
+            let receive = InitialKeyClient::connect(rx_client_send, rx_client_recv, generation)
+                .await
+                .map_err(|e| format!("Initial RX connect: {e:?}"))?;
+            let transmit = InitialKeyClient::connect(tx_client_send, tx_client_recv, generation)
+                .await
+                .map_err(|e| format!("Initial TX connect: {e:?}"))?;
+            let initial = InitialProtection::new(receive, transmit)
+                .map_err(|e| format!("Initial capabilities: {e:?}"))?;
+            report = Some(
+                exchange_connected(
+                    reactor,
+                    socket,
+                    initial_address,
+                    preferred_socket,
+                    preferred_server,
+                    local,
+                    original,
+                    tls,
+                    admission,
+                    retry_stats,
+                    first,
+                    start,
+                    budget,
+                    key_update_after,
+                    use_ecn,
+                    app,
+                    early_storage,
+                    session,
+                    initial,
+                )
+                .await?,
+            );
+            Ok::<(), String>(())
+        };
+        // Independently pin each caller-owned actor/task. A nested owning join
+        // would copy the large transport future and its packet arenas repeatedly.
+        let mut application = pin!(application);
+        let mut receive_actor = pin!(async {
+            packet_protection::run_borrowed(
+                &mut e16,
+                &mut e17,
+                generation,
+                receive_key,
+                rx_role_recv,
+                rx_role_send,
+                &mut rx_exchange,
+            )
+            .await
+            .map_err(|e| format!("Initial RX key role: {e:?}"))
+        });
+        let mut transmit_actor = pin!(async {
+            packet_protection::run_borrowed(
+                &mut e18,
+                &mut e19,
+                generation,
+                transmit_key,
+                tx_role_recv,
+                tx_role_send,
+                &mut tx_exchange,
+            )
+            .await
+            .map_err(|e| format!("Initial TX key role: {e:?}"))
+        });
+        TaskSet::new([
+            receive_actor.as_mut(),
+            transmit_actor.as_mut(),
+            application.as_mut(),
+        ])
+        .await?;
+    }
+    report.ok_or_else(|| "missing completed connection report".into())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn await_initial(
+    reactor: &HostReactor,
+    socket: &HostSocket<'_>,
     input: &mut [u8],
     start: Instant,
     timeout: Duration,
@@ -1477,11 +2128,24 @@ fn await_initial(
     let mut dispatcher = retry_lifetime.map(RetryDispatcher::new).transpose()?;
     let mut output = [0; version_negotiation::MAX_RESPONSE_BYTES];
     loop {
+        yield_now().await;
         if start.elapsed() >= timeout {
             return Err("deadline waiting for a fresh v1 Initial".into());
         }
-        let metadata = match socket.recv_from(input) {
-            Ok(metadata) => metadata,
+        let metadata = match receive_activity(
+            reactor,
+            socket,
+            None,
+            input,
+            &mut [],
+            start + timeout,
+            false,
+            false,
+        )
+        .await
+        {
+            Ok(Some(metadata)) => metadata,
+            Ok(None) => continue,
             Err(e) if transient(&e) => continue,
             Err(e) => return Err(format!("server initial receive: {e}")),
         };
@@ -1510,7 +2174,20 @@ fn await_initial(
             )
             .map_err(|e| format!("version negotiation: {e:?}"))?
         {
-            match socket.send_to(&output[..len], metadata.source, Codepoint::NotEct) {
+            match before_deadline(
+                reactor,
+                start + timeout,
+                socket.send_from(
+                    &output[..len],
+                    Address {
+                        local: metadata.local,
+                        remote: metadata.source,
+                    },
+                    Codepoint::NotEct,
+                ),
+            )
+            .await
+            {
                 Ok(written) if written == len => {}
                 Ok(_) => return Err("partial version negotiation datagram acceptance".into()),
                 Err(e) if transient(&e) => {} // Quota is burned; never retry without new input.
@@ -1539,7 +2216,20 @@ fn await_initial(
             )? {
                 RetryAction::Discard => continue,
                 RetryAction::Send(n) => {
-                    match socket.send_to(&output[..n], metadata.source, Codepoint::NotEct) {
+                    match before_deadline(
+                        reactor,
+                        start + timeout,
+                        socket.send_from(
+                            &output[..n],
+                            Address {
+                                local: metadata.local,
+                                remote: metadata.source,
+                            },
+                            Codepoint::NotEct,
+                        ),
+                    )
+                    .await
+                    {
                         Ok(written) if written == n => {
                             dispatcher.stats.sent = dispatcher.stats.sent.saturating_add(1)
                         }
@@ -1553,6 +2243,7 @@ fn await_initial(
                     return Ok(InitialAdmission {
                         len: metadata.len,
                         peer: metadata.source,
+                        local_address: metadata.local,
                         original: token.original_destination_id().to_vec(),
                         ecn: metadata.ecn,
                         token: Some(token),
@@ -1564,6 +2255,7 @@ fn await_initial(
         return Ok(InitialAdmission {
             len: metadata.len,
             peer: metadata.source,
+            local_address: metadata.local,
             original: destination_id.to_vec(),
             ecn: metadata.ecn,
             token: None,
@@ -1572,6 +2264,15 @@ fn await_initial(
     }
 }
 fn run(options: Options) -> Result<RunReport> {
+    let reactor = HostReactor::new().map_err(|e| format!("reactor setup: {e}"))?;
+    // Pin the large caller-owned connection aggregate once. Passing its pinned
+    // reference avoids copying its bounded packet/crypto arenas into block_on.
+    let mut task = pin!(run_async(&reactor, options));
+    reactor
+        .block_on(task.as_mut())
+        .map_err(|e| format!("reactor: {e}"))?
+}
+async fn run_async(reactor: &HostReactor, options: Options) -> Result<RunReport> {
     match options {
         Options::Client {
             connect,
@@ -1586,6 +2287,7 @@ fn run(options: Options) -> Result<RunReport> {
             connections,
             require_resumption,
             resumption_delay,
+            early,
         } => {
             let clock = HostTicketClock(Instant::now());
             let root_der = certificates(&ca)?;
@@ -1610,7 +2312,11 @@ fn run(options: Options) -> Result<RunReport> {
             for (index, requests) in groups.into_iter().enumerate() {
                 if index > 0 {
                     generation = next_generation(generation)?;
-                    std::thread::sleep(resumption_delay);
+                    reactor
+                        .sleep(resumption_delay)
+                        .map_err(|e| format!("resumption timer: {e}"))?
+                        .await
+                        .map_err(|e| format!("resumption timer: {e}"))?;
                 }
                 let offer = if index > 0 {
                     let now = clock.now_ms().map_err(|e| format!("ticket clock: {e:?}"))?;
@@ -1625,6 +2331,11 @@ fn run(options: Options) -> Result<RunReport> {
                     None
                 };
                 let offered = offer.is_some();
+                if index > 0 && early.mode == EarlyMode::ReplaySafeGet && !offered {
+                    return Err(
+                        "early mode requires an unexpired authenticated cached ticket".into(),
+                    );
+                }
                 if index > 0 && require_resumption && !offered {
                     return Err(
                         "no unexpired, trust-matching cached ticket for required resumption".into(),
@@ -1638,6 +2349,7 @@ fn run(options: Options) -> Result<RunReport> {
                 let local = random::<8>()?;
                 let original = random::<8>()?;
                 let params = parameters(&local, None, None, local_limits(Side::Client))?;
+                let early_storage = EarlyStorage::new();
                 let mut buffers = TlsBuffers::new();
                 let cfg = BoundedClientConfig {
                     server_name: &name,
@@ -1658,14 +2370,26 @@ fn run(options: Options) -> Result<RunReport> {
                         cipher_policy,
                     )
                 } else if let Some(offer) = offer {
-                    BoundedTls::client_resuming_with_policy(
-                        cfg,
-                        buffers.storage(),
-                        &mut OsRng,
-                        session,
-                        offer,
-                        cipher_policy,
-                    )
+                    if early.mode == EarlyMode::ReplaySafeGet {
+                        BoundedTls::client_resuming_early_with_policy(
+                            cfg,
+                            buffers.storage(),
+                            &mut OsRng,
+                            session,
+                            offer,
+                            ClientEarlyData::replay_safe_requests(generation),
+                            cipher_policy,
+                        )
+                    } else {
+                        BoundedTls::client_resuming_with_policy(
+                            cfg,
+                            buffers.storage(),
+                            &mut OsRng,
+                            session,
+                            offer,
+                            cipher_policy,
+                        )
+                    }
                 } else {
                     BoundedTls::client_with_tickets_and_policy(
                         cfg,
@@ -1676,14 +2400,30 @@ fn run(options: Options) -> Result<RunReport> {
                     )
                 }
                 .map_err(|e| format!("bounded TLS client: {e:?}"))?;
-                let socket = UdpSocket::bind(if connect.is_ipv4() {
+                let probe = UdpSocket::bind(if connect.is_ipv4() {
                     "0.0.0.0:0"
                 } else {
                     "[::]:0"
                 })
-                .map_err(|e| format!("client UDP bind: {e}"))?;
+                .map_err(|e| format!("route probe bind: {e}"))?;
+                probe
+                    .connect(connect)
+                    .map_err(|e| format!("route probe: {e}"))?;
+                let mut bind = probe
+                    .local_addr()
+                    .map_err(|e| format!("route address: {e}"))?;
+                bind.set_port(0);
+                drop(probe);
+                let socket = UdpSocket::bind(bind).map_err(|e| format!("client UDP bind: {e}"))?;
+                let initial_address = Address {
+                    local: socket
+                        .local_addr()
+                        .map_err(|e| format!("client local address: {e}"))?,
+                    remote: connect,
+                };
                 sockets.push(
-                    UdpMetadataSocket::new(socket)
+                    reactor
+                        .register_udp(socket)
                         .map_err(|e| format!("UDP metadata setup: {e}"))?,
                 );
                 let app = App {
@@ -1693,35 +2433,44 @@ fn run(options: Options) -> Result<RunReport> {
                     next_request: 0,
                     max_requests: None,
                     clients: std::array::from_fn(|_| None),
+                    early_pending: [None; LIVE],
                     servers: std::array::from_fn(|_| None),
                 };
-                reports.push(exchange(
-                    sockets.last_mut().ok_or("missing client socket")?,
-                    connect,
-                    local,
-                    original.to_vec(),
-                    tls,
-                    None,
-                    RetryStats::default(),
-                    None,
-                    Instant::now(),
-                    timeout,
-                    key_update_after,
-                    use_ecn,
-                    app,
-                    SessionOptions {
-                        generation,
-                        cipher_policy,
-                        index: index + 1,
-                        persistent: connections == 2,
-                        offered,
-                        require_resumed: index > 0 && require_resumption,
-                        wait_ticket: (connections == 2).then_some(&inserted),
-                        require_ticket: connections == 2 && index == 0,
-                        ticket_acceptance: None,
-                        ticket_age: None,
-                    },
-                )?);
+                reports.push(
+                    exchange(
+                        reactor,
+                        sockets.last_mut().ok_or("missing client socket")?,
+                        initial_address,
+                        None,
+                        None,
+                        local,
+                        original.to_vec(),
+                        tls,
+                        None,
+                        RetryStats::default(),
+                        None,
+                        Instant::now(),
+                        timeout,
+                        key_update_after,
+                        use_ecn,
+                        app,
+                        early_storage,
+                        SessionOptions {
+                            early,
+                            generation,
+                            cipher_policy,
+                            index: index + 1,
+                            persistent: connections == 2,
+                            offered,
+                            require_resumed: index > 0 && require_resumption,
+                            wait_ticket: (connections == 2).then_some(&inserted),
+                            require_ticket: connections == 2 && index == 0,
+                            ticket_acceptance: None,
+                            ticket_age: None,
+                        },
+                    )
+                    .await?,
+                );
             }
             Ok(RunReport {
                 connections: reports,
@@ -1730,6 +2479,7 @@ fn run(options: Options) -> Result<RunReport> {
         }
         Options::Server {
             listen,
+            preferred_address,
             cert,
             key,
             www,
@@ -1745,6 +2495,7 @@ fn run(options: Options) -> Result<RunReport> {
             ticket_age_skew_ms,
             ticket_policy_second,
             rotate_ticket_key,
+            early,
         } => {
             let chain = certificates(&cert)?;
             let key = private_key(&key)?;
@@ -1752,25 +2503,41 @@ fn run(options: Options) -> Result<RunReport> {
             let der: Vec<&[u8]> = chain.iter().map(|c| c.as_ref()).collect();
             let clock = HostTicketClock(Instant::now());
             let mut replay = [ReplaySlot::empty(), ReplaySlot::empty()];
-            let mut ticket_key =
+            let mut early_replay = ReplayStorage::<8>::new();
+            let mut ticket_key = if early.mode == EarlyMode::BufferedGet {
+                TicketKey::generate_with_early_replay(
+                    &mut OsRng,
+                    ReplayPolicy::SingleUseOneRtt,
+                    &mut replay,
+                    &mut early_replay,
+                )
+            } else {
                 TicketKey::generate(&mut OsRng, ReplayPolicy::SingleUseOneRtt, &mut replay)
-                    .map_err(|e| format!("ticket key generation: {e:?}"))?;
+            }
+            .map_err(|e| format!("ticket key generation: {e:?}"))?;
             let mut generation = u64::from_be_bytes(random::<8>()?);
             if max_connections == 2 {
                 next_generation(generation)?;
             }
             let socket = UdpSocket::bind(listen).map_err(|e| format!("server UDP bind: {e}"))?;
-            let mut socket =
-                UdpMetadataSocket::new(socket).map_err(|e| format!("UDP metadata setup: {e}"))?;
+            let socket = reactor
+                .register_udp(socket)
+                .map_err(|e| format!("UDP metadata setup: {e}"))?;
             eprintln!(
                 "listening {}",
                 socket
                     .local_addr()
                     .map_err(|e| format!("local address: {e}"))?
             );
-            socket
-                .set_read_timeout(Some(Duration::from_millis(25)))
-                .map_err(|e| format!("UDP timeout: {e}"))?;
+            let preferred_socket = preferred_address
+                .map(|address| -> Result<HostSocket<'_>> {
+                    let socket =
+                        UdpSocket::bind(address).map_err(|e| format!("preferred UDP bind: {e}"))?;
+                    reactor
+                        .register_udp(socket)
+                        .map_err(|e| format!("preferred metadata: {e}"))
+                })
+                .transpose()?;
             let mut reports = Vec::new();
             let mut retired = Vec::new();
             let mut version_listener = VersionNegotiationListener::new()?;
@@ -1780,35 +2547,62 @@ fn run(options: Options) -> Result<RunReport> {
                     generation = next_generation(generation)?;
                     if rotate_ticket_key {
                         drop(ticket_key);
-                        ticket_key = TicketKey::generate(
-                            &mut OsRng,
-                            ReplayPolicy::SingleUseOneRtt,
-                            &mut replay,
-                        )
+                        ticket_key = if early.mode == EarlyMode::BufferedGet {
+                            TicketKey::generate_with_early_replay(
+                                &mut OsRng,
+                                ReplayPolicy::SingleUseOneRtt,
+                                &mut replay,
+                                &mut early_replay,
+                            )
+                        } else {
+                            TicketKey::generate(
+                                &mut OsRng,
+                                ReplayPolicy::SingleUseOneRtt,
+                                &mut replay,
+                            )
+                        }
                         .map_err(|e| format!("ticket key rotation: {e:?}"))?;
                     }
                 }
                 let start = Instant::now();
                 let mut input = [0; UDP_BYTES];
                 let admission = await_initial(
-                    &mut socket,
+                    reactor,
+                    &socket,
                     &mut input,
                     start,
                     timeout,
                     require_retry.then_some(retry_lifetime_us),
                     &retired,
                     &mut version_listener,
-                )?;
+                )
+                .await?;
                 let local = random::<8>()?;
-                let params = parameters(
+                let mut params = parameters(
                     &local,
                     Some(&admission.original),
                     admission
                         .token
                         .as_ref()
                         .map(ValidatedToken::retry_source_id),
-                    local_limits(Side::Server),
+                    profile_limits(Side::Server, early),
                 )?;
+                let preferred_server = preferred_address
+                    .map(|address| -> Result<PreferredServer> {
+                        Ok(PreferredServer {
+                            address,
+                            connection_id: hibana_quic::connection_id::Cid::new(&random::<8>()?)
+                                .map_err(|e| format!("preferred CID: {e:?}"))?,
+                            reset_token: hibana_quic::connection_id::ResetToken::new(
+                                random::<16>()?
+                            ),
+                        })
+                    })
+                    .transpose()?;
+                if let Some(preferred) = preferred_server {
+                    append_preferred(&mut params, preferred)?;
+                    retired.push(preferred.connection_id.as_bytes().to_vec());
+                }
                 retired.push(admission.original.clone());
                 retired.push(local.to_vec());
                 if let Some(token) = &admission.token {
@@ -1823,6 +2617,7 @@ fn run(options: Options) -> Result<RunReport> {
                     age: &age,
                     prepared_at: None,
                 };
+                let early_storage = EarlyStorage::new();
                 let mut buffers = TlsBuffers::new();
                 let cfg = BoundedServerConfig {
                     certificate_chain: &der,
@@ -1843,20 +2638,41 @@ fn run(options: Options) -> Result<RunReport> {
                         cipher_policy,
                     )
                 } else {
-                    BoundedTls::server_with_tickets_and_policy(
-                        cfg,
-                        buffers.storage(),
-                        &mut OsRng,
-                        ServerResumption {
-                            store: &mut issuer,
-                            entropy: &mut entropy,
-                            clock: &clock,
-                            policy: policy.as_bytes(),
-                            lifetime_seconds: ticket_lifetime,
-                            max_age_skew_ms: ticket_age_skew_ms,
-                        },
-                        cipher_policy,
-                    )
+                    let session = ServerResumption {
+                        store: &mut issuer,
+                        entropy: &mut entropy,
+                        clock: &clock,
+                        policy: policy.as_bytes(),
+                        lifetime_seconds: ticket_lifetime,
+                        max_age_skew_ms: ticket_age_skew_ms,
+                    };
+                    if early.mode == EarlyMode::BufferedGet && (index == 0 || !early.reject_second)
+                    {
+                        let admission = ServerEarlyData::buffered(
+                            generation,
+                            EARLY_POLICY,
+                            &params,
+                            &early_storage.received,
+                            early.freshness.ok_or("missing explicit early freshness")?,
+                        )
+                        .map_err(|e| format!("early admission: {e:?}"))?;
+                        BoundedTls::server_with_early_data_and_policy(
+                            cfg,
+                            buffers.storage(),
+                            &mut OsRng,
+                            session,
+                            admission,
+                            cipher_policy,
+                        )
+                    } else {
+                        BoundedTls::server_with_tickets_and_policy(
+                            cfg,
+                            buffers.storage(),
+                            &mut OsRng,
+                            session,
+                            cipher_policy,
+                        )
+                    }
                 }
                 .map_err(|e| format!("bounded TLS server: {e:?}"))?;
                 let connection_requests = if max_connections == 2 && index == 0 {
@@ -1873,11 +2689,18 @@ fn run(options: Options) -> Result<RunReport> {
                     next_request: 0,
                     max_requests: connection_requests,
                     clients: std::array::from_fn(|_| None),
+                    early_pending: [None; LIVE],
                     servers: std::array::from_fn(|_| None),
                 };
-                reports.push(exchange(
-                    &mut socket,
-                    admission.peer,
+                let report = exchange(
+                    reactor,
+                    &socket,
+                    Address {
+                        local: admission.local_address,
+                        remote: admission.peer,
+                    },
+                    preferred_socket.as_ref(),
+                    preferred_server,
                     local,
                     admission.original,
                     tls,
@@ -1889,7 +2712,9 @@ fn run(options: Options) -> Result<RunReport> {
                     key_update_after,
                     use_ecn,
                     app,
+                    early_storage,
                     SessionOptions {
+                        early,
                         generation,
                         cipher_policy,
                         index: index + 1,
@@ -1901,7 +2726,10 @@ fn run(options: Options) -> Result<RunReport> {
                         ticket_acceptance: Some(&acceptance),
                         ticket_age: Some(&age),
                     },
-                )?);
+                )
+                .await?;
+                retired.extend(report.retained_cids.iter().cloned());
+                reports.push(report);
             }
             Ok(RunReport {
                 connections: reports,
@@ -1911,9 +2739,12 @@ fn run(options: Options) -> Result<RunReport> {
     }
 }
 #[allow(clippy::too_many_arguments)]
-fn exchange(
-    socket: &mut UdpMetadataSocket,
-    peer: SocketAddr,
+async fn exchange_connected(
+    reactor: &HostReactor,
+    socket: &HostSocket<'_>,
+    initial_address: Address,
+    preferred_socket: Option<&HostSocket<'_>>,
+    preferred_server: Option<PreferredServer>,
     local: [u8; 8],
     original: Vec<u8>,
     tls: BoundedTls<'_, '_>,
@@ -1925,7 +2756,9 @@ fn exchange(
     key_update_after: Option<u64>,
     use_ecn: bool,
     mut app: App,
+    mut early_storage: EarlyStorage,
     session: SessionOptions<'_>,
+    initial: InitialProtection<'_, '_>,
 ) -> Result<Report> {
     let side = app.side;
     let generation = session.generation;
@@ -1977,14 +2810,35 @@ fn exchange(
         original_destination_id: &original,
         generation,
     };
+    // Existing non-Initial transport/recovery/provider services still use the
+    // partial synchronous Driver. Only Initial key authority is actor-owned.
     let driver = Driver::new(generation, roles);
+    let mut path_slots = [const { PathSlot::<1, 3>::empty() }; 2];
+    let mut local_cids = [LocalCidSlot::EMPTY; 8];
+    let mut peer_cids = [PeerCidSlot::<2>::EMPTY; 16];
+    let mut network_rng = OsRng;
+    let mut advertisement = [0u8; 2048];
     let mut engine = match admission {
         Some(admission) => {
-            HandshakeEndpoint::new_after_retry(config, tls, driver, crypto, admission)
+            HandshakeEndpoint::new_after_retry(config, tls, driver, crypto, admission, initial)
         }
-        None => HandshakeEndpoint::new(config, tls, driver, crypto),
+        None => HandshakeEndpoint::new(config, tls, driver, crypto, initial),
     }
     .map_err(|e| format!("QUIC setup: {e:?}"))?;
+    let mut network = NetworkConfig::new(initial_address);
+    network.preferred_server = preferred_server;
+    engine
+        .enable_network(
+            network,
+            NetworkResources {
+                paths: &mut path_slots,
+                local_cids: &mut local_cids,
+                peer_cids: &mut peer_cids,
+                preferred_advertisement: preferred_server.map(|_| &mut advertisement[..]),
+            },
+            &mut network_rng,
+        )
+        .map_err(|e| format!("network setup: {e:?}"))?;
     // parameters() omits TP 1: the advertised local idle timeout is exactly zero.
     // The host wall deadline is deliberately independent.
     engine
@@ -1993,25 +2847,45 @@ fn exchange(
     let mut stream_slots = [const { StreamSlot::<RX>::EMPTY }; LIVE];
     let mut chunks = [const { SendChunk::<CHUNK>::EMPTY }; 16];
     let mut references = [PacketReference::EMPTY; 128];
-    let mut endpoint: Endpoint<'_, '_, '_, '_> = TransportEndpoint::new(
+    let mut endpoint: Endpoint<'_, '_, '_, '_, '_, '_> = TransportEndpoint::new(
         engine,
-        local_limits(side),
+        profile_limits(side, session.early),
         &mut stream_slots,
         &mut chunks,
         &mut references,
         generation,
     )
     .map_err(|e| format!("stream setup: {e:?}"))?;
+    if side == Side::Server && session.early.mode == EarlyMode::BufferedGet {
+        endpoint
+            .configure_early_receive(EARLY_POLICY, &mut early_storage.received)
+            .map_err(|e| format!("early receive storage: {e:?}"))?;
+        endpoint
+            .configure_early_controls(&mut early_storage.controls)
+            .map_err(|e| format!("early control storage: {e:?}"))?;
+    }
+    if side == Side::Client && endpoint.tls().early_status() == EarlyStatus::Offered {
+        endpoint
+            .configure_early_send(&mut early_storage.requests)
+            .map_err(|e| format!("early request journal: {e:?}"))?;
+    }
     if use_ecn {
         endpoint
             .enable_ecn()
             .map_err(|e| format!("ECN enable: {e:?}"))?;
     }
     let mut input = [0; UDP_BYTES];
+    let mut alternate_input = [0; UDP_BYTES];
     let mut scratch = [0; UDP_BYTES];
     let mut output = [0; 1500];
     let mut report = Report {
+        early: EarlyReport {
+            mode: session.early.mode,
+            offered: endpoint.tls().early_status() == EarlyStatus::Offered,
+            ..EarlyReport::default()
+        },
         side,
+        retained_cids: Vec::new(),
         files: 0,
         bytes: 0,
         sent: retry_stats.sent,
@@ -2025,6 +2899,11 @@ fn exchange(
         send_key_generation: 0,
         receive_key_generation: 0,
         ecn: None,
+        initial_path: Some(initial_address),
+        active_path: Some(initial_address),
+        path_identity: Some(endpoint.path_identity()),
+        path_changes: 0,
+        path_validated: false,
         negotiated_group: None,
         negotiated_suite: None,
         cipher_policy: session.cipher_policy,
@@ -2038,13 +2917,13 @@ fn exchange(
         ticket_acceptance: None,
         ticket_age: None,
     };
+    if side == Side::Client && endpoint.tls().early_status() == EarlyStatus::Offered {
+        app.queue_early(&mut endpoint, &mut report)?;
+    }
     if let Some((first, codepoint)) = first {
-        let metadata = ecn::Metadata {
-            path: endpoint.path_identity(),
-            codepoint,
-        };
         let r = endpoint
-            .receive_with_metadata(first, &mut scratch, metadata)
+            .receive_from(first, &mut scratch, initial_address, codepoint)
+            .await
             .map_err(|e| {
                 format!(
                     "first packet: {e:?}; bounded TLS: {:?}",
@@ -2057,7 +2936,11 @@ fn exchange(
     }
     let mut last_activity = start.elapsed();
     let mut completed_at = None;
-    loop {
+    'connection: loop {
+        yield_now().await;
+        report.early.decision = endpoint.tls().early_status();
+        report.early.offered |= !matches!(report.early.decision, EarlyStatus::Disabled);
+        report.early.admitted_packets = endpoint.admitted_early_packets();
         if start.elapsed() >= budget {
             return Err(format!(
                 "deadline expired on connection {}: {} complete files, {} live; ticket acceptance {:?}, age {:?}; no overall success reported",
@@ -2089,6 +2972,16 @@ fn exchange(
             .timer(now(start))
             .map_err(|e| format!("timer: {e:?}"))?;
         let state = endpoint.connection_state();
+        report.observe_path(endpoint.network_path_state());
+        for cid in endpoint.issued_local_cids() {
+            if !report
+                .retained_cids
+                .iter()
+                .any(|known| known.as_slice() == cid.as_bytes())
+            {
+                report.retained_cids.push(cid.as_bytes().to_vec());
+            }
+        }
         report.tickets_cached = session.wait_ticket.map_or(0, Cell::get);
         report.ticket_acceptance = session.ticket_acceptance.and_then(Cell::get);
         report.ticket_age = session.ticket_age.and_then(Cell::get);
@@ -2106,6 +2999,23 @@ fn exchange(
                 .is_some_and(|suite| session.cipher_policy.permits(suite))
             {
                 return Err("negotiated cipher suite violates configured policy".into());
+            }
+            if side == Side::Client
+                && session.index == 2
+                && session.early.mode == EarlyMode::ReplaySafeGet
+            {
+                if report.early.packets_sent == 0 {
+                    return Err("early mode sent no actual0RTT request packet".into());
+                }
+                match session.early.expected {
+                    ExpectedEarly::Accepted if report.early.decision != EarlyStatus::Accepted => {
+                        return Err("server did not accept required early data".into());
+                    }
+                    ExpectedEarly::Rejected if report.early.decision != EarlyStatus::Rejected => {
+                        return Err("server did not reject early data as required".into());
+                    }
+                    _ => {}
+                }
             }
             if session.require_resumed && !report.resumed {
                 return Err(
@@ -2161,6 +3071,7 @@ fn exchange(
         for _ in 0..64 {
             let Some(tx) = endpoint
                 .transmit(&mut output)
+                .await
                 .map_err(|e| format!("packet production: {e:?}"))?
             else {
                 drained = true;
@@ -2172,16 +3083,45 @@ fn exchange(
             {
                 continue;
             }
-            match socket.send_to(&output[..tx.len], peer, tx.ecn) {
+            let target = tx.address.ok_or("missing prepared network tuple")?;
+            let sender = if preferred_server.is_some_and(|p| p.address == target.local) {
+                preferred_socket.ok_or("missing preferred socket")?
+            } else {
+                socket
+            };
+            let send_deadline = endpoint
+                .next_deadline()
+                .map(|deadline| start + Duration::from_micros(deadline))
+                .unwrap_or(start + budget)
+                .min(start + budget);
+            match before_deadline(
+                reactor,
+                send_deadline,
+                sender.send_from(&output[..tx.len], target, tx.ecn),
+            )
+            .await
+            {
                 Ok(n) if n == tx.len => {
                     endpoint
                         .adapter_result(tx, true, now(start))
+                        .await
                         .map_err(|e| format!("adapter acceptance: {e:?}"))?;
                     report.sent += 1;
+                    if tx.is_early_data() {
+                        report.early.packets_sent += 1;
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                    endpoint
+                        .adapter_result(tx, false, now(start))
+                        .await
+                        .map_err(|e| format!("cancel timed-out adapter wait: {e:?}"))?;
+                    continue 'connection;
                 }
                 other => {
                     endpoint
                         .adapter_result(tx, false, now(start))
+                        .await
                         .map_err(|e| format!("adapter rejection: {e:?}"))?;
                     return Err(format!("UDP did not accept datagram: {other:?}"));
                 }
@@ -2242,8 +3182,13 @@ fn exchange(
         {
             let completed = *completed_at.get_or_insert(start.elapsed());
             if start.elapsed().saturating_sub(completed) >= Duration::from_millis(500) {
-                report.duration_ms = start.elapsed().as_millis();
-                return Ok(report);
+                endpoint
+                    .initiate_close(
+                        CloseReason::application(0, "transfer complete")
+                            .map_err(|e| format!("close reason: {e:?}"))?,
+                    )
+                    .map_err(|e| format!("initiate close: {e:?}"))?;
+                continue;
             }
         } else {
             completed_at = None;
@@ -2258,31 +3203,54 @@ fn exchange(
             && report.update_ready()
             && start.elapsed().saturating_sub(last_activity) >= Duration::from_secs(2)
         {
-            report.duration_ms = start.elapsed().as_millis();
-            return Ok(report);
+            endpoint
+                .initiate_close(
+                    CloseReason::application(0, "transfer complete")
+                        .map_err(|e| format!("close reason: {e:?}"))?,
+                )
+                .map_err(|e| format!("initiate close: {e:?}"))?;
+            continue;
         }
-        let deadline = endpoint
-            .next_deadline()
-            .map(|d| Duration::from_micros(d.saturating_sub(now(start))));
-        let wait = deadline
-            .unwrap_or(Duration::from_millis(5))
-            .min(if progress || !drained {
-                Duration::from_millis(1)
-            } else {
-                Duration::from_millis(5)
-            })
-            .max(Duration::from_micros(100));
-        socket
-            .set_read_timeout(Some(wait))
-            .map_err(|e| format!("receive timeout: {e}"))?;
-        match socket.recv_from(&mut input) {
-            Ok(received) if received.source == peer => {
-                let metadata = ecn::Metadata {
-                    path: endpoint.path_identity(),
-                    codepoint: received.ecn,
+        // Sleep only for real readiness/deadlines. Runnable bounded application
+        // work yields one turn rather than introducing a periodic polling tick.
+        let mut deadline = start + budget;
+        if let Some(transport) = endpoint.next_deadline() {
+            deadline = deadline.min(start + Duration::from_micros(transport));
+        }
+        if let Some(completed) = completed_at {
+            deadline = deadline.min(start + completed + Duration::from_millis(500));
+        }
+        if !session.persistent
+            && state == ConnectionState::Active
+            && side == Side::Server
+            && app.max_requests.is_none()
+            && report.files > 0
+            && app.active() == 0
+            && quiet
+            && report.update_ready()
+        {
+            deadline = deadline.min(start + last_activity + Duration::from_secs(2));
+        }
+        let incoming = receive_activity(
+            reactor,
+            socket,
+            preferred_socket,
+            &mut input,
+            &mut alternate_input,
+            deadline,
+            progress || !drained,
+            report.received % 2 == 1,
+        )
+        .await;
+        match incoming {
+            Ok(Some(received)) => {
+                let address = Address {
+                    local: received.local,
+                    remote: received.source,
                 };
                 let r = endpoint
-                    .receive_with_metadata(&input[..received.len], &mut scratch, metadata)
+                    .receive_from(&input[..received.len], &mut scratch, address, received.ecn)
+                    .await
                     .map_err(|e| {
                         format!(
                             "packet receive: {e:?}; bounded TLS: {:?}",
@@ -2295,6 +3263,7 @@ fn exchange(
                     report.negotiated_group = endpoint.negotiated_group();
                 }
                 report.ecn = Some(endpoint.ecn_snapshot());
+                report.observe_path(endpoint.network_path_state());
                 report.received += 1;
                 report.authenticated += r.authenticated as u64;
                 report.discarded += r.discarded as u64;
@@ -2302,7 +3271,7 @@ fn exchange(
                 // Closing/Draining is not completion. The loop's exact Closed
                 // check owns successful lifecycle exit after all file gates.
             }
-            Ok(_) => {}
+            Ok(None) => {}
             Err(e) if transient(&e) => {}
             Err(e) => return Err(format!("UDP receive: {e}")),
         }
@@ -2368,6 +3337,120 @@ mod tests {
     fn components(target: &str) -> Vec<String> {
         path_components(target).unwrap()
     }
+    #[test]
+    fn host_root_future_storage_is_measured_without_constructing_it() {
+        fn produced_bytes<T>(_make: impl FnOnce() -> T) -> usize {
+            std::mem::size_of::<T>()
+        }
+        let reactor = HostReactor::new().unwrap();
+        let args = [
+            "client",
+            "--connect",
+            "127.0.0.1:4433",
+            "--server-name",
+            "localhost",
+            "--ca",
+            "unused.pem",
+            "--request",
+            "/file",
+            "--downloads",
+            "unused",
+        ]
+        .map(str::to_owned);
+        let options = parse_options(&args).unwrap();
+        let bytes = produced_bytes(|| run_async(&reactor, options));
+        println!("HQ fixed root-future storage: {bytes} bytes (host only, no embedded fit claim)");
+        assert!(
+            bytes <= 1024 * 1024,
+            "host root future exceeded its explicit 1 MiB ceiling"
+        );
+    }
+
+    #[test]
+    fn expired_async_send_deadline_never_attempts_submission() {
+        let reactor = HostReactor::new().unwrap();
+        let attempted = Cell::new(false);
+        let outcome = reactor
+            .block_on(before_deadline(
+                &reactor,
+                Instant::now(),
+                poll_fn(|_| {
+                    attempted.set(true);
+                    Poll::Ready(Ok(1_usize))
+                }),
+            ))
+            .unwrap();
+        assert_eq!(outcome.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(!attempted.get());
+    }
+
+    #[test]
+    fn async_path_selection_retains_actual_buffer_and_cancels_other_receive() {
+        let reactor = HostReactor::new().unwrap();
+        let primary = reactor
+            .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
+            .unwrap();
+        let preferred = reactor
+            .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
+            .unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.send_to(b"primary", primary.local_addr().unwrap())
+            .unwrap();
+        peer.send_to(b"preferred", preferred.local_addr().unwrap())
+            .unwrap();
+        let mut input = [0; 32];
+        let mut alternate = [0; 32];
+        reactor
+            .block_on(async {
+                let first = receive_activity(
+                    &reactor,
+                    &primary,
+                    Some(&preferred),
+                    &mut input,
+                    &mut alternate,
+                    Instant::now() + Duration::from_secs(1),
+                    false,
+                    false,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(&input[..first.len], b"primary");
+                assert_eq!(first.local, primary.local_addr().unwrap());
+                let second = receive_activity(
+                    &reactor,
+                    &primary,
+                    Some(&preferred),
+                    &mut input,
+                    &mut alternate,
+                    Instant::now() + Duration::from_secs(1),
+                    false,
+                    true,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(&input[..second.len], b"preferred");
+                assert_eq!(second.local, preferred.local_addr().unwrap());
+                let idle = receive_activity(
+                    &reactor,
+                    &primary,
+                    Some(&preferred),
+                    &mut input,
+                    &mut alternate,
+                    Instant::now() + Duration::from_millis(2),
+                    false,
+                    false,
+                )
+                .await
+                .unwrap();
+                assert!(idle.is_none());
+            })
+            .unwrap();
+        assert_eq!(reactor.statistics().timer_events, 1);
+        assert!(reactor.statistics().polls <= 3, "idle paths should sleep");
+    }
+
     #[test]
     fn completed_server_close_requires_explicit_goal_and_no_live_owners() {
         assert!(completed_server_goal(Side::Server, Some(1), 1, 0, 0));
@@ -2639,7 +3722,9 @@ mod tests {
     #[test]
     fn local_key_rotation_alone_cannot_satisfy_update_mode() {
         let mut report = Report {
+            early: EarlyReport::default(),
             side: Side::Client,
+            retained_cids: Vec::new(),
             files: 1,
             bytes: 2048,
             sent: 1,
@@ -2653,6 +3738,11 @@ mod tests {
             send_key_generation: 1,
             receive_key_generation: 0,
             ecn: None,
+            initial_path: None,
+            active_path: None,
+            path_identity: None,
+            path_changes: 0,
+            path_validated: false,
             negotiated_group: None,
             negotiated_suite: None,
             cipher_policy: CipherPolicy::Default,
@@ -3008,5 +4098,167 @@ mod tests {
             assert!(parse_options(&args(&format!("{base} {tail}"))).is_err());
         }
         assert!(parse_options(&args("client --retry")).is_err());
+    }
+    #[test]
+    fn preferred_address_cli_rejects_unknown_family_wildcard_and_zero_port() {
+        let args = |s: &str| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        let base = "server --listen 127.0.0.1:4433 --cert leaf.pem --key key.pem --www www";
+        assert!(matches!(
+            parse_options(&args(&format!("{base} --preferred-address 127.0.0.2:4434"))).unwrap(),
+            Options::Server {
+                preferred_address: Some(_),
+                ..
+            }
+        ));
+        for address in [
+            "127.0.0.1:4433",
+            "127.0.0.1:0",
+            "0.0.0.0:4434",
+            "[::1]:4434",
+            "not-an-address",
+        ] {
+            assert!(
+                parse_options(&args(&format!("{base} --preferred-address {address}"))).is_err()
+            );
+        }
+        let client = "client --connect 127.0.0.1:4433 --server-name localhost --ca ca.pem --request /x --downloads out --preferred-address 127.0.0.1:4434";
+        assert!(parse_options(&args(client)).is_err());
+    }
+    #[test]
+    fn preferred_parameter_roundtrips_exact_address_cid_and_token() {
+        for address in ["127.0.0.2:4434", "[::1]:4434"] {
+            let preferred = PreferredServer {
+                address: address.parse().unwrap(),
+                connection_id: hibana_quic::connection_id::Cid::new(b"prefer01").unwrap(),
+                reset_token: hibana_quic::connection_id::ResetToken::new([42; 16]),
+            };
+            let mut params = parameters(
+                b"server01",
+                Some(b"original"),
+                None,
+                local_limits(Side::Server),
+            )
+            .unwrap();
+            append_preferred(&mut params, preferred).unwrap();
+            let parsed = hibana_quic::parameters::Parameters::parse(
+                &params,
+                hibana_quic::parameters::Peer::Server,
+                &mut [0; 64],
+            )
+            .unwrap();
+            let value =
+                hibana_quic::migration::PreferredAddress::parse(parsed.get(13).unwrap()).unwrap();
+            assert!([value.ipv4, value.ipv6].contains(&Some(preferred.address)));
+            assert_eq!(value.connection_id, b"prefer01");
+            assert_eq!(value.reset_token, &[42; 16]);
+        }
+    }
+    #[test]
+    fn early_cli_requires_explicit_replay_policy_two_connections_and_independent_freshness() {
+        let client = "client --connect 127.0.0.1:4433 --server-name localhost --ca ca.pem --downloads out --request /a --request /b --connections 2";
+        let server = "server --listen 127.0.0.1:0 --cert leaf.pem --key key.pem --www www --max-connections 2";
+        let parse = |text: String| {
+            parse_options(
+                &text
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let Options::Client { early, .. } = parse(client.into()).unwrap() else {
+            panic!()
+        };
+        assert_eq!(early.mode, EarlyMode::Disabled);
+        let Options::Client { early, .. } = parse(format!(
+            "{client} --early-data replay-safe-get --expect-early rejected"
+        ))
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(early.mode, EarlyMode::ReplaySafeGet);
+        assert_eq!(early.expected, ExpectedEarly::Rejected);
+        let Options::Server { early, .. } = parse(format!(
+            "{server} --early-data buffered-get --early-age-skew-ms 1000 --reject-early-second true"
+        ))
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(early.mode, EarlyMode::BufferedGet);
+        assert_eq!(early.freshness, Some(EarlyFreshness::new(1000).unwrap()));
+        assert!(early.reject_second);
+        for tail in [
+            " --early-data buffered-get",
+            " --early-data replay-safe-get --expect-early maybe",
+            " --expect-early accepted",
+            " --early-data replay-safe-get --early-age-skew-ms 1000",
+        ] {
+            assert!(parse(format!("{client}{tail}")).is_err());
+        }
+        for tail in [
+            " --early-data buffered-get",
+            " --early-data buffered-get --early-age-skew-ms 60001",
+            " --early-data replay-safe-get",
+            " --reject-early-second true",
+        ] {
+            assert!(parse(format!("{server}{tail}")).is_err());
+        }
+        assert!(
+            parse(format!(
+                "{} --early-data replay-safe-get",
+                client.replace("--connections 2", "--connections 1")
+            ))
+            .is_err()
+        );
+    }
+    #[test]
+    fn early_profile_bounds_request_credit_without_changing_normal_profile() {
+        let normal = local_limits(Side::Server);
+        assert_eq!(normal.stream_data_bidi_remote, RX as u64);
+        assert_eq!(
+            profile_limits(Side::Server, EarlyOptions::default()),
+            normal
+        );
+        let early = EarlyOptions {
+            mode: EarlyMode::BufferedGet,
+            freshness: Some(EarlyFreshness::new(1).unwrap()),
+            ..EarlyOptions::default()
+        };
+        let limits = profile_limits(Side::Server, early);
+        assert_eq!(limits.stream_data_bidi_remote, CHUNK as u64);
+        assert_eq!(limits.max_data, (LIVE * CHUNK) as u64);
+        assert_eq!(
+            profile_limits(Side::Client, early),
+            local_limits(Side::Client)
+        );
+        let encoded = parameters(b"server01", Some(b"original"), None, limits).unwrap();
+        let storage = EarlyStorage::new();
+        ServerEarlyData::buffered(
+            1,
+            EARLY_POLICY,
+            &encoded,
+            &storage.received,
+            early.freshness.unwrap(),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn early_success_requires_actual_output_or_admission_and_finished_acceptance() {
+        let mut report = EarlyReport {
+            mode: EarlyMode::ReplaySafeGet,
+            offered: true,
+            decision: EarlyStatus::Accepted,
+            ..EarlyReport::default()
+        };
+        assert!(!report.accepted());
+        report.packets_sent = 1;
+        assert!(report.accepted());
+        report.decision = EarlyStatus::Rejected;
+        assert!(!report.accepted());
+        report.decision = EarlyStatus::AcceptedPendingFinished;
+        assert!(!report.accepted());
+        report.packets_sent = 0;
+        report.admitted_packets = 1;
+        report.decision = EarlyStatus::Accepted;
+        assert!(report.accepted());
     }
 }

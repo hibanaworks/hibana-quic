@@ -357,3 +357,33 @@ fn actual_service_rejects_early_release_before_verified_finished() {
     assert!(ready(packet.send::<EarlyReleaseRequest>(&[0; 12])).is_err());
     assert_eq!(queues.queued(), 0, "mutated transition must never publish");
 }
+
+#[test]
+fn actual_service_rejects_client_intent_import_before_finished() {
+    let queues = CarrierStorage::<8, 16, { SERVICE_PORTS }>::new();
+    let sid = SessionId::new(301);
+    let carrier = queues.bind(sid).unwrap();
+    let mut slab = [0; SERVICE_SLAB_BYTES];
+    let mut storage = SessionKitStorage::<LocalCarrier<'_, 8, 16, { SERVICE_PORTS }>>::uninit();
+    let kit = storage.init();
+    let rv = kit.rendezvous(&mut slab, carrier).unwrap();
+    let p = service_program::<PACKET>();
+    let mut packet = rv.enter(sid, &p).unwrap();
+    assert!(ready(packet.send::<EarlyIntentRequest>(&[0; 12])).is_err());
+    assert_eq!(queues.queued(), 0);
+}
+
+#[test]
+fn actual_service_rejects_deferred_control_release_before_finished() {
+    let queues = CarrierStorage::<8, 16, { SERVICE_PORTS }>::new();
+    let sid = SessionId::new(302);
+    let carrier = queues.bind(sid).unwrap();
+    let mut slab = [0; SERVICE_SLAB_BYTES];
+    let mut storage = SessionKitStorage::<LocalCarrier<'_, 8, 16, { SERVICE_PORTS }>>::uninit();
+    let kit = storage.init();
+    let rv = kit.rendezvous(&mut slab, carrier).unwrap();
+    let p = service_program::<PACKET>();
+    let mut packet = rv.enter(sid, &p).unwrap();
+    assert!(ready(packet.send::<EarlyControlReleaseRequest>(&[0; 12])).is_err());
+    assert_eq!(queues.queued(), 0);
+}

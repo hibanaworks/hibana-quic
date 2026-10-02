@@ -586,3 +586,89 @@ fn replayed_clienthello_cannot_admit_early_after_first_owner_aborts() {
         assert_eq!(server.take_early_replay_claim().is_some(), generation == 2);
     }
 }
+
+#[test]
+fn broad_one_rtt_tolerance_cannot_silently_authorize_stale_early_data() {
+    for (delay, accept) in [(999, true), (1000, true), (1001, false)] {
+        let id = identity();
+        let anchors = [trust_anchor_from_der(&id.root).unwrap()];
+        let chain = [id.leaf.as_ref()];
+        let client_clock = Clock(Cell::new(1000));
+        let server_clock = Clock(Cell::new(1000 + delay));
+        let mut ordinary = [];
+        let mut replay = ReplayStorage::<2>::new();
+        let mut cache_slots = [ClientSlot::<SIZE>::empty()];
+        let mut cache = ClientCache::new(&mut cache_slots);
+        let mut key = TicketKey::generate_with_early_replay(
+            &mut OsRng,
+            ReplayPolicy::ReusableOneRtt,
+            &mut ordinary,
+            &mut replay,
+        )
+        .unwrap();
+        issue_ticket(
+            &id,
+            &anchors,
+            &mut key,
+            &mut cache,
+            &client_clock,
+            CipherPolicy::Default,
+        );
+        let cached = offer(&mut cache, &anchors, 0x1301);
+        let mut cb = Buffers::new();
+        let mut sb = Buffers::new();
+        let held = [QuarantineSlot::<1024>::EMPTY, QuarantineSlot::EMPTY];
+        let mut entropy = OsRng;
+        let mut client = BoundedTls::client_resuming_early(
+            client_config(&anchors),
+            cb.storage(),
+            &mut OsRng,
+            ClientResumption {
+                store: &mut cache,
+                clock: &client_clock,
+            },
+            cached,
+            ClientEarlyData::replay_safe_requests(2),
+        )
+        .unwrap();
+        let admission = ServerEarlyData::buffered(
+            2,
+            EARLY_POLICY,
+            SERVER_PARAMS,
+            &held,
+            EarlyFreshness::new(1000).unwrap(),
+        )
+        .unwrap();
+        let mut server = BoundedTls::server_with_early_data(
+            ServerConfig {
+                certificate_chain: &chain,
+                signing_key: &id.signing,
+                transport_parameters: SERVER_PARAMS,
+            },
+            sb.storage(),
+            &mut OsRng,
+            ServerResumption {
+                store: &mut key,
+                entropy: &mut entropy,
+                clock: &server_clock,
+                policy: b"early GET v1",
+                lifetime_seconds: 60,
+                max_age_skew_ms: 10_000,
+            },
+            admission,
+        )
+        .unwrap();
+        pump(&mut client, &mut server);
+        assert!(client.is_resumed() && server.is_resumed());
+        assert_eq!(
+            client.early_status(),
+            if accept {
+                EarlyStatus::Accepted
+            } else {
+                EarlyStatus::Rejected
+            }
+        );
+        assert_eq!(server.early_status(), client.early_status());
+        assert_eq!(server.take_early_replay_claim().is_some(), accept);
+    }
+}

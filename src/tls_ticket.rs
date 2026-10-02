@@ -1,6 +1,6 @@
-//! Bounded authenticated ticket and client-cache primitives for 1-RTT resumption.
+//! Bounded authenticated tickets/cache with explicit optional early replay policy.
 //!
-//! No TLS state transition or 0-RTT authorization occurs here. The provider must
+//! This module performs no TLS transition or packet processing. The provider must
 //! negotiate psk_dhe_ke, validate binder framing, enforce suite/hash continuity,
 //! perform fresh ECDHE and verify Finished. Prepare a nonce, derive its PSK with
 //! the existing TLS schedule, then consume both in seal; never retain the whole
@@ -12,7 +12,8 @@
 //! issues unique counter nonces. Single-use replay state is borrowed, bounded,
 //! scoped to that key and updated only after a valid binder. It must not be reset
 //! independently while that key remains usable. Reusable tickets are explicitly
-//! limited to 1-RTT. Neither replay mode is an early-data replay policy.
+//! limited to 1-RTT. Early admission additionally requires the separately borrowed
+//! early replay ledger, authenticated remembered limits and explicit freshness.
 //!
 //! Sources: RFC 9846 sections 4.2.11 and 4.6.1; RFC 9001 sections 4.5 and 4.6.
 
@@ -1291,6 +1292,52 @@ mod tests {
             Error::Authentication
         );
     }
+    #[test]
+    fn early_age_tolerance_is_independent_exact_and_does_not_burn_on_failure() {
+        for (delta, allowed) in [
+            (999, true),
+            (1000, true),
+            (1001, false),
+            (9999, false),
+            (10000, false),
+        ] {
+            let mut rng = TestRng::new(900 + delta);
+            let mut ordinary = [];
+            let mut replay = ReplayStorage::<1>::new();
+            let mut key = TicketKey::generate_with_early_replay(
+                &mut rng,
+                ReplayPolicy::ReusableOneRtt,
+                &mut ordinary,
+                &mut replay,
+            )
+            .unwrap();
+            let (bytes, issued, binder) = issue_early(&mut key, &mut rng, 60);
+            let binding = binding();
+            let mut req = request(&binding, &issued, 2000, &binder);
+            req.max_age_skew_ms = 10_000;
+            req.obfuscated_age = req.obfuscated_age.wrapping_add(delta as u32);
+            let mut accepted = key.accept(&bytes, req).unwrap();
+            let result =
+                key.claim_early(&mut accepted, 1, 2000, EarlyFreshness::new(1000).unwrap());
+            assert_eq!(result.is_ok(), allowed);
+            if !allowed {
+                assert_eq!(error(result), Error::EarlyAgeMismatch);
+                assert_eq!(accepted.into_schedule().stage(), Stage::Early);
+                let mut correct = key
+                    .accept(&bytes, request(&binding, &issued, 2000, &binder))
+                    .unwrap();
+                assert!(
+                    key.claim_early(&mut correct, 2, 2000, EarlyFreshness::new(0).unwrap())
+                        .is_ok()
+                );
+            }
+        }
+        assert_eq!(
+            EarlyFreshness::new(EarlyFreshness::MAX_SKEW_MS + 1),
+            Err(early::Error::InvalidFreshness)
+        );
+    }
+
     #[test]
     fn early_permission_requires_explicit_key_policy_and_cache_metadata() {
         let mut rng = TestRng::new(58);

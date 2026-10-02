@@ -4,12 +4,13 @@
 //! four-byte headers. It performs no cryptography, transcript update, certificate
 //! verification, key installation, or state transition. Those belong to Provider.
 //! Profile: TLS 1.3, SHA-256 suites 0x1301/0x1303, P-256/X25519 key shares,
-//! ECDSA/P-256/SHA-256 CertificateVerify, hq-interop ALPN, QUIC TP extension 0x39,
+//! ECDSA/P-256 and bounded RSA-PSS/SHA-256 CertificateVerify, hq-interop ALPN,
+//! QUIC TP extension 0x39,
 //! empty legacy session IDs and certificate-request context. Bounded HRR syntax
 //! supports selected-group and cookie-only retries. Explicit *_psk APIs add
 //! one bounded identity with a SHA-256 binder and PSK_DHE only; legacy wrappers
-//! still reject actual PSK offers/selections. Client early data and client
-//! authentication remain unsupported. NewSessionTicket parsing does not confer
+//! still reject actual PSK offers/selections. Explicit *_early entry points add
+//! early-data syntax; client authentication remains unsupported. NST parsing does not confer
 //! trust, cache eligibility or permission to resume; those are Provider duties.
 //! Encoders may partially write the caller buffer on error; only an Ok length
 //! authorizes structurally encoded bytes. PSK encoders emit a zero binder that

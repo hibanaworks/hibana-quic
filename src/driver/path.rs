@@ -4,7 +4,7 @@
 //! path acceptance alone never authenticates a peer address.
 use super::*;
 use crate::{
-    connection_id::{LocalCidHandle, PeerCidHandle},
+    connection_id::{Cid, LocalCidHandle, PeerCidHandle},
     path::{PathIdentity, Transmit as PathTransmit},
     protocol::*,
 };
@@ -14,11 +14,42 @@ pub enum PathEffect {
     ChallengeReceived,
     ResponseValidated,
     ActivePathChanged,
+    ValidationExpired,
+}
+/// Single-use owner of one completed typed timer event. Equal clock values
+/// carry different checked descriptor identities.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TimerTicket {
+    descriptor: Descriptor,
+    now: u64,
+}
+impl TimerTicket {
+    pub const fn now(self) -> u64 {
+        self.now
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReceiveSource {
+    Ordinary(ReceiveTicket),
+    EarlyControl(EarlyControlReleaseTicket),
+    Timer(TimerTicket),
+}
+impl ReceiveSource {
+    fn descriptor(self) -> Descriptor {
+        match self {
+            Self::Ordinary(ticket) => ticket.0,
+            Self::EarlyControl(ticket) => Descriptor {
+                generation: ticket.generation(),
+                id: ticket.descriptor_id(),
+            },
+            Self::Timer(ticket) => ticket.descriptor,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PathEffectTicket {
     descriptor: Descriptor,
-    receive: ReceiveTicket,
+    receive: ReceiveSource,
     path: PathIdentity,
     effect: PathEffect,
 }
@@ -33,21 +64,26 @@ impl PathEffectTicket {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CidInstallTicket {
     descriptor: Descriptor,
-    receive: ReceiveTicket,
+    receive: ReceiveSource,
     sequence: u64,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CidRetirementTicket {
     descriptor: Descriptor,
-    receive: ReceiveTicket,
+    receive: ReceiveSource,
     sequence: u64,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PeerTarget {
+    Bootstrap(Cid),
+    Verified(PeerCidHandle),
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PathReservationTicket {
     descriptor: Descriptor,
     transmit: TransmitTicket,
     path: PathTransmit,
-    cid: PeerCidHandle,
+    cid: PeerTarget,
 }
 impl PathReservationTicket {
     pub const fn transmit(self) -> TransmitTicket {
@@ -56,8 +92,17 @@ impl PathReservationTicket {
     pub fn path(self) -> PathIdentity {
         self.path.path()
     }
-    pub const fn peer_cid(self) -> PeerCidHandle {
-        self.cid
+    pub const fn peer_cid(self) -> Option<PeerCidHandle> {
+        match self.cid {
+            PeerTarget::Bootstrap(_) => None,
+            PeerTarget::Verified(cid) => Some(cid),
+        }
+    }
+    pub const fn bootstrap_cid(self) -> Option<Cid> {
+        match self.cid {
+            PeerTarget::Bootstrap(cid) => Some(cid),
+            PeerTarget::Verified(_) => None,
+        }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,13 +136,26 @@ enum SendState {
 }
 pub(super) struct State {
     send: Option<SendState>,
+    timer: Option<TimerTicket>,
+    timer_effect: bool,
 }
 impl State {
     pub(super) const fn new() -> Self {
-        Self { send: None }
+        Self {
+            send: None,
+            timer: None,
+            timer_effect: false,
+        }
     }
     pub(super) const fn retired() -> Self {
         Self::new()
+    }
+    pub(super) fn supersede_timer(&mut self) -> Result<(), DriverError> {
+        if self.timer_effect {
+            return Err(DriverError::ReceiveEffectBusy);
+        }
+        self.timer = None;
+        Ok(())
     }
     pub(super) fn transmitting(&self) -> bool {
         self.send.is_some()
@@ -105,13 +163,68 @@ impl State {
 }
 
 impl Driver<'_> {
+    fn validate_path_source(&self, source: ReceiveSource) -> Result<(), DriverError> {
+        match source {
+            ReceiveSource::Ordinary(ticket) => self.validate_receive(ticket),
+            ReceiveSource::EarlyControl(ticket) => self.validate_early_control_release(ticket),
+            ReceiveSource::Timer(ticket) => {
+                self.ensure_live()?;
+                if self.path.timer != Some(ticket)
+                    || ticket.descriptor.generation != self.generation
+                {
+                    return Err(DriverError::InvalidTicket);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Preserve ordinary timer progress while optionally granting one explicit
+    /// timer-driven path transition. Any newer timer event invalidates the grant.
+    pub fn timer_with_ticket(&mut self, now: u64) -> Result<TimerTicket, DriverError> {
+        let descriptor = self.issue_descriptor()?;
+        self.timer(now)?;
+        let ticket = TimerTicket { descriptor, now };
+        self.path.timer = Some(ticket);
+        Ok(ticket)
+    }
+    pub fn begin_timer_path_effect(
+        &mut self,
+        timer: TimerTicket,
+        path: PathIdentity,
+        effect: PathEffect,
+    ) -> Result<PathEffectTicket, DriverError> {
+        if !matches!(
+            effect,
+            PathEffect::ValidationExpired | PathEffect::ActivePathChanged
+        ) {
+            return Err(DriverError::InvalidTicket);
+        }
+        self.begin_path_effect_from(ReceiveSource::Timer(timer), path, effect)
+    }
     pub fn begin_path_effect(
         &mut self,
         receive: ReceiveTicket,
         path: PathIdentity,
         effect: PathEffect,
     ) -> Result<PathEffectTicket, DriverError> {
-        self.validate_receive(receive)?;
+        self.begin_path_effect_from(ReceiveSource::Ordinary(receive), path, effect)
+    }
+    pub fn begin_early_path_effect(
+        &mut self,
+        release: EarlyControlReleaseTicket,
+        path: PathIdentity,
+        effect: PathEffect,
+    ) -> Result<PathEffectTicket, DriverError> {
+        self.begin_path_effect_from(ReceiveSource::EarlyControl(release), path, effect)
+    }
+    fn begin_path_effect_from(
+        &mut self,
+        receive: ReceiveSource,
+        path: PathIdentity,
+        effect: PathEffect,
+    ) -> Result<PathEffectTicket, DriverError> {
+        self.validate_path_source(receive)?;
         if self.receive_effect.is_some() {
             return Err(DriverError::ReceiveEffectBusy);
         }
@@ -124,23 +237,34 @@ impl Driver<'_> {
             path,
             effect,
         };
-        let wire = path_wire(receive.0, ticket.descriptor, path.path_generation);
+        let wire = path_wire(
+            receive.descriptor(),
+            ticket.descriptor,
+            path.path_generation,
+        );
         self.execute(|roles| rx_request::<PathEffectRequest>(roles, wire))?;
         self.receive_effect = Some(ReceiveEffect::Path(ticket));
+        if matches!(receive, ReceiveSource::Timer(_)) {
+            self.path.timer_effect = true;
+        }
         Ok(ticket)
     }
     pub fn finish_path_effect(&mut self, ticket: PathEffectTicket) -> Result<(), DriverError> {
-        self.validate_receive(ticket.receive)?;
+        self.validate_path_source(ticket.receive)?;
         if self.receive_effect != Some(ReceiveEffect::Path(ticket)) {
             return Err(DriverError::InvalidTicket);
         }
         let wire = path_wire(
-            ticket.receive.0,
+            ticket.receive.descriptor(),
             ticket.descriptor,
             ticket.path.path_generation,
         );
         self.execute(|roles| rx_complete::<PathEffectCompleted>(roles, wire))?;
         self.receive_effect = None;
+        if matches!(ticket.receive, ReceiveSource::Timer(_)) {
+            self.path.timer = None;
+            self.path.timer_effect = false;
+        }
         Ok(())
     }
     pub fn begin_cid_install(
@@ -148,7 +272,21 @@ impl Driver<'_> {
         receive: ReceiveTicket,
         sequence: u64,
     ) -> Result<CidInstallTicket, DriverError> {
-        self.validate_receive(receive)?;
+        self.begin_cid_install_from(ReceiveSource::Ordinary(receive), sequence)
+    }
+    pub fn begin_early_cid_install(
+        &mut self,
+        release: EarlyControlReleaseTicket,
+        sequence: u64,
+    ) -> Result<CidInstallTicket, DriverError> {
+        self.begin_cid_install_from(ReceiveSource::EarlyControl(release), sequence)
+    }
+    fn begin_cid_install_from(
+        &mut self,
+        receive: ReceiveSource,
+        sequence: u64,
+    ) -> Result<CidInstallTicket, DriverError> {
+        self.validate_path_source(receive)?;
         if self.receive_effect.is_some() {
             return Err(DriverError::ReceiveEffectBusy);
         }
@@ -160,17 +298,21 @@ impl Driver<'_> {
             receive,
             sequence,
         };
-        let wire = path_wire(receive.0, ticket.descriptor, sequence);
+        let wire = path_wire(receive.descriptor(), ticket.descriptor, sequence);
         self.execute(|roles| rx_request::<CidInstallRequest>(roles, wire))?;
         self.receive_effect = Some(ReceiveEffect::CidInstall(ticket));
         Ok(ticket)
     }
     pub fn finish_cid_install(&mut self, ticket: CidInstallTicket) -> Result<(), DriverError> {
-        self.validate_receive(ticket.receive)?;
+        self.validate_path_source(ticket.receive)?;
         if self.receive_effect != Some(ReceiveEffect::CidInstall(ticket)) {
             return Err(DriverError::InvalidTicket);
         }
-        let wire = path_wire(ticket.receive.0, ticket.descriptor, ticket.sequence);
+        let wire = path_wire(
+            ticket.receive.descriptor(),
+            ticket.descriptor,
+            ticket.sequence,
+        );
         self.execute(|roles| rx_complete::<CidInstallCompleted>(roles, wire))?;
         self.receive_effect = None;
         Ok(())
@@ -180,7 +322,21 @@ impl Driver<'_> {
         receive: ReceiveTicket,
         sequence: u64,
     ) -> Result<CidRetirementTicket, DriverError> {
-        self.validate_receive(receive)?;
+        self.begin_cid_retirement_from(ReceiveSource::Ordinary(receive), sequence)
+    }
+    pub fn begin_early_cid_retirement(
+        &mut self,
+        release: EarlyControlReleaseTicket,
+        sequence: u64,
+    ) -> Result<CidRetirementTicket, DriverError> {
+        self.begin_cid_retirement_from(ReceiveSource::EarlyControl(release), sequence)
+    }
+    fn begin_cid_retirement_from(
+        &mut self,
+        receive: ReceiveSource,
+        sequence: u64,
+    ) -> Result<CidRetirementTicket, DriverError> {
+        self.validate_path_source(receive)?;
         if self.receive_effect.is_some() {
             return Err(DriverError::ReceiveEffectBusy);
         }
@@ -192,7 +348,7 @@ impl Driver<'_> {
             receive,
             sequence,
         };
-        let wire = path_wire(receive.0, ticket.descriptor, sequence);
+        let wire = path_wire(receive.descriptor(), ticket.descriptor, sequence);
         self.execute(|roles| rx_request::<CidRetirementRequest>(roles, wire))?;
         self.receive_effect = Some(ReceiveEffect::CidRetirement(ticket));
         Ok(ticket)
@@ -201,11 +357,15 @@ impl Driver<'_> {
         &mut self,
         ticket: CidRetirementTicket,
     ) -> Result<(), DriverError> {
-        self.validate_receive(ticket.receive)?;
+        self.validate_path_source(ticket.receive)?;
         if self.receive_effect != Some(ReceiveEffect::CidRetirement(ticket)) {
             return Err(DriverError::InvalidTicket);
         }
-        let wire = path_wire(ticket.receive.0, ticket.descriptor, ticket.sequence);
+        let wire = path_wire(
+            ticket.receive.descriptor(),
+            ticket.descriptor,
+            ticket.sequence,
+        );
         self.execute(|roles| rx_complete::<CidRetirementCompleted>(roles, wire))?;
         self.receive_effect = None;
         Ok(())
@@ -219,6 +379,24 @@ impl Driver<'_> {
         path: PathTransmit,
         cid: PeerCidHandle,
     ) -> Result<PathReservationTicket, DriverError> {
+        self.bind_path_target(transmit, path, PeerTarget::Verified(cid))
+    }
+    /// Before the peer's final initial source CID is verified, keep the actual
+    /// bootstrap wire DCID in the reservation. It grants no reset-token usage.
+    pub fn bind_bootstrap_path_transmit(
+        &mut self,
+        transmit: TransmitTicket,
+        path: PathTransmit,
+        destination: Cid,
+    ) -> Result<PathReservationTicket, DriverError> {
+        self.bind_path_target(transmit, path, PeerTarget::Bootstrap(destination))
+    }
+    fn bind_path_target(
+        &mut self,
+        transmit: TransmitTicket,
+        path: PathTransmit,
+        cid: PeerTarget,
+    ) -> Result<PathReservationTicket, DriverError> {
         self.ensure_live()?;
         if self.path.transmitting() {
             return Err(DriverError::TransmitBusy);
@@ -226,7 +404,7 @@ impl Driver<'_> {
         if self.transmit != Some(transmit)
             || transmit.generation() != self.generation
             || path.path().connection_generation != self.generation
-            || cid.connection_generation() != self.generation
+            || matches!(cid, PeerTarget::Verified(handle) if handle.connection_generation() != self.generation)
         {
             return Err(DriverError::InvalidTicket);
         }
@@ -437,6 +615,55 @@ mod tests {
         validation_timeout_us: 300,
         max_attempts: 3,
     };
+
+    #[test]
+    fn timer_path_grants_are_exact_single_use_and_cannot_be_superseded_mid_effect() {
+        with_driver::<16, _>(7, |driver, _| {
+            let old = driver.timer_with_ticket(10).unwrap();
+            let current = driver.timer_with_ticket(10).unwrap();
+            assert_ne!(old, current);
+            assert!(matches!(
+                driver.begin_timer_path_effect(old, identity(7), PathEffect::ValidationExpired),
+                Err(DriverError::InvalidTicket)
+            ));
+            let mut foreign = current;
+            foreign.descriptor.generation = 8;
+            assert!(matches!(
+                driver.begin_timer_path_effect(foreign, identity(7), PathEffect::ValidationExpired),
+                Err(DriverError::InvalidTicket)
+            ));
+            let effect = driver
+                .begin_timer_path_effect(current, identity(7), PathEffect::ValidationExpired)
+                .unwrap();
+            assert!(matches!(
+                driver.timer(11),
+                Err(DriverError::ReceiveEffectBusy)
+            ));
+            driver.finish_path_effect(effect).unwrap();
+            assert!(matches!(
+                driver.finish_path_effect(effect),
+                Err(DriverError::InvalidTicket)
+            ));
+            assert!(matches!(
+                driver.begin_timer_path_effect(current, identity(7), PathEffect::ValidationExpired),
+                Err(DriverError::InvalidTicket)
+            ));
+            let receive = driver.begin_receive().unwrap();
+            let effect = driver
+                .begin_path_effect(receive, identity(7), PathEffect::ActivePathChanged)
+                .unwrap();
+            driver.timer(11).unwrap();
+            driver.finish_path_effect(effect).unwrap();
+            driver.finish_receive(receive).unwrap();
+            let tx = driver.reserve_transmit().unwrap();
+            let timer = driver.timer_with_ticket(11).unwrap();
+            let effect = driver
+                .begin_timer_path_effect(timer, identity(7), PathEffect::ValidationExpired)
+                .unwrap();
+            driver.finish_path_effect(effect).unwrap();
+            driver.adapter_result(tx).unwrap();
+        });
+    }
 
     #[test]
     fn complete_service_graph_supports_timer_as_the_first_action() {

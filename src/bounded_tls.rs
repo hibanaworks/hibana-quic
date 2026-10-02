@@ -6,7 +6,9 @@
 //! Resumption offers are bound to the actual client trust/verification context;
 //! only authenticated OneRtt NST input can populate the provider's ticket cache.
 //! Full and resumed handshakes share strict HRR and Finished state transitions.
-//! This profile does not enable client authentication or 0-RTT. It is not a claim
+//! Explicit early constructors additionally require replay/freshness policy,
+//! remembered limits and application retry authorization. Ordinary constructors
+//! keep 0-RTT disabled. Client authentication is not enabled; this is not a claim
 //! of complete mandatory TLS algorithms or QUIC release conformance.
 
 use crate::{
@@ -139,7 +141,10 @@ pub struct ServerResumption<'a> {
     pub max_age_skew_ms: u32,
 }
 /// Explicit application opt-in. The application promises replay-tolerant
-/// requests; this does not imply network exactly-once semantics.
+/// requests; this does not imply network exactly-once semantics. This opt-in
+/// also authorizes retransmitting those queued complete requests over 1-RTT
+/// after early rejection, under the newly authenticated transport limits.
+/// Applications that do not authorize that retry must not enable this mode.
 #[derive(Clone, Copy)]
 pub struct ClientEarlyData {
     generation: u64,

@@ -61,6 +61,14 @@ pub type VerifiedFinished = g::Msg<118, u32>;
 pub type VerifiedFinishedAccepted = g::Msg<119, u32>;
 pub type EarlyReleaseRequest = g::Msg<120, [u8; 12]>;
 pub type EarlyReleaseCompleted = g::Msg<121, [u8; 12]>;
+pub type EarlyIntentRequest = g::Msg<122, [u8; 12]>;
+pub type EarlyIntentCompleted = g::Msg<123, [u8; 13]>;
+pub type EarlyControlBufferRequest = g::Msg<124, [u8; 8]>;
+pub type EarlyControlBufferCompleted = g::Msg<125, [u8; 8]>;
+pub type EarlyControlReleaseRequest = g::Msg<126, [u8; 12]>;
+pub type EarlyControlReleaseCompleted = g::Msg<127, [u8; 12]>;
+pub type EarlyPeerCloseRequest = g::Msg<128, [u8; 16]>;
+pub type EarlyPeerCloseCompleted = g::Msg<129, [u8; 16]>;
 
 pub type PathEffectRequest = g::Msg<130, [u8; 16]>;
 pub type PathEffectCompleted = g::Msg<131, [u8; 16]>;
@@ -171,18 +179,42 @@ pub fn service_program<const ROLE: u8>() -> RoleProgram<ROLE> {
         g::send::<PACKET, INGRESS, EarlyReceived>(),
     )
     .roll();
-    let early_buffer = g::seq(
-        g::send::<PACKET, APPLICATION, EarlyBufferRequest>(),
-        g::send::<APPLICATION, PACKET, EarlyBufferCompleted>(),
+    let early_buffer = g::route(
+        g::seq(
+            g::send::<PACKET, APPLICATION, EarlyBufferRequest>(),
+            g::send::<APPLICATION, PACKET, EarlyBufferCompleted>(),
+        ),
+        g::route(
+            g::seq(
+                g::send::<PACKET, APPLICATION, EarlyControlBufferRequest>(),
+                g::send::<APPLICATION, PACKET, EarlyControlBufferCompleted>(),
+            ),
+            g::seq(
+                g::send::<PACKET, APPLICATION, EarlyPeerCloseRequest>(),
+                g::send::<APPLICATION, PACKET, EarlyPeerCloseCompleted>(),
+            ),
+        ),
     )
     .roll();
     let early_release = g::seq(
         g::send::<PACKET, APPLICATION, VerifiedFinished>(),
         g::seq(
             g::send::<APPLICATION, PACKET, VerifiedFinishedAccepted>(),
-            g::seq(
-                g::send::<PACKET, APPLICATION, EarlyReleaseRequest>(),
-                g::send::<APPLICATION, PACKET, EarlyReleaseCompleted>(),
+            g::route(
+                g::seq(
+                    g::send::<PACKET, APPLICATION, EarlyReleaseRequest>(),
+                    g::send::<APPLICATION, PACKET, EarlyReleaseCompleted>(),
+                ),
+                g::route(
+                    g::seq(
+                        g::send::<PACKET, APPLICATION, EarlyIntentRequest>(),
+                        g::send::<APPLICATION, PACKET, EarlyIntentCompleted>(),
+                    ),
+                    g::seq(
+                        g::send::<PACKET, APPLICATION, EarlyControlReleaseRequest>(),
+                        g::send::<APPLICATION, PACKET, EarlyControlReleaseCompleted>(),
+                    ),
+                ),
             )
             .roll(),
         ),

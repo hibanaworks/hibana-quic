@@ -43,7 +43,55 @@ pub struct SendTicket {
 pub struct ImportTicket {
     handle: Handle,
     decision: Decision,
+    stream_id: u64,
+    offset: usize,
 }
+impl ImportTicket {
+    pub fn generation(self) -> u64 {
+        self.handle.connection
+    }
+    pub fn stream_id(self) -> u64 {
+        self.stream_id
+    }
+}
+
+/// Narrow post-Finished authority handed to the transport handler. It exposes
+/// only checked intent import, never the internal endpoints or arbitrary driver
+/// operations. Completion means the attempted operation finished, not that a
+/// capacity/flow-control rejection transferred bytes.
+pub struct ImportAuthority<'a, 'r> {
+    driver: &'a mut crate::driver::Driver<'r>,
+}
+impl<'a, 'r> ImportAuthority<'a, 'r> {
+    pub(crate) fn new(driver: &'a mut crate::driver::Driver<'r>) -> Self {
+        Self { driver }
+    }
+    pub fn import_next<const B: usize, const RX: usize, const TX: usize>(
+        &mut self,
+        journal: &mut Journal<'_, B>,
+        table: &mut crate::streams::StreamTable<'_, RX>,
+        queue: &mut crate::streams::SendQueue<'_, TX>,
+    ) -> Result<Option<crate::streams::StreamHandle>, crate::streams::Error> {
+        let Some(view) = journal
+            .next_import()
+            .map_err(|_| crate::streams::Error::InvalidTransition)?
+        else {
+            return Ok(None);
+        };
+        let grant = self
+            .driver
+            .begin_early_intent_import(view.ticket)
+            .map_err(|_| crate::streams::Error::InvalidTransition)?;
+        let stream_id = view.ticket.stream_id();
+        let result = journal.import_next(table, queue);
+        let request_complete = result.is_ok() && !journal.has_pending_stream(stream_id);
+        self.driver
+            .finish_early_intent_import(grant, request_complete)
+            .map_err(|_| crate::streams::Error::InvalidTransition)?;
+        result
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
     Offering,
@@ -59,6 +107,8 @@ pub struct RequestSlot<const BYTES: usize> {
     bytes: [u8; BYTES],
     packets: [Option<u64>; REFERENCES_PER_REQUEST],
     lost: [bool; REFERENCES_PER_REQUEST],
+    replay_offset: usize,
+    replay_stream: Option<crate::streams::StreamHandle>,
 }
 impl<const BYTES: usize> RequestSlot<BYTES> {
     pub const EMPTY: Self = Self {
@@ -69,6 +119,8 @@ impl<const BYTES: usize> RequestSlot<BYTES> {
         bytes: [0; BYTES],
         packets: [None; REFERENCES_PER_REQUEST],
         lost: [false; REFERENCES_PER_REQUEST],
+        replay_offset: 0,
+        replay_stream: None,
     };
     fn clear(&mut self) {
         self.bytes.zeroize();
@@ -76,6 +128,8 @@ impl<const BYTES: usize> RequestSlot<BYTES> {
         self.len = 0;
         self.packets.fill(None);
         self.lost.fill(false);
+        self.replay_offset = 0;
+        self.replay_stream = None;
     }
 }
 pub struct RequestView<'a> {
@@ -129,11 +183,15 @@ impl<'a, const BYTES: usize> Journal<'a, BYTES> {
             last_packet: None,
         })
     }
+    pub fn is_offering(&self)->bool{self.phase==Phase::Offering}
     pub fn decision(&self) -> Option<Decision> {
         match self.phase {
             Phase::Importing(d) => Some(d),
             _ => None,
         }
+    }
+    pub fn has_pending_stream(&self, id: u64) -> bool {
+        self.slots.iter().any(|s| s.live && s.stream == id)
     }
     pub fn has_intent(&self) -> bool {
         self.slots.iter().any(|s| s.live)
@@ -330,10 +388,12 @@ impl<'a, const BYTES: usize> Journal<'a, BYTES> {
             ticket: ImportTicket {
                 handle: self.handle(i),
                 decision,
+                stream_id: s.stream,
+                offset: s.replay_offset,
             },
             decision,
             stream_id: s.stream,
-            bytes: &s.bytes[..s.len],
+            bytes: &s.bytes[s.replay_offset..s.len],
             accepted_packets: &s.packets,
             lost_packets: &s.lost,
         }))
@@ -368,6 +428,29 @@ impl<'a, const BYTES: usize> Journal<'a, BYTES> {
             return Ok(None);
         };
         let ticket = view.ticket;
+        if view.decision == Decision::Rejected {
+            let slot = ticket.handle.slot;
+            let existing = self.slots[slot].replay_stream;
+            let (stream, n) = queue.import_replay_prefix(
+                table,
+                self.connection,
+                view.stream_id,
+                existing,
+                view.bytes,
+            )?;
+            let remaining = view.bytes.len();
+            if n == remaining {
+                self.complete_import(ticket)
+                    .map_err(|_| crate::streams::Error::InvalidTransition)?;
+            } else {
+                let state = &mut self.slots[slot];
+                let start = state.replay_offset;
+                state.bytes[start..start + n].zeroize();
+                state.replay_offset += n;
+                state.replay_stream = Some(stream);
+            }
+            return Ok(Some(stream));
+        }
         let (stream, _) = queue.import_early_request(
             table,
             self.connection,
@@ -376,8 +459,6 @@ impl<'a, const BYTES: usize> Journal<'a, BYTES> {
             view.accepted_packets,
             view.lost_packets,
         )?;
-        // The exact current opaque ticket cannot change during this synchronous
-        // owner operation. Bytes are cleared only after queue ownership exists.
         self.complete_import(ticket)
             .map_err(|_| crate::streams::Error::InvalidTransition)?;
         Ok(Some(stream))
@@ -554,7 +635,7 @@ mod tests {
             max_streams_uni: 0,
         };
         let mut peer = limits().stream_limits();
-        peer.max_data = 4;
+        peer.max_data = 0;
         let mut table = StreamTable::new(&mut slots, Role::Client, 45, local, peer).unwrap();
         let mut chunks = [SendChunk::<16>::EMPTY];
         let mut refs = [PacketReference::EMPTY; 8];
@@ -618,5 +699,101 @@ mod tests {
         let v = journal.next_import().unwrap().unwrap();
         assert_eq!(v.bytes, b"GET /");
         assert_eq!(v.accepted_packets[0], Some(7));
+    }
+    #[test]
+    fn rejected_request_replays_in_prefixes_when_new_credit_is_smaller() {
+        use crate::streams::{
+            Error as StreamError, Limits, PacketReference, Role, SendChunk, SendQueue, StreamSlot,
+            StreamTable,
+        };
+        let mut intents = [RequestSlot::<16>::EMPTY];
+        let mut journal = Journal::new(46, limits(), &mut intents).unwrap();
+        journal.enqueue(b"GET /").unwrap();
+        journal.decide(Decision::Rejected).unwrap();
+        let mut slots = [const { StreamSlot::<16>::EMPTY }; 2];
+        let local = Limits {
+            max_data: 32,
+            stream_data_bidi_local: 16,
+            stream_data_bidi_remote: 16,
+            stream_data_uni: 0,
+            max_streams_bidi: 0,
+            max_streams_uni: 0,
+        };
+        let mut peer = limits().stream_limits();
+        peer.max_data = 4;
+        peer.stream_data_bidi_remote = 4;
+        let mut table = StreamTable::new(&mut slots, Role::Client, 46, local, peer).unwrap();
+        let mut chunks = [const { SendChunk::<16>::EMPTY }; 2];
+        let mut refs = [PacketReference::EMPTY; 8];
+        let mut queue = SendQueue::new(46, &mut chunks, &mut refs).unwrap();
+        let h = journal
+            .import_next(&mut table, &mut queue)
+            .unwrap()
+            .unwrap();
+        assert_eq!(table.send_reserved(), 4);
+        let first = queue.next_pending().unwrap();
+        let view = queue.chunk(first).unwrap();
+        assert_eq!(view.data, b"GET ");
+        assert!(!view.fin);
+        assert_eq!(journal.next_import().unwrap().unwrap().bytes, b"/");
+        assert_eq!(
+            journal.import_next(&mut table, &mut queue),
+            Err(StreamError::FlowControl)
+        );
+        let sent = queue.reserve_transmission(first, 9).unwrap();
+        queue.commit_transmission(&mut table, sent).unwrap();
+        table.on_max_data(8).unwrap();
+        table.on_max_stream_data(h, 8).unwrap();
+        assert_eq!(
+            journal.import_next(&mut table, &mut queue).unwrap(),
+            Some(h)
+        );
+        let last = queue.chunk(queue.next_pending().unwrap()).unwrap();
+        assert_eq!(last.offset, 4);
+        assert_eq!(last.data, b"/");
+        assert!(last.fin);
+        assert!(!journal.has_intent());
+        assert_eq!(table.cumulative_opened(0).unwrap(), 1);
+    }
+    #[test]
+    fn accepted_lost_reference_remains_retransmittable_and_late_ack_eligible_after_import() {
+        use crate::streams::{
+            Limits, PacketReference, Role, SendChunk, SendQueue, StreamSlot, StreamTable,
+        };
+        let mut intents = [RequestSlot::<16>::EMPTY];
+        let mut journal = Journal::new(47, limits(), &mut intents).unwrap();
+        let h = journal.enqueue(b"GET /").unwrap();
+        let t = journal.reserve(h, 7).unwrap();
+        journal.adapter_result(t, true).unwrap();
+        assert_eq!(journal.packet_lost(7), 1);
+        assert_eq!(journal.packet_lost(7), 0);
+        journal.decide(Decision::Accepted).unwrap();
+        let mut slots = [const { StreamSlot::<16>::EMPTY }; 2];
+        let local = Limits {
+            max_data: 32,
+            stream_data_bidi_local: 16,
+            stream_data_bidi_remote: 16,
+            stream_data_uni: 0,
+            max_streams_bidi: 0,
+            max_streams_uni: 0,
+        };
+        let mut table = StreamTable::new(
+            &mut slots,
+            Role::Client,
+            47,
+            local,
+            limits().stream_limits(),
+        )
+        .unwrap();
+        let mut chunks = [SendChunk::<16>::EMPTY];
+        let mut refs = [PacketReference::EMPTY; 8];
+        let mut queue = SendQueue::new(47, &mut chunks, &mut refs).unwrap();
+        journal.import_next(&mut table, &mut queue).unwrap();
+        assert_eq!(
+            queue.chunk(queue.next_pending().unwrap()).unwrap().data,
+            b"GET /"
+        );
+        assert_eq!(queue.on_packet_acked(&mut table, 7).unwrap(), 1);
+        assert!(queue.next_pending().is_none());
     }
 }
