@@ -21,6 +21,7 @@ CONSOLE_CLASSES = {'ModuleNotFoundError': 'python-dependency', 'unrecognized arg
     'invalid reference format': 'image-reference-invalid',
     'unable to get image': 'image-resolution-failed',
     'client version': 'docker-api-client-version',
+    'interface_name requires Docker Engine': 'docker-engine-interface-name-prerequisite',
     'unknown flag': 'docker-cli-flag', 'additional property': 'compose-schema',
     'must be a mapping': 'compose-schema', 'invalid interpolation': 'compose-interpolation',
     'failed to create network': 'docker-network-create',

@@ -19,6 +19,49 @@ Path('ci-safe-results/environment.json').write_text(json.dumps({
  'machine':platform.machine(),'public_repository':True,'scope':'one manual pilot; baseline plus handshake/transfer only',
  'not_claimed':['full 40-cell matrix','three release repetitions','Pico hardware','whole-host zero allocation']},indent=2)+'\n')
 PY
+# Upstream Compose uses interface_name, which requires daemon API >= 1.49.
+# Upgrade only the existing Docker CE/CLI packages from Docker's official source.
+# No daemon settings, firewall rules, socket modes, or host groups are changed.
+[[ $(. /etc/os-release; echo "$ID:$VERSION_CODENAME") == ubuntu:noble ]]
+[[ $(dpkg --print-architecture) == amd64 ]]
+dpkg-query -W docker-ce docker-ce-cli containerd.io
+DOCKER_BEFORE=$(docker version --format '{{json .Server}}')
+export DOCKER_BEFORE DOCKER_ENGINE_VERSION DOCKER_CLI_DEB_SHA256 DOCKER_ENGINE_DEB_SHA256
+python3 - <<'PRECHECK'
+import json,os
+current=json.loads(os.environ['DOCKER_BEFORE'])['Version']
+assert tuple(map(int,current.split('.'))) <= tuple(map(int,os.environ['DOCKER_ENGINE_VERSION'].split('.'))), 'refusing an engine downgrade'
+PRECHECK
+config_hash() { if [[ -f /etc/docker/daemon.json ]]; then sudo sha256sum /etc/docker/daemon.json; else echo absent; fi; }
+CONFIG_BEFORE=$(config_hash)
+SOCKET_BEFORE=$(stat -c '%g:%a' /var/run/docker.sock)
+mkdir -p .ci-work/docker-packages
+for package in docker-ce-cli docker-ce; do
+  curl --fail --silent --show-error --location \
+    "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/${package}_${DOCKER_ENGINE_VERSION}-1~ubuntu.24.04~noble_amd64.deb" \
+    -o ".ci-work/docker-packages/$package.deb"
+done
+printf '%s  %s\n' "$DOCKER_CLI_DEB_SHA256" .ci-work/docker-packages/docker-ce-cli.deb \
+  "$DOCKER_ENGINE_DEB_SHA256" .ci-work/docker-packages/docker-ce.deb | sha256sum --check --strict
+sudo dpkg --force-confold -i .ci-work/docker-packages/docker-ce-cli.deb .ci-work/docker-packages/docker-ce.deb
+sudo systemctl restart docker
+for attempt in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+[[ $(config_hash) == "$CONFIG_BEFORE" ]]
+[[ $(stat -c '%g:%a' /var/run/docker.sock) == "$SOCKET_BEFORE" ]]
+python3 - <<'POSTCHECK'
+import json,os,subprocess
+from pathlib import Path
+server=json.loads(subprocess.check_output(['docker','version','--format','{{json .Server}}'],text=True))
+assert server['Version']==os.environ['DOCKER_ENGINE_VERSION'], 'engine pin mismatch'
+assert tuple(map(int,server['ApiVersion'].split('.'))) >= (1,49), 'upstream interface_name needs API 1.49'
+Path('ci-safe-results/docker-upgrade.json').write_text(json.dumps({
+ 'source':'https://download.docker.com/linux/ubuntu/dists/noble/stable/binary-amd64/Packages',
+ 'before_version':json.loads(os.environ['DOCKER_BEFORE'])['Version'],
+ 'after_version':server['Version'],'after_api':server['ApiVersion'],
+ 'cli_deb_sha256':os.environ['DOCKER_CLI_DEB_SHA256'],
+ 'engine_deb_sha256':os.environ['DOCKER_ENGINE_DEB_SHA256'],
+ 'daemon_config_unchanged':True,'socket_group_and_mode_unchanged':True},indent=2)+'\n')
+POSTCHECK
 docker version
 docker compose version
 # No host network/security configuration is changed here. Standard runner
@@ -51,7 +94,7 @@ export NEQO_IMAGE BOUNDED_IMAGE TOOLS_IMAGE RUNNER_REVISION NEQO_REVISION HIBANA
 python3 - <<'PY'
 import json,os
 from pathlib import Path
-keys=['RUNNER_REVISION','NEQO_REVISION','HIBANA_REVISION','SIM_IMAGE','NEQO_IMAGE','BOUNDED_IMAGE','TOOLS_IMAGE','RUST_IMAGE','ENDPOINT_IMAGE','UBUNTU_IMAGE']
+keys=['RUNNER_REVISION','NEQO_REVISION','HIBANA_REVISION','SIM_IMAGE','NEQO_IMAGE','BOUNDED_IMAGE','TOOLS_IMAGE','RUST_IMAGE','ENDPOINT_IMAGE','UBUNTU_IMAGE','DOCKER_ENGINE_VERSION','DOCKER_CLI_DEB_SHA256','DOCKER_ENGINE_DEB_SHA256']
 Path('ci-safe-results/pins.json').write_text(json.dumps({k:os.environ[k] for k in keys},indent=2)+'\n')
 PY
 # Keep /tmp at the identical path: upstream explicitly creates Docker bind
