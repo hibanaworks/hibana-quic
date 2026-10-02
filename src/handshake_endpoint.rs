@@ -1802,17 +1802,23 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             let ticket = self.driver.begin_receive()?;
             let path_pto = self.key_pto()?;
             self.path.ensure_probe_pto(path_pto)?;
-            let network_context = self.path.admit_packet(
-                destination,
-                pn,
-                non_probing,
-                datagram.len() as u64,
-                self.now,
-            )?;
+            let network_context = if self.path.managed() {
+                Some(self.path.admit_packet(
+                    destination,
+                    pn,
+                    non_probing,
+                    datagram.len() as u64,
+                    self.now,
+                )?)
+            } else {
+                None
+            };
             self.finish_network_admission(ticket)?;
             for frame in FrameIter::new(payload, wire_level(level), limits)? {
                 let frame = frame?;
-                if self.process_network_frame(ticket, frame, network_context)? {
+                if let Some(context) = network_context
+                    && self.process_network_frame(ticket, frame, context)?
+                {
                     continue;
                 }
                 match frame {
@@ -1850,7 +1856,9 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                             .path
                             .matches_active(self.sent.sent_path(largest_packet))
                             && (!self.path.managed()
-                                || network_context.path == self.path.active_identity());
+                                || network_context.is_none_or(|context| {
+                                    context.path == self.path.active_identity()
+                                }));
                         let mut newly_flight = [None; 64];
                         let mut added = 0;
                         for p in self.sent.unacknowledged_sent() {
@@ -2020,8 +2028,10 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 }
             }
             self.ecn_rx.processed(space(level), received_ecn)?;
-            if level == Level::OneRtt {
-                self.network_packet_processed(ticket, network_context, pn, non_probing)?;
+            if level == Level::OneRtt
+                && let Some(context) = network_context
+            {
+                self.network_packet_processed(ticket, context, pn, non_probing)?;
             }
             self.driver.finish_receive(ticket)?;
             if eliciting {
@@ -2400,13 +2410,16 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             .sent
             .next_packet_number(space(level))
             .ok_or(Error::Capacity)?;
-        let destination = self.path.selected_destination().unwrap_or(
-            crate::connection_id::Cid::new(self.remote.bytes()).map_err(NetworkError::from)?,
-        );
+        // A zero-length peer CID is a legal wire destination on its fixed
+        // address-bound path; it is not a member of the nonzero CID table.
+        let selected_destination = self.path.selected_destination();
+        let destination = selected_destination
+            .as_ref()
+            .map_or(self.remote.bytes(), |cid| cid.as_bytes());
         let hlen = if level == Level::OneRtt {
             packet::encode_short_header(
                 &ShortHeader {
-                    destination_id: destination.as_bytes(),
+                    destination_id: destination,
                     packet_number: pn,
                     packet_number_len: 4,
                     spin: false,
@@ -2421,7 +2434,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 } else {
                     LongType::Handshake
                 },
-                destination_id: destination.as_bytes(),
+                destination_id: destination,
                 source_id: self.local.bytes(),
                 token: if level == Level::Initial && self.side == Side::Client {
                     self.client_retry.token()

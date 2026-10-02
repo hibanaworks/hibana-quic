@@ -941,6 +941,10 @@ impl<
     pub fn peer_close(&self) -> Option<handshake_endpoint::PeerClose> {
         self.engine.peer_close()
     }
+    /// Absolute idle expiry, distinct from immediately runnable recovery work.
+    pub fn idle_deadline(&self) -> Option<u64> {
+        self.engine.idle_deadline()
+    }
     pub fn close_deadline(&self) -> Option<u64> {
         self.engine.close_deadline()
     }

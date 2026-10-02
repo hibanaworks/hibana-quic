@@ -75,6 +75,7 @@ pub struct CidRetirementTicket {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PeerTarget {
+    FixedZero,
     Bootstrap(Cid),
     Verified(PeerCidHandle),
 }
@@ -94,14 +95,14 @@ impl PathReservationTicket {
     }
     pub const fn peer_cid(self) -> Option<PeerCidHandle> {
         match self.cid {
-            PeerTarget::Bootstrap(_) => None,
+            PeerTarget::Bootstrap(_) | PeerTarget::FixedZero => None,
             PeerTarget::Verified(cid) => Some(cid),
         }
     }
     pub const fn bootstrap_cid(self) -> Option<Cid> {
         match self.cid {
             PeerTarget::Bootstrap(cid) => Some(cid),
-            PeerTarget::Verified(_) => None,
+            PeerTarget::Verified(_) | PeerTarget::FixedZero => None,
         }
     }
 }
@@ -390,6 +391,19 @@ impl Driver<'_> {
         destination: Cid,
     ) -> Result<PathReservationTicket, DriverError> {
         self.bind_path_target(transmit, path, PeerTarget::Bootstrap(destination))
+    }
+    /// Zero-length peer CIDs use only the original address-bound path. The
+    /// connection owner checks its exact tuple; no synthetic CID is introduced.
+    pub(crate) fn bind_zero_cid_path_transmit(
+        &mut self,
+        transmit: TransmitTicket,
+        path: PathTransmit,
+        original: PathIdentity,
+    ) -> Result<PathReservationTicket, DriverError> {
+        if path.path() != original {
+            return Err(DriverError::InvalidTicket);
+        }
+        self.bind_path_target(transmit, path, PeerTarget::FixedZero)
     }
     fn bind_path_target(
         &mut self,

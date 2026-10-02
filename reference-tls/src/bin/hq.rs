@@ -81,7 +81,9 @@ use std::{
 
 type Result<T> = std::result::Result<T, String>;
 const LIVE: usize = 4;
-const RX: usize = 4096;
+// Host receive credit is caller-owned and bounded, independent of embedded
+// profiles. 16KiB avoids the former4KiB per-stream RTT throughput bottleneck.
+const RX: usize = 16384;
 const CHUNK: usize = 1024;
 const MAX_TARGET: usize = 1000;
 const MAX_REQUESTS: usize = 4096;
@@ -1982,6 +1984,40 @@ async fn before_deadline<T>(
     .await
 }
 
+/// Submit ready UDP before servicing a soft recovery/probe deadline. Hard
+/// wall, idle, and closing expiry always win before another syscall attempt.
+/// A soft wake returns None only when submission actually remains Pending;
+/// the caller then rejects its reservation and gives receive work a turn.
+async fn send_activity<T>(
+    reactor: &HostReactor,
+    hard_deadline: Instant,
+    soft_deadline: Option<Instant>,
+    operation: impl Future<Output = io::Result<T>>,
+) -> io::Result<Option<T>> {
+    let wake_deadline = soft_deadline.map_or(hard_deadline, |soft| soft.min(hard_deadline));
+    let mut operation = pin!(operation);
+    let mut timer = pin!(reactor.sleep_until(wake_deadline));
+    poll_fn(|cx| {
+        if Instant::now() >= hard_deadline {
+            return Poll::Ready(Err(io::ErrorKind::TimedOut.into()));
+        }
+        if let Poll::Ready(result) = operation.as_mut().poll(cx) {
+            return Poll::Ready(result.map(Some));
+        }
+        if let Poll::Ready(result) = timer.as_mut().poll(cx) {
+            return Poll::Ready(result.and_then(|()| {
+                if Instant::now() >= hard_deadline {
+                    Err(io::ErrorKind::TimedOut.into())
+                } else {
+                    Ok(None)
+                }
+            }));
+        }
+        Poll::Pending
+    })
+    .await
+}
+
 /// Select actual socket/timer futures. Dropping the losing receive cancels its
 /// readiness registration without consuming a datagram. The two owned buffers
 /// permit both sockets to remain armed; polling priority alternates per packet.
@@ -3206,19 +3242,26 @@ async fn exchange_connected(
             } else {
                 socket
             };
-            let send_deadline = endpoint
+            // Recovery/probe deadlines request work; they do not revoke a
+            // prepared packet. Only wall/idle/closing expiry forbids submission.
+            let hard_deadline = [endpoint.idle_deadline(), endpoint.close_deadline()]
+                .into_iter()
+                .flatten()
+                .fold(start + budget, |bound, deadline| {
+                    bound.min(start + Duration::from_micros(deadline))
+                });
+            let soft_deadline = endpoint
                 .next_deadline()
-                .map(|deadline| start + Duration::from_micros(deadline))
-                .unwrap_or(start + budget)
-                .min(start + budget);
-            match before_deadline(
+                .map(|deadline| start + Duration::from_micros(deadline));
+            match send_activity(
                 reactor,
-                send_deadline,
+                hard_deadline,
+                soft_deadline,
                 sender.send_from(&output[..tx.len], target, tx.ecn),
             )
             .await
             {
-                Ok(n) if n == tx.len => {
+                Ok(Some(n)) if n == tx.len => {
                     endpoint
                         .adapter_result(tx, true, now(start))
                         .await
@@ -3228,11 +3271,34 @@ async fn exchange_connected(
                         report.early.packets_sent += 1;
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                Ok(None) => {
+                    let rejected_at = now(start);
+                    if !endpoint
+                        .transmit_permitted(tx, rejected_at)
+                        .map_err(|e| format!("cancel soft adapter wait: {e:?}"))?
+                    {
+                        continue 'connection;
+                    }
                     endpoint
-                        .adapter_result(tx, false, now(start))
+                        .adapter_result(tx, false, rejected_at)
                         .await
-                        .map_err(|e| format!("cancel timed-out adapter wait: {e:?}"))?;
+                        .map_err(|e| format!("cancel soft adapter wait: {e:?}"))?;
+                    // Do not skip receive: its queued ACK may unblock this work.
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                    let rejected_at = now(start);
+                    // Idle/closing expiry may already retire the reservation.
+                    // Do not report a stale adapter callback after that edge.
+                    if endpoint
+                        .transmit_permitted(tx, rejected_at)
+                        .map_err(|e| format!("expire adapter wait: {e:?}"))?
+                    {
+                        endpoint
+                            .adapter_result(tx, false, rejected_at)
+                            .await
+                            .map_err(|e| format!("cancel expired adapter wait: {e:?}"))?;
+                    }
                     continue 'connection;
                 }
                 other => {
@@ -3506,6 +3572,85 @@ mod tests {
             bytes <= 1024 * 1024,
             "host root future exceeded its explicit 1 MiB ceiling"
         );
+    }
+
+    #[test]
+    fn overdue_soft_send_deadline_does_not_prevent_ready_udp() {
+        let reactor = HostReactor::new().unwrap();
+        let sender = reactor
+            .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
+            .unwrap();
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let sent = reactor
+            .block_on(send_activity(
+                &reactor,
+                Instant::now() + Duration::from_secs(1),
+                Some(Instant::now()),
+                sender.send_to(b"ready", receiver.local_addr().unwrap(), Codepoint::NotEct),
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent, Some(5));
+        let mut data = [0; 8];
+        assert_eq!(receiver.recv_from(&mut data).unwrap().0, 5);
+        assert_eq!(&data[..5], b"ready");
+    }
+
+    #[test]
+    fn soft_send_wake_cancels_only_a_pending_operation() {
+        let reactor = HostReactor::new().unwrap();
+        let polls = Cell::new(0);
+        let start = Instant::now();
+        // Explicit backpressure fault injection; not kernel UDP exhaustion.
+        let operation = poll_fn(|_| {
+            polls.set(polls.get() + 1);
+            Poll::<io::Result<usize>>::Pending
+        });
+        let result = reactor
+            .block_on(send_activity(
+                &reactor,
+                start + Duration::from_secs(1),
+                Some(start + Duration::from_millis(2)),
+                operation,
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(result.is_none());
+        assert_eq!(polls.get(), 2);
+    }
+
+    #[test]
+    fn hard_send_expiry_wins_over_ready_and_pending_operations() {
+        let reactor = HostReactor::new().unwrap();
+        let polls = Cell::new(0);
+        let ready = poll_fn(|_| {
+            polls.set(polls.get() + 1);
+            Poll::Ready(Ok(1_usize))
+        });
+        let hard = Instant::now();
+        let error = reactor
+            .block_on(send_activity(&reactor, hard, Some(hard), ready))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(polls.get(), 0);
+        let start = Instant::now();
+        let pending = poll_fn(|_| {
+            polls.set(polls.get() + 1);
+            Poll::<io::Result<usize>>::Pending
+        });
+        let error = reactor
+            .block_on(send_activity(
+                &reactor,
+                start + Duration::from_millis(2),
+                Some(start + Duration::from_secs(1)),
+                pending,
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(polls.get(), 1);
     }
 
     #[test]

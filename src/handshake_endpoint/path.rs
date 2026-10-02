@@ -128,6 +128,11 @@ struct Network<'s> {
     ee_complete: bool,
     peer_slots: Option<&'s mut [PeerCidSlot<2>; PEER_CID_HISTORY]>,
     peer: Option<PeerCidTable<'s, 2>>,
+    /// A real zero-length peer CID has no entry in the nonzero CID table.
+    /// It remains bound to the original exact address tuple for its lifetime.
+    zero_peer: bool,
+    zero_peer_token: Option<ResetToken>,
+    zero_peer_used: bool,
     peer_selected: Option<PeerCidHandle>,
     bootstrap_used: Option<(Cid, Address)>,
     peers_by_path: [Option<PeerCidHandle>; 2],
@@ -257,6 +262,9 @@ impl<'s> Owner<'s> {
             ee_complete: false,
             peer_slots: Some(resources.peer_cids),
             peer: None,
+            zero_peer: false,
+            zero_peer_token: None,
+            zero_peer_used: false,
             peer_selected: None,
             bootstrap_used: None,
             peers_by_path: [None; 2],
@@ -448,7 +456,21 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         if n.pending_driver.is_some() {
             return Err(Error::Busy);
         }
-        let grant = if let Some(peer) = n.peer_selected {
+        let grant = if self.remote.bytes().is_empty() {
+            if n.peer.is_some()
+                || n.peer_selected.is_some()
+                || path.path() != n.original
+                || n.paths
+                    .snapshot(path.path())
+                    .map_err(NetworkError::from)?
+                    .address
+                    != n.config.initial
+            {
+                return Err(Error::InvalidConfig);
+            }
+            self.driver
+                .bind_zero_cid_path_transmit(ticket, path, n.original)?
+        } else if let Some(peer) = n.peer_selected {
             let address = n
                 .paths
                 .snapshot(path.path())
@@ -571,13 +593,20 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             return Err(Error::Busy);
         }
         self.path.begin_ingress(address)?;
-        if self
-            .path
-            .network
-            .as_ref()
-            .and_then(|n| n.peer.as_ref())
-            .is_some_and(|p| p.detect_stateless_reset(datagram, address.remote))
-        {
+        if self.path.network.as_ref().is_some_and(|n| {
+            n.peer
+                .as_ref()
+                .is_some_and(|p| p.detect_stateless_reset(datagram, address.remote))
+                || (n.zero_peer
+                    && n.zero_peer_used
+                    && address == n.config.initial
+                    && datagram.len() >= 21
+                    && n.zero_peer_token.is_some_and(|token| {
+                        let mut tail = [0; 16];
+                        tail.copy_from_slice(&datagram[datagram.len() - 16..]);
+                        token == ResetToken::new(tail)
+                    }))
+        }) {
             self.enter_draining().await?;
             self.path.end_ingress();
             return Ok(Received {
@@ -659,6 +688,8 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 .map_err(NetworkError::from)?;
         } else if let Some(cid) = grant.bootstrap_cid() {
             n.bootstrap_used = Some((cid, address));
+        } else {
+            n.zero_peer_used = true;
         }
 
         if pending.output.level != Level::OneRtt || pending.output.early {
@@ -756,13 +787,34 @@ impl Owner<'_> {
         let Some(n) = &mut self.network else {
             return Ok(());
         };
-        if n.peer.is_some() {
+        if n.peer.is_some() || n.zero_peer {
             return Ok(());
         }
         n.local.set_peer_limit_verified(
             p.get_integer(14, 2)
                 .map_err(|_| NetworkError::InvalidConfig)?,
         )?;
+        if remote.is_empty() {
+            // RFC9000§5.1.1/18.2: the zero-length initial peer CID stays zero;
+            // neither NEW_CONNECTION_ID nor a preferred address may replace it.
+            if p.get(13).is_some() {
+                return Err(NetworkError::InvalidConfig);
+            }
+            n.zero_peer_token = p
+                .get(2)
+                .map(|token| {
+                    token
+                        .try_into()
+                        .map(ResetToken::new)
+                        .map_err(|_| NetworkError::InvalidConfig)
+                })
+                .transpose()?;
+            n.paths.handshake_validated(n.original)?;
+            n.migration.validated(n.original, &n.paths)?;
+            n.migration.verified_parameters(p.get(12).is_some(), None)?;
+            n.zero_peer = true;
+            return Ok(());
+        }
         let slots = n.peer_slots.take().ok_or(NetworkError::InvalidConfig)?;
         let mut peer = PeerCidTable::new(
             1,
@@ -833,7 +885,7 @@ impl Owner<'_> {
         if address == n.config.initial {
             return true;
         }
-        if !confirmed {
+        if n.zero_peer || !confirmed {
             return false;
         }
         match side {
@@ -895,6 +947,9 @@ impl Network<'_> {
         rebind_from: Option<PathIdentity>,
     ) -> Result<bool, NetworkError> {
         let address = self.paths.snapshot(path)?.address;
+        if self.zero_peer {
+            return Ok(path == self.original && address == self.config.initial);
+        }
         let peer = self.peer.as_mut().ok_or(NetworkError::InvalidConfig)?;
         let i = usize::from(path.slot);
         if let Some(h) = self.peers_by_path[i]
@@ -959,6 +1014,9 @@ impl Owner<'_> {
             });
         };
         let address = n.ingress.ok_or(NetworkError::InvalidConfig)?;
+        if n.zero_peer && address != n.config.initial {
+            return Err(NetworkError::InvalidConfig);
+        }
         let path = if let Some(path) = n.paths.find(address) {
             path
         } else {
@@ -1044,34 +1102,45 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         context: NetworkReceiveContext,
         remembered_limit: u64,
     ) -> Result<(), Error> {
-        let mut slots = [PeerCidSlot::<2>::EMPTY; PEER_CID_HISTORY];
-        let mut peer = if let Some(n) = &self.path.network {
+        if let Some(n) = &self.path.network {
             n.paths.snapshot(context.path).map_err(NetworkError::from)?;
-            if let Some(peer) = &n.peer {
-                peer.admission_copy(&mut slots, remembered_limit)
-            } else {
-                PeerCidTable::new(
-                    1,
-                    self.generation(),
-                    &mut slots,
-                    remembered_limit,
-                    Cid::new(self.remote.bytes()).map_err(NetworkError::from)?,
-                )
-            }
-        } else {
-            if context.path != self.path.legacy_id {
-                return Err(Error::InvalidConfig);
-            }
-            PeerCidTable::new(
-                1,
-                self.generation(),
-                &mut slots,
-                remembered_limit,
-                Cid::new(self.remote.bytes()).map_err(NetworkError::from)?,
-            )
+        } else if context.path != self.path.legacy_id {
+            return Err(Error::InvalidConfig);
         }
-        .map_err(NetworkError::from)?;
-        let validate = |peer: &mut PeerCidTable<'_, 2>,
+        let mut slots = [PeerCidSlot::<2>::EMPTY; PEER_CID_HISTORY];
+        let mut peer = if self.remote.bytes().is_empty() {
+            None
+        } else {
+            Some(
+                if let Some(n) = &self.path.network {
+                    n.paths.snapshot(context.path).map_err(NetworkError::from)?;
+                    if let Some(peer) = &n.peer {
+                        peer.admission_copy(&mut slots, remembered_limit)
+                    } else {
+                        PeerCidTable::new(
+                            1,
+                            self.generation(),
+                            &mut slots,
+                            remembered_limit,
+                            Cid::new(self.remote.bytes()).map_err(NetworkError::from)?,
+                        )
+                    }
+                } else {
+                    if context.path != self.path.legacy_id {
+                        return Err(Error::InvalidConfig);
+                    }
+                    PeerCidTable::new(
+                        1,
+                        self.generation(),
+                        &mut slots,
+                        remembered_limit,
+                        Cid::new(self.remote.bytes()).map_err(NetworkError::from)?,
+                    )
+                }
+                .map_err(NetworkError::from)?,
+            )
+        };
+        let validate = |peer: &mut Option<PeerCidTable<'_, 2>>,
                         frame: Frame<'_>,
                         context: NetworkReceiveContext|
          -> Result<(), Error> {
@@ -1082,13 +1151,15 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                     id,
                     reset_token,
                 } => {
-                    peer.accept_new_authenticated(
-                        sequence,
-                        retire_prior_to,
-                        Cid::new(id).map_err(NetworkError::from)?,
-                        ResetToken::new(*reset_token),
-                    )
-                    .map_err(NetworkError::from)?;
+                    peer.as_mut()
+                        .ok_or(Error::ProtocolViolation)?
+                        .accept_new_authenticated(
+                            sequence,
+                            retire_prior_to,
+                            Cid::new(id).map_err(NetworkError::from)?,
+                            ResetToken::new(*reset_token),
+                        )
+                        .map_err(NetworkError::from)?;
                 }
                 Frame::RetireConnectionId { sequence } => {
                     if let Some(n) = &self.path.network {
@@ -1152,6 +1223,9 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 id,
                 reset_token,
             } => {
+                if n.zero_peer {
+                    return Err(Error::ProtocolViolation);
+                }
                 let ticket = authority.install(&mut self.driver, sequence)?;
                 n.peer
                     .as_mut()
@@ -1544,13 +1618,19 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         };
         n.selected = target;
         n.peer_selected = n.peers_by_path[usize::from(target.slot)];
-        let peer = n
-            .peer
-            .as_ref()
-            .ok_or(Error::InvalidConfig)?
-            .get(n.peer_selected.ok_or(Error::InvalidConfig)?)
-            .map_err(NetworkError::from)?;
-        let header = 1 + peer.cid.as_bytes().len() + 4 + 16;
+        let peer_cid = if n.zero_peer {
+            None
+        } else {
+            Some(
+                n.peer
+                    .as_ref()
+                    .ok_or(Error::InvalidConfig)?
+                    .get(n.peer_selected.ok_or(Error::InvalidConfig)?)
+                    .map_err(NetworkError::from)?
+                    .cid,
+            )
+        };
+        let header = 1 + peer_cid.map_or(0, |cid| cid.as_bytes().len()) + 4 + 16;
         let mut encoded = [0u8; 96];
         let len = match plan {
             Plan::Cid { slot, .. } => match n.controls[slot].ok_or(Error::InvalidConfig)?.kind {
@@ -1571,7 +1651,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                         .peer
                         .as_ref()
                         .ok_or(Error::InvalidConfig)?
-                        .retirement_sequence(h, peer.cid)
+                        .retirement_sequence(h, peer_cid.ok_or(Error::ProtocolViolation)?)
                         .map_err(NetworkError::from)?;
                     packet::encode_frame(&Frame::RetireConnectionId { sequence }, &mut encoded)?
                 }
