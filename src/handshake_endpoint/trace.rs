@@ -70,7 +70,7 @@ impl State<'_> {
     }
 }
 
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     /// Opt in before I/O. Storage belongs to the caller; no file, callback or
     /// environment access is performed. Overflow drops only observations and
     /// makes trace_status().incomplete sticky, never changing transport state.

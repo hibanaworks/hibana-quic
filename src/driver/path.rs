@@ -662,7 +662,9 @@ mod tests {
                 driver.begin_timer_path_effect(current, identity(7), PathEffect::ValidationExpired),
                 Err(DriverError::InvalidTicket)
             ));
-            let receive = driver.begin_receive().unwrap();
+            let receive = driver
+                .begin_receive(super::super::test_support::initial(driver.generation()))
+                .unwrap();
             let effect = driver
                 .begin_path_effect(receive, identity(7), PathEffect::ActivePathChanged)
                 .unwrap();
@@ -683,11 +685,9 @@ mod tests {
     fn complete_service_graph_supports_timer_as_the_first_action() {
         with_driver::<16, _>(7, |driver, queues| {
             driver.timer(0).unwrap();
-            driver.install_key(Level::Initial).unwrap();
-            driver.install_key(Level::Handshake).unwrap();
-            driver.install_key(Level::OneRtt).unwrap();
-            driver.install_early_key().unwrap();
-            let receive = driver.begin_receive().unwrap();
+            let receive = driver
+                .begin_receive(super::super::test_support::initial(driver.generation()))
+                .unwrap();
             let path = driver
                 .begin_path_effect(receive, identity(7), PathEffect::ActivePathChanged)
                 .unwrap();
@@ -709,7 +709,9 @@ mod tests {
                 driver.begin_path_effect(missing, identity(7), PathEffect::ResponseValidated),
                 Err(DriverError::InvalidTicket)
             ));
-            let receive = driver.begin_receive().unwrap();
+            let receive = driver
+                .begin_receive(super::super::test_support::initial(driver.generation()))
+                .unwrap();
             assert!(matches!(
                 driver.begin_path_effect(receive, identity(8), PathEffect::ResponseValidated),
                 Err(DriverError::InvalidTicket)
@@ -757,7 +759,9 @@ mod tests {
                 driver.begin_cid_install(receive, 2),
                 Err(DriverError::InvalidTicket)
             ));
-            let next = driver.begin_receive().unwrap();
+            let next = driver
+                .begin_receive(super::super::test_support::initial(driver.generation()))
+                .unwrap();
             assert!(matches!(
                 driver.finish_cid_retirement(retire),
                 Err(DriverError::InvalidTicket)
@@ -919,9 +923,8 @@ mod tests {
     #[test]
     fn path_effect_and_timer_progress_do_not_authorize_early_or_completed_receives() {
         with_driver::<16, _>(7, |driver, _| {
-            driver.install_early_key().unwrap();
             let early_id = driver.next_descriptor.unwrap();
-            let early = driver.begin_early_receive().unwrap();
+            let early = super::super::early::tests::begin(driver).unwrap();
             // Even equal numeric IDs have different ledger/type authority.
             let forged_ordinary = ReceiveTicket(Descriptor {
                 generation: driver.generation(),
@@ -936,7 +939,9 @@ mod tests {
                 Err(DriverError::InvalidTicket)
             ));
             driver.finish_early_receive(early).unwrap();
-            let receive = driver.begin_receive().unwrap();
+            let receive = driver
+                .begin_receive(super::super::test_support::initial(driver.generation()))
+                .unwrap();
             let path = driver
                 .begin_path_effect(receive, identity(7), PathEffect::ResponseValidated)
                 .unwrap();

@@ -392,6 +392,26 @@ impl<'a> CheckedRetry<'a> {
     }
 }
 
+/// Affine outcome of the client's actual checked, one-Retry commit.
+/// It does not authenticate a peer identity; Retry integrity and local policy
+/// authorize only this connection's bootstrap destination change.
+pub struct CommittedRetry {
+    source: ConnectionId,
+    original: ConnectionId,
+    client: ConnectionId,
+}
+impl CommittedRetry {
+    pub fn source_id(&self) -> &[u8] {
+        self.source.bytes()
+    }
+    pub fn original_destination_id(&self) -> &[u8] {
+        self.original.bytes()
+    }
+    pub fn client_source_id(&self) -> &[u8] {
+        self.client.bytes()
+    }
+}
+
 /// Generate exactly one Retry packet; output is not a coalescible packet. Server
 /// adapters enforce one Retry per input datagram and anti-amplification limits.
 /// `unused` supplies the four arbitrary low bits and must be at most 15.
@@ -517,6 +537,17 @@ impl<const N: usize> ClientRetry<N> {
             client: self.client,
             source: source_id,
             token,
+        })
+    }
+    pub(crate) fn commit_with_receipt(
+        &mut self,
+        checked: CheckedRetry<'_>,
+    ) -> Result<CommittedRetry, Error> {
+        self.commit(checked)?;
+        Ok(CommittedRetry {
+            source: self.retry.ok_or(Error::RetryNotAllowed)?,
+            original: self.original,
+            client: self.client,
         })
     }
     /// Commit a checked packet after the endpoint's reset can no longer fail.

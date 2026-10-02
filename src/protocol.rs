@@ -27,19 +27,6 @@ pub type TxComplete = g::Msg<23, u32>;
 pub type TimerExpired = g::Msg<30, u64>;
 pub type TimerHandled = g::Msg<31, u64>;
 
-pub type InitialKeyInstalled = g::Msg<70, u32>;
-pub type InitialKeyUse = g::Msg<71, u32>;
-pub type InitialKeyUsed = g::Msg<72, u32>;
-pub type InitialKeyRetired = g::Msg<73, u32>;
-pub type HandshakeKeyInstalled = g::Msg<80, u32>;
-pub type HandshakeKeyUse = g::Msg<81, u32>;
-pub type HandshakeKeyUsed = g::Msg<82, u32>;
-pub type HandshakeKeyRetired = g::Msg<83, u32>;
-pub type OneRttKeyInstalled = g::Msg<90, u32>;
-pub type OneRttKeyUse = g::Msg<91, u32>;
-pub type OneRttKeyUsed = g::Msg<92, u32>;
-pub type OneRttKeyRetired = g::Msg<93, u32>;
-
 pub type AckReleaseRequest = g::Msg<100, [u8; 8]>;
 pub type AckReleaseCompleted = g::Msg<101, [u8; 8]>;
 pub type DeliveryRequest = g::Msg<102, [u8; 16]>;
@@ -47,12 +34,8 @@ pub type DeliveryCompleted = g::Msg<103, [u8; 16]>;
 pub type StreamRetiredRequest = g::Msg<104, [u8; 12]>;
 pub type StreamRetiredAcknowledged = g::Msg<105, [u8; 12]>;
 
-// Early data has a separate key and quarantine/release authority. It cannot
+// Early data has a separate actor-produced Open receipt and quarantine authority. It cannot
 // pass an ordinary ReceiveTicket to ACK or stream-delivery services.
-pub type EarlyKeyInstalled = g::Msg<110, u32>;
-pub type EarlyKeyUse = g::Msg<111, u32>;
-pub type EarlyKeyUsed = g::Msg<112, u32>;
-pub type EarlyKeyRetired = g::Msg<113, u32>;
 pub type EarlyAuthenticated = g::Msg<114, u32>;
 pub type EarlyReceived = g::Msg<115, u32>;
 pub type EarlyBufferRequest = g::Msg<116, [u8; 16]>;
@@ -116,43 +99,8 @@ pub fn service_program<const ROLE: u8>() -> RoleProgram<ROLE> {
         g::send::<RECOVERY, TIMER, TimerHandled>(),
     )
     .roll();
-    // The installed grant is an actual prerequisite at both participating
-    // endpoints. A guarded route permits retirement even before the first use.
-    // The driver ledger makes Retired terminal; the repeated wire route alone
-    // does not establish the lifetime of a cryptographic key.
-    macro_rules! key_service {
-        ($installed:ty, $use:ty, $used:ty, $retired:ty) => {
-            g::seq(
-                g::send::<RECOVERY, PACKET, $installed>(),
-                g::route(
-                    g::seq(
-                        g::send::<RECOVERY, PACKET, $use>(),
-                        g::send::<PACKET, RECOVERY, $used>(),
-                    ),
-                    g::send::<RECOVERY, PACKET, $retired>(),
-                )
-                .roll(),
-            )
-        };
-    }
-    let initial = key_service!(
-        InitialKeyInstalled,
-        InitialKeyUse,
-        InitialKeyUsed,
-        InitialKeyRetired
-    );
-    let handshake = key_service!(
-        HandshakeKeyInstalled,
-        HandshakeKeyUse,
-        HandshakeKeyUsed,
-        HandshakeKeyRetired
-    );
-    let one_rtt = key_service!(
-        OneRttKeyInstalled,
-        OneRttKeyUse,
-        OneRttKeyUsed,
-        OneRttKeyRetired
-    );
+    // Cryptographic lifetime services live in the owning async key/TLS roles.
+    // This transitional driver graph contains only the remaining data effects.
     let ack_release = g::seq(
         g::send::<PACKET, RECOVERY, AckReleaseRequest>(),
         g::send::<RECOVERY, PACKET, AckReleaseCompleted>(),
@@ -168,12 +116,6 @@ pub fn service_program<const ROLE: u8>() -> RoleProgram<ROLE> {
         g::send::<RECOVERY, APPLICATION, StreamRetiredAcknowledged>(),
     )
     .roll();
-    let early_key = key_service!(
-        EarlyKeyInstalled,
-        EarlyKeyUse,
-        EarlyKeyUsed,
-        EarlyKeyRetired
-    );
     let early_receive = g::seq(
         g::send::<INGRESS, PACKET, EarlyAuthenticated>(),
         g::send::<PACKET, INGRESS, EarlyReceived>(),
@@ -223,10 +165,7 @@ pub fn service_program<const ROLE: u8>() -> RoleProgram<ROLE> {
     // driver tickets; g::par alone does not establish packet authentication.
     let ordinary = g::par(
         g::par(receive, g::par(transmit, timer)),
-        g::par(
-            g::par(initial, g::par(handshake, one_rtt)),
-            g::par(ack_release, g::par(delivery, stream_retirement)),
-        ),
+        g::par(ack_release, g::par(delivery, stream_retirement)),
     );
     let path_effect = g::seq(
         g::send::<PACKET, RECOVERY, PathEffectRequest>(),
@@ -263,10 +202,7 @@ pub fn service_program<const ROLE: u8>() -> RoleProgram<ROLE> {
         g::par(path_effect, g::par(cid_install, cid_retirement)),
         g::par(path_send, cid_advertisement),
     );
-    let early_services = g::par(
-        g::par(early_key, early_receive),
-        g::par(early_buffer, early_release),
-    );
+    let early_services = g::par(early_receive, g::par(early_buffer, early_release));
     project(&g::par(ordinary, g::par(path_services, early_services)))
 }
 

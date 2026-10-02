@@ -161,11 +161,19 @@ fn real_aead_outcomes_nonce_guard_shared_integrity_budget_and_retirement_do_not_
                 })
                 .await
                 .unwrap_or_else(|_| panic!("closed"));
-            let Outcome::Opened { packet, budget } = reply_receiver.recv().await.unwrap().outcome
+            let Outcome::Opened {
+                packet,
+                receipt,
+                budget,
+            } = reply_receiver.recv().await.unwrap().outcome
             else {
                 panic!("not authenticated")
             };
             assert_eq!(packet.body(), b"owned plaintext");
+            assert_eq!(receipt.generation(), 17);
+            assert_eq!(receipt.packet_number(), 42);
+            assert_eq!(receipt.operation_id(), 2);
+            assert_eq!(receipt.kind(), crypto::KeyKind::Initial);
             assert_eq!(budget.failed_packets(), 0);
             drop(packet);
             sender
@@ -533,7 +541,9 @@ fn actor_owned_retry_rekey_preserves_nonce_guard_and_returns_same_integrity_budg
                 .unwrap();
             assert_eq!(&body[..n], b"after retry");
             let (opened, budget) = client.open(sealed, budget).await.unwrap();
-            assert_eq!(opened.unwrap().body(), b"after retry");
+            let opened = opened.unwrap();
+            assert_eq!(opened.packet.body(), b"after retry");
+            assert_eq!(opened.receipt.packet_number(), 10);
             assert_eq!(
                 budget.failed_packets(),
                 1,

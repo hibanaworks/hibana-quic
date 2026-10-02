@@ -32,7 +32,6 @@ use crate::{
         self, ChunkHandle, Limits, PacketReference, ReadView, Role, SendChunk, SendQueue,
         StreamHandle, StreamSlot, StreamTable, Transmission,
     },
-    tls::Provider,
 };
 
 #[derive(Debug)]
@@ -531,14 +530,15 @@ struct Pending {
 pub struct TransportEndpoint<
     'r,
     's,
-    T: Provider,
+    'tc,
+    'ts,
     const RX: usize,
     const TX: usize,
     const CONTROLS: usize = 16,
     const CONTROL_REFS: usize = 64,
     K: InitialKeyProtection = InitialProtection<'r, 's>,
 > {
-    engine: HandshakeEndpoint<'r, 's, T, K>,
+    engine: HandshakeEndpoint<'r, 's, 'tc, 'ts, K>,
     table: StreamTable<'s, RX>,
     queue: SendQueue<'s, TX>,
     early: Option<crate::early_send::Journal<'s, TX>>,
@@ -553,24 +553,26 @@ struct CancelOnDrop<
     'a,
     'r,
     's,
-    T: Provider,
+    'tc,
+    'ts,
     const RX: usize,
     const TX: usize,
     const C: usize,
     const R: usize,
     K: InitialKeyProtection,
 > {
-    endpoint: &'a mut TransportEndpoint<'r, 's, T, RX, TX, C, R, K>,
+    endpoint: &'a mut TransportEndpoint<'r, 's, 'tc, 'ts, RX, TX, C, R, K>,
     complete: bool,
 }
 impl<
-    T: Provider,
+    'tc,
+    'ts,
     const RX: usize,
     const TX: usize,
     const C: usize,
     const R: usize,
     K: InitialKeyProtection,
-> Drop for CancelOnDrop<'_, '_, '_, T, RX, TX, C, R, K>
+> Drop for CancelOnDrop<'_, '_, '_, 'tc, 'ts, RX, TX, C, R, K>
 {
     fn drop(&mut self) {
         if !self.complete {
@@ -582,14 +584,45 @@ impl<
 impl<
     'r,
     's,
-    T: Provider,
+    'tc,
+    'ts,
     const RX: usize,
     const TX: usize,
     const C: usize,
     const R: usize,
     K: InitialKeyProtection,
-> TransportEndpoint<'r, 's, T, RX, TX, C, R, K>
+> TransportEndpoint<'r, 's, 'tc, 'ts, RX, TX, C, R, K>
 {
+    pub async fn timer(&mut self, now: u64) -> Result<(), Error> {
+        let mut guard = CancelOnDrop {
+            endpoint: self,
+            complete: false,
+        };
+        let result = guard.endpoint.timer_impl(now).await;
+        guard.complete = true;
+        result
+    }
+    pub async fn initiate_key_update(&mut self) -> Result<(), Error> {
+        let mut guard = CancelOnDrop {
+            endpoint: self,
+            complete: false,
+        };
+        let result = guard.endpoint.initiate_key_update_impl().await;
+        guard.complete = true;
+        result
+    }
+    pub async fn initiate_close(
+        &mut self,
+        reason: crate::lifecycle::CloseReason,
+    ) -> Result<(), Error> {
+        let mut guard = CancelOnDrop {
+            endpoint: self,
+            complete: false,
+        };
+        let result = guard.endpoint.initiate_close_impl(reason).await;
+        guard.complete = true;
+        result
+    }
     /// Cancellation of a suspended packet operation retires this connection.
     pub async fn receive_from(
         &mut self,
@@ -653,7 +686,7 @@ impl<
         result
     }
     pub fn new(
-        engine: HandshakeEndpoint<'r, 's, T, K>,
+        engine: HandshakeEndpoint<'r, 's, 'tc, 'ts, K>,
         local_limits: Limits,
         slots: &'s mut [StreamSlot<RX>],
         send_chunks: &'s mut [SendChunk<TX>],
@@ -684,7 +717,7 @@ impl<
             application_probe: false,
             now: 0,
         };
-        result.install_peer_limits()?;
+        result.apply_verified_limits()?;
         Ok(result)
     }
     /// Explicitly authorize sending replay-safe complete requests early AND
@@ -699,14 +732,14 @@ impl<
             || self.early.is_some()
             || self.pending.is_some()
             || self.table.live_count() != 0
-            || self.engine.tls().early_status() != crate::early_data::EarlyStatus::Offered
+            || self.engine.tls_snapshot().early_status != crate::early_data::EarlyStatus::Offered
         {
             return Err(Error::InvalidConfiguration);
         }
         let limits = self
             .engine
-            .tls()
-            .remembered_early_limits()
+            .tls_snapshot()
+            .remembered_early_limits
             .ok_or(Error::InvalidConfiguration)?;
         self.early = Some(
             crate::early_send::Journal::new(self.engine.generation(), limits, slots)
@@ -721,12 +754,12 @@ impl<
         if self.connection_state() != crate::lifecycle::State::Active
             || self.engine.is_retired()
             || !matches!(
-                self.engine.tls().early_status(),
+                self.engine.tls_snapshot().early_status,
                 crate::early_data::EarlyStatus::Offered
                     | crate::early_data::EarlyStatus::AcceptedPendingFinished
             )
-            || !self.engine.tls().has_early_keys()
-            || self.engine.tls().has_keys(crate::tls::Level::OneRtt)
+            || !self.engine.tls_snapshot().early_keys
+            || self.engine.tls_snapshot().one_rtt_keys
         {
             return Err(Error::NotReady);
         }
@@ -785,7 +818,10 @@ impl<
             },
             &mut encoded,
         )?;
-        let result = self.engine.transmit_early_application(&encoded[..n], out);
+        let result = self
+            .engine
+            .transmit_early_application(&encoded[..n], out)
+            .await;
         let Some(output) = self.after_engine(result)? else {
             return Ok(None);
         };
@@ -809,7 +845,7 @@ impl<
         self.application_probe = false;
         Ok(Some(output))
     }
-    fn install_peer_limits(&mut self) -> Result<(), Error> {
+    fn apply_verified_limits(&mut self) -> Result<(), Error> {
         if self.engine.is_retired() {
             self.close_application_state();
             return Err(Error::Engine(handshake_endpoint::Error::Retired));
@@ -817,6 +853,10 @@ impl<
         if let Some(limits) = self.engine.verified_peer_limits() {
             self.table.apply_peer_initial_limits(limits)?;
         }
+        Ok(())
+    }
+    async fn install_peer_limits(&mut self) -> Result<(), Error> {
+        self.apply_verified_limits()?;
         if self.early.as_ref().is_some_and(|j| j.has_intent()) {
             let mut handler = Handler {
                 table: &mut self.table,
@@ -824,7 +864,7 @@ impl<
                 controls: &mut self.controls,
                 early: &mut self.early,
             };
-            let result = self.engine.reconcile_early_client(&mut handler);
+            let result = self.engine.reconcile_early_client(&mut handler).await;
             if result.is_err() {
                 self.engine.retire();
             }
@@ -850,7 +890,9 @@ impl<
     }
     fn ready(&mut self) -> Result<(), Error> {
         self.idle()?;
-        self.install_peer_limits()?;
+        // Stream admission uses already-verified limits only. TLS effects and
+        // early reconciliation run in the enclosing async I/O continuations.
+        self.apply_verified_limits()?;
         if !self.engine.handshake_complete() {
             return Err(Error::NotReady);
         }
@@ -921,27 +963,28 @@ impl<
         self.engine.admitted_early_packets()
     }
     pub fn receive_key_generation(&self) -> u64 {
-        self.engine.tls().receive_key_generation()
+        self.engine.tls_snapshot().receive_generation
     }
     pub fn negotiated_group(&self) -> Option<u16> {
-        self.engine.tls().negotiated_group()
+        self.engine.tls_snapshot().negotiated_group
     }
     pub fn key_generation(&self) -> u64 {
-        self.engine.tls().key_generation()
+        self.engine.tls_snapshot().send_generation
     }
-    pub fn initiate_key_update(&mut self) -> Result<(), Error> {
+    async fn initiate_key_update_impl(&mut self) -> Result<(), Error> {
         self.idle()?;
-        let result = self.engine.initiate_key_update();
+        let result = self.engine.initiate_key_update().await;
         self.after_engine(result)?;
         Ok(())
     }
-    pub fn tls(&self) -> &T {
-        self.engine.tls()
+    pub fn tls_snapshot(&self) -> &crate::roles::tls_owner::Snapshot<512> {
+        self.engine.tls_snapshot()
     }
     pub fn peer_close(&self) -> Option<handshake_endpoint::PeerClose> {
         self.engine.peer_close()
     }
-    /// Absolute idle expiry, distinct from immediately runnable recovery work.
+    /// Absolute connection-relative idle deadline; unlike recovery work, this
+    /// bounds whether a pending adapter submission may remain live.
     pub fn idle_deadline(&self) -> Option<u64> {
         self.engine.idle_deadline()
     }
@@ -951,9 +994,12 @@ impl<
     pub fn connection_state(&self) -> crate::lifecycle::State {
         self.engine.connection_state()
     }
-    pub fn initiate_close(&mut self, reason: crate::lifecycle::CloseReason) -> Result<(), Error> {
+    async fn initiate_close_impl(
+        &mut self,
+        reason: crate::lifecycle::CloseReason,
+    ) -> Result<(), Error> {
         self.idle()?;
-        let result = self.engine.close(reason);
+        let result = self.engine.close(reason).await;
         self.after_engine(result)?;
         self.close_application_state();
         Ok(())
@@ -1173,7 +1219,7 @@ impl<
     ) -> Result<Received, Error> {
         self.idle()?;
         if self.connection_state() == crate::lifecycle::State::Active {
-            self.install_peer_limits()?;
+            self.install_peer_limits().await?;
         }
         let mut handler = Handler {
             table: &mut self.table,
@@ -1191,7 +1237,7 @@ impl<
         }
         let report = result?;
         if self.connection_state() == crate::lifecycle::State::Active {
-            self.install_peer_limits()?;
+            self.install_peer_limits().await?;
         }
         Ok(report)
     }
@@ -1203,7 +1249,7 @@ impl<
     ) -> Result<Received, Error> {
         self.idle()?;
         if self.connection_state() == crate::lifecycle::State::Active {
-            self.install_peer_limits()?;
+            self.install_peer_limits().await?;
         }
         let mut handler = Handler {
             table: &mut self.table,
@@ -1221,11 +1267,11 @@ impl<
         }
         let report = result?;
         if self.connection_state() == crate::lifecycle::State::Active {
-            self.install_peer_limits()?;
+            self.install_peer_limits().await?;
         }
         Ok(report)
     }
-    pub fn timer(&mut self, now: u64) -> Result<(), Error> {
+    async fn timer_impl(&mut self, now: u64) -> Result<(), Error> {
         if self.connection_state() == crate::lifecycle::State::Active {
             // An unsubmitted output must not pin a connection past idle expiry.
             // Recovery remains serialized with its adapter completion while active.
@@ -1238,7 +1284,7 @@ impl<
             }
             self.idle()?;
         }
-        let result = self.engine.timer(now);
+        let result = self.engine.timer(now).await;
         self.after_engine(result)?;
         self.drain_losses();
         self.now = now;
@@ -1276,7 +1322,7 @@ impl<
         self.idle()?;
         self.drain_early_data()?;
         if self.connection_state() == crate::lifecycle::State::Active {
-            self.install_peer_limits()?;
+            self.install_peer_limits().await?;
         }
         let result = self.engine.transmit(out).await;
         let engine_output = self.after_engine(result)?;
@@ -1290,17 +1336,17 @@ impl<
         }
         if !self.engine.handshake_complete() {
             if matches!(
-                self.engine.tls().early_status(),
+                self.engine.tls_snapshot().early_status,
                 crate::early_data::EarlyStatus::Offered
                     | crate::early_data::EarlyStatus::AcceptedPendingFinished
-            ) && self.engine.tls().has_early_keys()
-                && !self.engine.tls().has_keys(crate::tls::Level::OneRtt)
+            ) && self.engine.tls_snapshot().early_keys
+                && !self.engine.tls_snapshot().one_rtt_keys
             {
                 return self.transmit_early(out).await;
             }
             return Ok(None);
         }
-        self.install_peer_limits()?;
+        self.install_peer_limits().await?;
         self.application_probe |= self.engine.take_application_probe();
         let control = self.controls.next(self.application_probe);
         let chunk: Option<ChunkHandle> = if control.is_none() {
@@ -1438,6 +1484,22 @@ impl<
         self.idle()?;
         self.retire_on_error();
         Ok(())
+    }
+    /// Await retirement of every actual crypto owner, then release application
+    /// state. No QUIC close frame is sent. A dropped shutdown future terminally
+    /// closes admission and releases application state through the same guard
+    /// as suspended packet operations.
+    pub async fn retire_owned(&mut self) -> Result<(), Error> {
+        self.idle()?;
+        let mut guard = CancelOnDrop {
+            endpoint: self,
+            complete: false,
+        };
+        let result = guard.endpoint.engine.retire_owned().await;
+        guard.endpoint.close_application_state();
+        guard.endpoint.pending = None;
+        guard.complete = true;
+        result.map_err(Error::Engine)
     }
 }
 

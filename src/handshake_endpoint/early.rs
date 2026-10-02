@@ -26,7 +26,7 @@ impl<'s> State<'s> {
         }
     }
 }
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     /// Number of distinct authenticated 0-RTT packets admitted by this
     /// connection generation. Includes accepted early close; excludes replay,
     /// rejected early data, corrupt packets and local-capacity drops. Admission
@@ -35,23 +35,25 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
     pub const fn admitted_early_packets(&self) -> u64 {
         self.early.admitted_packets
     }
-    pub(crate) fn reconcile_early_client<A: ApplicationHandler>(
+    pub(crate) async fn reconcile_early_client<A: ApplicationHandler>(
         &mut self,
         handler: &mut A,
     ) -> Result<(), Error> {
-        if self.side != Side::Client || !self.parameters_verified || self.tls.is_handshaking() {
+        if self.side != Side::Client || !self.parameters_verified || self.tls_snapshot().handshaking
+        {
             return Ok(());
         }
-        let decision = match self.tls.early_status() {
+        let decision = match self.tls_snapshot().early_status {
             EarlyStatus::Accepted => crate::early_send::Decision::Accepted,
             EarlyStatus::Rejected => crate::early_send::Decision::Rejected,
             _ => return Ok(()),
         };
         if !self.early.client_reconciled {
             if decision == crate::early_send::Decision::Rejected {
-                self.reject_early_packets()?;
+                self.reject_early_packets().await?;
             }
-            self.driver.handshake_finished()?;
+            self.driver
+                .handshake_finished(self.finished_receipt.take().ok_or(Error::InvalidConfig)?)?;
             self.early.client_reconciled = true;
         }
         let mut authority = crate::early_send::ImportAuthority::new(&mut self.driver);
@@ -85,14 +87,13 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         Ok(())
     }
     pub(super) fn clear_early(&mut self) {
-        self.tls.discard_early_keys();
         self.early.quarantine.take();
         self.early.controls.take();
     }
     /// Reconcile authenticated TLS early rejection without declaring loss,
     /// discarding one-RTT records, or rewinding the shared application allocator.
-    pub fn reject_early_packets(&mut self) -> Result<u64, Error> {
-        if self.side != Side::Client || self.tls.early_status() != EarlyStatus::Rejected {
+    pub(super) async fn reject_early_packets_impl(&mut self) -> Result<u64, Error> {
+        if self.side != Side::Client || self.tls_snapshot().early_status != EarlyStatus::Rejected {
             return Err(Error::InvalidConfig);
         }
         if self
@@ -108,9 +109,8 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 *record = None;
             }
         }
-        self.tls.discard_early_keys();
-        if self.driver.is_early_key_installed() {
-            self.driver.retire_early_key()?;
+        if self.tls_snapshot().early_keys {
+            self.tls_discard_early().await?;
         }
         self.sent
             .reclaim_completed_prefix(PacketNumberSpace::ApplicationData)?;
@@ -123,7 +123,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
     /// retains intent and maps the accepted PN into its EarlyIntentJournal.
     /// Initial CRYPTO must already have been submitted; output still owns the
     /// ordinary path/PN/adapter reservation and the distinct early-key authority.
-    pub fn transmit_early_application(
+    pub(super) async fn transmit_early_application_impl(
         &mut self,
         encoded: &[u8],
         out: &mut [u8],
@@ -138,11 +138,11 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             || self.lifecycle.state() != ConnectionState::Active
             || self.offsets[0] == 0
             || !matches!(
-                self.tls.early_status(),
+                self.tls_snapshot().early_status,
                 EarlyStatus::Offered | EarlyStatus::AcceptedPendingFinished
             )
-            || !self.tls.has_early_keys()
-            || self.tls.has_keys(Level::OneRtt)
+            || !self.tls_snapshot().early_keys
+            || self.tls_has_keys(Level::OneRtt)
         {
             return Err(Error::InvalidConfig);
         }
@@ -156,20 +156,22 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             eliciting |= frame.ack_eliciting();
             padding |= matches!(frame, Frame::Padding { .. });
         }
-        let result = self.transmit_early_inner(encoded, out, eliciting || padding, eliciting);
+        let result = self
+            .transmit_early_inner(encoded, out, eliciting || padding, eliciting)
+            .await;
         if result.is_err() {
             self.retire();
         }
         result
     }
-    fn transmit_early_inner(
+    async fn transmit_early_inner(
         &mut self,
         encoded: &[u8],
         out: &mut [u8],
         in_flight: bool,
         ack_eliciting: bool,
     ) -> Result<Option<Transmit>, Error> {
-        self.sync_early_authority()?;
+        self.sync_early_state().await?;
         let application_slot = if ack_eliciting {
             let Some(slot) = self.application_packets.iter().position(Option::is_none) else {
                 return Ok(None);
@@ -230,22 +232,21 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         };
         let ticket = self.driver.reserve_transmit()?;
         self.bind_network_transmit(ticket, path)?;
-        let key = self.driver.begin_early_key_use()?;
         out[hlen..hlen + encoded.len()].copy_from_slice(encoded);
-        let operation = (|| -> Result<(), Error> {
+        let operation = async {
             let (header, body) = out[..total].split_at_mut(hlen);
-            self.tls.seal_early(pn, header, body, encoded.len())?;
+            self.tls_seal_early(pn, header, body, encoded.len()).await?;
             let sample: &[u8; 16] = out[hlen..hlen + 16]
                 .try_into()
                 .map_err(|_| Error::Capacity)?;
-            let mask = self.tls.early_header_mask(true, sample)?;
+            let mask = self.tls_early_mask(true, *sample).await?;
             out[0] ^= mask[0] & 0x0f;
             for i in 0..4 {
                 out[hlen - 4 + i] ^= mask[i + 1];
             }
-            Ok(())
-        })();
-        self.driver.finish_early_key_use(key)?;
+            Ok::<(), Error>(())
+        }
+        .await;
         operation?;
         let output = Transmit {
             authority: ticket,
@@ -323,43 +324,38 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         );
         Ok(())
     }
-    pub(super) fn sync_early_authority(&mut self) -> Result<(), Error> {
+    pub(super) async fn sync_early_state(&mut self) -> Result<(), Error> {
         if self.lifecycle.state() != ConnectionState::Active {
             return Ok(());
         }
-        if self.tls.has_early_keys() {
-            if self.tls.early_generation() != Some(self.generation()) {
-                return Err(Error::InvalidConfig);
-            }
-            if !self.driver.is_early_key_installed() {
-                self.driver.install_early_key()?;
-            }
-        } else if self.driver.is_early_key_installed() {
-            self.driver.retire_early_key()?;
+        if self.tls_snapshot().early_keys
+            && self.tls_snapshot().early_generation != Some(self.generation())
+        {
+            return Err(Error::InvalidConfig);
         }
-        if self.side == Side::Client && self.tls.early_status() == EarlyStatus::Rejected {
+        if self.side == Side::Client && self.tls_snapshot().early_status == EarlyStatus::Rejected {
             // HRR/EE rejection removes early flight immediately. Waiting for
             // Finished could leave a full early congestion window blocking CH2.
             // Intent stays in its journal until new authenticated limits exist.
-            self.reject_early_packets()?;
+            self.reject_early_packets().await?;
         }
         if self.side == Side::Server
             && self.early.quarantine.is_none()
             && matches!(
-                self.tls.early_status(),
+                self.tls_snapshot().early_status,
                 EarlyStatus::AcceptedPendingFinished | EarlyStatus::Accepted
             )
         {
             let claim = self
-                .tls
-                .take_early_replay_claim()
+                .tls_take_replay_claim()
+                .await?
                 .ok_or(Error::InvalidConfig)?;
             if claim.generation() != self.generation() {
                 return Err(Error::InvalidConfig);
             }
             let limits = self
-                .tls
-                .remembered_early_limits()
+                .tls_snapshot()
+                .remembered_early_limits
                 .ok_or(Error::InvalidConfig)?;
             let slots = self.early.slots.take().ok_or(Error::InvalidConfig)?;
             self.early.quarantine = Some(
@@ -388,14 +384,15 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         handler: &mut A,
     ) -> Result<(), Error> {
         if self.side != Side::Server
-            || self.tls.is_handshaking()
+            || self.tls_snapshot().handshaking
             || !self.parameters_verified
             || self.early.quarantine.is_none()
         {
             return Ok(());
         }
         if !self.early.finished {
-            self.driver.handshake_finished()?;
+            self.driver
+                .handshake_finished(self.finished_receipt.take().ok_or(Error::InvalidConfig)?)?;
             let generation = self.generation();
             self.early
                 .quarantine
@@ -482,9 +479,9 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         if self.side != Side::Server
             || !self.early_path_allowed()
             || self.lifecycle.state() != ConnectionState::Active
-            || !self.tls.has_early_keys()
+            || !self.tls_snapshot().early_keys
             || !matches!(
-                self.tls.early_status(),
+                self.tls_snapshot().early_status,
                 EarlyStatus::AcceptedPendingFinished | EarlyStatus::Accepted
             )
             || self.early.quarantine.is_none()
@@ -495,16 +492,15 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         {
             return Ok(false);
         }
-        self.sync_early_authority()?;
+        self.sync_early_state().await?;
         let bytes = &mut scratch[..packet.bytes.len()];
         bytes.copy_from_slice(packet.bytes);
         let Some(sample) = bytes.get(pn_offset + 4..pn_offset + 20) else {
             return Ok(false);
         };
         let sample: [u8; 16] = sample.try_into().map_err(|_| Error::Capacity)?;
-        let authority = self.driver.begin_early_key_use()?;
-        let operation = (|| -> Result<Option<(u64, usize, usize)>, Error> {
-            let mask = self.tls.early_header_mask(false, &sample)?;
+        let operation = async {
+            let mask = self.tls_early_mask(false, sample).await?;
             bytes[0] ^= mask[0] & 0x0f;
             let n = usize::from((bytes[0] & 3) + 1);
             if pn_offset + n > bytes.len() {
@@ -522,10 +518,12 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 };
             let first = bytes[0];
             let (header, body) = bytes.split_at_mut(pn_offset + n);
-            let len = match self.tls.open_early(pn, header, body) {
+            let (len, receipt) = match self.tls_open_early(pn, header, body).await {
                 Ok(n) => n,
-                Err(tls::Error::Authentication | tls::Error::KeysUnavailable) => return Ok(None),
-                Err(e) => return Err(e.into()),
+                Err(Error::Tls(tls::Error::Authentication | tls::Error::KeysUnavailable)) => {
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
             };
             self.trace_event(crate::trace::Event::Packet {
                 direction: crate::trace::Direction::Received,
@@ -540,10 +538,10 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             if len == 0 {
                 return Err(Error::ProtocolViolation);
             }
-            Ok(Some((pn, pn_offset + n, len)))
-        })();
-        self.driver.finish_early_key_use(authority)?;
-        let Some((pn, header_len, len)) = operation? else {
+            Ok(Some((pn, pn_offset + n, len, receipt)))
+        }
+        .await;
+        let Some((pn, header_len, len, receipt)) = operation? else {
             return Ok(false);
         };
         let payload = &bytes[header_len..header_len + len];
@@ -602,7 +600,10 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             ..
         }) = terminal
         {
-            let receive = self.driver.begin_early_receive()?;
+            let receive = self.driver.begin_early_receive(
+                receipt,
+                self.early.quarantine.as_ref().ok_or(Error::InvalidConfig)?,
+            )?;
             let close = self.driver.begin_early_peer_close(receive, error_code)?;
             self.driver.finish_early_peer_close(close)?;
             self.driver.finish_early_receive(receive)?;
@@ -636,8 +637,8 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         }
         let context = self.network_receive_context(destination_id)?;
         let remembered_limit = self
-            .tls
-            .remembered_early_limits()
+            .tls_snapshot()
+            .remembered_early_limits
             .ok_or(Error::InvalidConfig)?
             .active_connection_id_limit();
         self.preflight_early_network_controls(
@@ -662,7 +663,10 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             } else {
                 None
             };
-            let receive = self.driver.begin_early_receive()?;
+            let receive = self.driver.begin_early_receive(
+                receipt,
+                self.early.quarantine.as_ref().ok_or(Error::InvalidConfig)?,
+            )?;
             if let Some(prepared) = prepared {
                 if prepared.control_count() != 0 {
                     let control = self.driver.begin_early_control_buffer(receive)?;

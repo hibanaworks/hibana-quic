@@ -1,7 +1,7 @@
 //! Shared resource bootstrap for development handshake adapters.
 //!
 //! The actual role-local protocol awaits and key ownership remain in
-//! roles::packet_protection. This helper only allocates caller-owned bounded
+//! roles::packet_protection and roles::tls_owner. This helper only allocates caller-owned bounded
 //! storage, attaches both facets of one projected session, and retains every
 //! endpoint value until the borrowed actors and application have finished.
 use hibana::{
@@ -11,30 +11,36 @@ use hibana::{
 use hibana_quic::{
     carrier::CarrierStorage,
     crypto::InitialKeys,
-    handshake_endpoint::{INITIAL_PACKET_BYTES, InitialKeyClient, InitialProtection, Side},
+    handshake_endpoint::{
+        INITIAL_PACKET_BYTES, InitialKeyClient, InitialProtection, Side, TlsClient,
+    },
     mailbox::Mailbox,
     roles::{
         packet_protection::{self, Command, Exchange, Reply},
         protocol::key_choreography,
+        protocol_tls::tls_choreography,
+        tls_owner,
     },
     runtime::{Task, TaskSet},
 };
 use std::pin::pin;
 
-pub async fn with_initial<R>(
+pub async fn with_connection<T: hibana_quic::tls::Provider, R>(
     keys: InitialKeys,
     side: Side,
     generation: u64,
-    application: impl for<'channel, 'storage> AsyncFnOnce(
+    provider: T,
+    application: impl for<'channel, 'storage, 'tc, 'ts> AsyncFnOnce(
         InitialProtection<'channel, 'storage>,
+        TlsClient<'tc, 'ts>,
     ) -> Result<R, String>,
 ) -> Result<R, String> {
     let (receive_key, transmit_key) = match side {
         Side::Client => (keys.server, keys.client),
         Side::Server => (keys.client, keys.server),
     };
-    let carrier = CarrierStorage::<1, 16, 32>::new();
-    let mut slab = [0; 32768];
+    let carrier = CarrierStorage::<1, 16, 64>::new();
+    let mut slab = [0; 65536];
     let mut storage = SessionKitStorage::uninit();
     let kit = storage.init();
     let sid = SessionId::new(2);
@@ -46,11 +52,16 @@ pub async fn with_initial<R>(
                 .map_err(|e| format!("Initial carrier: {e:?}"))?,
         )
         .map_err(|e| format!("Initial rendezvous: {e:?}"))?;
-    let global = g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>());
+    let global = g::par(
+        g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>()),
+        tls_choreography::<24, 25>(),
+    );
     let p16 = project::<16, _>(&global);
     let p17 = project::<17, _>(&global);
     let p18 = project::<18, _>(&global);
     let p19 = project::<19, _>(&global);
+    let p24 = project::<24, _>(&global);
+    let p25 = project::<25, _>(&global);
     let mut e16 = rv
         .enter(sid, &p16)
         .map_err(|e| format!("Initial RX client: {e:?}"))?;
@@ -63,6 +74,24 @@ pub async fn with_initial<R>(
     let mut e19 = rv
         .enter(sid, &p19)
         .map_err(|e| format!("Initial TX crypto: {e:?}"))?;
+    let mut e24 = rv
+        .enter(sid, &p24)
+        .map_err(|e| format!("TLS client attach: {e:?}"))?;
+    let mut e25 = rv
+        .enter(sid, &p25)
+        .map_err(|e| format!("TLS owner attach: {e:?}"))?;
+    let mut tls_commands: [Option<tls_owner::Command<1536>>; 1] = [None];
+    let mut tls_replies: [Option<tls_owner::Reply<1536, 512>>; 1] = [None];
+    let tls_commands =
+        Mailbox::new(&mut tls_commands).map_err(|e| format!("TLS mailbox: {e:?}"))?;
+    let tls_replies = Mailbox::new(&mut tls_replies).map_err(|e| format!("TLS replies: {e:?}"))?;
+    let (tls_send, tls_recv) = tls_commands
+        .split()
+        .map_err(|e| format!("TLS split: {e:?}"))?;
+    let (tls_reply_send, tls_reply_recv) = tls_replies
+        .split()
+        .map_err(|e| format!("TLS reply split: {e:?}"))?;
+    let mut tls_exchange = tls_owner::Exchange::new();
     let mut rx_commands: [Option<Command<INITIAL_PACKET_BYTES>>; 1] = [None];
     let mut rx_replies: [Option<Reply<INITIAL_PACKET_BYTES>>; 1] = [None];
     let mut tx_commands: [Option<Command<INITIAL_PACKET_BYTES>>; 1] = [None];
@@ -92,6 +121,9 @@ pub async fn with_initial<R>(
     let mut result = None;
     {
         let mut work = pin!(async {
+            let tls = TlsClient::connect(tls_send, tls_reply_recv, generation)
+                .await
+                .map_err(|e| format!("TLS connect: {e:?}"))?;
             let receive = InitialKeyClient::connect(rx_client_send, rx_client_recv, generation)
                 .await
                 .map_err(|e| format!("Initial RX connect: {e:?}"))?;
@@ -100,7 +132,7 @@ pub async fn with_initial<R>(
                 .map_err(|e| format!("Initial TX connect: {e:?}"))?;
             let initial = InitialProtection::new(receive, transmit)
                 .map_err(|e| format!("Initial capabilities: {e:?}"))?;
-            result = Some(application(initial).await?);
+            result = Some(application(initial, tls).await?);
             Ok::<(), String>(())
         });
         let mut receive_actor = pin!(async {
@@ -129,7 +161,21 @@ pub async fn with_initial<R>(
             .await
             .map_err(|e| format!("Initial TX role: {e:?}"))
         });
-        let tasks: [Task<'_, String>; 3] = [
+        let mut tls_actor = pin!(async {
+            tls_owner::run_borrowed(
+                &mut e24,
+                &mut e25,
+                generation,
+                provider,
+                tls_recv,
+                tls_reply_send,
+                &mut tls_exchange,
+            )
+            .await
+            .map_err(|e| format!("TLS owner: {e:?}"))
+        });
+        let tasks: [Task<'_, String>; 4] = [
+            tls_actor.as_mut(),
             receive_actor.as_mut(),
             transmit_actor.as_mut(),
             work.as_mut(),
@@ -154,30 +200,46 @@ mod tests {
             let sample = [0x37; 16];
             let client_mask = keys.client.header_mask(&sample).unwrap();
             let server_mask = keys.server.header_mask(&sample).unwrap();
-            let mut execution = pin!(with_initial(keys, side, 44, async move |mut initial| {
-                assert_eq!(initial.generation(), 44);
-                let receive = initial
-                    .receive_mask(sample)
-                    .await
-                    .map_err(|e| format!("RX: {e:?}"))?;
-                let transmit = initial
-                    .transmit_mask(sample)
-                    .await
-                    .map_err(|e| format!("TX: {e:?}"))?;
-                assert_eq!(
-                    (receive, transmit),
-                    if side == Side::Client {
-                        (server_mask, client_mask)
-                    } else {
-                        (client_mask, server_mask)
-                    }
-                );
-                initial
-                    .retire()
-                    .await
-                    .map_err(|e| format!("retire: {e:?}"))?;
-                Ok(())
-            }));
+            let provider = hibana_quic_reference_tls::RustlsProvider::client(
+                hibana_quic_reference_tls::rustls::RootCertStore::empty(),
+                hibana_quic_reference_tls::rustls::pki_types::ServerName::try_from("localhost")
+                    .unwrap(),
+                vec![],
+            )
+            .unwrap();
+            let mut execution = pin!(with_connection(
+                keys,
+                side,
+                44,
+                provider,
+                async move |mut initial, tls| {
+                    assert_eq!(initial.generation(), 44);
+                    let receive = initial
+                        .receive_mask(sample)
+                        .await
+                        .map_err(|e| format!("RX: {e:?}"))?;
+                    let transmit = initial
+                        .transmit_mask(sample)
+                        .await
+                        .map_err(|e| format!("TX: {e:?}"))?;
+                    assert_eq!(
+                        (receive, transmit),
+                        if side == Side::Client {
+                            (server_mask, client_mask)
+                        } else {
+                            (client_mask, server_mask)
+                        }
+                    );
+                    initial
+                        .retire()
+                        .await
+                        .map_err(|e| format!("retire: {e:?}"))?;
+                    tls.retire()
+                        .await
+                        .map_err(|e| format!("TLS retire: {e:?}"))?;
+                    Ok(())
+                }
+            ));
             reactor.block_on(execution.as_mut()).unwrap().unwrap();
         }
     }

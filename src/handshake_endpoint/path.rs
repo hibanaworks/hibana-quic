@@ -396,7 +396,7 @@ fn budget_error(error: crate::path::Error) -> accounting::AccountingError {
         _ => accounting::AccountingError::InvalidState,
     }
 }
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     /// Configure exact socket identities and bounded resources before any I/O.
     /// Local CID length remains fixed. Local token/preferred values must be the
     /// same values supplied to the TLS provider's transport parameters.
@@ -578,7 +578,7 @@ impl Owner<'_> {
         self.network.as_ref().is_none_or(|n| n.ingress.is_some())
     }
 }
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     /// Exact receive tuple from an unconnected adapter. A previously unseen
     /// address does not itself create a path or authenticate its ownership.
     pub(super) async fn receive_from_impl<A: ApplicationHandler>(
@@ -1071,7 +1071,7 @@ impl Owner<'_> {
         })
     }
 }
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     /// Retain this exact context with deferred 0-RTT controls. No active-path or
     /// later-CID substitution is valid when those controls are released.
     pub(super) fn network_receive_context(
@@ -1381,7 +1381,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
     }
 }
 
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     /// Early data cannot establish a migrated path. Check before early key use;
     /// an unexpected source is a silent discard, not a connection error.
     pub(super) fn early_path_allowed(&self) -> bool {
@@ -1596,12 +1596,12 @@ impl Owner<'_> {
         }
     }
 }
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     pub(super) async fn transmit_network_control(
         &mut self,
         out: &mut [u8],
     ) -> Result<Option<Transmit>, Error> {
-        if !self.handshake_confirmed || self.tls.is_handshaking() {
+        if !self.handshake_confirmed || self.tls_snapshot().handshaking {
             return Ok(None);
         }
         let Some(n) = &mut self.path.network else {
@@ -1771,7 +1771,7 @@ impl Owner<'_> {
         deadline
     }
 }
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     fn abandon_network_packets(&mut self, path: PathIdentity) -> Result<(), Error> {
         // Validation failure abandons this exact path. Outstanding originals
         // remain ACKable as Lost; their data is requeued on the surviving path.

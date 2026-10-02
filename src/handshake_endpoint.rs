@@ -2,14 +2,16 @@
 //!
 //! Owns authenticated packet processing, CRYPTO/control recovery, congestion
 //! accounting and typed Hibana authority. `TransportEndpoint` adds bounded streams.
-//! Initial HP/AEAD/Retry replacement and graceful key retirement use actual
-//! actor-owned keys through awaited mailbox capabilities. Provider protection
-//! at other levels and the remaining Driver services are not yet migrated to
-//! independently scheduled role actors. This is a partial architecture slice.
+//! Initial keys and the whole TLS Provider are owned by separate projected
+//! async roles. Packet protection, CRYPTO processing, key maintenance and key
+//! retirement are genuinely awaited; no Provider or key handle lives here.
+//! Remaining non-key Driver services are migrating separately.
 //! Retry and explicit close/draining are integrated; provider resumption is
 //! supported. Migration and automatic fatal-error close reporting remain incomplete. Allocation
 //! policy depends on the selected provider; the bounded backend and allocating
 //! Rustls reference backend have separate evidence.
+mod tls_actor;
+pub use tls_actor::{TLS_PACKET_BYTES, TLS_PARAMETER_BYTES, TlsClient, TlsSnapshot};
 mod initial;
 pub use initial::{
     INITIAL_PACKET_BYTES, InitialKeyClient, InitialKeyProtection, InitialProtection,
@@ -27,7 +29,7 @@ pub use early::{EARLY_CONTROL_BYTES, EARLY_REQUEST_BYTES};
 
 use crate::{
     accounting::{self, PacketKind, PacketNumberSpace, SendReservation, SentLedger},
-    crypto::{self, IntegrityBudget},
+    crypto::{self},
     driver::{Driver, DriverError, TransmitTicket},
     ecn::{self, Codepoint, MarkedPackets, PathEcn, PathIdentity, RxCounts},
     flights::{self, FlightId, FlightStore, Reference},
@@ -43,7 +45,7 @@ use crate::{
         self, RecoveryTimer, RttEstimator, RttSample, SpaceTimer, TimeoutAction, TimerContext,
     },
     retry::{self, ClientRetry, ValidatedToken},
-    tls::{self, Level, Provider},
+    tls::{self, Level},
     version_negotiation,
 };
 
@@ -60,13 +62,6 @@ pub const MAX_RETRY_TOKEN_BYTES: usize = 192;
 pub enum Side {
     Client,
     Server,
-}
-#[derive(Clone, Copy, Debug)]
-pub enum KeyStage {
-    Install,
-    Use,
-    Complete,
-    Retire,
 }
 #[derive(Debug)]
 pub enum Error {
@@ -92,14 +87,11 @@ pub enum Error {
     Crypto(crypto::Error),
     /// The key-role service failed. The connection is terminal after this error.
     Protection(crate::roles::client::Error),
+    TlsOwner(crate::roles::tls_owner::ClientError),
+    IntegrityLoanUnavailable,
     Tls(tls::Error),
     Accounting(accounting::AccountingError),
     Driver(DriverError),
-    KeyAuthority {
-        stage: KeyStage,
-        level: Level,
-        error: DriverError,
-    },
     Reassembly(handshake::Error),
     Parameters(crate::parameters::Error),
 }
@@ -151,6 +143,11 @@ impl From<crypto::Error> for Error {
 impl From<tls::Error> for Error {
     fn from(e: tls::Error) -> Self {
         Self::Tls(e)
+    }
+}
+impl From<crate::roles::tls_owner::ClientError> for Error {
+    fn from(error: crate::roles::tls_owner::ClientError) -> Self {
+        Self::TlsOwner(error)
     }
 }
 impl From<accounting::AccountingError> for Error {
@@ -405,12 +402,8 @@ fn ecn_congestion_event<const N: usize>(
 /// One connection owner. All receive storage is borrowed from the caller; inline
 /// bounded history and descriptor state are owned by this object. The provider's
 /// allocation policy is explicit and is NOT inferred from this no_std core.
-pub struct HandshakeEndpoint<
-    'r,
-    's,
-    T: Provider,
-    K: InitialKeyProtection = InitialProtection<'r, 's>,
-> {
+pub struct HandshakeEndpoint<'r, 's, 'tc, 'ts, K: InitialKeyProtection = InitialProtection<'r, 's>>
+{
     side: Side,
     early: early::State<'s>,
     trace: Option<trace::State<'s>>,
@@ -422,9 +415,10 @@ pub struct HandshakeEndpoint<
     retry_pending: bool,
     remote: ConnectionId,
     remote_known: bool,
-    tls: T,
+    tls: Option<TlsClient<'tc, 'ts>>,
+    tls_last: TlsSnapshot,
+    finished_receipt: Option<crate::roles::tls_owner::FinishedReceipt>,
     initial: K,
-    integrity: IntegrityBudget,
     driver: Driver<'r>,
     received: [Seen; 3],
     crypto: [CryptoBuffer<'s>; 3],
@@ -475,7 +469,7 @@ pub struct HandshakeEndpoint<
     peer_close: Option<PeerClose>,
     parameters_verified: bool,
 }
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     /// The local advertised max_idle_timeout defaults to zero. If TLS advertises
     /// a nonzero value, call configure_idle_timeout with that exact value before
     /// any receive/transmit attempt. Peer parameters are installed after TLS authentication.
@@ -483,7 +477,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
     /// original destination CID. The endpoint never derives or borrows their keys.
     pub fn new(
         config: Config<'_>,
-        tls: T,
+        tls: TlsClient<'tc, 'ts>,
         driver: Driver<'r>,
         crypto: [CryptoBuffer<'s>; 3],
         initial: K,
@@ -498,7 +492,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
     /// Initial actors must already own the keys derived from that Retry SCID.
     pub fn new_after_retry(
         config: Config<'_>,
-        tls: T,
+        tls: TlsClient<'tc, 'ts>,
         driver: Driver<'r>,
         crypto: [CryptoBuffer<'s>; 3],
         admission: ValidatedToken,
@@ -513,13 +507,16 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
     }
     fn new_inner(
         config: Config<'_>,
-        tls: T,
+        tls: TlsClient<'tc, 'ts>,
         driver: Driver<'r>,
         crypto: [CryptoBuffer<'s>; 3],
         admission: Option<ValidatedToken>,
         initial: K,
     ) -> Result<Self, Error> {
-        if config.generation != driver.generation() || config.generation != initial.generation() {
+        if config.generation != driver.generation()
+            || config.generation != initial.generation()
+            || config.generation != tls.generation()
+        {
             return Err(Error::InvalidConfig);
         }
         // RFC 9000 §7.2: only the client's first chosen DCID has this minimum;
@@ -552,6 +549,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         if config.side == Side::Client || admission.is_some() {
             path.mark_validated()?;
         }
+        let tls_last = *tls.snapshot();
         Ok(Self {
             side: config.side,
             early: early::State::new(),
@@ -564,9 +562,10 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             retry_pending: false,
             remote,
             remote_known: admission.is_some(),
-            tls,
+            tls: Some(tls),
+            tls_last,
+            finished_receipt: None,
             initial,
-            integrity: IntegrityBudget::new(),
             driver,
             received: [Seen::default(); 3],
             crypto,
@@ -757,7 +756,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
     }
     /// Request an authenticated QUIC application-key update. Pending adapter output
     /// must complete first so no old-key datagram crosses the local update boundary.
-    pub fn initiate_key_update(&mut self) -> Result<(), Error> {
+    async fn initiate_key_update_impl(&mut self) -> Result<(), Error> {
         if self.connection_state() != ConnectionState::Active {
             return Err(Error::Busy);
         }
@@ -770,10 +769,11 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         if !self.handshake_confirmed {
             return Err(tls::Error::KeyUpdateNotAllowed.into());
         }
-        self.tls.initiate_key_update(self.now, self.key_pto()?)?;
+        self.tls_initiate_key_update(self.now, self.key_pto()?)
+            .await?;
         self.trace_event(crate::trace::Event::ApplicationKeyUpdated {
             owner: self.trace_vantage(),
-            generation: self.tls.key_generation(),
+            generation: self.tls_snapshot().send_generation,
             trigger: crate::trace::KeyUpdateTrigger::LocalUpdate,
         });
         Ok(())
@@ -809,13 +809,10 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             congestion_events: self.ecn_congestion_events,
         }
     }
-    pub fn tls(&self) -> &T {
-        &self.tls
-    }
     pub fn handshake_complete(&self) -> bool {
         self.connection_state() == ConnectionState::Active
             && !self.is_retired()
-            && !self.tls.is_handshaking()
+            && !self.tls_snapshot().handshaking
             && self.parameters_verified
     }
     pub fn congestion_window(&self) -> u64 {
@@ -887,7 +884,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             self.lifecycle.state()
         }
     }
-    pub fn close(&mut self, reason: CloseReason) -> Result<(), Error> {
+    async fn close_impl(&mut self, reason: CloseReason) -> Result<(), Error> {
         if self.retired {
             return Err(Error::Retired);
         }
@@ -899,13 +896,13 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             .local_close(reason, self.now, self.key_pto()?)?
         {
             self.idle.stop();
-            self.stop_ordinary_output()?;
+            self.stop_ordinary_output().await?;
         }
         Ok(())
     }
-    fn stop_ordinary_output(&mut self) -> Result<(), Error> {
-        if self.driver.is_early_key_installed() {
-            self.driver.retire_early_key()?;
+    async fn stop_ordinary_output(&mut self) -> Result<(), Error> {
+        if self.tls_snapshot().early_keys {
+            self.tls_discard_early().await?;
         }
         self.clear_early();
         self.close_round = None;
@@ -947,21 +944,18 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             }
             self.driver.adapter_result(pending.ticket)?;
         }
-        self.stop_ordinary_output()?;
-        for level in [Level::Handshake, Level::OneRtt] {
-            if self.driver.is_key_installed(level) {
-                self.driver.retire_key(level)?;
-            }
-        }
+        self.stop_ordinary_output().await?;
         self.initial.retire().await?;
-        self.tls.discard_keys(Level::Handshake);
-        self.tls.discard_keys(Level::OneRtt);
+        self.retire_tls().await?;
         self.discarded = [true; 2];
         self.driver.retire();
         Ok(())
     }
     /// Check immediately before synchronous adapter submission. Serialize this
     /// check/send with receive and timer calls. A result reports submission, not delivery.
+    /// Closing expiry revokes the output synchronously; the caller must then
+    /// await `retire_owned` to finish the retained crypto owners before returning
+    /// success. This check cannot suspend between permission and submission.
     pub fn transmit_permitted(&mut self, output: Transmit, now: u64) -> Result<bool, Error> {
         let Some(pending) = self.pending.as_ref() else {
             return Ok(false);
@@ -973,7 +967,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             let permitted = self.lifecycle.transmit_permitted(token, now)?;
             self.now = self.now.max(now);
             if self.lifecycle.state() == ConnectionState::Closed {
-                self.retire();
+                self.retire_data_plane();
             }
             return Ok(permitted);
         }
@@ -986,6 +980,14 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         self.retired || self.driver.is_retired()
     }
     pub fn retire(&mut self) {
+        self.retire_data_plane();
+        self.initial.close();
+        self.abort_tls();
+    }
+    /// Revoke numerical admission without replacing an awaited owner retirement
+    /// with mailbox cancellation. Only the synchronous Closing-expiry check
+    /// leaves owner capabilities retained for the explicit async finalizer.
+    fn retire_data_plane(&mut self) {
         self.idle.stop();
         self.pending = None;
         self.pending_tls = None;
@@ -993,16 +995,13 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         self.retired = true;
         self.driver.retire();
         self.clear_early();
-        self.initial.close();
         self.sent.retire();
         self.path.retire();
         self.flights.discard();
-        self.tls.discard_keys(Level::Handshake);
-        self.tls.discard_keys(Level::OneRtt);
     }
     /// Advance the injected monotonic clock and arm a bounded fresh-PN CRYPTO
     /// probe on PTO. A PTO does not declare every outstanding packet lost.
-    pub fn timer(&mut self, now: u64) -> Result<(), Error> {
+    async fn timer_impl(&mut self, now: u64) -> Result<(), Error> {
         if self.retired {
             return Err(Error::Retired);
         }
@@ -1016,7 +1015,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             }
             if self.lifecycle.on_timeout(now)? || self.lifecycle.state() == ConnectionState::Closed
             {
-                self.retire();
+                self.retire_owned().await?;
             }
             return Ok(());
         }
@@ -1029,7 +1028,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         if self.is_retired() {
             return Ok(());
         }
-        self.tls.maintain_keys(now, self.key_pto()?)?;
+        self.tls_maintain(now, self.key_pto()?).await?;
         if let Some(action) = self.recovery.on_timeout(now)? {
             if let TimeoutAction::DetectLoss(_) = action {
                 self.detect_losses()?;
@@ -1131,7 +1130,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 keys_available: if i == 0 {
                     !self.discarded[0]
                 } else {
-                    self.tls.has_keys(level)
+                    self.tls_has_keys(level)
                 },
                 loss_time: self.loss_times[i],
                 ack_eliciting_in_flight: at.is_some(),
@@ -1148,31 +1147,8 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         Ok(())
     }
 
-    fn sync_key_authority(&mut self) -> Result<(), Error> {
-        for level in [Level::Handshake, Level::OneRtt] {
-            if self.tls.has_keys(level) && !self.driver.is_key_installed(level) {
-                self.driver
-                    .install_key(level)
-                    .map_err(|error| Error::KeyAuthority {
-                        stage: KeyStage::Install,
-                        level,
-                        error,
-                    })?;
-                if level == Level::OneRtt {
-                    self.trace_event(crate::trace::Event::ApplicationKeyUpdated {
-                        owner: self.trace_vantage(),
-                        generation: self.tls.key_generation(),
-                        trigger: crate::trace::KeyUpdateTrigger::Tls,
-                    });
-                    self.trace_event(crate::trace::Event::ApplicationKeyUpdated {
-                        owner: self.trace_peer_vantage(),
-                        generation: self.tls.receive_key_generation(),
-                        trigger: crate::trace::KeyUpdateTrigger::Tls,
-                    });
-                }
-            }
-        }
-        self.sync_early_authority()
+    async fn sync_tls_effects(&mut self) -> Result<(), Error> {
+        self.sync_early_state().await
     }
     async fn apply_key_discards(&mut self) -> Result<(), Error> {
         if self.lifecycle.state() != ConnectionState::Active {
@@ -1199,14 +1175,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             if i == 0 {
                 self.initial.retire().await?;
             } else {
-                self.driver
-                    .retire_key(level)
-                    .map_err(|error| Error::KeyAuthority {
-                        stage: KeyStage::Retire,
-                        level,
-                        error,
-                    })?;
-                self.tls.discard_keys(level);
+                self.tls_discard_handshake().await?;
             }
             self.received[i].ack_pending = false;
             self.loss_times[i] = None;
@@ -1410,7 +1379,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         received_ecn: Option<Codepoint>,
         handler: &mut A,
     ) -> Result<Received, Error> {
-        self.tls.maintain_keys(self.now, self.key_pto()?)?;
+        self.tls_maintain(self.now, self.key_pto()?).await?;
         self.path.record_received(datagram.len() as u64)?;
         let mut report = Received::default();
         let packets = match PacketIter::new(datagram, self.local.len, 8) {
@@ -1536,15 +1505,13 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 report.discarded += 1;
                 continue;
             }
-            if packet.bytes.len() > scratch.len()
-                || (level == Level::Initial && packet.bytes.len() > INITIAL_PACKET_BYTES)
-            {
+            if packet.bytes.len() > scratch.len() || packet.bytes.len() > TLS_PACKET_BYTES {
                 report.discarded += 1;
                 continue;
             }
             if (level == Level::Initial && self.discarded[0])
-                || (level == Level::OneRtt && self.tls.is_handshaking())
-                || (level != Level::Initial && !self.tls.has_keys(level))
+                || (level == Level::OneRtt && self.tls_snapshot().handshaking)
+                || (level != Level::Initial && !self.tls_has_keys(level))
             {
                 report.discarded += 1;
                 continue;
@@ -1557,34 +1524,15 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 continue;
             };
             let sample: &[u8; 16] = sample.try_into().map_err(|_| Error::Capacity)?;
-            self.sync_key_authority()?;
-            let key_use = if level == Level::Initial {
-                None
-            } else {
-                Some(
-                    self.driver
-                        .begin_key_use(level)
-                        .map_err(|error| Error::KeyAuthority {
-                            stage: KeyStage::Use,
-                            level,
-                            error,
-                        })?,
-                )
-            };
+            self.sync_tls_effects().await?;
             let mask = if level == Level::Initial {
                 self.initial.receive_mask(*sample).await?
             } else {
-                self.tls.header_mask(level, false, sample)?
+                self.tls_mask(level, false, *sample).await?
             };
             bytes[0] ^= mask[0] & if bytes[0] & 0x80 != 0 { 0x0f } else { 0x1f };
             let pn_len = usize::from((bytes[0] & 3) + 1);
             if pn_offset + pn_len > bytes.len() {
-                self.finish_provider_key_use(key_use)
-                    .map_err(|error| Error::KeyAuthority {
-                        stage: KeyStage::Complete,
-                        level,
-                        error,
-                    })?;
                 report.discarded += 1;
                 continue;
             }
@@ -1600,32 +1548,19 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             ) {
                 Ok(pn) => pn,
                 Err(_) => {
-                    self.finish_provider_key_use(key_use)
-                        .map_err(|error| Error::KeyAuthority {
-                            stage: KeyStage::Complete,
-                            level,
-                            error,
-                        })?;
                     report.discarded += 1;
                     continue;
                 }
             };
             let first = bytes[0];
             let (header, body) = bytes.split_at_mut(pn_offset + pn_len);
-            let previous_receive_generation = self.tls.receive_key_generation();
-            let previous_write_generation = self.tls.key_generation();
+            let previous_receive_generation = self.tls_snapshot().receive_generation;
+            let previous_write_generation = self.tls_snapshot().send_generation;
             let mut received_key_generation = 0;
-            let plaintext = if level == Level::Initial {
+            let (plaintext, receive_evidence) = if level == Level::Initial {
                 match self.open_initial(pn, header, body).await {
-                    Ok(n) => n,
+                    Ok((n, receipt)) => (n, crate::driver::ReceiveEvidence::Initial(receipt)),
                     Err(Error::Crypto(crypto::Error::AuthenticationFailed)) => {
-                        self.finish_provider_key_use(key_use).map_err(|error| {
-                            Error::KeyAuthority {
-                                stage: KeyStage::Complete,
-                                level,
-                                error,
-                            }
-                        })?;
                         report.discarded += 1;
                         continue;
                     }
@@ -1633,57 +1568,47 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 }
             } else {
                 let opened = if level == Level::OneRtt {
-                    self.tls
-                        .open_one_rtt(
-                            pn,
-                            first & 0x04 != 0,
-                            header,
-                            body,
-                            self.now,
-                            self.key_pto()?,
-                        )
-                        .map(|opened| {
-                            received_key_generation = opened.generation;
-                            opened.len
-                        })
+                    self.tls_open_one_rtt(
+                        pn,
+                        first & 0x04 != 0,
+                        header,
+                        body,
+                        self.now,
+                        self.key_pto()?,
+                    )
+                    .await
+                    .map(|(opened, receipt)| {
+                        received_key_generation = opened.generation;
+                        (opened.len, receipt)
+                    })
                 } else {
-                    self.tls.open(level, pn, header, body)
+                    self.tls_open(level, pn, header, body).await
                 };
                 match opened {
-                    Ok(n) => n,
-                    Err(tls::Error::Authentication | tls::Error::KeysUnavailable) => {
-                        self.finish_provider_key_use(key_use).map_err(|error| {
-                            Error::KeyAuthority {
-                                stage: KeyStage::Complete,
-                                level,
-                                error,
-                            }
-                        })?;
+                    Ok((n, receipt)) => (n, crate::driver::ReceiveEvidence::Tls(receipt)),
+                    Err(Error::Tls(tls::Error::Authentication | tls::Error::KeysUnavailable)) => {
                         report.discarded += 1;
                         continue;
                     }
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(e),
                 }
             };
-            self.finish_provider_key_use(key_use)
-                .map_err(|error| Error::KeyAuthority {
-                    stage: KeyStage::Complete,
-                    level,
-                    error,
-                })?;
+
             if level == Level::OneRtt
-                && self.tls.receive_key_generation() > previous_receive_generation
+                && self.tls_snapshot().receive_generation > previous_receive_generation
             {
                 self.trace_event(crate::trace::Event::ApplicationKeyUpdated {
                     owner: self.trace_peer_vantage(),
-                    generation: self.tls.receive_key_generation(),
+                    generation: self.tls_snapshot().receive_generation,
                     trigger: crate::trace::KeyUpdateTrigger::RemoteUpdate,
                 });
             }
-            if level == Level::OneRtt && self.tls.key_generation() > previous_write_generation {
+            if level == Level::OneRtt
+                && self.tls_snapshot().send_generation > previous_write_generation
+            {
                 self.trace_event(crate::trace::Event::ApplicationKeyUpdated {
                     owner: self.trace_vantage(),
-                    generation: self.tls.key_generation(),
+                    generation: self.tls_snapshot().send_generation,
                     trigger: crate::trace::KeyUpdateTrigger::RemoteUpdate,
                 });
             }
@@ -1799,7 +1724,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 report.discarded += 1;
                 continue;
             }
-            let ticket = self.driver.begin_receive()?;
+            let ticket = self.driver.begin_receive(receive_evidence)?;
             let path_pto = self.key_pto()?;
             self.path.ensure_probe_pto(path_pto)?;
             let network_context = if self.path.managed() {
@@ -1830,10 +1755,12 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                             if bytes.is_empty() {
                                 break;
                             }
-                            let n = bytes.len();
-                            self.tls.receive(level, bytes)?;
+                            let n = bytes.len().min(TLS_PACKET_BYTES);
+                            let mut input = [0; TLS_PACKET_BYTES];
+                            input[..n].copy_from_slice(&bytes[..n]);
+                            self.tls_receive_crypto(level, &input[..n]).await?;
                             self.crypto[index(level)].consume(n)?;
-                            self.sync_key_authority()?;
+                            self.sync_tls_effects().await?;
                         }
                     }
                     Frame::Ack { ranges, delay, ecn } => {
@@ -1891,12 +1818,13 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                                 if self.sent.sent_kind(sent.packet) != Some(PacketKind::OneRtt) {
                                     continue;
                                 }
-                                self.tls.acknowledge_one_rtt(
+                                self.tls_acknowledge(
                                     sent.packet.value,
                                     received_key_generation,
                                     self.now,
                                     self.key_pto()?,
-                                )?;
+                                )
+                                .await?;
                             }
                         }
                         let mut marked = MarkedPackets::default();
@@ -1989,9 +1917,11 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                     }
                     Frame::Padding { .. } | Frame::Ping => {}
                     Frame::HandshakeDone if self.side == Side::Client && level == Level::OneRtt => {
-                        self.handshake_confirmed = true;
-                        self.tls.confirm_handshake()?;
-                        self.discard_requested[1] = true;
+                        if !self.handshake_confirmed {
+                            self.tls_confirm().await?;
+                            self.handshake_confirmed = true;
+                            self.discard_requested[1] = true;
+                        }
                     }
                     // These optional post-handshake frames require no immediate
                     // effect for the handshake-only endpoint. No stream API exists.
@@ -2049,27 +1979,23 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                 client.on_peer_processed();
             }
             self.idle.on_processed_receive(self.now, receive_pto)?;
-            self.validate_parameters()?;
-            self.reconcile_early_client(handler)?;
+            self.validate_parameters().await?;
+            self.reconcile_early_client(handler).await?;
             self.release_early(handler)?;
-            if level == Level::OneRtt && self.side == Side::Server && self.tls.has_early_keys() {
-                self.tls.discard_early_keys();
-                if self.driver.is_early_key_installed() {
-                    self.driver.retire_early_key()?;
-                }
+            if level == Level::OneRtt && self.side == Side::Server && self.tls_snapshot().early_keys
+            {
+                self.tls_discard_early().await?;
             }
             self.apply_key_discards().await?;
         }
         Ok(report)
     }
-    fn validate_parameters(&mut self) -> Result<(), Error> {
-        if self.tls.is_handshaking() || self.parameters_verified {
+    async fn validate_parameters(&mut self) -> Result<(), Error> {
+        if self.tls_snapshot().handshaking || self.parameters_verified {
             return Ok(());
         }
-        let raw = self
-            .tls
-            .peer_transport_parameters()
-            .ok_or(Error::InvalidConfig)?;
+        let observed = *self.tls_snapshot();
+        let raw = observed.peer_parameters().ok_or(Error::InvalidConfig)?;
         let peer = if self.side == Side::Client {
             Peer::Server
         } else {
@@ -2105,13 +2031,13 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         let peer_idle_timeout = p.get_integer(1, 0)?;
         self.idle
             .negotiate_peer(peer_idle_timeout, self.now, self.idle_pto()?)?;
-        self.parameters_verified = true;
         if self.side == Side::Server {
+            self.tls_confirm().await?;
             self.handshake_confirmed = true;
-            self.tls.confirm_handshake()?;
             self.handshake_done_pending = true;
             self.discard_requested[1] = true;
         }
+        self.parameters_verified = true;
         Ok(())
     }
 
@@ -2203,11 +2129,11 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
     async fn transmit_close(&mut self, out: &mut [u8]) -> Result<Option<Transmit>, Error> {
         if self.close_round.is_none() {
             let mut levels = 0_u8;
-            if self.tls.has_keys(Level::OneRtt) && !self.tls.is_handshaking() {
+            if self.tls_has_keys(Level::OneRtt) && !self.tls_snapshot().handshaking {
                 levels |= 4;
             }
             if !self.handshake_confirmed {
-                if self.tls.has_keys(Level::Handshake) {
+                if self.tls_has_keys(Level::Handshake) {
                     levels |= 2;
                 }
                 if !self.discarded[0] && (self.side == Side::Server || levels == 0) {
@@ -2270,7 +2196,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             && self.pending_tls.is_none()
             && self.probe.is_none()
         {
-            self.pending_tls = self.tls.transmit(&mut self.pending_crypto)?;
+            self.take_tls_flight().await?;
         }
         if let Some(output) = self.pending_tls
             && self.queued_flight.is_none()
@@ -2319,7 +2245,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             let Some(i) = self.received.iter().enumerate().find_map(|(i, s)| {
                 if s.ack_pending
                     && ((i == 0 && !self.discarded[0])
-                        || self.tls.has_keys(if i == 1 {
+                        || self.tls_has_keys(if i == 1 {
                             Level::Handshake
                         } else {
                             Level::OneRtt
@@ -2334,7 +2260,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             };
             [Level::Initial, Level::Handshake, Level::OneRtt][i]
         };
-        if closing.is_none() && level == Level::OneRtt && self.tls.is_handshaking() {
+        if closing.is_none() && level == Level::OneRtt && self.tls_snapshot().handshaking {
             return Ok(None);
         }
         let mut plaintext = [0_u8; 1200];
@@ -2423,7 +2349,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
                     packet_number: pn,
                     packet_number_len: 4,
                     spin: false,
-                    key_phase: self.tls.key_phase(),
+                    key_phase: self.tls_snapshot().key_phase,
                 },
                 out,
             )?
@@ -2551,26 +2477,13 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         };
         let ticket = self.driver.reserve_transmit()?;
         self.bind_network_transmit(ticket, path)?;
-        self.sync_key_authority()?;
-        let key_use = if level == Level::Initial {
-            None
-        } else {
-            Some(
-                self.driver
-                    .begin_key_use(level)
-                    .map_err(|error| Error::KeyAuthority {
-                        stage: KeyStage::Use,
-                        level,
-                        error,
-                    })?,
-            )
-        };
+        self.sync_tls_effects().await?;
         out[hlen..hlen + len].copy_from_slice(&plaintext[..len]);
         let (header, body) = out[..total].split_at_mut(hlen);
         if level == Level::Initial {
             self.initial.seal(pn, header, body, len).await?;
         } else {
-            self.tls.seal(level, pn, header, body, len)?;
+            self.tls_seal(level, pn, header, body, len).await?;
         }
         let pn_offset = hlen - 4;
         let sample: &[u8; 16] = out[pn_offset + 4..pn_offset + 20]
@@ -2579,18 +2492,13 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
         let mask = if level == Level::Initial {
             self.initial.transmit_mask(*sample).await?
         } else {
-            self.tls.header_mask(level, true, sample)?
+            self.tls_mask(level, true, *sample).await?
         };
         out[0] ^= mask[0] & if out[0] & 0x80 != 0 { 0x0f } else { 0x1f };
         for i in 0..4 {
             out[pn_offset + i] ^= mask[i + 1];
         }
-        self.finish_provider_key_use(key_use)
-            .map_err(|error| Error::KeyAuthority {
-                stage: KeyStage::Complete,
-                level,
-                error,
-            })?;
+
         let output = Transmit {
             authority: ticket,
             early: false,
@@ -2603,7 +2511,8 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             ecn: self.transmit_ecn()?,
         };
         self.next_id = self.next_id.checked_add(1).ok_or(Error::Capacity)?;
-        let trace_key_generation = (level == Level::OneRtt).then(|| self.tls.key_generation());
+        let trace_key_generation =
+            (level == Level::OneRtt).then(|| self.tls_snapshot().send_generation);
         self.pending = Some(Pending {
             trace_key_generation,
             close: None,

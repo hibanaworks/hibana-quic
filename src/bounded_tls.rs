@@ -1540,6 +1540,23 @@ fn map_crypto(error: crypto::Error) -> tls::Error {
     }
 }
 impl Provider for BoundedTls<'_, '_> {
+    fn observations(&self) -> tls::Observations {
+        tls::Observations {
+            resumed: Some(self.is_resumed()),
+            negotiated_suite: self.negotiated_suite().map(|suite| match suite {
+                CipherSuite::Aes128GcmSha256 => 0x1301,
+                CipherSuite::ChaCha20Poly1305Sha256 => 0x1303,
+            }),
+            failed_authentications: Some(self.failed_authentications()),
+        }
+    }
+    fn write_failure_diagnostic(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        if let Some(failure) = self.last_failure() {
+            write!(out, "{failure:?}")?;
+        }
+        Ok(())
+    }
+
     fn early_status(&self) -> EarlyStatus {
         self.early_status
     }

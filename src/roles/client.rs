@@ -4,7 +4,9 @@
 //! in packet_protection.rs. This client moves owned requests through the bounded
 //! mailbox and checks correlation. Cancelling an in-flight call closes its
 //! capability; callers must abandon the connection after a service error.
-use super::packet_protection::{Command, Descriptor, InitialDestination, Outcome, Packet, Reply};
+use super::packet_protection::{
+    Command, Descriptor, InitialDestination, OpenedPacket, Outcome, Packet, Reply,
+};
 use crate::{
     crypto,
     mailbox::{Receiver, Sender},
@@ -147,7 +149,7 @@ impl<'c, 's, const N: usize, const Q: usize, const R: usize> KeyClient<'c, 's, N
     pub async fn seal(
         &mut self,
         packet: Packet<N>,
-    ) -> Result<Result<Packet<N>, crypto::Error>, Error> {
+    ) -> Result<Result<super::sealed_packet::SealedPacket<N>, crypto::Error>, Error> {
         match self.request(Command::Seal(packet)).await? {
             Outcome::Sealed(packet) => Ok(Ok(packet)),
             Outcome::SealFailed(error) => Ok(Err(error)),
@@ -164,9 +166,19 @@ impl<'c, 's, const N: usize, const Q: usize, const R: usize> KeyClient<'c, 's, N
         &mut self,
         packet: Packet<N>,
         budget: crypto::IntegrityBudget,
-    ) -> Result<(Result<Packet<N>, crypto::Error>, crypto::IntegrityBudget), Error> {
+    ) -> Result<
+        (
+            Result<OpenedPacket<N>, crypto::Error>,
+            crypto::IntegrityBudget,
+        ),
+        Error,
+    > {
         match self.request(Command::Open { packet, budget }).await? {
-            Outcome::Opened { packet, budget } => Ok((Ok(packet), budget)),
+            Outcome::Opened {
+                packet,
+                receipt,
+                budget,
+            } => Ok((Ok(OpenedPacket { packet, receipt }), budget)),
             Outcome::AuthenticationRejected { error, budget }
             | Outcome::OpenFailed { error, budget } => Ok((Err(error), budget)),
             _ => {

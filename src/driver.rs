@@ -6,17 +6,20 @@
 //! Each method has a fixed operation bound and never leaves a borrowed future
 //! behind. An unexpected Pending is terminal, never an inferred success.
 //!
-//! Call `begin_receive` only after successful packet authentication, and finish
+//! `begin_receive` consumes successful key-owner authentication evidence; finish
 //! it after authenticated effects have been applied. Reserve actual accounting
 //! resources before `reserve_transmit`, publish only after its success, and
 //! call `adapter_result` only after the corresponding adapter callback. This
-//! driver enforces message order; it does not perform cryptography/accounting.
+//! driver enforces effect order; the projected key owners perform cryptography
+//! and keep every key lifecycle out of this numerical effect ledger.
 
 mod early;
 mod path;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub use early::{
     EarlyBufferTicket, EarlyControlBufferTicket, EarlyControlReleaseTicket, EarlyIntentTicket,
-    EarlyKeyUseTicket, EarlyPeerCloseTicket, EarlyReceiveTicket, EarlyReleaseTicket,
+    EarlyPeerCloseTicket, EarlyReceiveTicket, EarlyReleaseTicket,
 };
 pub use path::{
     CidAdvertisementTicket, CidInstallTicket, CidRetirementTicket, PathAcceptedTicket, PathEffect,
@@ -24,17 +27,13 @@ pub use path::{
 };
 
 use crate::protocol::{
-    ADAPTER, APPLICATION, HandshakeKeyInstalled, HandshakeKeyRetired, HandshakeKeyUse,
-    HandshakeKeyUsed, INGRESS, InitialKeyInstalled, InitialKeyRetired, InitialKeyUse,
-    InitialKeyUsed, OneRttKeyInstalled, OneRttKeyRetired, OneRttKeyUse, OneRttKeyUsed, PACKET,
-    RECOVERY, RxDatagram, RxProcessed, TIMER, TimerExpired, TimerHandled, TxComplete, TxRequest,
-    TxReserved, TxResult,
+    ADAPTER, APPLICATION, INGRESS, PACKET, RECOVERY, RxDatagram, RxProcessed, TIMER, TimerExpired,
+    TimerHandled, TxComplete, TxRequest, TxReserved, TxResult,
 };
 use crate::protocol::{
     AckReleaseCompleted, AckReleaseRequest, AuthenticatedPacket, DeliveryCompleted, DeliveryRequest,
 };
 use crate::protocol::{StreamRetiredAcknowledged, StreamRetiredRequest};
-use crate::tls::Level;
 use core::{
     future::Future,
     pin::pin,
@@ -58,6 +57,49 @@ pub struct Roles<'r> {
 struct Descriptor {
     generation: u64,
     id: u32,
+}
+
+/// One successfully authenticated packet, minted only by its actual key owner.
+/// The variants deliberately exclude 0-RTT, whose effects require quarantine.
+/// Consuming this affine value admits one numeric receive record; it cannot be
+/// recreated from a key snapshot, packet number, or copied generation.
+///
+/// Evidence cannot be reused for another receive:
+/// ```compile_fail
+/// use hibana_quic::driver::ReceiveEvidence;
+/// fn duplicate(receipt: ReceiveEvidence) {
+///     let first = receipt;
+///     let second = receipt;
+/// }
+/// ```
+/// Early authentication cannot grant ordinary ACK/delivery authority:
+/// ```compile_fail
+/// use hibana_quic::{driver::ReceiveEvidence, roles::tls_owner::EarlyOpenReceipt};
+/// fn substitute(early: EarlyOpenReceipt) -> ReceiveEvidence {
+///     ReceiveEvidence::Tls(early)
+/// }
+/// ```
+pub enum ReceiveEvidence {
+    Initial(crate::roles::packet_protection::OpenReceipt),
+    Tls(crate::roles::tls_owner::OpenReceipt),
+}
+impl ReceiveEvidence {
+    fn generation(&self) -> Result<u64, DriverError> {
+        match self {
+            Self::Initial(opened) if opened.kind() == crate::crypto::KeyKind::Initial => {
+                Ok(opened.generation())
+            }
+            Self::Tls(opened)
+                if matches!(
+                    opened.level(),
+                    crate::tls::Level::Handshake | crate::tls::Level::OneRtt
+                ) =>
+            {
+                Ok(opened.generation())
+            }
+            _ => Err(DriverError::InvalidTicket),
+        }
+    }
 }
 
 /// A handle checked against the driver's single live receive record. Copying
@@ -86,25 +128,6 @@ impl TransmitTicket {
     }
 }
 
-/// A use grant tied to one installed level and one unique live driver record.
-/// Copying or replaying it cannot complete another use.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct KeyUseTicket {
-    descriptor: Descriptor,
-    level: Level,
-    installation: u32,
-}
-impl KeyUseTicket {
-    pub const fn descriptor_id(self) -> u32 {
-        self.descriptor.id
-    }
-    pub const fn generation(self) -> u64 {
-        self.descriptor.generation
-    }
-    pub const fn level(self) -> Level {
-        self.level
-    }
-}
 /// One checked ACK effect bound to an authenticated receive record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AckTicket {
@@ -146,29 +169,11 @@ enum ReceiveEffect {
     CidRetirement(CidRetirementTicket),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum KeyState {
-    Uninstalled,
-    Installed(u32),
-    Retired,
-}
-fn key_index(level: Level) -> usize {
-    match level {
-        Level::Initial => 0,
-        Level::Handshake => 1,
-        Level::OneRtt => 2,
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum DriverError {
     Retired,
     ReceiveBusy,
     TransmitBusy,
-    KeyNotInstalled,
-    KeyAlreadyInstalled,
-    KeyRetired,
-    KeyUseBusy,
     ReceiveEffectBusy,
     InvalidStreamId,
     InvalidTicket,
@@ -203,8 +208,6 @@ pub struct Driver<'r> {
     receive: Option<ReceiveTicket>,
     transmit: Option<TransmitTicket>,
     last_timer: Option<u64>,
-    keys: [KeyState; 3],
-    key_use: Option<KeyUseTicket>,
     receive_effect: Option<ReceiveEffect>,
     early: early::State,
     path: path::State,
@@ -221,8 +224,6 @@ impl<'r> Driver<'r> {
             receive: None,
             transmit: None,
             last_timer: None,
-            keys: [KeyState::Uninstalled; 3],
-            key_use: None,
             receive_effect: None,
             early: early::State::new(),
             path: path::State::new(),
@@ -247,19 +248,20 @@ impl<'r> Driver<'r> {
     pub fn retire(&mut self) {
         self.receive = None;
         self.transmit = None;
-        self.key_use = None;
         self.receive_effect = None;
-        self.keys = [KeyState::Retired; 3];
         self.early = early::State::retired();
         self.path = path::State::retired();
         drop(self.roles.take());
     }
 
-    /// Admit an authenticated packet and emit/receive its actual typed
-    /// authentication notice to Recovery (four bounded polls).
-    /// This must be called only after external packet authentication succeeds.
-    pub fn begin_receive(&mut self) -> Result<ReceiveTicket, DriverError> {
+    /// Consume successful owner-produced Open evidence before notifying
+    /// Recovery. Full packet syntax, replay, ACK ranges and resource admission
+    /// remain the connection's checked numerical obligations.
+    pub fn begin_receive(&mut self, opened: ReceiveEvidence) -> Result<ReceiveTicket, DriverError> {
         self.ensure_live()?;
+        if opened.generation()? != self.generation {
+            return Err(DriverError::InvalidTicket);
+        }
         if self.receive.is_some() || self.early.receiving() {
             return Err(DriverError::ReceiveBusy);
         }
@@ -371,100 +373,6 @@ impl<'r> Driver<'r> {
             Ok(())
         })?;
         self.last_timer = Some(now);
-        Ok(())
-    }
-
-    /// Notify both key-service roles only after the real crypto owner has
-    /// installed this level's keys. Installation is one-time per generation.
-    pub fn install_key(&mut self, level: Level) -> Result<(), DriverError> {
-        self.ensure_live()?;
-        match self.keys[key_index(level)] {
-            KeyState::Uninstalled => {}
-            KeyState::Installed(_) => return Err(DriverError::KeyAlreadyInstalled),
-            KeyState::Retired => return Err(DriverError::KeyRetired),
-        }
-        let grant = self.issue_descriptor()?.id;
-        self.execute(|roles| match level {
-            Level::Initial => key_grant::<InitialKeyInstalled>(roles, grant),
-            Level::Handshake => key_grant::<HandshakeKeyInstalled>(roles, grant),
-            Level::OneRtt => key_grant::<OneRttKeyInstalled>(roles, grant),
-        })?;
-        self.keys[key_index(level)] = KeyState::Installed(grant);
-        Ok(())
-    }
-
-    pub fn is_key_installed(&self, level: Level) -> bool {
-        !self.is_retired() && matches!(self.keys[key_index(level)], KeyState::Installed(_))
-    }
-
-    /// Execute the level-specific use route BEFORE header protection or AEAD.
-    /// Exactly one live use may exist. The completion is required even when an
-    /// ordinary authentication failure causes the network packet to be dropped.
-    pub fn begin_key_use(&mut self, level: Level) -> Result<KeyUseTicket, DriverError> {
-        self.ensure_live()?;
-        let installation = match self.keys[key_index(level)] {
-            KeyState::Uninstalled => return Err(DriverError::KeyNotInstalled),
-            KeyState::Retired => return Err(DriverError::KeyRetired),
-            KeyState::Installed(grant) => grant,
-        };
-        if self.key_use.is_some() || self.early.using_key() {
-            return Err(DriverError::KeyUseBusy);
-        }
-        let descriptor = self.issue_descriptor()?;
-        self.execute(|roles| match level {
-            Level::Initial => key_route::<InitialKeyUse>(roles, descriptor.id),
-            Level::Handshake => key_route::<HandshakeKeyUse>(roles, descriptor.id),
-            Level::OneRtt => key_route::<OneRttKeyUse>(roles, descriptor.id),
-        })?;
-        let ticket = KeyUseTicket {
-            descriptor,
-            level,
-            installation,
-        };
-        self.key_use = Some(ticket);
-        Ok(ticket)
-    }
-
-    /// Complete the key operation. This is completion evidence, not a claim
-    /// that AEAD authenticated successfully; normal auth failures use the same
-    /// completion and do not poison the internal Hibana session.
-    pub fn finish_key_use(&mut self, ticket: KeyUseTicket) -> Result<(), DriverError> {
-        self.ensure_live()?;
-        if self.key_use != Some(ticket)
-            || ticket.generation() != self.generation
-            || self.keys[key_index(ticket.level)] != KeyState::Installed(ticket.installation)
-        {
-            return Err(DriverError::InvalidTicket);
-        }
-        self.execute(|roles| match ticket.level {
-            Level::Initial => key_completion::<InitialKeyUsed>(roles, ticket.descriptor.id),
-            Level::Handshake => key_completion::<HandshakeKeyUsed>(roles, ticket.descriptor.id),
-            Level::OneRtt => key_completion::<OneRttKeyUsed>(roles, ticket.descriptor.id),
-        })?;
-        self.key_use = None;
-        Ok(())
-    }
-
-    /// Notify retirement at the typed route and then mark this level terminal
-    /// in the bounded ledger. The wire route alone permits repetition; the
-    /// ledger is the explicit authority preventing any post-retirement use.
-    /// Other encryption levels, Rx/Tx and timers remain independent.
-    pub fn retire_key(&mut self, level: Level) -> Result<(), DriverError> {
-        self.ensure_live()?;
-        let installation = match self.keys[key_index(level)] {
-            KeyState::Uninstalled => return Err(DriverError::KeyNotInstalled),
-            KeyState::Retired => return Err(DriverError::KeyRetired),
-            KeyState::Installed(grant) => grant,
-        };
-        if self.key_use.is_some_and(|ticket| ticket.level == level) {
-            return Err(DriverError::KeyUseBusy);
-        }
-        self.execute(|roles| match level {
-            Level::Initial => key_route::<InitialKeyRetired>(roles, installation),
-            Level::Handshake => key_route::<HandshakeKeyRetired>(roles, installation),
-            Level::OneRtt => key_route::<OneRttKeyRetired>(roles, installation),
-        })?;
-        self.keys[key_index(level)] = KeyState::Retired;
         Ok(())
     }
 
@@ -613,31 +521,6 @@ impl<'r> Driver<'r> {
     }
 }
 
-fn key_grant<M: hibana::g::Message<Payload = u32>>(
-    roles: &mut Roles<'_>,
-    id: u32,
-) -> Result<(), DriverError> {
-    poll_ready(roles.recovery.send::<M>(&id))?;
-    match_id(poll_ready(roles.packet.recv::<M>())?, id)
-}
-fn key_route<M: hibana::g::Message<Payload = u32>>(
-    roles: &mut Roles<'_>,
-    id: u32,
-) -> Result<(), DriverError> {
-    poll_ready(roles.recovery.send::<M>(&id))?;
-    // The caller selected this exact typed arm, so use descriptor-selected
-    // framed recv. Broad offer() over several re-entered sibling routes is not
-    // needed to discover a label that this single owner already knows.
-    match_id(poll_ready(roles.packet.recv::<M>())?, id)
-}
-fn key_completion<M: hibana::g::Message<Payload = u32>>(
-    roles: &mut Roles<'_>,
-    id: u32,
-) -> Result<(), DriverError> {
-    poll_ready(roles.packet.send::<M>(&id))?;
-    match_id(poll_ready(roles.recovery.recv::<M>())?, id)
-}
-
 fn effect_descriptor(receive: ReceiveTicket, descriptor: Descriptor) -> [u8; 8] {
     let mut wire = [0; 8];
     wire[..4].copy_from_slice(&receive.descriptor_id().to_be_bytes());
@@ -724,12 +607,14 @@ mod tests {
     #[test]
     fn runtime_driver_progresses_independently_and_rejects_stale_completions() {
         with_driver::<16, _>(90, |driver, queues| {
-            let rx = driver.begin_receive().unwrap();
+            let rx = driver
+                .begin_receive(super::test_support::initial(driver.generation()))
+                .unwrap();
             let tx = driver.reserve_transmit().unwrap();
             assert!(driver.receive_in_flight());
             assert!(driver.transmit_in_flight());
             assert!(matches!(
-                driver.begin_receive(),
+                driver.begin_receive(super::test_support::initial(driver.generation())),
                 Err(DriverError::ReceiveBusy)
             ));
             assert!(matches!(
@@ -744,7 +629,9 @@ mod tests {
                 Err(DriverError::ClockWentBackwards)
             ));
             driver.finish_receive(rx).unwrap();
-            let next_rx = driver.begin_receive().unwrap();
+            let next_rx = driver
+                .begin_receive(super::test_support::initial(driver.generation()))
+                .unwrap();
             assert_ne!(rx.descriptor_id(), next_rx.descriptor_id());
             assert!(matches!(
                 driver.finish_receive(rx),
@@ -783,10 +670,15 @@ mod tests {
             ));
             assert!(driver.transmit_in_flight());
             driver.adapter_result(current).unwrap();
-            let rx = driver.begin_receive().unwrap();
+            let rx = driver
+                .begin_receive(super::test_support::initial(driver.generation()))
+                .unwrap();
             driver.retire();
             assert!(queues.is_closed());
-            assert!(matches!(driver.begin_receive(), Err(DriverError::Retired)));
+            assert!(matches!(
+                driver.begin_receive(super::test_support::initial(driver.generation())),
+                Err(DriverError::Retired)
+            ));
             assert!(matches!(
                 driver.finish_receive(rx),
                 Err(DriverError::Retired)
@@ -808,7 +700,9 @@ mod tests {
     fn finite_descriptor_namespace_exhaustion_is_terminal_not_wraparound() {
         with_driver::<16, _>(102, |driver, queues| {
             driver.next_descriptor = Some(u32::MAX);
-            let last = driver.begin_receive().unwrap();
+            let last = driver
+                .begin_receive(super::test_support::initial(driver.generation()))
+                .unwrap();
             assert_eq!(last.descriptor_id(), u32::MAX);
             driver.finish_receive(last).unwrap();
             assert!(matches!(
@@ -928,7 +822,7 @@ mod tests {
         };
         let mut driver = Driver::new(104, roles);
         assert!(matches!(
-            driver.begin_receive(),
+            driver.begin_receive(super::test_support::initial(driver.generation())),
             Err(DriverError::UnexpectedPending)
         ));
         assert!(driver.is_retired());
@@ -938,186 +832,29 @@ mod tests {
         assert!(matches!(driver.timer(1), Err(DriverError::Retired)));
     }
     #[test]
-    fn keys_have_independent_lifetimes_and_checked_single_use_authority() {
-        with_driver::<16, _>(110, |driver, queues| {
-            for level in [Level::Initial, Level::Handshake, Level::OneRtt] {
-                assert!(matches!(
-                    driver.begin_key_use(level),
-                    Err(DriverError::KeyNotInstalled)
-                ));
-                driver.install_key(level).unwrap();
-                assert!(driver.is_key_installed(level));
-                assert!(matches!(
-                    driver.install_key(level),
-                    Err(DriverError::KeyAlreadyInstalled)
-                ));
-            }
-            let initial = driver.begin_key_use(Level::Initial).unwrap();
+    fn only_matching_generation_and_ordinary_actor_receipts_admit_receive() {
+        with_driver::<16, _>(119, |driver, queues| {
             assert!(matches!(
-                driver.begin_key_use(Level::OneRtt),
-                Err(DriverError::KeyUseBusy)
-            ));
-            assert!(matches!(
-                driver.retire_key(Level::Initial),
-                Err(DriverError::KeyUseBusy)
-            ));
-            // Retirement may occur without a prior use and is independent of
-            // another level's active operation in its own parallel service.
-            driver.retire_key(Level::Handshake).unwrap();
-            driver.timer(100).unwrap();
-            driver.finish_key_use(initial).unwrap();
-            assert!(matches!(
-                driver.finish_key_use(initial),
+                driver.begin_receive(super::test_support::initial(120)),
                 Err(DriverError::InvalidTicket)
             ));
-            driver.retire_key(Level::Initial).unwrap();
             assert!(matches!(
-                driver.begin_key_use(Level::Initial),
-                Err(DriverError::KeyRetired)
+                driver.begin_receive(super::test_support::key_evidence(
+                    119,
+                    crate::crypto::KeyKind::ZeroRtt
+                )),
+                Err(DriverError::InvalidTicket)
             ));
-            assert!(matches!(
-                driver.install_key(Level::Initial),
-                Err(DriverError::KeyRetired)
-            ));
-            assert!(matches!(
-                driver.begin_key_use(Level::Handshake),
-                Err(DriverError::KeyRetired)
-            ));
-            let one_rtt = driver.begin_key_use(Level::OneRtt).unwrap();
-            driver.finish_key_use(one_rtt).unwrap();
-            driver.retire_key(Level::OneRtt).unwrap();
-            assert!(matches!(
-                driver.begin_key_use(Level::OneRtt),
-                Err(DriverError::KeyRetired)
-            ));
+            assert!(!driver.receive_in_flight());
             assert!(!driver.is_retired());
+            let receive = driver
+                .begin_receive(super::test_support::initial(119))
+                .unwrap();
+            driver.finish_receive(receive).unwrap();
             assert_eq!(queues.queued(), 0);
         });
     }
 
-    #[test]
-    fn ordinary_failed_aead_completion_does_not_poison_key_service() {
-        with_driver::<16, _>(111, |driver, queues| {
-            driver.install_key(Level::Initial).unwrap();
-            let failed_authentication = driver.begin_key_use(Level::Initial).unwrap();
-            // The actual crypto owner's ordinary Authentication failure still
-            // completes its use; this method never asserts packet validity.
-            driver.finish_key_use(failed_authentication).unwrap();
-            let following = driver.begin_key_use(Level::Initial).unwrap();
-            assert_ne!(
-                failed_authentication.descriptor_id(),
-                following.descriptor_id()
-            );
-            assert!(matches!(
-                driver.finish_key_use(failed_authentication),
-                Err(DriverError::InvalidTicket)
-            ));
-            driver.finish_key_use(following).unwrap();
-            let tx = driver.reserve_transmit().unwrap();
-            driver.timer(1).unwrap();
-            driver.adapter_result(tx).unwrap();
-            assert!(!driver.is_retired());
-            assert_eq!(queues.queued(), 0);
-        });
-    }
-    #[test]
-    fn staggered_key_installation_allows_prior_level_reentry() {
-        with_driver::<16, _>(112, |driver, _| {
-            driver.install_key(Level::Initial).expect("install Initial");
-            let i = driver
-                .begin_key_use(Level::Initial)
-                .expect("first Initial use");
-            driver.finish_key_use(i).expect("finish first Initial");
-            driver
-                .install_key(Level::Handshake)
-                .expect("install Handshake after Initial use");
-            let i = driver
-                .begin_key_use(Level::Initial)
-                .expect("Initial reentry after Handshake installation");
-            driver.finish_key_use(i).expect("finish Initial reentry");
-            let h = driver
-                .begin_key_use(Level::Handshake)
-                .expect("first Handshake use");
-            driver.finish_key_use(h).expect("finish first Handshake");
-            driver
-                .install_key(Level::OneRtt)
-                .expect("install OneRtt after Handshake use");
-            let h = driver
-                .begin_key_use(Level::Handshake)
-                .expect("Handshake reentry after OneRtt installation");
-            driver.finish_key_use(h).expect("finish Handshake reentry");
-            let o = driver
-                .begin_key_use(Level::OneRtt)
-                .expect("first OneRtt use");
-            driver.finish_key_use(o).expect("finish OneRtt");
-        });
-    }
-
-    #[test]
-    fn key_use_interleaves_with_real_rx_and_tx_workflows() {
-        with_driver::<16, _>(113, |driver, _| {
-            driver.install_key(Level::Initial).unwrap();
-            for turn in 0..4 {
-                let tx = driver.reserve_transmit().unwrap();
-                let key = driver
-                    .begin_key_use(Level::Initial)
-                    .expect("Initial sealing while Tx awaits callback");
-                driver.finish_key_use(key).unwrap();
-                driver.adapter_result(tx).unwrap();
-                let key = driver
-                    .begin_key_use(Level::Initial)
-                    .expect("Initial decrypt");
-                driver.finish_key_use(key).unwrap();
-                let rx = driver.begin_receive().unwrap();
-                if turn == 0 {
-                    driver
-                        .install_key(Level::Handshake)
-                        .expect("Handshake install during authenticated receive");
-                }
-                if turn == 1 {
-                    driver
-                        .install_key(Level::OneRtt)
-                        .expect("OneRtt install during authenticated receive");
-                }
-                driver.finish_receive(rx).unwrap();
-                let tx = driver.reserve_transmit().unwrap();
-                let key = driver
-                    .begin_key_use(Level::Handshake)
-                    .expect("Handshake sealing while Tx awaits callback");
-                driver.finish_key_use(key).unwrap();
-                driver.adapter_result(tx).unwrap();
-                if turn == 1 {
-                    driver.retire_key(Level::Initial).unwrap();
-                    break;
-                }
-            }
-            let tx = driver.reserve_transmit().unwrap();
-            let key = driver
-                .begin_key_use(Level::OneRtt)
-                .expect("OneRtt sealing after Initial retirement");
-            driver.finish_key_use(key).unwrap();
-            driver.adapter_result(tx).unwrap();
-        });
-    }
-
-    #[test]
-    fn used_key_retirement_preserves_fresh_sibling_route() {
-        with_driver::<16, _>(114, |driver, _| {
-            for level in [Level::Initial, Level::Handshake, Level::OneRtt] {
-                driver.install_key(level).unwrap();
-            }
-            for level in [Level::Initial, Level::Handshake] {
-                let key = driver.begin_key_use(level).unwrap();
-                driver.finish_key_use(key).unwrap();
-            }
-            driver.retire_key(Level::Initial).unwrap();
-            driver.retire_key(Level::Handshake).unwrap();
-            let one_rtt = driver
-                .begin_key_use(Level::OneRtt)
-                .expect("fresh OneRtt use after used Initial and Handshake retirement");
-            driver.finish_key_use(one_rtt).unwrap();
-        });
-    }
     #[test]
     fn ack_and_delivery_require_live_authenticated_receive_and_exact_effect_ticket() {
         with_driver::<16, _>(120, |driver, queues| {
@@ -1134,7 +871,9 @@ mod tests {
                 Err(DriverError::InvalidTicket)
             ));
             assert_eq!(queues.queued(), 0);
-            let receive = driver.begin_receive().unwrap();
+            let receive = driver
+                .begin_receive(super::test_support::initial(driver.generation()))
+                .unwrap();
             let ack = driver.begin_ack_release(receive).unwrap();
             assert!(matches!(
                 driver.begin_ack_release(receive),
@@ -1179,7 +918,9 @@ mod tests {
                 driver.begin_stream_delivery(receive, 3),
                 Err(DriverError::InvalidTicket)
             ));
-            let following = driver.begin_receive().unwrap();
+            let following = driver
+                .begin_receive(super::test_support::initial(driver.generation()))
+                .unwrap();
             assert!(matches!(
                 driver.finish_ack_release(ack),
                 Err(DriverError::InvalidTicket)
@@ -1205,12 +946,9 @@ mod tests {
     #[test]
     fn complete_service_profile_fits_declared_slab_ports_and_message_budget() {
         with_driver::<16, _>(121, |driver, queues| {
-            for level in [Level::Initial, Level::Handshake, Level::OneRtt] {
-                driver.install_key(level).unwrap();
-                let use_key = driver.begin_key_use(level).unwrap();
-                driver.finish_key_use(use_key).unwrap();
-            }
-            let receive = driver.begin_receive().unwrap();
+            let receive = driver
+                .begin_receive(super::test_support::initial(driver.generation()))
+                .unwrap();
             let ack = driver.begin_ack_release(receive).unwrap();
             driver.finish_ack_release(ack).unwrap();
             let delivery = driver
@@ -1228,9 +966,6 @@ mod tests {
             let tx = driver.reserve_transmit().unwrap();
             driver.timer(1).unwrap();
             driver.adapter_result(tx).unwrap();
-            for level in [Level::Initial, Level::Handshake, Level::OneRtt] {
-                driver.retire_key(level).unwrap();
-            }
             assert!(!driver.is_retired());
             assert_eq!(queues.queued(), 0);
         });

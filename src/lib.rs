@@ -1,7 +1,12 @@
 #![no_std]
+#![cfg_attr(test, allow(long_running_const_eval))]
+
 #![forbid(unsafe_code)]
 //! Bounded QUIC v1 building blocks. This crate is not yet a QUIC endpoint.
 //! No interop, full TLS, Pico HIL, or source-level verification claim is made.
+
+#[cfg(test)]
+extern crate self as hibana_quic;
 
 pub mod accounting;
 pub mod bounded_tls;

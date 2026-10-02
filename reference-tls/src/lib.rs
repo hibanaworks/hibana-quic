@@ -9,7 +9,9 @@
 
 use std::{collections::VecDeque, sync::Arc};
 
-use hibana_quic::crypto::{MAX_PACKET_NUMBER, MAX_PROTECTED_PACKET_LEN};
+use hibana_quic::crypto::{
+    AuthenticationError, IntegrityBudget, MAX_PACKET_NUMBER, MAX_PROTECTED_PACKET_LEN,
+};
 use hibana_quic::tls::{Error, Level, Output, Provider};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::quic::{Connection, KeyChange, Keys, Version};
@@ -103,7 +105,9 @@ pub struct RustlsProvider {
     handshake: Option<KeyState>,
     one_rtt: Option<KeyState>,
     incoming: [Framing; 3],
-    failures: u64,
+    // The actual connection budget also moves through the projected Initial
+    // loan. The backend limit is only a monotonic constraint from rustls keys.
+    integrity: IntegrityBudget,
     integrity_limit: u64,
     fatal: Option<Error>,
     last_tls_error: Option<String>,
@@ -186,7 +190,7 @@ impl RustlsProvider {
             handshake: None,
             one_rtt: None,
             incoming: [Framing::default(); 3],
-            failures: 0,
+            integrity: IntegrityBudget::new(),
             integrity_limit: u64::MAX,
             fatal: None,
             last_tls_error: None,
@@ -199,7 +203,7 @@ impl RustlsProvider {
         self.last_tls_error.as_deref()
     }
     pub fn failed_authentications(&self) -> u64 {
-        self.failures
+        self.integrity.failed_packets()
     }
     pub fn negotiated_alpn(&self) -> Option<&[u8]> {
         if self.is_handshaking() {
@@ -307,6 +311,29 @@ fn packet_size(pn: u64, header: &[u8], payload_len: usize) -> Result<(), Error> 
 }
 
 impl Provider for RustlsProvider {
+    fn integrity_budget(&mut self) -> Option<&mut IntegrityBudget> {
+        Some(&mut self.integrity)
+    }
+    fn observations(&self) -> hibana_quic::tls::Observations {
+        hibana_quic::tls::Observations {
+            resumed: self
+                .connection
+                .handshake_kind()
+                .map(|kind| matches!(kind, rustls::HandshakeKind::Resumed)),
+            negotiated_suite: self
+                .connection
+                .negotiated_cipher_suite()
+                .map(|suite| u16::from(suite.suite())),
+            failed_authentications: Some(self.failed_authentications()),
+        }
+    }
+    fn write_failure_diagnostic(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        if let Some(failure) = self.last_tls_error() {
+            out.write_str(failure)?;
+        }
+        Ok(())
+    }
+
     fn receive(&mut self, level: Level, bytes: &[u8]) -> Result<(), Error> {
         self.active()?;
         if bytes.is_empty() {
@@ -448,28 +475,34 @@ impl Provider for RustlsProvider {
             return Err(Error::KeysUnavailable);
         }
         packet_size(pn, header, buffer.len())?;
-        if self.failures >= self.integrity_limit {
-            return Err(self.fail(Error::IntegrityLimit));
+        // Borrow disjoint key/budget fields so verification is performed inside
+        // the connection budget's closure gate, without an outcome supplied by
+        // the endpoint or a second failed-authentication counter.
+        let state = match level {
+            Level::Initial => None,
+            Level::Handshake => self.handshake.as_ref(),
+            Level::OneRtt => self.one_rtt.as_ref(),
         }
-        let state = self.keys(level)?;
+        .ok_or(Error::KeysUnavailable)?;
         if buffer.len() < state.keys.remote.packet.tag_len() {
             return Err(Error::Capacity);
         }
-        match state
-            .keys
-            .remote
-            .packet
-            .decrypt_in_place(pn, header, buffer)
-        {
-            Ok(plaintext) => Ok(plaintext.len()),
-            Err(_) => {
+        match self.integrity.authenticate(self.integrity_limit, || {
+            state
+                .keys
+                .remote
+                .packet
+                .decrypt_in_place(pn, header, buffer)
+                .map(|plaintext| plaintext.len())
+        }) {
+            Ok(len) => Ok(len),
+            Err(AuthenticationError::Failed(_)) => {
                 buffer.fill(0);
-                self.failures += 1;
-                if self.failures >= self.integrity_limit {
-                    Err(self.fail(Error::IntegrityLimit))
-                } else {
-                    Err(Error::Authentication)
-                }
+                Err(Error::Authentication)
+            }
+            Err(AuthenticationError::IntegrityLimit) => {
+                buffer.fill(0);
+                Err(self.fail(Error::IntegrityLimit))
             }
         }
     }
@@ -706,7 +739,9 @@ mod tests {
             client.seal(Level::OneRtt, 0, b"aad", &mut [0; 16], 0),
             Err(Error::ConfidentialityLimit)
         );
-        server.failures = server.integrity_limit - 1;
+        // A stricter test cap exercises a real final failed attempt without
+        // manufacturing or resetting the shared budget's failure count.
+        server.integrity_limit = 1;
         assert_eq!(
             server.open(Level::OneRtt, 0, b"aad", &mut [0; 16]),
             Err(Error::IntegrityLimit)
@@ -717,5 +752,49 @@ mod tests {
             server.seal(Level::OneRtt, 0, b"aad", &mut [0; 16], 0),
             Err(Error::IntegrityLimit)
         );
+    }
+
+    #[test]
+    fn initial_and_rustls_authentication_share_one_connection_budget() {
+        let (mut client, mut server) = pair();
+        let initial = hibana_quic::crypto::initial_keys(b"shared-budget")
+            .unwrap()
+            .server;
+        assert_eq!(
+            initial.open(0, b"aad", &mut [0; 16], server.integrity_budget().unwrap()),
+            Err(hibana_quic::crypto::Error::AuthenticationFailed)
+        );
+        assert_eq!(server.failed_authentications(), 1);
+        handshake(&mut client, &mut server, 47).unwrap();
+        assert_eq!(
+            server.failed_authentications(),
+            1,
+            "key installation must not reset Initial failures"
+        );
+        assert_eq!(
+            server.open(Level::OneRtt, 0, b"aad", &mut [0; 16]),
+            Err(Error::Authentication)
+        );
+        assert_eq!(server.failed_authentications(), 2);
+        let mut body = [0; 32];
+        body[..5].copy_from_slice(b"hello");
+        let len = client.seal(Level::OneRtt, 1, b"aad", &mut body, 5).unwrap();
+        assert_eq!(
+            server.open(Level::OneRtt, 1, b"aad", &mut body[..len]),
+            Ok(5)
+        );
+        assert_eq!(&body[..5], b"hello");
+        assert_eq!(
+            server.failed_authentications(),
+            2,
+            "successful authentication must not reset failures"
+        );
+        server.integrity_limit = 3;
+        assert_eq!(
+            server.open(Level::OneRtt, 2, b"aad", &mut [0; 16]),
+            Err(Error::IntegrityLimit)
+        );
+        assert_eq!(server.failed_authentications(), 3);
+        assert!(!server.has_keys(Level::OneRtt));
     }
 }

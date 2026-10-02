@@ -1,7 +1,9 @@
-//! Live endpoint Initial integration, with the real bounded TLS ClientHello.
+//! Live endpoint integration with a real actor-owned bounded TLS Provider.
 //! This proves packet-protection plumbing/Retry/cancellation, not a completed
 //! TLS handshake or independent-peer interoperability. The legacy Driver has
-//! its own fixture session; the two actual key facets share one global g::par.
+//! its own fixture session; Initial RX/TX and TLS owner share one global g::par.
+// Three real parallel facets require more const lowering work than the lint budget.
+#![allow(long_running_const_eval)]
 use core::{
     cell::Cell,
     future::{Future, poll_fn},
@@ -20,7 +22,7 @@ use hibana_quic::{
     driver::{Driver, Roles},
     handshake::CryptoBuffer,
     handshake_endpoint::{
-        Config, HandshakeEndpoint, INITIAL_PACKET_BYTES, InitialProtection, Side,
+        Config, HandshakeEndpoint, INITIAL_PACKET_BYTES, InitialProtection, Side, TlsClient,
     },
     mailbox::Mailbox,
     packet::{
@@ -33,6 +35,8 @@ use hibana_quic::{
         client::KeyClient,
         packet_protection::{self, Command, Exchange, Reply},
         protocol::key_choreography,
+        protocol_tls::tls_choreography,
+        tls_owner,
     },
     runtime::join2,
     tls_certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
@@ -124,6 +128,27 @@ async fn cancel_after_open<F: Future>(
         1,
         "Open request owns the live integrity budget"
     );
+}
+
+/// Cancel a real retirement after its command is published but before the role
+/// consumes it. This differs from successful awaited Closing expiry.
+async fn cancel_after_retirement<F: Future>(
+    future: F,
+    commands: &Mailbox<'_, Command<INITIAL_PACKET_BYTES>, 1>,
+    pause_actor: &Cell<bool>,
+) {
+    let mut future = pin!(future);
+    poll_fn(|cx| {
+        assert!(future.as_mut().poll(cx).is_pending());
+        if !commands.is_empty() {
+            pause_actor.set(true);
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    assert_eq!(commands.len(), 1);
 }
 
 struct TestRandom(u64);
@@ -271,6 +296,19 @@ fn cancelled_transport_open_closes_stream_admission_and_actor_clients() {
     run_case(2);
 }
 
+#[test]
+fn cancelled_owned_transport_retirement_closes_stream_admission() {
+    run_case(3);
+}
+#[test]
+fn closing_timer_awaits_actual_owner_retirement() {
+    run_case(4);
+}
+#[test]
+fn synchronous_closing_expiry_revokes_output_then_awaits_owner_retirement() {
+    run_case(5);
+}
+
 fn run_case(cancel: u8) {
     let wake = Arc::new(WakeCount(AtomicUsize::new(0)));
     let waker = Waker::from(wake.clone());
@@ -322,24 +360,30 @@ fn run_case(cancel: u8) {
             timer: old_rv.enter(old_sid, &p5).unwrap(),
         },
     );
-    assert!(!driver.is_key_installed(hibana_quic::tls::Level::Initial));
-    let carrier = CarrierStorage::<1, 16, 32>::new();
-    let mut slab = [0; 32768];
+    let carrier = CarrierStorage::<1, 16, 64>::new();
+    let mut slab = [0; 65536];
     let mut storage = SessionKitStorage::uninit();
     let kit = storage.init();
     let sid = SessionId::new(72);
     let rv = kit
         .rendezvous(&mut slab, carrier.bind(sid).unwrap())
         .unwrap();
-    let global = g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>());
+    let global = g::par(
+        g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>()),
+        tls_choreography::<24, 25>(),
+    );
     let p16 = project::<16, _>(&global);
     let p17 = project::<17, _>(&global);
     let p18 = project::<18, _>(&global);
     let p19 = project::<19, _>(&global);
+    let p24 = project::<24, _>(&global);
+    let p25 = project::<25, _>(&global);
     let mut e16 = rv.enter(sid, &p16).unwrap();
     let mut e17 = rv.enter(sid, &p17).unwrap();
     let mut e18 = rv.enter(sid, &p18).unwrap();
     let mut e19 = rv.enter(sid, &p19).unwrap();
+    let mut e24 = rv.enter(sid, &p24).unwrap();
+    let mut e25 = rv.enter(sid, &p25).unwrap();
     let mut rxc: [Option<Command<INITIAL_PACKET_BYTES>>; 1] = [None];
     let mut rxr: [Option<Reply<INITIAL_PACKET_BYTES>>; 1] = [None];
     let mut txc: [Option<Command<INITIAL_PACKET_BYTES>>; 1] = [None];
@@ -352,6 +396,13 @@ fn run_case(cancel: u8) {
     let (rx_reply_send, rx_reply_recv) = rxr.split().unwrap();
     let (tx_send, tx_recv) = txc.split().unwrap();
     let (tx_reply_send, tx_reply_recv) = txr.split().unwrap();
+    let mut tls_commands: [Option<tls_owner::Command<INITIAL_PACKET_BYTES>>; 1] = [None];
+    let mut tls_replies: [Option<tls_owner::Reply<INITIAL_PACKET_BYTES, 512>>; 1] = [None];
+    let tls_commands = Mailbox::new(&mut tls_commands).unwrap();
+    let tls_replies = Mailbox::new(&mut tls_replies).unwrap();
+    let (tls_send, tls_recv) = tls_commands.split().unwrap();
+    let (tls_reply_send, tls_reply_recv) = tls_replies.split().unwrap();
+    let mut tls_exchange = tls_owner::Exchange::new();
     let mut rx_exchange = Exchange::new();
     let mut tx_exchange = Exchange::new();
     let keys = crypto::initial_keys(b"original").unwrap();
@@ -365,7 +416,11 @@ fn run_case(cancel: u8) {
         CryptoBuffer::new(d2, m2).unwrap(),
     ];
     let pause_actor = Cell::new(false);
+    let mut footprint = None;
     let work = async {
+        let tls_client = TlsClient::connect(tls_send, tls_reply_recv, 71)
+            .await
+            .unwrap();
         let receive = KeyClient::connect(rx_send, rx_reply_recv, 71)
             .await
             .unwrap();
@@ -380,7 +435,7 @@ fn run_case(cancel: u8) {
                 original_destination_id: b"original",
                 generation: 71,
             },
-            tls,
+            tls_client,
             driver,
             buffers,
             protection,
@@ -402,7 +457,14 @@ fn run_case(cancel: u8) {
                     .discarded,
                 1
             );
-            assert_eq!(endpoint.tls().failed_authentications(), failed);
+            assert_eq!(
+                endpoint
+                    .tls_snapshot()
+                    .observations
+                    .failed_authentications
+                    .unwrap(),
+                failed
+            );
         }
         let mut retry_packet = [0; 512];
         let len = retry::encode_retry(
@@ -425,7 +487,14 @@ fn run_case(cancel: u8) {
         );
         endpoint.adapter_result(first, true, 0).await.unwrap();
         assert!(!endpoint.retry_is_pending());
-        assert_eq!(endpoint.tls().failed_authentications(), 2);
+        assert_eq!(
+            endpoint
+                .tls_snapshot()
+                .observations
+                .failed_authentications
+                .unwrap(),
+            2
+        );
         let resent = endpoint.transmit(&mut out).await.unwrap().unwrap();
         let (next_pn, next_crypto, next_crypto_len) =
             client_crypto(&out[..resent.len], b"retrykey");
@@ -442,7 +511,20 @@ fn run_case(cancel: u8) {
                 .authenticated,
             1
         );
-        assert_eq!(endpoint.tls().failed_authentications(), 2);
+        assert_eq!(
+            endpoint
+                .tls_snapshot()
+                .observations
+                .failed_authentications
+                .unwrap(),
+            2
+        );
+        // Observe host sizes only. This is not a target SRAM/stack fit claim;
+        // none of these measurement futures is polled or given authority.
+        let endpoint_bytes = core::mem::size_of_val(&endpoint);
+        let receive_bytes = core::mem::size_of_val(&endpoint.receive(&incoming, &mut scratch));
+        let transmit_bytes = core::mem::size_of_val(&endpoint.transmit(&mut out));
+        footprint = Some((endpoint_bytes, receive_bytes, transmit_bytes));
         if cancel == 1 {
             cancel_after_open(
                 endpoint.receive(&incoming, &mut scratch),
@@ -451,19 +533,26 @@ fn run_case(cancel: u8) {
             )
             .await;
             assert!(endpoint.is_retired());
-            assert_eq!(endpoint.tls().failed_authentications(), 2);
+            assert_eq!(
+                endpoint
+                    .tls_snapshot()
+                    .observations
+                    .failed_authentications
+                    .unwrap(),
+                2
+            );
             assert!(matches!(
                 endpoint.transmit(&mut out).await,
                 Err(hibana_quic::handshake_endpoint::Error::Retired)
             ));
             return Err("cancelled as requested");
         }
-        if cancel == 2 {
+        if cancel == 2 || cancel == 3 {
             use hibana_quic::{streams, transport_endpoint::TransportEndpoint};
             let mut slots = [streams::StreamSlot::<64>::EMPTY];
             let mut chunks = [streams::SendChunk::<64>::EMPTY];
             let mut references = [streams::PacketReference::EMPTY];
-            let mut transport = TransportEndpoint::<_, 64, 64, 16, 64, _>::new(
+            let mut transport = TransportEndpoint::<64, 64, 16, 64, _>::new(
                 endpoint,
                 streams::Limits::ZERO,
                 &mut slots,
@@ -472,16 +561,45 @@ fn run_case(cancel: u8) {
                 2,
             )
             .unwrap();
-            cancel_after_open(
-                transport.receive(&incoming, &mut scratch),
-                &rxc,
-                &pause_actor,
-            )
-            .await;
+            if cancel == 2 {
+                cancel_after_open(
+                    transport.receive(&incoming, &mut scratch),
+                    &rxc,
+                    &pause_actor,
+                )
+                .await;
+            } else {
+                cancel_after_retirement(transport.retire_owned(), &rxc, &pause_actor).await;
+            }
             assert!(transport.is_retired());
             assert_eq!(transport.streams().lookup(0), Err(streams::Error::Closed));
             assert!(transport.open(true).is_err());
             return Err("cancelled as requested");
+        }
+        if cancel == 4 || cancel == 5 {
+            use hibana_quic::lifecycle::{CloseReason, State};
+            endpoint
+                .close(CloseReason::transport(0, 0, "fixture done").unwrap())
+                .await
+                .unwrap();
+            let deadline = endpoint.close_deadline().unwrap();
+            assert_eq!(endpoint.connection_state(), State::Closing);
+            if cancel == 4 {
+                endpoint.timer(deadline).await.unwrap();
+            } else {
+                let tx = endpoint.transmit(&mut out).await.unwrap().unwrap();
+                assert!(!endpoint.transmit_permitted(tx, deadline).unwrap());
+                assert_eq!(endpoint.connection_state(), State::Closed);
+                assert!(endpoint.is_retired());
+                assert!(matches!(
+                    endpoint.transmit(&mut out).await,
+                    Err(hibana_quic::handshake_endpoint::Error::Retired)
+                ));
+                endpoint.retire_owned().await.unwrap();
+            }
+            assert_eq!(endpoint.connection_state(), State::Closed);
+            assert!(endpoint.is_retired());
+            return Ok(());
         }
         let closing = initial_packet(b"retrykey", b"retrykey", 6, true);
         assert_eq!(
@@ -493,6 +611,8 @@ fn run_case(cancel: u8) {
             1
         );
         assert!(endpoint.keys_discarded(hibana_quic::tls::Level::Initial));
+        assert!(!endpoint.tls_snapshot().handshake_keys);
+        assert!(!endpoint.tls_snapshot().one_rtt_keys);
         Ok(())
     };
     let actors = async {
@@ -528,20 +648,42 @@ fn run_case(cancel: u8) {
     };
     let measured = Measure::start();
     let result = {
-        let mut execution = pin!(join2(actors, work));
+        let mut tls_actor = pin!(async {
+            tls_owner::run_borrowed(
+                &mut e24,
+                &mut e25,
+                71,
+                tls,
+                tls_recv,
+                tls_reply_send,
+                &mut tls_exchange,
+            )
+            .await
+            .map_err(|_| "TLS actor closed")
+        });
+        let mut actors = pin!(actors);
+        let mut work = pin!(work);
+        let tasks: [hibana_quic::runtime::Task<'_, &str>; 3] =
+            [tls_actor.as_mut(), actors.as_mut(), work.as_mut()];
+        let mut execution = pin!(hibana_quic::runtime::TaskSet::new(tasks));
         drive(execution.as_mut(), &wake, &waker)
     };
     let allocations = ALLOCATIONS.with(|n| n.get().unwrap());
     drop(measured);
+    eprintln!(
+        "host endpoint / receive future / transmit future bytes: {:?}",
+        footprint.unwrap()
+    );
     assert_eq!(
         allocations, 0,
         "actual Initial I/O, Retry, retirement and cancellation allocate zero"
     );
-    if cancel != 0 {
+    if matches!(cancel, 1..=3) {
         assert_eq!(result, Err("cancelled as requested"));
     } else {
         assert_eq!(result, Ok(()));
     }
+    assert!(tls_exchange.is_empty());
     assert!(rx_exchange.is_empty());
     assert!(tx_exchange.is_empty());
 }

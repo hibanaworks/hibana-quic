@@ -1,15 +1,12 @@
 //! Distinct early-data authority. No EarlyReceiveTicket can authorize an ACK
 //! mutation or ordinary delivery. Release follows the actual typed Finished
-//! message and a checked quarantine revision; cryptography remains the caller's.
+//! receipt and a checked quarantine revision; cryptography belongs to the TLS
+//! actor and the affine replay claim belongs to the quarantine.
 use super::*;
-use crate::early_data::ReleaseTicket as QuarantineTicket;
+use crate::early_data::{Quarantine, ReleaseTicket as QuarantineTicket};
 use crate::protocol::*;
+use crate::roles::tls_owner::{EarlyOpenReceipt, FinishedReceipt};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EarlyKeyUseTicket {
-    descriptor: Descriptor,
-    installation: u32,
-}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EarlyReceiveTicket(Descriptor);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,15 +53,13 @@ pub struct EarlyIntentTicket {
     import: crate::early_send::ImportTicket,
 }
 pub(super) struct State {
-    key: KeyState,
-    key_use: Option<EarlyKeyUseTicket>,
     receive: Option<EarlyReceiveTicket>,
     buffer: Option<EarlyBufferTicket>,
     control_buffer: Option<EarlyControlBufferTicket>,
     peer_close: Option<EarlyPeerCloseTicket>,
     control_release: Option<EarlyControlReleaseTicket>,
     next_control_revision: Option<u64>,
-    finished: bool,
+    finished: Option<FinishedReceipt>,
     release: Option<EarlyReleaseTicket>,
     intent: Option<EarlyIntentTicket>,
     next_intent_stream: u64,
@@ -73,15 +68,13 @@ pub(super) struct State {
 impl State {
     pub(super) const fn new() -> Self {
         Self {
-            key: KeyState::Uninstalled,
-            key_use: None,
             receive: None,
             buffer: None,
             control_buffer: None,
             peer_close: None,
             control_release: None,
             next_control_revision: Some(0),
-            finished: false,
+            finished: None,
             release: None,
             intent: None,
             next_intent_stream: 0,
@@ -90,7 +83,6 @@ impl State {
     }
     pub(super) fn retired() -> Self {
         Self {
-            key: KeyState::Retired,
             next_revision: None,
             next_control_revision: None,
             ..Self::new()
@@ -99,79 +91,23 @@ impl State {
     pub(super) fn receiving(&self) -> bool {
         self.receive.is_some()
     }
-    pub(super) fn using_key(&self) -> bool {
-        self.key_use.is_some()
-    }
 }
 impl Driver<'_> {
-    /// Call after the real early packet key was installed. A rejected early
-    /// epoch is terminal and cannot be reinstalled in this connection.
-    pub fn install_early_key(&mut self) -> Result<(), DriverError> {
+    /// Consume one successful Open from the TLS owner, together with the
+    /// quarantine that consumed this connection's committed replay claim.
+    /// Neither a key snapshot nor an asserted authentication flag can create
+    /// this authority. Packet-number replay and whole-packet preflight remain
+    /// numerical obligations of the connection owner.
+    pub fn begin_early_receive<const BYTES: usize>(
+        &mut self,
+        opened: EarlyOpenReceipt,
+        quarantine: &Quarantine<'_, BYTES>,
+    ) -> Result<EarlyReceiveTicket, DriverError> {
         self.ensure_live()?;
-        match self.early.key {
-            KeyState::Uninstalled => {}
-            KeyState::Installed(_) => return Err(DriverError::KeyAlreadyInstalled),
-            KeyState::Retired => return Err(DriverError::KeyRetired),
-        }
-        let id = self.issue_descriptor()?.id;
-        self.execute(|roles| key_grant::<EarlyKeyInstalled>(roles, id))?;
-        self.early.key = KeyState::Installed(id);
-        Ok(())
-    }
-    pub fn is_early_key_installed(&self) -> bool {
-        !self.is_retired() && matches!(self.early.key, KeyState::Installed(_))
-    }
-    pub fn begin_early_key_use(&mut self) -> Result<EarlyKeyUseTicket, DriverError> {
-        self.ensure_live()?;
-        let installation = match self.early.key {
-            KeyState::Uninstalled => return Err(DriverError::KeyNotInstalled),
-            KeyState::Retired => return Err(DriverError::KeyRetired),
-            KeyState::Installed(id) => id,
-        };
-        if self.key_use.is_some() || self.early.key_use.is_some() {
-            return Err(DriverError::KeyUseBusy);
-        }
-        let descriptor = self.issue_descriptor()?;
-        self.execute(|roles| key_route::<EarlyKeyUse>(roles, descriptor.id))?;
-        let ticket = EarlyKeyUseTicket {
-            descriptor,
-            installation,
-        };
-        self.early.key_use = Some(ticket);
-        Ok(ticket)
-    }
-    pub fn finish_early_key_use(&mut self, ticket: EarlyKeyUseTicket) -> Result<(), DriverError> {
-        self.ensure_live()?;
-        if self.early.key_use != Some(ticket)
-            || ticket.descriptor.generation != self.generation
-            || self.early.key != KeyState::Installed(ticket.installation)
+        if opened.generation() != self.generation
+            || !quarantine.accepts_authenticated_generation(opened.generation())
         {
             return Err(DriverError::InvalidTicket);
-        }
-        self.execute(|roles| key_completion::<EarlyKeyUsed>(roles, ticket.descriptor.id))?;
-        self.early.key_use = None;
-        Ok(())
-    }
-    pub fn retire_early_key(&mut self) -> Result<(), DriverError> {
-        self.ensure_live()?;
-        let id = match self.early.key {
-            KeyState::Installed(id) => id,
-            KeyState::Uninstalled => return Err(DriverError::KeyNotInstalled),
-            KeyState::Retired => return Err(DriverError::KeyRetired),
-        };
-        if self.early.key_use.is_some() {
-            return Err(DriverError::KeyUseBusy);
-        }
-        self.execute(|roles| key_route::<EarlyKeyRetired>(roles, id))?;
-        self.early.key = KeyState::Retired;
-        Ok(())
-    }
-    /// Invoke only after successful early AEAD and replay-policy admission.
-    /// This gives quarantine authority, never stream application delivery.
-    pub fn begin_early_receive(&mut self) -> Result<EarlyReceiveTicket, DriverError> {
-        self.ensure_live()?;
-        if !self.is_early_key_installed() {
-            return Err(DriverError::KeyNotInstalled);
         }
         if self.receive.is_some() || self.early.receive.is_some() {
             return Err(DriverError::ReceiveBusy);
@@ -364,7 +300,7 @@ impl Driver<'_> {
         control: crate::early_control::ControlTicket,
     ) -> Result<EarlyControlReleaseTicket, DriverError> {
         self.ensure_live()?;
-        if !self.early.finished
+        if self.early.finished.is_none()
             || control.generation() != self.generation
             || self.early.next_control_revision != Some(control.revision())
         {
@@ -397,7 +333,7 @@ impl Driver<'_> {
         ticket: EarlyControlReleaseTicket,
     ) -> Result<(), DriverError> {
         self.ensure_live()?;
-        if !self.early.finished
+        if self.early.finished.is_none()
             || ticket.generation() != self.generation
             || self.early.control_release != Some(ticket)
         {
@@ -429,11 +365,17 @@ impl Driver<'_> {
         self.early.control_release = None;
         Ok(())
     }
-    /// Invoke only after TLS verifies the peer Finished. The program itself
-    /// places this actual message before every early-release message.
-    pub fn handshake_finished(&mut self) -> Result<(), DriverError> {
+    /// Consume the TLS owner's unique verified-Finished transition. A copied
+    /// snapshot or endpoint assertion cannot establish the release boundary.
+    /// ```compile_fail
+    /// use hibana_quic::driver::Driver;
+    /// fn assert_finished(driver: &mut Driver<'_>) {
+    ///     driver.handshake_finished().unwrap();
+    /// }
+    /// ```
+    pub fn handshake_finished(&mut self, finished: FinishedReceipt) -> Result<(), DriverError> {
         self.ensure_live()?;
-        if self.early.finished {
+        if finished.generation() != self.generation || self.early.finished.is_some() {
             return Err(DriverError::InvalidTicket);
         }
         if self.early.receive.is_some() {
@@ -452,7 +394,7 @@ impl Driver<'_> {
                 id,
             )
         })?;
-        self.early.finished = true;
+        self.early.finished = Some(finished);
         Ok(())
     }
     pub fn begin_early_intent_import(
@@ -460,7 +402,7 @@ impl Driver<'_> {
         import: crate::early_send::ImportTicket,
     ) -> Result<EarlyIntentTicket, DriverError> {
         self.ensure_live()?;
-        if !self.early.finished
+        if self.early.finished.is_none()
             || import.generation() != self.generation
             || import.stream_id() != self.early.next_intent_stream
         {
@@ -526,7 +468,7 @@ impl Driver<'_> {
         quarantine: QuarantineTicket,
     ) -> Result<EarlyReleaseTicket, DriverError> {
         self.ensure_live()?;
-        if !self.early.finished
+        if self.early.finished.is_none()
             || quarantine.generation() != self.generation
             || self.early.next_revision != Some(quarantine.revision())
         {
@@ -615,11 +557,38 @@ fn release_wire(t: EarlyReleaseTicket) -> [u8; 12] {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::early_data::{
         Quarantine, QuarantineSlot, RememberedLimits, ReplayLedger, ReplayStorage, ServerPolicy,
     };
+    pub(crate) fn begin(driver: &mut Driver<'_>) -> Result<EarlyReceiveTicket, DriverError> {
+        with_quarantine(driver.generation(), |opened, quarantine| {
+            driver.begin_early_receive(opened, quarantine)
+        })
+    }
+    fn with_quarantine<R>(
+        generation: u64,
+        body: impl FnOnce(EarlyOpenReceipt, &mut Quarantine<'_, 16>) -> R,
+    ) -> R {
+        let (opened, claim) = super::super::test_support::early(generation);
+        let limits = RememberedLimits::from_authenticated_server_parameters(&[
+            0, 0, 15, 0, 4, 1, 16, 5, 1, 16, 6, 1, 16, 8, 1, 1,
+        ])
+        .unwrap();
+        let mut slots = [QuarantineSlot::<16>::EMPTY];
+        let mut quarantine = Quarantine::new(
+            ServerPolicy::BufferedReplaySafeRequests {
+                max_bytes: 16,
+                max_streams: 1,
+            },
+            limits,
+            claim,
+            &mut slots,
+        )
+        .unwrap();
+        body(opened, &mut quarantine)
+    }
     fn ticket(generation: u64) -> QuarantineTicket {
         let issuer = [9; 16];
         let mut storage = ReplayStorage::<1>::new();
@@ -648,26 +617,13 @@ mod tests {
         q.next_release().unwrap().unwrap().ticket
     }
     #[test]
-    fn early_key_and_quarantine_authority_are_distinct_and_replay_checked() {
+    fn early_open_and_quarantine_authority_are_distinct_and_single_consumption_checked() {
         super::super::tests::with_driver::<16, _>(400, |d, q| {
+            let rx = begin(d).unwrap();
             assert!(matches!(
-                d.begin_early_key_use(),
-                Err(DriverError::KeyNotInstalled)
+                d.begin_receive(super::super::test_support::initial(d.generation())),
+                Err(DriverError::ReceiveBusy)
             ));
-            assert!(matches!(
-                d.begin_early_receive(),
-                Err(DriverError::KeyNotInstalled)
-            ));
-            d.install_early_key().unwrap();
-            let k = d.begin_early_key_use().unwrap();
-            assert!(matches!(d.retire_early_key(), Err(DriverError::KeyUseBusy)));
-            d.finish_early_key_use(k).unwrap();
-            assert!(matches!(
-                d.finish_early_key_use(k),
-                Err(DriverError::InvalidTicket)
-            ));
-            let rx = d.begin_early_receive().unwrap();
-            assert!(matches!(d.begin_receive(), Err(DriverError::ReceiveBusy)));
             let b = d.begin_early_buffer(rx, 0).unwrap();
             assert!(matches!(
                 d.finish_early_receive(rx),
@@ -686,11 +642,6 @@ mod tests {
                 d.finish_early_receive(rx),
                 Err(DriverError::InvalidTicket)
             ));
-            d.retire_early_key().unwrap();
-            assert!(matches!(
-                d.install_early_key(),
-                Err(DriverError::KeyRetired)
-            ));
             assert_eq!(q.queued(), 0);
         });
     }
@@ -703,9 +654,14 @@ mod tests {
                 d.begin_early_release(0, valid),
                 Err(DriverError::InvalidTicket)
             ));
-            d.handshake_finished().unwrap();
             assert!(matches!(
-                d.handshake_finished(),
+                d.handshake_finished(super::super::test_support::finished(402)),
+                Err(DriverError::InvalidTicket)
+            ));
+            d.handshake_finished(super::super::test_support::finished(d.generation()))
+                .unwrap();
+            assert!(matches!(
+                d.handshake_finished(super::super::test_support::finished(d.generation())),
                 Err(DriverError::InvalidTicket)
             ));
             assert!(matches!(
@@ -731,21 +687,47 @@ mod tests {
     }
     #[test]
     fn retired_early_tickets_cannot_complete_new_connection_with_same_local_ids() {
-        let old = super::super::tests::with_driver::<16, _>(403, |d, _| {
-            d.install_early_key().unwrap();
-            d.begin_early_key_use().unwrap()
-        });
+        let old = super::super::tests::with_driver::<16, _>(403, |d, _| begin(d).unwrap());
         super::super::tests::with_driver::<16, _>(404, |d, _| {
-            d.install_early_key().unwrap();
-            let new = d.begin_early_key_use().unwrap();
-            assert_eq!(old.descriptor.id, new.descriptor.id);
+            let new = begin(d).unwrap();
+            assert_eq!(old.0.id, new.0.id);
             assert!(matches!(
-                d.finish_early_key_use(old),
+                d.finish_early_receive(old),
                 Err(DriverError::InvalidTicket)
             ));
-            d.finish_early_key_use(new).unwrap();
+            d.finish_early_receive(new).unwrap();
             d.retire();
-            assert!(matches!(d.begin_early_receive(), Err(DriverError::Retired)));
+            assert!(matches!(begin(d), Err(DriverError::Retired)));
+        });
+    }
+    #[test]
+    fn actual_open_receipt_requires_matching_live_replay_claim_generation() {
+        super::super::tests::with_driver::<16, _>(405, |driver, queues| {
+            with_quarantine(406, |opened, quarantine| {
+                assert!(matches!(
+                    driver.begin_early_receive(opened, quarantine),
+                    Err(DriverError::InvalidTicket)
+                ));
+            });
+            with_quarantine(405, |opened, _| {
+                with_quarantine(406, |_, foreign| {
+                    assert!(matches!(
+                        driver.begin_early_receive(opened, foreign),
+                        Err(DriverError::InvalidTicket)
+                    ));
+                });
+            });
+            with_quarantine(405, |opened, rejected| {
+                rejected.reject(405).unwrap();
+                assert!(matches!(
+                    driver.begin_early_receive(opened, rejected),
+                    Err(DriverError::InvalidTicket)
+                ));
+            });
+            assert!(!driver.is_retired());
+            let receive = begin(driver).unwrap();
+            driver.finish_early_receive(receive).unwrap();
+            assert_eq!(queues.queued(), 0);
         });
     }
     #[test]
@@ -765,7 +747,8 @@ mod tests {
                 d.begin_early_intent_import(import),
                 Err(DriverError::InvalidTicket)
             ));
-            d.handshake_finished().unwrap();
+            d.handshake_finished(super::super::test_support::finished(d.generation()))
+                .unwrap();
             let first = d.begin_early_intent_import(import).unwrap();
             assert!(matches!(
                 d.begin_early_intent_import(import),
@@ -816,8 +799,7 @@ mod tests {
                 d.begin_early_control_release(control),
                 Err(DriverError::InvalidTicket)
             ));
-            d.install_early_key().unwrap();
-            let receive = d.begin_early_receive().unwrap();
+            let receive = begin(d).unwrap();
             let buffer = d.begin_early_control_buffer(receive).unwrap();
             assert!(matches!(
                 d.begin_early_buffer(receive, 0),
@@ -837,7 +819,8 @@ mod tests {
                 d.begin_early_control_buffer(receive),
                 Err(DriverError::InvalidTicket)
             ));
-            d.handshake_finished().unwrap();
+            d.handshake_finished(super::super::test_support::finished(d.generation()))
+                .unwrap();
             let release = d.begin_early_control_release(control).unwrap();
             assert!(matches!(
                 d.begin_early_control_release(control),
@@ -884,8 +867,7 @@ mod tests {
     #[test]
     fn authenticated_early_peer_close_has_terminal_authority_before_finished() {
         super::super::tests::with_driver::<16, _>(503, |d, q| {
-            d.install_early_key().unwrap();
-            let receive = d.begin_early_receive().unwrap();
+            let receive = begin(d).unwrap();
             let close = d.begin_early_peer_close(receive, 123).unwrap();
             assert!(matches!(
                 d.begin_early_control_buffer(receive),
@@ -895,7 +877,7 @@ mod tests {
                 d.finish_early_receive(receive),
                 Err(DriverError::ReceiveEffectBusy)
             ));
-            assert!(!d.early.finished);
+            assert!(d.early.finished.is_none());
             d.finish_early_peer_close(close).unwrap();
             assert!(matches!(
                 d.finish_early_peer_close(close),

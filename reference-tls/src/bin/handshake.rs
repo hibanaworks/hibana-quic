@@ -1,6 +1,8 @@
 //! Development-only UDP adapter for real QUIC v1 handshakes.
 //! No HTTP, transfer, migration, complete recovery, or runner testcase support is implied.
 #![forbid(unsafe_code)]
+// The composed Initial RX/TX + TLS choreography exceeds the default const-eval lint budget.
+#![allow(long_running_const_eval)]
 
 #[path = "support/handshake_io.rs"]
 mod handshake_io;
@@ -17,7 +19,7 @@ use hibana_quic::{
     driver::{Driver, Roles},
     handshake::CryptoBuffer,
     handshake_endpoint::{
-        Config, HandshakeEndpoint, InitialKeyProtection, InitialProtection, Side,
+        Config, HandshakeEndpoint, InitialKeyProtection, InitialProtection, Side, TlsClient,
     },
     packet::{Header, LongType, PacketIter, encode_varint},
     protocol::*,
@@ -338,7 +340,7 @@ async fn exchange_async(
     let generation = u64::from_be_bytes(random::<8>()?);
     let keys =
         hibana_quic::crypto::initial_keys(&original).map_err(|e| format!("Initial keys: {e:?}"))?;
-    initial_roles::with_initial(keys, side, generation, async move |initial| {
+    initial_roles::with_connection(keys, side, generation, tls, async move |initial, tls| {
         exchange_connected(
             reactor, socket, peer, side, local, original, tls, first, start, budget, generation,
             initial,
@@ -355,7 +357,7 @@ async fn exchange_connected(
     side: Side,
     local: [u8; 8],
     original: Vec<u8>,
-    tls: RustlsProvider,
+    tls: TlsClient<'_, '_>,
     first: Option<&[u8]>,
     start: Instant,
     budget: Duration,
@@ -451,6 +453,7 @@ async fn exchange_connected(
         }
         endpoint
             .timer(now(start))
+            .await
             .map_err(|e| endpoint_error("monotonic timer", &endpoint, e))?;
         let mut drained = false;
         for _ in 0..MAX_OUTPUT_PER_TURN {
@@ -499,6 +502,10 @@ async fn exchange_connected(
         // Finished bytes and every other queued TLS/ACK output to the adapter.
         if endpoint.handshake_complete() {
             report.duration_ms = start.elapsed().as_millis();
+            endpoint
+                .retire_owned()
+                .await
+                .map_err(|e| endpoint_error("actor retirement", &endpoint, e))?;
             return Ok(report);
         }
         if endpoint.is_retired() {
@@ -531,12 +538,22 @@ async fn exchange_connected(
 }
 fn endpoint_error<K: InitialKeyProtection>(
     stage: &str,
-    endpoint: &HandshakeEndpoint<'_, '_, RustlsProvider, K>,
+    endpoint: &HandshakeEndpoint<'_, '_, '_, '_, K>,
     error: hibana_quic::handshake_endpoint::Error,
 ) -> String {
-    match endpoint.tls().last_tls_error() {
-        Some(tls) => format!("{stage}: {error:?}; TLS: {tls}"),
-        None => format!("{stage}: {error:?}"),
+    let diagnostic = &endpoint.tls_snapshot().diagnostic;
+    if diagnostic.is_empty() {
+        format!("{stage}: {error:?}")
+    } else {
+        format!(
+            "{stage}: {error:?}; TLS: {}{}",
+            diagnostic.as_str(),
+            if diagnostic.truncated() || diagnostic.format_error() {
+                " [incomplete]"
+            } else {
+                ""
+            }
+        )
     }
 }
 fn json_string(value: &str) -> String {

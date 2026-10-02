@@ -1,4 +1,7 @@
-//! Managed nonmigrating zero-peer-CID regression with real encrypted TLS/QUIC.
+//! Managed nonmigrating zero-peer-CID regression with real actor-owned TLS/QUIC.
+//! Initial RX/TX and the whole Provider are distinct projected facets of one
+//! session per connection. Every AEAD and integrity-budget loan is awaited.
+#![allow(long_running_const_eval)]
 #[allow(dead_code)]
 #[path = "support/tls_actor_fixture.rs"]
 mod fixture;
@@ -11,7 +14,7 @@ use hibana_quic::{
     carrier::{CarrierStorage, LocalCarrier},
     driver::{Driver, Roles},
     handshake::CryptoBuffer,
-    handshake_endpoint::{Config, HandshakeEndpoint, Side},
+    handshake_endpoint::{Config, HandshakeEndpoint, Side, TlsClient},
     packet::encode_varint,
     protocol::*,
     tls_certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
@@ -24,8 +27,9 @@ use hibana_quic::{
         client::KeyClient,
         packet_protection::{self, Command, Exchange, Reply},
         protocol::key_choreography,
+        protocol_tls::tls_choreography,
+        tls_owner,
     },
-    runtime::join2,
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -119,14 +123,9 @@ fn parameters(id: &[u8], original: Option<&[u8]>) -> Vec<u8> {
     }
     out
 }
-async fn transfer<
-    A: InitialKeyProtection,
-    B: InitialKeyProtection,
-    C: hibana_quic::tls::Provider,
-    D: hibana_quic::tls::Provider,
->(
-    from: &mut HandshakeEndpoint<'_, '_, C, A>,
-    to: &mut HandshakeEndpoint<'_, '_, D, B>,
+async fn transfer<A: InitialKeyProtection, B: InitialKeyProtection>(
+    from: &mut HandshakeEndpoint<'_, '_, '_, '_, A>,
+    to: &mut HandshakeEndpoint<'_, '_, '_, '_, B>,
     now: u64,
 ) -> usize {
     let mut out = [0; 1500];
@@ -313,13 +312,16 @@ fn run_zero(violation: u8) {
         let mut srxr: [Option<Reply<1536>>; 1] = [None];
         let mut stxc: [Option<Command<1536>>; 1] = [None];
         let mut stxr: [Option<Reply<1536>>; 1] = [None];
-        let cq = CarrierStorage::<1, 16, 32>::new();
-        let mut cslab = [0; 32768];
+        let cq = CarrierStorage::<1, 16, 64>::new();
+        let mut cslab = [0; 65536];
         let mut cstore = SessionKitStorage::uninit();
         let ckit = cstore.init();
         let csid = SessionId::new(81);
         let car = ckit.rendezvous(&mut cslab, cq.bind(csid).unwrap()).unwrap();
-        let cglobal = g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>());
+        let cglobal = g::par(
+            g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>()),
+            tls_choreography::<24, 25>(),
+        );
         let cp16 = project::<16, _>(&cglobal);
         let mut ce16 = car.enter(csid, &cp16).unwrap();
         let cp17 = project::<17, _>(&cglobal);
@@ -328,6 +330,17 @@ fn run_zero(violation: u8) {
         let mut ce18 = car.enter(csid, &cp18).unwrap();
         let cp19 = project::<19, _>(&cglobal);
         let mut ce19 = car.enter(csid, &cp19).unwrap();
+        let cp24 = project::<24, _>(&cglobal);
+        let mut ce24 = car.enter(csid, &cp24).unwrap();
+        let cp25 = project::<25, _>(&cglobal);
+        let mut ce25 = car.enter(csid, &cp25).unwrap();
+        let mut ctlsc: [Option<tls_owner::Command<1536>>; 1] = [None];
+        let mut ctlsr: [Option<tls_owner::Reply<1536, 512>>; 1] = [None];
+        let ctlsc = Mailbox::new(&mut ctlsc).unwrap();
+        let ctlsr = Mailbox::new(&mut ctlsr).unwrap();
+        let (ctlssend, ctlsrecv) = ctlsc.split().unwrap();
+        let (ctlsreplysend, ctlsreplyrecv) = ctlsr.split().unwrap();
+        let mut ctlsexchange = tls_owner::Exchange::new();
         let crxc = Mailbox::new(&mut crxc).unwrap();
         let crxr = Mailbox::new(&mut crxr).unwrap();
         let (crxsend, crxrecv) = crxc.split().unwrap();
@@ -339,13 +352,16 @@ fn run_zero(violation: u8) {
         let (ctxreplysend, ctxreplyrecv) = ctxr.split().unwrap();
         let mut ctxexchange = Exchange::new();
         let ckeys = crypto::initial_keys(b"original").unwrap();
-        let sq = CarrierStorage::<1, 16, 32>::new();
-        let mut sslab = [0; 32768];
+        let sq = CarrierStorage::<1, 16, 64>::new();
+        let mut sslab = [0; 65536];
         let mut sstore = SessionKitStorage::uninit();
         let skit = sstore.init();
         let ssid = SessionId::new(82);
         let sar = skit.rendezvous(&mut sslab, sq.bind(ssid).unwrap()).unwrap();
-        let sglobal = g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>());
+        let sglobal = g::par(
+            g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>()),
+            tls_choreography::<24, 25>(),
+        );
         let sp16 = project::<16, _>(&sglobal);
         let mut se16 = sar.enter(ssid, &sp16).unwrap();
         let sp17 = project::<17, _>(&sglobal);
@@ -354,6 +370,17 @@ fn run_zero(violation: u8) {
         let mut se18 = sar.enter(ssid, &sp18).unwrap();
         let sp19 = project::<19, _>(&sglobal);
         let mut se19 = sar.enter(ssid, &sp19).unwrap();
+        let sp24 = project::<24, _>(&sglobal);
+        let mut se24 = sar.enter(ssid, &sp24).unwrap();
+        let sp25 = project::<25, _>(&sglobal);
+        let mut se25 = sar.enter(ssid, &sp25).unwrap();
+        let mut stlsc: [Option<tls_owner::Command<1536>>; 1] = [None];
+        let mut stlsr: [Option<tls_owner::Reply<1536, 512>>; 1] = [None];
+        let stlsc = Mailbox::new(&mut stlsc).unwrap();
+        let stlsr = Mailbox::new(&mut stlsr).unwrap();
+        let (stlssend, stlsrecv) = stlsc.split().unwrap();
+        let (stlsreplysend, stlsreplyrecv) = stlsr.split().unwrap();
+        let mut stlsexchange = tls_owner::Exchange::new();
         let srxc = Mailbox::new(&mut srxc).unwrap();
         let srxr = Mailbox::new(&mut srxr).unwrap();
         let (srxsend, srxrecv) = srxc.split().unwrap();
@@ -366,6 +393,12 @@ fn run_zero(violation: u8) {
         let mut stxexchange = Exchange::new();
         let skeys = crypto::initial_keys(b"original").unwrap();
         let work = async {
+            let client_owner = TlsClient::connect(ctlssend, ctlsreplyrecv, 1)
+                .await
+                .unwrap();
+            let server_owner = TlsClient::connect(stlssend, stlsreplyrecv, 2)
+                .await
+                .unwrap();
             let cprotection = InitialProtection::new(
                 KeyClient::connect(crxsend, crxreplyrecv, 1).await.unwrap(),
                 KeyClient::connect(ctxsend, ctxreplyrecv, 1).await.unwrap(),
@@ -383,10 +416,7 @@ fn run_zero(violation: u8) {
                     original_destination_id: b"original",
                     generation: 1,
                 },
-                Injected {
-                    inner: client_tls,
-                    next: &injection,
-                },
+                client_owner,
                 driver!(crv, 1),
                 client_crypto,
                 cprotection,
@@ -399,7 +429,7 @@ fn run_zero(violation: u8) {
                     original_destination_id: b"original",
                     generation: 2,
                 },
-                server_tls,
+                server_owner,
                 driver!(srv, 2),
                 server_crypto,
                 sprotection,
@@ -472,8 +502,8 @@ fn run_zero(violation: u8) {
             assert_eq!(server.network_path_state().unwrap().1.reserved, 0);
             assert_eq!(server.network_path_state().unwrap().1.sent, 0);
             for turn in 1..32 {
-                client.timer(turn * 100).unwrap();
-                server.timer(turn * 100).unwrap();
+                client.timer(turn * 100).await.unwrap();
+                server.timer(turn * 100).await.unwrap();
                 transfer(&mut server, &mut client, turn * 100).await;
                 transfer(&mut client, &mut server, turn * 100).await;
                 if client.handshake_complete() && server.handshake_complete() {
@@ -581,6 +611,9 @@ fn run_zero(violation: u8) {
                     .unwrap()
                     .unwrap();
                 client.adapter_result(tx, true, 10002).await.unwrap();
+                // The malicious peer has finished all real seal/HP requests.
+                // Its unique owner retires normally before the expected receiver abort.
+                client.retire_owned().await.unwrap();
                 let result = server
                     .receive_from(
                         &out[..tx.len],
@@ -605,10 +638,16 @@ fn run_zero(violation: u8) {
                         ))
                     ));
                 }
+                assert!(server.is_retired());
+                // This exact, assertion-checked application result cancels the
+                // expected aborted receiver task. Actor errors never count as success.
+                return Err(TestError::ExpectedViolation);
             }
-            Ok::<(), packet_protection::Error>(())
+            client.retire_owned().await.unwrap();
+            server.retire_owned().await.unwrap();
+            Ok::<(), TestError>(())
         };
-        let cactors = join2(
+        let mut crxactor = pin!(async {
             packet_protection::run_borrowed(
                 &mut ce16,
                 &mut ce17,
@@ -617,7 +656,11 @@ fn run_zero(violation: u8) {
                 crxrecv,
                 crxreplysend,
                 &mut crxexchange,
-            ),
+            )
+            .await
+            .map_err(TestError::Initial)
+        });
+        let mut ctxactor = pin!(async {
             packet_protection::run_borrowed(
                 &mut ce18,
                 &mut ce19,
@@ -626,9 +669,11 @@ fn run_zero(violation: u8) {
                 ctxrecv,
                 ctxreplysend,
                 &mut ctxexchange,
-            ),
-        );
-        let sactors = join2(
+            )
+            .await
+            .map_err(TestError::Initial)
+        });
+        let mut srxactor = pin!(async {
             packet_protection::run_borrowed(
                 &mut se16,
                 &mut se17,
@@ -637,7 +682,11 @@ fn run_zero(violation: u8) {
                 srxrecv,
                 srxreplysend,
                 &mut srxexchange,
-            ),
+            )
+            .await
+            .map_err(TestError::Initial)
+        });
+        let mut stxactor = pin!(async {
             packet_protection::run_borrowed(
                 &mut se18,
                 &mut se19,
@@ -646,31 +695,75 @@ fn run_zero(violation: u8) {
                 stxrecv,
                 stxreplysend,
                 &mut stxexchange,
-            ),
-        );
+            )
+            .await
+            .map_err(TestError::Initial)
+        });
+        let mut ctlsactor = pin!(async {
+            tls_owner::run_borrowed(
+                &mut ce24,
+                &mut ce25,
+                1,
+                Injected {
+                    inner: client_tls,
+                    next: &injection,
+                },
+                ctlsrecv,
+                ctlsreplysend,
+                &mut ctlsexchange,
+            )
+            .await
+            .map_err(TestError::Tls)
+        });
+        let mut stlsactor = pin!(async {
+            tls_owner::run_borrowed(
+                &mut se24,
+                &mut se25,
+                2,
+                server_tls,
+                stlsrecv,
+                stlsreplysend,
+                &mut stlsexchange,
+            )
+            .await
+            .map_err(TestError::Tls)
+        });
         sizes = [
             core::mem::size_of_val(&work),
-            core::mem::size_of_val(&cactors),
-            core::mem::size_of_val(&sactors),
+            core::mem::size_of_val(crxactor.as_ref().get_ref()),
+            core::mem::size_of_val(ctlsactor.as_ref().get_ref()),
         ];
-        let mut cactors = pin!(cactors);
-        let mut sactors = pin!(sactors);
         let mut work = pin!(work);
         let mut complete = pin!(hibana_quic::runtime::TaskSet::new([
-            cactors.as_mut() as hibana_quic::runtime::Task<'_, packet_protection::Error>,
-            sactors.as_mut(),
+            crxactor.as_mut() as hibana_quic::runtime::Task<'_, TestError>,
+            ctxactor.as_mut(),
+            srxactor.as_mut(),
+            stxactor.as_mut(),
+            ctlsactor.as_mut(),
+            stlsactor.as_mut(),
             work.as_mut(),
         ]));
-        drive(complete.as_mut(), &wake, &waker).unwrap();
+        match drive(complete.as_mut(), &wake, &waker) {
+            Ok(()) => assert_eq!(violation, 0),
+            Err(TestError::ExpectedViolation) => assert_ne!(violation, 0),
+            Err(TestError::Initial(error)) => panic!("unexpected Initial actor error: {error:?}"),
+            Err(TestError::Tls(error)) => panic!("unexpected TLS actor error: {error:?}"),
+        }
     }
     let allocations = TRACK.with(|c| c.replace(None).unwrap());
     assert_eq!(allocations, 0, "bounded QUIC/TLS/Hibana flow allocated");
     eprintln!(
-        "fixed async fixture task bytes: work={}, client_roles={}, server_roles={}",
+        "host future bytes (excluding borrowed storage): work={}, Initial role={}, TLS role={}",
         sizes[0], sizes[1], sizes[2]
     );
 }
 
+#[derive(Debug)]
+enum TestError {
+    Initial(packet_protection::Error),
+    Tls(tls_owner::Error),
+    ExpectedViolation,
+}
 struct WakeCount(AtomicUsize);
 impl Wake for WakeCount {
     fn wake(self: Arc<Self>) {

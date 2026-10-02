@@ -117,11 +117,56 @@ impl InitialDestination {
     }
 }
 
-/// These variants describe results, not caller-granted protocol authority.
+/// Affine evidence minted only by the owning actor after successful AEAD open.
+/// It binds the service generation, operation, key kind and actual nonce PN.
+/// Parsing and subsequent frame ownership must remain tied to the returned packet.
+///
+/// ```compile_fail
+/// use hibana_quic::roles::packet_protection::OpenReceipt;
+/// let forged = OpenReceipt { generation: 1, operation: 1, packet_number: 0,
+///     kind: hibana_quic::crypto::KeyKind::Initial };
+/// ```
+#[derive(Debug)]
+pub struct OpenReceipt {
+    generation: u64,
+    operation: u64,
+    packet_number: u64,
+    kind: crypto::KeyKind,
+    plaintext_digest: [u8; 32],
+    header_digest: [u8; 32],
+}
+impl OpenReceipt {
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub const fn operation_id(&self) -> u64 {
+        self.operation
+    }
+    pub const fn packet_number(&self) -> u64 {
+        self.packet_number
+    }
+    pub const fn kind(&self) -> crypto::KeyKind {
+        self.kind
+    }
+    pub fn authenticates_plaintext(&self, plaintext: &[u8]) -> bool {
+        self.plaintext_digest == super::sealed_packet::plaintext_digest(plaintext)
+    }
+    pub fn authenticates_header(&self, header: &[u8]) -> bool {
+        self.header_digest == super::sealed_packet::plaintext_digest(header)
+    }
+}
+/// Authenticated bytes and their unique successful-open provenance travel together.
+pub struct OpenedPacket<const N: usize> {
+    pub packet: Packet<N>,
+    pub receipt: OpenReceipt,
+}
+
+/// Result variants cannot manufacture successful-open evidence at the public boundary.
 pub enum Outcome<const N: usize> {
     Installed,
     Opened {
         packet: Packet<N>,
+        receipt: OpenReceipt,
         budget: IntegrityBudget,
     },
     AuthenticationRejected {
@@ -132,7 +177,7 @@ pub enum Outcome<const N: usize> {
         error: crypto::Error,
         budget: IntegrityBudget,
     },
-    Sealed(Packet<N>),
+    Sealed(super::sealed_packet::SealedPacket<N>),
     SealFailed(crypto::Error),
     HeaderMask([u8; 5]),
     HeaderMaskFailed(crypto::Error),
@@ -505,9 +550,25 @@ async fn crypto_role<const CRYPTO: u8, const N: usize>(
                     match key.open(packet.packet_number, header, body, &mut budget) {
                         Ok(len) => {
                             packet.body_len = len;
+                            let receipt = OpenReceipt {
+                                generation: descriptor.generation,
+                                operation: descriptor.sequence,
+                                packet_number: packet.packet_number,
+                                kind: key.kind(),
+                                plaintext_digest: super::sealed_packet::plaintext_digest(
+                                    packet.body(),
+                                ),
+                                header_digest: super::sealed_packet::plaintext_digest(
+                                    packet.header(),
+                                ),
+                            };
                             exchange.put_reply(Reply {
                                 descriptor,
-                                outcome: Outcome::Opened { packet, budget },
+                                outcome: Outcome::Opened {
+                                    packet,
+                                    receipt,
+                                    budget,
+                                },
                             })?;
                             true
                         }
@@ -549,13 +610,21 @@ async fn crypto_role<const CRYPTO: u8, const N: usize>(
                     let Command::Seal(mut packet) = command else {
                         return Err(Error::CommandMismatch);
                     };
+                    let plaintext_digest = super::sealed_packet::plaintext_digest(packet.body());
                     let (header, body) = packet.bytes.split_at_mut(packet.header_len);
                     match key.seal(packet.packet_number, header, body, packet.body_len) {
                         Ok(len) => {
                             packet.body_len = len;
                             exchange.put_reply(Reply {
                                 descriptor,
-                                outcome: Outcome::Sealed(packet),
+                                outcome: Outcome::Sealed(
+                                    super::sealed_packet::SealedPacket::from_owner(
+                                        packet,
+                                        descriptor,
+                                        key.kind(),
+                                        plaintext_digest,
+                                    ),
+                                ),
                             })?;
                             true
                         }

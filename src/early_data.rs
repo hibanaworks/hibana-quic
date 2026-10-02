@@ -334,9 +334,24 @@ pub struct ReplayClaim {
     generation: u64,
     serial: u64,
 }
+/// Numeric identity for private owner-to-owner handoffs. Copying this value
+/// cannot create a replay claim or undo its committed ledger entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ReplayBinding {
+    issuer: [u8; 16],
+    generation: u64,
+    serial: u64,
+}
 impl ReplayClaim {
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    pub(crate) fn owner_binding(&self) -> ReplayBinding {
+        ReplayBinding {
+            issuer: self.issuer,
+            generation: self.generation,
+            serial: self.serial,
+        }
     }
 }
 impl<'a, const N: usize> ReplayLedger<'a, N> {
@@ -589,6 +604,11 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
             charged: 0,
             phase: Phase::Holding,
         })
+    }
+    /// The claim was consumed by `new`; this only observes its still-live
+    /// generation and cannot mint a claim or revive a rejected quarantine.
+    pub(crate) fn accepts_authenticated_generation(&self, generation: u64) -> bool {
+        generation == self.generation && self.phase != Phase::Rejected
     }
     pub fn charged(&self) -> u64 {
         self.charged

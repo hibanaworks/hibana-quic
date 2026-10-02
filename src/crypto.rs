@@ -105,6 +105,15 @@ pub struct IntegrityBudget {
     limit: u64,
 }
 
+/// Outcome of an external packet-protection backend's authentication attempt.
+#[derive(Debug, Eq, PartialEq)]
+pub enum AuthenticationError<E> {
+    /// The connection's smallest observed integrity limit is exhausted.
+    IntegrityLimit,
+    /// The backend performed an actual attempt and rejected authentication.
+    Failed(E),
+}
+
 impl Default for IntegrityBudget {
     fn default() -> Self {
         Self::new()
@@ -122,6 +131,30 @@ impl IntegrityBudget {
         self.failed
     }
 
+    /// Gate an external cryptographic backend using this same connection budget.
+    /// `limit` must be the actual backend key's integrity limit (or a stricter
+    /// previously observed limit). The limit only tightens; successful attempts
+    /// never reset failures. An exhausted budget never invokes `attempt`.
+    ///
+    /// This is trusted Provider integration, not proof of authentication: the
+    /// closure must perform the real AEAD verification and return its outcome.
+    /// No failure-counter setter or reset capability is exposed.
+    pub fn authenticate<T, E>(
+        &mut self,
+        limit: u64,
+        attempt: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, AuthenticationError<E>> {
+        self.before_attempt_limit(limit)
+            .map_err(|_| AuthenticationError::IntegrityLimit)?;
+        match attempt() {
+            Ok(value) => Ok(value),
+            Err(error) => match self.record_failure() {
+                Error::IntegrityLimit => Err(AuthenticationError::IntegrityLimit),
+                _ => Err(AuthenticationError::Failed(error)),
+            },
+        }
+    }
+
     /// Transfer the unique connection budget to an async crypto role. Until the
     /// role returns it, this owner is fail-closed, including cancellation paths.
     pub(crate) fn take_for_role(&mut self) -> Self {
@@ -130,7 +163,11 @@ impl IntegrityBudget {
     }
 
     fn before_attempt(&mut self, suite: CipherSuite) -> Result<(), Error> {
-        self.limit = self.limit.min(suite.integrity_limit());
+        self.before_attempt_limit(suite.integrity_limit())
+    }
+
+    fn before_attempt_limit(&mut self, limit: u64) -> Result<(), Error> {
+        self.limit = self.limit.min(limit);
         if self.failed >= self.limit {
             Err(Error::IntegrityLimit)
         } else {
@@ -139,7 +176,7 @@ impl IntegrityBudget {
     }
 
     fn record_failure(&mut self) -> Error {
-        // before_attempt guarantees failed < limit, and all limits are < u64::MAX.
+        // before_attempt guarantees failed < limit <= u64::MAX.
         self.failed += 1;
         if self.failed >= self.limit {
             Error::IntegrityLimit
@@ -1706,5 +1743,92 @@ mod role_transfer_tests {
         assert_eq!(owner.before_attempt(CipherSuite::Aes128GcmSha256), Err(Error::IntegrityLimit));
         let exhausted = owner.take_for_role();
         assert_eq!(exhausted.limit, 0);
+    }
+}
+
+#[cfg(test)]
+mod external_authentication_budget_tests {
+    use super::{AuthenticationError, IntegrityBudget};
+    use core::cell::Cell;
+
+    #[test]
+    fn actual_attempts_debit_once_and_success_never_debits() {
+        let calls = Cell::new(0);
+        let mut budget = IntegrityBudget::new();
+        assert_eq!(
+            budget.authenticate(4, || {
+                calls.set(calls.get() + 1);
+                Err::<(), _>(7)
+            }),
+            Err(AuthenticationError::Failed(7))
+        );
+        assert_eq!(budget.failed_packets(), 1);
+        assert_eq!(
+            budget.authenticate(4, || {
+                calls.set(calls.get() + 1);
+                Ok::<_, u8>(9)
+            }),
+            Ok(9)
+        );
+        assert_eq!(budget.failed_packets(), 1);
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn final_failure_is_terminal_and_exhaustion_never_invokes_backend() {
+        let calls = Cell::new(0);
+        let mut budget = IntegrityBudget::new();
+        assert_eq!(
+            budget.authenticate(1, || {
+                calls.set(calls.get() + 1);
+                Err::<(), _>(7)
+            }),
+            Err(AuthenticationError::IntegrityLimit)
+        );
+        assert_eq!(budget.failed_packets(), 1);
+        assert_eq!(
+            budget.authenticate(u64::MAX, || {
+                calls.set(calls.get() + 1);
+                Ok::<(), u8>(())
+            }),
+            Err(AuthenticationError::IntegrityLimit)
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(budget.failed_packets(), 1);
+    }
+
+    #[test]
+    fn encountered_limits_only_tighten_even_after_success() {
+        let mut budget = IntegrityBudget::new();
+        assert_eq!(
+            budget.authenticate(10, || Err::<(), _>(7)),
+            Err(AuthenticationError::Failed(7))
+        );
+        assert_eq!(budget.authenticate(2, || Ok::<(), u8>(())), Ok(()));
+        assert_eq!(
+            budget.authenticate(10, || Err::<(), _>(8)),
+            Err(AuthenticationError::IntegrityLimit)
+        );
+        assert_eq!(budget.failed_packets(), 2);
+        assert_eq!(budget.limit, 2);
+    }
+
+    #[test]
+    fn loan_tombstone_never_invokes_external_backend() {
+        let mut owner = IntegrityBudget::new();
+        let mut loan = owner.take_for_role();
+        assert_eq!(
+            owner.authenticate(u64::MAX, || -> Result<(), u8> {
+                panic!("loan tombstone invoked backend")
+            }),
+            Err(AuthenticationError::IntegrityLimit)
+        );
+        assert_eq!(
+            loan.authenticate(3, || Err::<(), _>(7)),
+            Err(AuthenticationError::Failed(7))
+        );
+        owner = loan;
+        assert_eq!(owner.failed_packets(), 1);
+        assert_eq!(owner.authenticate(3, || Ok::<(), u8>(())), Ok(()));
     }
 }

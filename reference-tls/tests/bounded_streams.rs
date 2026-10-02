@@ -2,7 +2,14 @@
 //! PKI fixture generation/import, caller storage preparation and test harness are
 //! outside the counter; constructors, runtime rendezvous, handshake, streaming,
 //! key updates, local retirement and provider/runtime drops are inside it.
+//! Initial keys and each complete TLS Provider run in real projected actor tasks.
+//! Remaining non-key Driver services are still a separate migration. Original
+//! data-plane assertions are preserved across the async API migration.
+#![allow(long_running_const_eval)]
+#[path = "support/async_initial_pair.rs"]
+mod async_initial_pair;
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
+use hibana_quic::handshake_endpoint::InitialProtection;
 use hibana_quic::{
     bounded_tls::{BoundedTls, ClientConfig, ServerConfig, SigningKey, Storage},
     carrier::{CarrierStorage, LocalCarrier},
@@ -20,12 +27,14 @@ use hibana_quic::{
 use p256::pkcs8::DecodePrivateKey;
 use rand_core::OsRng;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
+use std::pin::pin;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     time::Duration,
 };
-type Endpoint<'r, 's, 'c, 'b> = TransportEndpoint<'r, 's, BoundedTls<'c, 'b>, 1024, 1024>;
+type Endpoint<'r, 's, 'c, 'b, 'i, 'q> =
+    TransportEndpoint<'r, 's, 'c, 'b, 1024, 1024, 16, 64, InitialProtection<'i, 'q>>;
 thread_local! {static TRACK:Cell<Option<usize>>=const{Cell::new(None)};}
 struct Counter;
 fn allocation() {
@@ -132,7 +141,7 @@ fn parameters(id: &[u8], original: Option<&[u8]>, limits: Limits) -> Vec<u8> {
 }
 fn with_pair(
     valid_root: bool,
-    f: impl FnOnce(&mut Endpoint<'_, '_, '_, '_>, &mut Endpoint<'_, '_, '_, '_>),
+    f: impl AsyncFnOnce(&mut Endpoint<'_, '_, '_, '_, '_, '_>, &mut Endpoint<'_, '_, '_, '_, '_, '_>),
 ) {
     let limits = Limits {
         max_data: 2048,
@@ -155,8 +164,12 @@ fn with_pair(
     let server_queue = CarrierStorage::<8, 16, { hibana_quic::protocol::SERVICE_PORTS }>::new();
     let mut client_slab = [0; 32768];
     let mut server_slab = [0; 32768];
-    let mut client_kit = SessionKitStorage::<LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>>::uninit();
-    let mut server_kit = SessionKitStorage::<LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>>::uninit();
+    let mut client_kit = SessionKitStorage::<
+        LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>,
+    >::uninit();
+    let mut server_kit = SessionKitStorage::<
+        LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>,
+    >::uninit();
     let mut cb0 = [0; 8192];
     let mut cb1 = [0; 8192];
     let mut cb2 = [0; 8192];
@@ -175,6 +188,7 @@ fn with_pair(
     let mut server_chunks = [const { SendChunk::<1024>::EMPTY }; 4];
     let mut client_refs = [PacketReference::EMPTY; 16];
     let mut server_refs = [PacketReference::EMPTY; 16];
+    let harness = async_initial_pair::Harness::new();
     TRACK.with(|c| c.set(Some(0)));
     {
         let client_tls = BoundedTls::client(
@@ -244,57 +258,72 @@ fn with_pair(
             CryptoBuffer::new(&mut sb1, &mut sm1).unwrap(),
             CryptoBuffer::new(&mut sb2, &mut sm2).unwrap(),
         ];
-        let client = HandshakeEndpoint::new(
-            Config {
-                side: Side::Client,
-                local_id: b"client01",
-                original_destination_id: b"original",
-                generation: 1,
-            },
+        let mut execution = pin!(async_initial_pair::with_pair(
             client_tls,
-            attach!(crv, 1),
-            cc,
-        )
-        .unwrap();
-        let server = HandshakeEndpoint::new(
-            Config {
-                side: Side::Server,
-                local_id: b"server01",
-                original_destination_id: b"original",
-                generation: 2,
-            },
             server_tls,
-            attach!(srv, 2),
-            sc,
-        )
-        .unwrap();
-        let mut client = TransportEndpoint::new(
-            client,
-            limits,
-            &mut client_streams,
-            &mut client_chunks,
-            &mut client_refs,
-            1,
-        )
-        .unwrap();
-        let mut server = TransportEndpoint::new(
-            server,
-            limits,
-            &mut server_streams,
-            &mut server_chunks,
-            &mut server_refs,
-            2,
-        )
-        .unwrap();
-        f(&mut client, &mut server);
-        if !client.is_retired() {
-            client.close().unwrap();
-        }
-        if !server.is_retired() {
-            server.close().unwrap();
-        }
-        assert!(client.is_retired());
-        assert!(server.is_retired());
+            async |client_initial, server_initial, client_tls, server_tls| {
+                let client = HandshakeEndpoint::new(
+                    Config {
+                        side: Side::Client,
+                        local_id: b"client01",
+                        original_destination_id: b"original",
+                        generation: 1,
+                    },
+                    client_tls,
+                    attach!(crv, 1),
+                    cc,
+                    client_initial,
+                )
+                .unwrap();
+                let server = HandshakeEndpoint::new(
+                    Config {
+                        side: Side::Server,
+                        local_id: b"server01",
+                        original_destination_id: b"original",
+                        generation: 2,
+                    },
+                    server_tls,
+                    attach!(srv, 2),
+                    sc,
+                    server_initial,
+                )
+                .unwrap();
+                let mut client = TransportEndpoint::new(
+                    client,
+                    limits,
+                    &mut client_streams,
+                    &mut client_chunks,
+                    &mut client_refs,
+                    1,
+                )
+                .unwrap();
+                let mut server = TransportEndpoint::new(
+                    server,
+                    limits,
+                    &mut server_streams,
+                    &mut server_chunks,
+                    &mut server_refs,
+                    2,
+                )
+                .unwrap();
+                f(&mut client, &mut server).await;
+                if valid_root {
+                    assert!(!client.is_retired() && !server.is_retired());
+                    client.retire_owned().await.unwrap();
+                    server.retire_owned().await.unwrap();
+                    assert!(client.is_retired() && server.is_retired());
+                    async_initial_pair::Completion::Retired
+                } else {
+                    // The test body already proved the exact certificate failure.
+                    // Return without another await after terminal client closure.
+                    assert!(client.is_retired());
+                    server.close().unwrap();
+                    assert!(server.is_retired());
+                    async_initial_pair::Completion::Rejected
+                }
+            }
+        ));
+        harness.drive(execution.as_mut());
     }
     drop(client_kit);
     drop(server_kit);
@@ -303,54 +332,62 @@ fn with_pair(
     let allocations = TRACK.with(|c| c.replace(None).unwrap());
     assert_eq!(allocations, 0, "full bounded transport flow allocated");
 }
-fn transfer(
-    from: &mut Endpoint<'_, '_, '_, '_>,
-    to: &mut Endpoint<'_, '_, '_, '_>,
+async fn transfer(
+    from: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
+    to: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
     now: u64,
 ) -> usize {
     let mut out = [0; 1500];
     let mut scratch = [0; 1500];
     for n in 0..64 {
-        let Some(tx) = from.transmit(&mut out).unwrap() else {
+        let Some(tx) = from.transmit(&mut out).await.unwrap() else {
             return n;
         };
-        from.adapter_result(tx, true, now).unwrap();
-        to.receive(&out[..tx.len], &mut scratch).unwrap();
+        from.adapter_result(tx, true, now).await.unwrap();
+        to.receive(&out[..tx.len], &mut scratch).await.unwrap();
     }
     panic!("bounded transfer failed to yield")
 }
-fn pump(client: &mut Endpoint<'_, '_, '_, '_>, server: &mut Endpoint<'_, '_, '_, '_>, now: u64) {
-    client.timer(now).unwrap();
-    server.timer(now).unwrap();
+async fn pump(
+    client: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
+    server: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
+    now: u64,
+) {
+    client.timer(now).await.unwrap();
+    server.timer(now).await.unwrap();
     for _ in 0..32 {
-        let a = transfer(client, server, now);
-        let b = transfer(server, client, now);
+        let a = transfer(client, server, now).await;
+        let b = transfer(server, client, now).await;
         if a + b == 0 {
             return;
         }
     }
     panic!("wire did not become idle")
 }
-fn handshake(client: &mut Endpoint<'_, '_, '_, '_>, server: &mut Endpoint<'_, '_, '_, '_>) {
-    pump(client, server, 0);
+async fn handshake(
+    client: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
+    server: &mut Endpoint<'_, '_, '_, '_, '_, '_>,
+) {
+    pump(client, server, 0).await;
     assert!(client.handshake_complete());
     assert!(server.handshake_complete());
 }
 
 #[test]
 fn full_bounded_five_mebibyte_stream_loss_corruption_key_updates_and_retirement_allocate_zero() {
-    with_pair(true, |client, server| {
-        handshake(client, server);
+    with_pair(true, async |client, server| {
+        handshake(client, server).await;
         let request = client.open(true).unwrap();
         client.send(request, b"GET /five-mib\r\n", true).unwrap();
         let mut out = [0; 1500];
         let mut scratch = [0; 1500];
-        let first = client.transmit(&mut out).unwrap().unwrap();
-        client.adapter_result(first, true, 1).unwrap();
+        let first = client.transmit(&mut out).await.unwrap().unwrap();
+        client.adapter_result(first, true, 1).await.unwrap();
         out[first.len - 1] ^= 1;
         assert_eq!(
             server
                 .receive(&out[..first.len], &mut scratch)
+                .await
                 .unwrap()
                 .authenticated,
             0
@@ -360,36 +397,40 @@ fn full_bounded_five_mebibyte_stream_loss_corruption_key_updates_and_retirement_
             Err(streams::Error::NotOpened)
         );
         let mut now = client.next_deadline().expect("lost request PTO");
-        client.timer(now).unwrap();
-        server.timer(now).unwrap();
-        let replay = client.transmit(&mut out).unwrap().unwrap();
+        client.timer(now).await.unwrap();
+        server.timer(now).await.unwrap();
+        let replay = client.transmit(&mut out).await.unwrap().unwrap();
         assert!(replay.packet_number.value > first.packet_number.value);
-        client.adapter_result(replay, true, now).unwrap();
-        server.receive(&out[..replay.len], &mut scratch).unwrap();
+        client.adapter_result(replay, true, now).await.unwrap();
+        server
+            .receive(&out[..replay.len], &mut scratch)
+            .await
+            .unwrap();
         assert_eq!(
             server
                 .receive(&out[..replay.len], &mut scratch)
+                .await
                 .unwrap()
                 .discarded,
             1
         );
-        pump(client, server, now);
+        pump(client, server, now).await;
         let response = server.streams().lookup(request.id()).unwrap();
         let view = server.read(response).unwrap();
         assert_eq!(view.first, b"GET /five-mib\r\n");
         assert!(view.fin);
         server.consume(response, 15).unwrap();
-        pump(client, server, now);
+        pump(client, server, now).await;
         const BLOCKS: usize = 5 * 1024;
         for i in 0..BLOCKS {
             now += 100;
             if i == 1024 || i == 3072 {
                 now += 10_000_000;
-                pump(client, server, now);
+                pump(client, server, now).await;
                 if i == 1024 {
-                    server.initiate_key_update().unwrap();
+                    server.initiate_key_update().await.unwrap();
                 } else {
-                    client.initiate_key_update().unwrap();
+                    client.initiate_key_update().await.unwrap();
                 }
             }
             let block = [(i % 251) as u8; 1024];
@@ -397,40 +438,47 @@ fn full_bounded_five_mebibyte_stream_loss_corruption_key_updates_and_retirement_
             if i == 256 {
                 // Lose an accepted stream packet and corrupt a copy. Only a
                 // freshly numbered PTO retransmission may reach the owner.
-                let sent = server.transmit(&mut out).unwrap().unwrap();
-                server.adapter_result(sent, true, now).unwrap();
+                let sent = server.transmit(&mut out).await.unwrap().unwrap();
+                server.adapter_result(sent, true, now).await.unwrap();
                 out[sent.len - 1] ^= 1;
                 assert_eq!(
                     client
                         .receive(&out[..sent.len], &mut scratch)
+                        .await
                         .unwrap()
                         .authenticated,
                     0
                 );
                 assert!(client.read(request).unwrap().first.is_empty());
                 now = server.next_deadline().unwrap().max(now);
-                client.timer(now).unwrap();
-                server.timer(now).unwrap();
-                let replay = server.transmit(&mut out).unwrap().unwrap();
+                client.timer(now).await.unwrap();
+                server.timer(now).await.unwrap();
+                let replay = server.transmit(&mut out).await.unwrap().unwrap();
                 assert!(replay.packet_number.value > sent.packet_number.value);
-                server.adapter_result(replay, true, now).unwrap();
-                client.receive(&out[..replay.len], &mut scratch).unwrap();
+                server.adapter_result(replay, true, now).await.unwrap();
+                client
+                    .receive(&out[..replay.len], &mut scratch)
+                    .await
+                    .unwrap();
             }
             if i == 512 {
-                let rejected = server.transmit(&mut out).unwrap().unwrap();
-                server.adapter_result(rejected, false, now).unwrap();
-                let fresh = server.transmit(&mut out).unwrap().unwrap();
+                let rejected = server.transmit(&mut out).await.unwrap().unwrap();
+                server.adapter_result(rejected, false, now).await.unwrap();
+                let fresh = server.transmit(&mut out).await.unwrap().unwrap();
                 assert!(fresh.packet_number.value > rejected.packet_number.value);
-                server.adapter_result(fresh, true, now).unwrap();
-                client.receive(&out[..fresh.len], &mut scratch).unwrap();
+                server.adapter_result(fresh, true, now).await.unwrap();
+                client
+                    .receive(&out[..fresh.len], &mut scratch)
+                    .await
+                    .unwrap();
             }
-            pump(client, server, now);
+            pump(client, server, now).await;
             let view = client.read(request).unwrap();
             assert_eq!(view.first, &block);
             assert!(view.second.is_empty());
             assert_eq!(view.fin, i + 1 == BLOCKS);
             client.consume(request, 1024).unwrap();
-            pump(client, server, now);
+            pump(client, server, now).await;
         }
         assert_eq!(client.streams().receive_charged(), 5 * 1024 * 1024);
         assert_eq!(client.key_generation(), 2);
@@ -439,7 +487,7 @@ fn full_bounded_five_mebibyte_stream_loss_corruption_key_updates_and_retirement_
         assert_eq!(server.receive_key_generation(), 2);
         client.retire_stream(request).unwrap();
         server.retire_stream(response).unwrap();
-        pump(client, server, now + 1);
+        pump(client, server, now + 1).await;
         assert_eq!(
             client.streams().lookup(request.id()),
             Err(streams::Error::Retired)
@@ -455,17 +503,17 @@ fn full_bounded_five_mebibyte_stream_loss_corruption_key_updates_and_retirement_
 
 #[test]
 fn bounded_transport_bad_ca_fails_terminally_and_drops_without_allocating() {
-    with_pair(false, |client, server| {
-        transfer(client, server, 0);
+    with_pair(false, async |client, server| {
+        transfer(client, server, 0).await;
         let mut out = [0; 1500];
         let mut scratch = [0; 1500];
         let mut rejected = false;
         for _ in 0..32 {
-            let Some(tx) = server.transmit(&mut out).unwrap() else {
+            let Some(tx) = server.transmit(&mut out).await.unwrap() else {
                 break;
             };
-            server.adapter_result(tx, true, 0).unwrap();
-            if let Err(error) = client.receive(&out[..tx.len], &mut scratch) {
+            server.adapter_result(tx, true, 0).await.unwrap();
+            if let Err(error) = client.receive(&out[..tx.len], &mut scratch).await {
                 assert!(matches!(
                     error,
                     transport::Error::Engine(hibana_quic::handshake_endpoint::Error::Tls(

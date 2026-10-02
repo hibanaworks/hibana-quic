@@ -313,27 +313,32 @@ fn forbidden_reservation_reuse_before_adapter_result_fails_closed() {
 
 #[test]
 fn actual_key_services_reject_use_before_install_at_hibana_endpoint() {
+    use hibana_quic::roles::{protocol as key, protocol_tls as tls};
     for level in 0..3 {
-        let queues = CarrierStorage::<8, 16, { hibana_quic::protocol::SERVICE_PORTS }>::new();
+        let queues = CarrierStorage::<8, 16, 26>::new();
         let sid = SessionId::new(200 + level);
         let carrier = queues.bind(sid).unwrap();
-        let mut slab = [0_u8; 32 * 1024];
-        let mut storage = SessionKitStorage::<
-            LocalCarrier<'_, 8, 16, { hibana_quic::protocol::SERVICE_PORTS }>,
-        >::uninit();
+        let mut slab = [0_u8; 64 * 1024];
+        let mut storage = SessionKitStorage::<LocalCarrier<'_, 8, 16, 26>>::uninit();
         let kit = storage.init();
         let rv = kit.rendezvous(&mut slab, carrier).unwrap();
-        let program = service_program::<RECOVERY>();
-        let mut recovery = rv.enter(sid, &program).unwrap();
-        let result = match level {
-            0 => ready(recovery.send::<InitialKeyUse>(&10)),
-            1 => ready(recovery.send::<HandshakeKeyUse>(&10)),
-            2 => ready(recovery.send::<OneRttKeyUse>(&10)),
-            _ => unreachable!(),
+        let descriptor = [0u8; 16];
+        let rejected = if level == 0 {
+            let program = key::key_program::<{ key::KEY_CLIENT }>();
+            let mut endpoint = rv.enter(sid, &program).unwrap();
+            ready(endpoint.send::<key::Open>(&descriptor)).is_err()
+        } else {
+            let program = tls::tls_program::<{ tls::TLS_CLIENT }>();
+            let mut endpoint = rv.enter(sid, &program).unwrap();
+            if level == 1 {
+                ready(endpoint.send::<tls::OpenHandshake>(&descriptor)).is_err()
+            } else {
+                ready(endpoint.send::<tls::OpenOneRtt>(&descriptor)).is_err()
+            }
         };
         assert!(
-            result.is_err(),
-            "the projected install sequence must reject an early use"
+            rejected,
+            "the actual owner projection rejects use before install"
         );
         assert_eq!(
             queues.queued(),

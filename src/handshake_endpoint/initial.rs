@@ -5,7 +5,11 @@
 //! generic capability keeps mailbox and backing-storage lifetimes independent
 //! of the endpoint's Driver and CRYPTO buffers.
 use super::*;
-use crate::roles::{client::KeyClient, packet_protection::Packet};
+use crate::crypto::IntegrityBudget;
+use crate::roles::{
+    client::KeyClient,
+    packet_protection::{OpenedPacket, Packet},
+};
 use core::future::Future;
 
 /// Bounded Initial packet arena. Locally produced Initials are 1200 bytes;
@@ -23,23 +27,11 @@ mod sealed {
 /// This is an implementation capability, not a replacement QUIC control FSM.
 /// The only implementation below owns connected mailbox halves. Generics avoid
 /// tying their two storage lifetimes to the endpoint's unrelated buffers.
-pub trait InitialKeyProtection: sealed::Sealed {
-    fn generation(&self) -> u64;
+pub trait InitialKeyProtection:
+    sealed::Sealed + crate::roles::tls_owner::InitialOpen<INITIAL_PACKET_BYTES>
+{
     fn receive_mask(&mut self, sample: [u8; 16]) -> impl Future<Output = Result<[u8; 5], Error>>;
     fn transmit_mask(&mut self, sample: [u8; 16]) -> impl Future<Output = Result<[u8; 5], Error>>;
-    fn open(
-        &mut self,
-        packet: Packet<INITIAL_PACKET_BYTES>,
-        budget: IntegrityBudget,
-    ) -> impl Future<
-        Output = Result<
-            (
-                Result<Packet<INITIAL_PACKET_BYTES>, crypto::Error>,
-                IntegrityBudget,
-            ),
-            Error,
-        >,
-    >;
     fn seal(
         &mut self,
         pn: u64,
@@ -60,6 +52,9 @@ pub struct InitialProtection<'channel, 'storage> {
     generation: u64,
 }
 impl<'c, 's> InitialProtection<'c, 's> {
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
     /// Both clients must have completed the real actor installation exchange,
     /// and their actors must protect opposite directions of this connection.
     /// Keep the enclosing actor/session owner alive while this value is used.
@@ -79,10 +74,31 @@ impl<'c, 's> InitialProtection<'c, 's> {
     }
 }
 impl sealed::Sealed for InitialProtection<'_, '_> {}
-impl InitialKeyProtection for InitialProtection<'_, '_> {
+impl crate::roles::tls_owner::initial_open_seal::Sealed for InitialProtection<'_, '_> {}
+impl crate::roles::tls_owner::InitialOpen<INITIAL_PACKET_BYTES> for InitialProtection<'_, '_> {
     fn generation(&self) -> u64 {
         self.generation
     }
+    async fn open_with_budget(
+        &mut self,
+        packet: Packet<INITIAL_PACKET_BYTES>,
+        budget: IntegrityBudget,
+    ) -> Result<
+        (
+            Result<OpenedPacket<INITIAL_PACKET_BYTES>, crypto::Error>,
+            IntegrityBudget,
+        ),
+        crate::roles::tls_owner::ClientError,
+    > {
+        self.receive
+            .as_mut()
+            .ok_or(crate::roles::tls_owner::ClientError::Closed)?
+            .open(packet, budget)
+            .await
+            .map_err(|_| crate::roles::tls_owner::ClientError::InitialProtection)
+    }
+}
+impl InitialKeyProtection for InitialProtection<'_, '_> {
     async fn receive_mask(&mut self, sample: [u8; 16]) -> Result<[u8; 5], Error> {
         Ok(self
             .receive
@@ -100,24 +116,6 @@ impl InitialKeyProtection for InitialProtection<'_, '_> {
             .header_mask(sample)
             .await
             .map_err(Error::Protection)??)
-    }
-    async fn open(
-        &mut self,
-        packet: Packet<INITIAL_PACKET_BYTES>,
-        budget: IntegrityBudget,
-    ) -> Result<
-        (
-            Result<Packet<INITIAL_PACKET_BYTES>, crypto::Error>,
-            IntegrityBudget,
-        ),
-        Error,
-    > {
-        self.receive
-            .as_mut()
-            .ok_or(Error::Retired)?
-            .open(packet, budget)
-            .await
-            .map_err(Error::Protection)
     }
     async fn seal(
         &mut self,
@@ -173,19 +171,19 @@ impl InitialKeyProtection for InitialProtection<'_, '_> {
 /// Dropping any pending public packet-I/O operation abandons this connection.
 /// In particular, cancellation after Open publication cannot expose an endpoint
 /// with a fresh integrity budget or a resumable half-finished send reservation.
-struct CancelOnDrop<'a, 'r, 's, T: Provider, K: InitialKeyProtection> {
-    endpoint: &'a mut HandshakeEndpoint<'r, 's, T, K>,
+struct CancelOnDrop<'a, 'r, 's, 'tc, 'ts, K: InitialKeyProtection> {
+    endpoint: &'a mut HandshakeEndpoint<'r, 's, 'tc, 'ts, K>,
     complete: bool,
 }
-impl<'a, 'r, 's, T: Provider, K: InitialKeyProtection> CancelOnDrop<'a, 'r, 's, T, K> {
-    fn new(endpoint: &'a mut HandshakeEndpoint<'r, 's, T, K>) -> Self {
+impl<'a, 'r, 's, 'tc, 'ts, K: InitialKeyProtection> CancelOnDrop<'a, 'r, 's, 'tc, 'ts, K> {
+    fn new(endpoint: &'a mut HandshakeEndpoint<'r, 's, 'tc, 'ts, K>) -> Self {
         Self {
             endpoint,
             complete: false,
         }
     }
 }
-impl<T: Provider, K: InitialKeyProtection> Drop for CancelOnDrop<'_, '_, '_, T, K> {
+impl<K: InitialKeyProtection> Drop for CancelOnDrop<'_, '_, '_, '_, '_, K> {
     fn drop(&mut self) {
         if !self.complete {
             self.endpoint.retire();
@@ -193,39 +191,96 @@ impl<T: Provider, K: InitialKeyProtection> Drop for CancelOnDrop<'_, '_, '_, T, 
     }
 }
 
-impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, K> {
+impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
     pub(super) async fn open_initial(
         &mut self,
         pn: u64,
         header: &[u8],
         body: &mut [u8],
-    ) -> Result<usize, Error> {
+    ) -> Result<(usize, crate::roles::packet_protection::OpenReceipt), Error> {
         let packet = Packet::new(pn, header, body)?;
-        // Transfer the exact connection-wide budget. The lender retains an
-        // exhausted tombstone until that same budget returns. The public I/O
-        // cancellation guard retires all connection state if this await drops.
-        let budget = self
+        let mut loan = self
             .tls
-            .integrity_budget()
-            .unwrap_or(&mut self.integrity)
-            .take_for_role();
-        let (result, budget) = self.initial.open(packet, budget).await?;
-        *self.tls.integrity_budget().unwrap_or(&mut self.integrity) = budget;
-        let packet = result?;
-        let len = packet.body().len();
+            .as_mut()
+            .ok_or(Error::Retired)?
+            .loan_integrity()
+            .await?
+            .ok_or(Error::IntegrityLoanUnavailable)?;
+        let result = loan.open_initial(&mut self.initial, packet).await?;
+        loan.return_to_owner().await?;
+        let opened = result?;
+        let len = opened.packet.body().len();
         body.get_mut(..len)
             .ok_or(Error::Capacity)?
-            .copy_from_slice(packet.body());
-        Ok(len)
+            .copy_from_slice(opened.packet.body());
+        Ok((len, opened.receipt))
     }
-    pub(super) fn finish_provider_key_use(
-        &mut self,
-        ticket: Option<crate::driver::KeyUseTicket>,
-    ) -> Result<(), DriverError> {
-        if let Some(ticket) = ticket {
-            self.driver.finish_key_use(ticket)?;
+    /// Gracefully retire actor-owned keys without sending a QUIC close frame.
+    /// Use after the enclosing application has finished its accepted output.
+    /// Aborting a suspended shutdown still terminally retires the connection.
+    pub async fn retire_owned(&mut self) -> Result<(), Error> {
+        let mut guard = CancelOnDrop::new(self);
+        let result = async {
+            guard.endpoint.initial.retire().await?;
+            guard.endpoint.retire_tls().await?;
+            Ok::<(), Error>(())
         }
-        Ok(())
+        .await;
+        guard.endpoint.retire();
+        guard.complete = true;
+        result
+    }
+    pub async fn timer(&mut self, now: u64) -> Result<(), Error> {
+        let mut guard = CancelOnDrop::new(self);
+        let result = guard.endpoint.timer_impl(now).await;
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
+            guard.endpoint.retire();
+        }
+        guard.complete = true;
+        result
+    }
+    pub async fn close(&mut self, reason: CloseReason) -> Result<(), Error> {
+        let mut guard = CancelOnDrop::new(self);
+        let result = guard.endpoint.close_impl(reason).await;
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
+            guard.endpoint.retire();
+        }
+        guard.complete = true;
+        result
+    }
+    pub async fn initiate_key_update(&mut self) -> Result<(), Error> {
+        let mut guard = CancelOnDrop::new(self);
+        let result = guard.endpoint.initiate_key_update_impl().await;
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
+            guard.endpoint.retire();
+        }
+        guard.complete = true;
+        result
+    }
+    pub async fn reject_early_packets(&mut self) -> Result<u64, Error> {
+        let mut guard = CancelOnDrop::new(self);
+        let result = guard.endpoint.reject_early_packets_impl().await;
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
+            guard.endpoint.retire();
+        }
+        guard.complete = true;
+        result
+    }
+    pub async fn transmit_early_application(
+        &mut self,
+        encoded: &[u8],
+        out: &mut [u8],
+    ) -> Result<Option<Transmit>, Error> {
+        let mut guard = CancelOnDrop::new(self);
+        let result = guard
+            .endpoint
+            .transmit_early_application_impl(encoded, out)
+            .await;
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
+            guard.endpoint.retire();
+        }
+        guard.complete = true;
+        result
     }
     /// Await packet-key roles while processing one datagram. Cancellation
     /// abandons this connection; retain input and retry only after Busy.
@@ -241,7 +296,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             .endpoint
             .receive_with_metadata_impl(datagram, scratch, metadata, handler)
             .await;
-        if matches!(&result, Err(Error::Protection(_))) {
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
             guard.endpoint.retire();
         }
         guard.complete = true;
@@ -252,7 +307,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
     pub async fn transmit(&mut self, out: &mut [u8]) -> Result<Option<Transmit>, Error> {
         let mut guard = CancelOnDrop::new(self);
         let result = guard.endpoint.transmit_impl(out).await;
-        if matches!(&result, Err(Error::Protection(_))) {
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
             guard.endpoint.retire();
         }
         guard.complete = true;
@@ -268,7 +323,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             .endpoint
             .transmit_application_impl(encoded_frames, out)
             .await;
-        if matches!(&result, Err(Error::Protection(_))) {
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
             guard.endpoint.retire();
         }
         guard.complete = true;
@@ -287,7 +342,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             .endpoint
             .adapter_result_impl(output, accepted, now)
             .await;
-        if matches!(&result, Err(Error::Protection(_))) {
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
             guard.endpoint.retire();
         }
         guard.complete = true;
@@ -306,7 +361,7 @@ impl<'r, 's, T: Provider, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, T, 
             .endpoint
             .receive_from_impl(datagram, scratch, address, codepoint, handler)
             .await;
-        if matches!(&result, Err(Error::Protection(_))) {
+        if matches!(&result, Err(Error::Protection(_) | Error::TlsOwner(_))) {
             guard.endpoint.retire();
         }
         guard.complete = true;

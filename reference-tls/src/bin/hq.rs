@@ -1,9 +1,14 @@
 //! Linux development HTTP/0.9 adapter. Real bounded TLS + hibana-quic transport;
 //! host arguments, files and PEM setup allocate, file bodies are streamed.
-//! Initial keys use one projected async RX/TX choreography; UDP/timers await
-//! epoll/eventfd readiness. Non-Initial Driver control remains a partial legacy
-//! service. This is an experimental integration, not a full architecture claim.
+//! Initial keys and the owned TLS provider use one projected async choreography;
+//! UDP/timers await epoll/eventfd readiness. Transport/recovery Driver control
+//! remains partial. This is an experimental integration, not a full architecture claim.
 #![forbid(unsafe_code)]
+// Composed Initial RX/TX and owned TLS projection exceeds the default const-eval budget.
+#![allow(long_running_const_eval)]
+
+#[path = "support/initial_roles.rs"]
+mod initial_roles;
 
 #[path = "../../../adapters/host/src/pem.rs"]
 mod pem;
@@ -11,10 +16,7 @@ use pem::{certificates, private_key};
 #[cfg(not(target_os = "linux"))]
 compile_error!("hq's symlink-safe descriptor-relative file adapter requires Linux");
 
-use hibana::{
-    g,
-    runtime::{SessionKitStorage, ids::SessionId, program::project},
-};
+use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
     bounded_tls::{
         BoundedTls, CipherPolicy, ClientConfig as BoundedClientConfig, ClientEarlyData,
@@ -23,7 +25,7 @@ use hibana_quic::{
     },
     carrier::{CarrierStorage, LocalCarrier},
     connection_id::{LocalCidSlot, PeerCidSlot},
-    crypto::{self, CipherSuite},
+    crypto,
     driver::{Driver, Roles},
     early_data::{
         EarlyFreshness, EarlyStatus, QuarantineSlot, RememberedLimits, ReplayClaim, ReplayStorage,
@@ -33,22 +35,17 @@ use hibana_quic::{
     ecn::{self, Codepoint},
     handshake::CryptoBuffer,
     handshake_endpoint::{
-        Config, Error as EngineError, HandshakeEndpoint, INITIAL_PACKET_BYTES, InitialKeyClient,
-        InitialProtection, NetworkConfig, NetworkResources, PreferredServer, Side,
+        Config, Error as EngineError, HandshakeEndpoint, InitialProtection, NetworkConfig,
+        NetworkResources, PreferredServer, Side, TlsClient,
     },
     lifecycle::{CloseReason, State as ConnectionState},
-    mailbox::Mailbox,
     packet::{Header, LongType, PacketIter, encode_varint},
     path::{Address, PathSlot},
     protocol::*,
     retry::{self, ClientAddress, RetryTokens, TokenContext, ValidatedToken},
-    roles::{
-        packet_protection::{self, Command, Exchange, Reply},
-        protocol::key_choreography,
-    },
-    runtime::{TaskSet, yield_now},
+    runtime::yield_now,
     streams::{self, Limits, PacketReference, SendChunk, StreamHandle, StreamSlot},
-    tls::{self, Provider},
+    tls,
     tls_certificate::{Limits as CertificateLimits, UnixTime, trust_anchor_from_der},
     tls_schedule::Secret32,
     tls_ticket::{
@@ -81,8 +78,7 @@ use std::{
 
 type Result<T> = std::result::Result<T, String>;
 const LIVE: usize = 4;
-// Host receive credit is caller-owned and bounded, independent of embedded
-// profiles. 16KiB avoids the former4KiB per-stream RTT throughput bottleneck.
+// Bounded host profile: four 16KiB receive windows; no embedded-memory claim.
 const RX: usize = 16384;
 const CHUNK: usize = 1024;
 const MAX_TARGET: usize = 1000;
@@ -93,7 +89,7 @@ type HostSocket<'a> = AsyncUdp<'a, 4, 8>;
 const O_DIRECTORY: i32 = 0o200000;
 const O_NOFOLLOW: i32 = 0o400000;
 const O_NONBLOCK: i32 = 0o4000;
-const USAGE: &str = "Experimental hq-interop HTTP/0.9 over real QUIC v1; bounded X25519/P256 with ECDSA TLS\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem --request /FILE [--request https://HOST:PORT/FILE ...] --downloads DIR [--timeout-seconds 120]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem --www DIR [--max-requests N] [--timeout-seconds 120]\n\nOne connection by default, at most four live streams, streamed file chunks. Explicit CA+hostname verification; no insecure mode. Server exits after --max-requests completed streams or two seconds of quiescence after a completed transfer. Existing downloads are never overwritten. Optional --cipher-suite default|aes128|chacha20 on either role sets an immutable TLS suite policy (default retains AES128+ChaCha20); singleton modes never negotiate the other suite. Optional --ecn on enables per-path ECT0 probing with actual kernel metadata (default off); received markings are always reported when available. Optional --key-update-after-bytes N on either role requests one update after positive N body bytes; update success additionally requires an authenticated peer phase change. Linux descriptor-relative file access rejects symlinks/traversal. Optional server --retry requires an address-bound opaque token before TLS allocation; --retry-lifetime-ms 1..=60000 sets its lifetime (default 10000). Bounded sequential dispatcher, no production listener capacity claim. Initial protected-packet actor storage is 1536 bytes; larger peer Initial packets are discarded. Unsupported-version Initial-sized datagrams receive at most one stateless v1 Version Negotiation response, limited to 64 prepared responses per 1-second listener window; retained CIDs route first. Optional client --connections 2 transfers the first request, caches an authenticated ticket, closes/drains, then transfers every remaining request on a fresh connection; --require-resumption true (default for two) rejects full fallback. Optional --resumption-delay-ms 0..60000 delays the second connection. Server --max-connections 2 retains one ticket key across two peer-closed/drained connections; --max-requests is the total across both, with exactly one file on the first. Server ticket-policy controls are --ticket-lifetime-seconds 1..604800 (default60), --ticket-age-skew-ms 0..300000 (default10000), --ticket-policy-second STRING, and --rotate-ticket-key-after-first true|false; policy/key changes permit explicit full-authentication fallback tests. Optional server --preferred-address IP:PORT binds and advertises one same-family preferred address, with a fresh CID/reset token and actual path/MTU validation. Bounded NAT rebinding uses exact received socket metadata and validated paths; 0RTT stays disabled unless explicitly configured: client --early-data replay-safe-get authorizes sending and retrying those same GET requests, requires --connections 2, and accepts --expect-early accepted|rejected|either. Server --early-data buffered-get requires --max-connections 2 and an independent --early-age-skew-ms 0..60000; --reject-early-second true tests rejection without changing the early-capable profile. This profile advertises1024-byte initial request credit per stream while preserving4096-byte receive storage; normal mode limits are unchanged. Requests are withheld until Finished. No arbitrary active migration, HTTP/3, qlog or keylog support is implied. Failures/timeouts exit nonzero.";
+const USAGE: &str = "Experimental hq-interop HTTP/0.9 over real QUIC v1; bounded X25519/P256 with ECDSA TLS\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem --request /FILE [--request https://HOST:PORT/FILE ...] --downloads DIR [--timeout-seconds 120]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem --www DIR [--max-requests N] [--timeout-seconds 120]\n\nOne connection by default, at most four live streams, streamed file chunks. Explicit CA+hostname verification; no insecure mode. Server exits after --max-requests completed streams or two seconds of quiescence after a completed transfer. Existing downloads are never overwritten. Optional --cipher-suite default|aes128|chacha20 on either role sets an immutable TLS suite policy (default retains AES128+ChaCha20); singleton modes never negotiate the other suite. Optional --ecn on enables per-path ECT0 probing with actual kernel metadata (default off); received markings are always reported when available. Optional --key-update-after-bytes N on either role requests one update after positive N body bytes; update success additionally requires an authenticated peer phase change. Linux descriptor-relative file access rejects symlinks/traversal. Optional server --retry requires an address-bound opaque token before TLS allocation; --retry-lifetime-ms 1..=60000 sets its lifetime (default 10000). Bounded sequential dispatcher, no production listener capacity claim. Initial protected-packet actor storage is 1536 bytes; larger peer Initial packets are discarded. Unsupported-version Initial-sized datagrams receive at most one stateless v1 Version Negotiation response, limited to 64 prepared responses per 1-second listener window; retained CIDs route first. Optional client --connections 2 transfers the first request, caches an authenticated ticket, closes/drains, then transfers every remaining request on a fresh connection; --require-resumption true (default for two) rejects full fallback. Optional --resumption-delay-ms 0..60000 delays the second connection. Server --max-connections 2 retains one ticket key across two peer-closed/drained connections; --max-requests is the total across both, with exactly one file on the first. Server ticket-policy controls are --ticket-lifetime-seconds 1..604800 (default60), --ticket-age-skew-ms 0..300000 (default10000), --ticket-policy-second STRING, and --rotate-ticket-key-after-first true|false; policy/key changes permit explicit full-authentication fallback tests. Optional server --preferred-address IP:PORT binds and advertises one same-family preferred address, with a fresh CID/reset token and actual path/MTU validation. Bounded NAT rebinding uses exact received socket metadata and validated paths; 0RTT stays disabled unless explicitly configured: client --early-data replay-safe-get authorizes sending and retrying those same GET requests, requires --connections 2, and accepts --expect-early accepted|rejected|either. Server --early-data buffered-get requires --max-connections 2 and an independent --early-age-skew-ms 0..60000; --reject-early-second true tests rejection without changing the early-capable profile. This profile advertises1024-byte initial request credit per stream while preserving16384-byte receive storage; normal mode limits are unchanged. Requests are withheld until Finished. No arbitrary active migration, HTTP/3, qlog or keylog support is implied. Failures/timeouts exit nonzero.";
 
 #[derive(Debug)]
 enum Options {
@@ -1275,7 +1271,68 @@ impl EarlyReport {
         )
     }
 }
+/// Observations relative to the existing host deadline origin. Server timings
+/// include listener admission; differences between milestones exclude that wait.
+/// Body progress means client file writes or server stream enqueue. FIN publication
+/// means client response FIN consumption + file publication, or server stream FIN
+/// enqueue; it does not claim kernel acceptance or peer acknowledgement. The last
+/// successful stream retirement includes transport's terminal/acknowledgement gate.
+struct Milestones {
+    start: Instant,
+    tls_complete_us: Option<u64>,
+    last_body_byte_us: Option<u64>,
+    last_fin_published_us: Option<u64>,
+    last_stream_retired_us: Option<u64>,
+    closed_us: Option<u64>,
+    total_us: Option<u64>,
+}
+impl Milestones {
+    fn new(start: Instant) -> Self {
+        Self {
+            start,
+            tls_complete_us: None,
+            last_body_byte_us: None,
+            last_fin_published_us: None,
+            last_stream_retired_us: None,
+            closed_us: None,
+            total_us: None,
+        }
+    }
+    fn handshake_complete(&mut self) {
+        self.tls_complete_us.get_or_insert_with(|| now(self.start));
+    }
+    fn body_bytes(&mut self, count: usize) {
+        if count != 0 {
+            self.last_body_byte_us = Some(now(self.start));
+        }
+    }
+    fn fin_published(&mut self) {
+        self.last_fin_published_us = Some(now(self.start));
+    }
+    fn stream_retired(&mut self) {
+        self.last_stream_retired_us = Some(now(self.start));
+    }
+    fn closed(&mut self) {
+        self.closed_us.get_or_insert_with(|| now(self.start));
+    }
+    fn finish(&mut self) {
+        self.total_us = Some(now(self.start));
+    }
+    fn json(&self) -> String {
+        let number = |value: Option<u64>| value.map_or_else(|| "null".into(), |n| n.to_string());
+        format!(
+            "{{\"tls_complete_us\":{},\"last_body_byte_us\":{},\"last_fin_published_us\":{},\"last_stream_retired_us\":{},\"closed_us\":{},\"total_us\":{}}}",
+            number(self.tls_complete_us),
+            number(self.last_body_byte_us),
+            number(self.last_fin_published_us),
+            number(self.last_stream_retired_us),
+            number(self.closed_us),
+            number(self.total_us),
+        )
+    }
+}
 struct Report {
+    timing: Milestones,
     early: EarlyReport,
     side: Side,
     retained_cids: Vec<Vec<u8>>,
@@ -1360,7 +1417,7 @@ impl Report {
     }
     fn json(&self) -> String {
         format!(
-            "{{\"status\":\"success\",\"scope\":\"direct-http09-transfer\",\"backend\":\"bounded-profile\",\"certificate_verification_profile\":\"ECDSA-P256-SHA256+RSA-2048/3072/4096-SHA256\",\"bounded_server_signing_profile\":\"ECDSA-P256-SHA256\",\"negotiated_group\":{},\"mandatory_tls_algorithms_complete\":false,\"alpn\":\"hq-interop\",\"role\":\"{}\",\"files_completed\":{},\"body_bytes\":{},\"datagrams_sent\":{},\"datagrams_received\":{},\"authenticated_packets\":{},\"discarded_packets\":{},\"duration_ms\":{},\"key_update_after_bytes\":{},\"key_update_initiated_at_body_bytes\":{},\"send_key_generation\":{},\"authenticated_receive_key_generation\":{},\"ecn\":{},\"network\":{},\"server_retry\":{},\"cipher_policy\":{},\"negotiated_suite\":{},\"connection_index\":{},\"connection_generation\":{},\"resumption_offered\":{},\"resumed\":{},\"handshake_mode\":{},\"tickets_cached\":{},\"lifecycle_closed\":{},\"ticket_acceptance\":{},\"ticket_age\":{},\"authentication\":{},\"certificate_chain_hostname_time_verified\":{},\"zero_rtt\":{},\"early_data\":{}}}",
+            "{{\"status\":\"success\",\"scope\":\"direct-http09-transfer\",\"backend\":\"bounded-profile\",\"certificate_verification_profile\":\"ECDSA-P256-SHA256+RSA-2048/3072/4096-SHA256\",\"bounded_server_signing_profile\":\"ECDSA-P256-SHA256\",\"negotiated_group\":{},\"mandatory_tls_algorithms_complete\":false,\"alpn\":\"hq-interop\",\"role\":\"{}\",\"files_completed\":{},\"body_bytes\":{},\"datagrams_sent\":{},\"datagrams_received\":{},\"authenticated_packets\":{},\"discarded_packets\":{},\"duration_ms\":{},\"timing\":{},\"key_update_after_bytes\":{},\"key_update_initiated_at_body_bytes\":{},\"send_key_generation\":{},\"authenticated_receive_key_generation\":{},\"ecn\":{},\"network\":{},\"server_retry\":{},\"cipher_policy\":{},\"negotiated_suite\":{},\"connection_index\":{},\"connection_generation\":{},\"resumption_offered\":{},\"resumed\":{},\"handshake_mode\":{},\"tickets_cached\":{},\"lifecycle_closed\":{},\"ticket_acceptance\":{},\"ticket_age\":{},\"authentication\":{},\"certificate_chain_hostname_time_verified\":{},\"zero_rtt\":{},\"early_data\":{}}}",
             self.negotiated_group
                 .map_or_else(|| "null".into(), |group| group.to_string()),
             if self.side == Side::Client {
@@ -1375,6 +1432,7 @@ impl Report {
             self.authenticated,
             self.discarded,
             self.duration_ms,
+            self.timing.json(),
             self.key_update_after
                 .map_or_else(|| "null".into(), |n| n.to_string()),
             self.key_update_at
@@ -1496,7 +1554,7 @@ struct App {
     servers: [Option<ServerJob>; LIVE],
 }
 type Endpoint<'r, 's, 'c, 't, 'i, 'q> =
-    TransportEndpoint<'r, 's, BoundedTls<'c, 't>, RX, CHUNK, 64, 128, InitialProtection<'i, 'q>>;
+    TransportEndpoint<'r, 's, 'c, 't, RX, CHUNK, 64, 128, InitialProtection<'i, 'q>>;
 impl App {
     fn active(&self) -> usize {
         if self.side == Side::Client {
@@ -1668,6 +1726,7 @@ impl App {
                         .map_err(|e| format!("write body chunk: {e}"))?;
                     job.bytes += count as u64;
                     report.body_progress += count as u64;
+                    report.timing.body_bytes(count);
                     job.unconsumed = count;
                     job.fin = view.fin;
                 }
@@ -1683,6 +1742,7 @@ impl App {
                 }
                 if job.fin && job.unconsumed == 0 {
                     job.download.finish()?;
+                    report.timing.fin_published();
                     job.published = true;
                     progress = true;
                 }
@@ -1692,6 +1752,7 @@ impl App {
                     Ok(()) => {
                         report.files += 1;
                         report.bytes += job.bytes;
+                        report.timing.stream_retired();
                         self.clients[index] = None;
                         progress = true
                     }
@@ -1798,8 +1859,12 @@ impl App {
                     Ok(()) => {
                         job.bytes += job.chunk_len as u64;
                         report.body_progress += job.chunk_len as u64;
+                        report.timing.body_bytes(job.chunk_len);
                         job.loaded = false;
                         job.fin_queued = job.eof;
+                        if job.eof {
+                            report.timing.fin_published();
+                        }
                         progress = true
                     }
                     Err(e) if backpressure(&e) => {}
@@ -1811,6 +1876,7 @@ impl App {
                     Ok(()) => {
                         report.files += 1;
                         report.bytes += job.bytes;
+                        report.timing.stream_retired();
                         self.servers[index] = None;
                         progress = true
                     }
@@ -2095,9 +2161,9 @@ async fn receive_activity(
     }
 }
 
-/// One Initial RX/TX service from one global choreography. All four endpoint
-/// VALUES stay in this enclosing owner until both borrowed services finish.
-/// The client capabilities are connected only while their real actors run.
+/// One global Initial RX/TX + TLS choreography retains all six endpoint values
+/// until their borrowed actors and the application finish. The shared bootstrap
+/// moves the complete provider into its owner before connecting capabilities.
 #[allow(clippy::too_many_arguments)]
 async fn exchange(
     reactor: &HostReactor,
@@ -2124,141 +2190,42 @@ async fn exchange(
         .as_ref()
         .map_or(original.as_slice(), ValidatedToken::retry_source_id);
     let keys = crypto::initial_keys(destination).map_err(|e| format!("Initial keys: {e:?}"))?;
-    let (receive_key, transmit_key) = if app.side == Side::Client {
-        (keys.server, keys.client)
-    } else {
-        (keys.client, keys.server)
-    };
-    let carrier = CarrierStorage::<1, 16, 32>::new();
-    let mut slab = [0; 32768];
-    let mut storage = SessionKitStorage::uninit();
-    let kit = storage.init();
-    let sid = SessionId::new(2);
-    let rv = kit
-        .rendezvous(
-            &mut slab,
-            carrier
-                .bind(sid)
-                .map_err(|e| format!("Initial carrier: {e:?}"))?,
-        )
-        .map_err(|e| format!("Initial rendezvous: {e:?}"))?;
-    let global = g::par(key_choreography::<16, 17>(), key_choreography::<18, 19>());
-    let p16 = project::<16, _>(&global);
-    let p17 = project::<17, _>(&global);
-    let p18 = project::<18, _>(&global);
-    let p19 = project::<19, _>(&global);
-    let mut e16 = rv
-        .enter(sid, &p16)
-        .map_err(|e| format!("Initial RX client: {e:?}"))?;
-    let mut e17 = rv
-        .enter(sid, &p17)
-        .map_err(|e| format!("Initial RX crypto: {e:?}"))?;
-    let mut e18 = rv
-        .enter(sid, &p18)
-        .map_err(|e| format!("Initial TX client: {e:?}"))?;
-    let mut e19 = rv
-        .enter(sid, &p19)
-        .map_err(|e| format!("Initial TX crypto: {e:?}"))?;
-    let mut rx_commands: [Option<Command<INITIAL_PACKET_BYTES>>; 1] = [None];
-    let mut rx_replies: [Option<Reply<INITIAL_PACKET_BYTES>>; 1] = [None];
-    let mut tx_commands: [Option<Command<INITIAL_PACKET_BYTES>>; 1] = [None];
-    let mut tx_replies: [Option<Reply<INITIAL_PACKET_BYTES>>; 1] = [None];
-    let rx_commands =
-        Mailbox::new(&mut rx_commands).map_err(|e| format!("Initial RX mailbox: {e:?}"))?;
-    let rx_replies =
-        Mailbox::new(&mut rx_replies).map_err(|e| format!("Initial RX replies: {e:?}"))?;
-    let tx_commands =
-        Mailbox::new(&mut tx_commands).map_err(|e| format!("Initial TX mailbox: {e:?}"))?;
-    let tx_replies =
-        Mailbox::new(&mut tx_replies).map_err(|e| format!("Initial TX replies: {e:?}"))?;
-    let (rx_client_send, rx_role_recv) = rx_commands
-        .split()
-        .map_err(|e| format!("Initial RX split: {e:?}"))?;
-    let (rx_role_send, rx_client_recv) = rx_replies
-        .split()
-        .map_err(|e| format!("Initial RX replies split: {e:?}"))?;
-    let (tx_client_send, tx_role_recv) = tx_commands
-        .split()
-        .map_err(|e| format!("Initial TX split: {e:?}"))?;
-    let (tx_role_send, tx_client_recv) = tx_replies
-        .split()
-        .map_err(|e| format!("Initial TX replies split: {e:?}"))?;
-    let mut rx_exchange = Exchange::new();
-    let mut tx_exchange = Exchange::new();
-    let mut report = None;
-    {
-        let application = async {
-            let receive = InitialKeyClient::connect(rx_client_send, rx_client_recv, generation)
-                .await
-                .map_err(|e| format!("Initial RX connect: {e:?}"))?;
-            let transmit = InitialKeyClient::connect(tx_client_send, tx_client_recv, generation)
-                .await
-                .map_err(|e| format!("Initial TX connect: {e:?}"))?;
-            let initial = InitialProtection::new(receive, transmit)
-                .map_err(|e| format!("Initial capabilities: {e:?}"))?;
-            report = Some(
-                exchange_connected(
-                    reactor,
-                    socket,
-                    initial_address,
-                    preferred_socket,
-                    preferred_server,
-                    local,
-                    original,
-                    tls,
-                    admission,
-                    retry_stats,
-                    first,
-                    start,
-                    budget,
-                    key_update_after,
-                    use_ecn,
-                    app,
-                    early_storage,
-                    session,
-                    initial,
-                )
-                .await?,
-            );
-            Ok::<(), String>(())
-        };
-        // Independently pin each caller-owned actor/task. A nested owning join
-        // would copy the large transport future and its packet arenas repeatedly.
-        let mut application = pin!(application);
-        let mut receive_actor = pin!(async {
-            packet_protection::run_borrowed(
-                &mut e16,
-                &mut e17,
-                generation,
-                receive_key,
-                rx_role_recv,
-                rx_role_send,
-                &mut rx_exchange,
+    let mut report = initial_roles::with_connection(
+        keys,
+        app.side,
+        generation,
+        tls,
+        async move |initial, tls| {
+            exchange_connected(
+                reactor,
+                socket,
+                initial_address,
+                preferred_socket,
+                preferred_server,
+                local,
+                original,
+                tls,
+                admission,
+                retry_stats,
+                first,
+                start,
+                budget,
+                key_update_after,
+                use_ecn,
+                app,
+                early_storage,
+                session,
+                initial,
             )
             .await
-            .map_err(|e| format!("Initial RX key role: {e:?}"))
-        });
-        let mut transmit_actor = pin!(async {
-            packet_protection::run_borrowed(
-                &mut e18,
-                &mut e19,
-                generation,
-                transmit_key,
-                tx_role_recv,
-                tx_role_send,
-                &mut tx_exchange,
-            )
-            .await
-            .map_err(|e| format!("Initial TX key role: {e:?}"))
-        });
-        TaskSet::new([
-            receive_actor.as_mut(),
-            transmit_actor.as_mut(),
-            application.as_mut(),
-        ])
-        .await?;
-    }
-    report.ok_or_else(|| "missing completed connection report".into())
+        },
+    )
+    .await?;
+    // The shared aggregate has joined all three owner actors, so total includes
+    // graceful retirement rather than merely the application's Closed edge.
+    report.timing.finish();
+    report.duration_ms = u128::from(report.timing.total_us.expect("finished milestone")) / 1000;
+    Ok(report)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2897,7 +2864,7 @@ async fn exchange_connected(
     preferred_server: Option<PreferredServer>,
     local: [u8; 8],
     original: Vec<u8>,
-    tls: BoundedTls<'_, '_>,
+    tls: TlsClient<'_, '_>,
     admission: Option<ValidatedToken>,
     retry_stats: RetryStats,
     first: Option<(&[u8], Option<Codepoint>)>,
@@ -2960,8 +2927,8 @@ async fn exchange_connected(
         original_destination_id: &original,
         generation,
     };
-    // Existing non-Initial transport/recovery/provider services still use the
-    // partial synchronous Driver. Only Initial key authority is actor-owned.
+    // Transport/recovery control still uses the partial synchronous Driver.
+    // Initial keys and the complete TLS provider are owned by their actors.
     let driver = Driver::new(generation, roles);
     let mut path_slots = [const { PathSlot::<1, 3>::empty() }; 2];
     let mut local_cids = [LocalCidSlot::EMPTY; 8];
@@ -3014,7 +2981,7 @@ async fn exchange_connected(
             .configure_early_controls(&mut early_storage.controls)
             .map_err(|e| format!("early control storage: {e:?}"))?;
     }
-    if side == Side::Client && endpoint.tls().early_status() == EarlyStatus::Offered {
+    if side == Side::Client && endpoint.tls_snapshot().early_status == EarlyStatus::Offered {
         endpoint
             .configure_early_send(&mut early_storage.requests)
             .map_err(|e| format!("early request journal: {e:?}"))?;
@@ -3029,9 +2996,10 @@ async fn exchange_connected(
     let mut scratch = [0; UDP_BYTES];
     let mut output = [0; 1500];
     let mut report = Report {
+        timing: Milestones::new(start),
         early: EarlyReport {
             mode: session.early.mode,
-            offered: endpoint.tls().early_status() == EarlyStatus::Offered,
+            offered: endpoint.tls_snapshot().early_status == EarlyStatus::Offered,
             ..EarlyReport::default()
         },
         side,
@@ -3067,7 +3035,7 @@ async fn exchange_connected(
         ticket_acceptance: None,
         ticket_age: None,
     };
-    if side == Side::Client && endpoint.tls().early_status() == EarlyStatus::Offered {
+    if side == Side::Client && endpoint.tls_snapshot().early_status == EarlyStatus::Offered {
         app.queue_early(&mut endpoint, &mut report)?;
     }
     let mut diagnostics = ProgressLog::new();
@@ -3079,9 +3047,12 @@ async fn exchange_connected(
             .map_err(|e| {
                 format!(
                     "first packet: {e:?}; bounded TLS: {:?}",
-                    endpoint.tls().last_failure()
+                    endpoint.tls_snapshot().diagnostic
                 )
             })?;
+        if endpoint.handshake_complete() {
+            report.timing.handshake_complete();
+        }
         report.received += 1;
         report.authenticated += r.authenticated as u64;
         report.discarded += r.discarded as u64;
@@ -3091,7 +3062,7 @@ async fn exchange_connected(
     'connection: loop {
         yield_now().await;
         diagnostics.connection(reactor, &endpoint, &report, now(start));
-        report.early.decision = endpoint.tls().early_status();
+        report.early.decision = endpoint.tls_snapshot().early_status;
         report.early.offered |= !matches!(report.early.decision, EarlyStatus::Disabled);
         report.early.admitted_packets = endpoint.admitted_early_packets();
         if start.elapsed() >= budget {
@@ -3118,11 +3089,16 @@ async fn exchange_connected(
                 return Err("connection closed before requested key update or authenticated ticket was established".into());
             }
             report.lifecycle_closed = true;
-            report.duration_ms = start.elapsed().as_millis();
+            report.timing.closed();
+            endpoint
+                .retire_owned()
+                .await
+                .map_err(|e| format!("retire connection owners: {e:?}"))?;
             return Ok(report);
         }
         endpoint
             .timer(now(start))
+            .await
             .map_err(|e| format!("timer: {e:?}"))?;
         let state = endpoint.connection_state();
         report.observe_path(endpoint.network_path_state());
@@ -3142,11 +3118,13 @@ async fn exchange_connected(
             report.resumption_offered = report.ticket_acceptance.is_some();
         }
         if state == ConnectionState::Active && endpoint.handshake_complete() {
-            report.resumed = endpoint.tls().is_resumed();
-            report.negotiated_suite = endpoint.tls().negotiated_suite().map(|suite| match suite {
-                CipherSuite::Aes128GcmSha256 => 0x1301,
-                CipherSuite::ChaCha20Poly1305Sha256 => 0x1303,
-            });
+            report.timing.handshake_complete();
+            report.resumed = endpoint
+                .tls_snapshot()
+                .observations
+                .resumed
+                .ok_or("owned TLS provider did not report resumption status")?;
+            report.negotiated_suite = endpoint.tls_snapshot().observations.negotiated_suite;
             if !report
                 .negotiated_suite
                 .is_some_and(|suite| session.cipher_policy.permits(suite))
@@ -3196,7 +3174,11 @@ async fn exchange_connected(
                 return Err("connection closed before requested key update or authenticated ticket was established".into());
             }
             report.lifecycle_closed = true;
-            report.duration_ms = start.elapsed().as_millis();
+            report.timing.closed();
+            endpoint
+                .retire_owned()
+                .await
+                .map_err(|e| format!("retire connection owners: {e:?}"))?;
             return Ok(report);
         }
         if state == ConnectionState::Active
@@ -3205,7 +3187,7 @@ async fn exchange_connected(
                 .key_update_after
                 .is_some_and(|n| report.body_progress >= n)
         {
-            match endpoint.initiate_key_update() {
+            match endpoint.initiate_key_update().await {
                 Ok(()) => report.key_update_at = Some(report.body_progress),
                 Err(error) if update_temporarily_blocked(&error) => {}
                 Err(error) => return Err(format!("requested key update: {error:?}")),
@@ -3234,7 +3216,9 @@ async fn exchange_connected(
                 .transmit_permitted(tx, now(start))
                 .map_err(|e| format!("transmit permission: {e:?}"))?
             {
-                continue;
+                // A hard lifecycle expiry may have revoked this reservation.
+                // Reach the outer Closed/retirement gate before producing more.
+                continue 'connection;
             }
             let target = tx.address.ok_or("missing prepared network tuple")?;
             let sender = if preferred_server.is_some_and(|p| p.address == target.local) {
@@ -3336,6 +3320,7 @@ async fn exchange_connected(
                         CloseReason::application(0, "completed requested files")
                             .map_err(|e| format!("close reason: {e:?}"))?,
                     )
+                    .await
                     .map_err(|e| format!("close completed server: {e:?}"))?;
                 continue;
             }
@@ -3353,6 +3338,7 @@ async fn exchange_connected(
                     CloseReason::application(0, "transfer complete")
                         .map_err(|e| format!("close reason: {e:?}"))?,
                 )
+                .await
                 .map_err(|e| format!("initiate close: {e:?}"))?;
             continue;
         }
@@ -3370,6 +3356,7 @@ async fn exchange_connected(
                         CloseReason::application(0, "transfer complete")
                             .map_err(|e| format!("close reason: {e:?}"))?,
                     )
+                    .await
                     .map_err(|e| format!("initiate close: {e:?}"))?;
                 continue;
             }
@@ -3391,6 +3378,7 @@ async fn exchange_connected(
                     CloseReason::application(0, "transfer complete")
                         .map_err(|e| format!("close reason: {e:?}"))?,
                 )
+                .await
                 .map_err(|e| format!("initiate close: {e:?}"))?;
             continue;
         }
@@ -3443,7 +3431,7 @@ async fn exchange_connected(
                     .map_err(|e| {
                         format!(
                             "packet receive: {e:?}; bounded TLS: {:?}",
-                            endpoint.tls().last_failure()
+                            endpoint.tls_snapshot().diagnostic
                         )
                     })?;
                 if endpoint.connection_state() == ConnectionState::Active {
@@ -3453,6 +3441,9 @@ async fn exchange_connected(
                 }
                 report.ecn = Some(endpoint.ecn_snapshot());
                 report.observe_path(endpoint.network_path_state());
+                if endpoint.handshake_complete() {
+                    report.timing.handshake_complete();
+                }
                 report.received += 1;
                 report.authenticated += r.authenticated as u64;
                 report.discarded += r.discarded as u64;
@@ -4086,6 +4077,7 @@ mod tests {
     #[test]
     fn local_key_rotation_alone_cannot_satisfy_update_mode() {
         let mut report = Report {
+            timing: Milestones::new(Instant::now()),
             early: EarlyReport::default(),
             side: Side::Client,
             retained_cids: Vec::new(),
