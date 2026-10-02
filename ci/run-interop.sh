@@ -56,9 +56,16 @@ Path('ci-safe-results/pins.json').write_text(json.dumps({k:os.environ[k] for k i
 PY
 # Keep /tmp at the identical path: upstream explicitly creates Docker bind
 # mount sources there. The reference source and its verdicts are not patched.
+# Match the checkout owner's host identity, preserving Git's ownership guard.
+# The supplementary group grants this process only the Docker socket access
+# already provided by the authorized mount; no host groups or modes are changed.
+mkdir -p "$ROOT/.ci-work/tools-home"
 docker run --rm --cpus=2 \
+  --user "$(id -u):$(id -g)" \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /tmp:/tmp -v "$ROOT:$ROOT" -w "$ROOT" \
+  -e "HOME=$ROOT/.ci-work/tools-home" \
   -e ROOT -e SIM_IMAGE -e NEQO_IMAGE -e BOUNDED_IMAGE \
   -e RUNNER_REVISION -e NEQO_REVISION \
   "$TOOLS_IMAGE" python3 ci/run_in_tools.py
