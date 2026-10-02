@@ -1,0 +1,51 @@
+[package]
+name = "hibana-quic"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Bounded QUIC v1 transport under development; not yet an interoperable endpoint"
+
+[dependencies]
+hibana = { path = "vendor/hibana", default-features = false }
+aes = { version = "=0.8.4", default-features = false, features = ["zeroize"] }
+aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "zeroize"] }
+chacha20 = { version = "=0.9.1", default-features = false, features = ["zeroize"] }
+chacha20poly1305 = { version = "=0.10.1", default-features = false }
+hkdf = { version = "=0.12.4", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false }
+zeroize = { version = "=1.8.2", default-features = false }
+hmac = { version = "=0.12.1", default-features = false }
+subtle = { version = "=2.6.1", default-features = false }
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "ecdh"] }
+rand_core = { version = "=0.6.4", default-features = false }
+rustls-webpki = { version = "=0.103.15", path = "vendor/rustls-webpki-0.103.15", default-features = false }
+rustls-pki-types = { version = "=1.15.1", default-features = false }
+der = { version = "=0.7.10", default-features = false }
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+crypto-bigint = { version = "=0.5.5", default-features = false }
+pkcs1 = { version = "=0.7.5", default-features = false }
+
+[features]
+default = []
+target-link-smoke = []
+
+[[example]]
+name = "thumb_link"
+required-features = ["target-link-smoke"]
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+
+[[example]]
+name = "thumb_budget"
+required-features = ["target-link-smoke"]
+
+[package.metadata.hibana-source]
+repository = "https://github.com/hibanaworks/hibana"
+branch = "development/dots-causality"
+revision = "3aef31ba015c75ea824b8b41f5603b03f5dd336b"
+local-patches = false

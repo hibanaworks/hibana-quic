@@ -1,0 +1,11 @@
+--- /tmp/hibana-cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustls-webpki-0.103.15/src/verify_cert.rs	2006-07-24 10:21:28.000000000 +0900
++++ hibana-quic/vendor/rustls-webpki-0.103.15/src/verify_cert.rs	2026-10-02 12:50:21.053314563 +0900
+@@ -844,7 +844,7 @@
+     }
+ }
+ 
+-const MAX_SUB_CA_COUNT: usize = 6;
++const MAX_SUB_CA_COUNT: usize = 8;
+ 
+ pub(crate) struct PathNode<'a> {
+     /// The path we're iterating.
