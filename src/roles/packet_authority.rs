@@ -1,3 +1,4 @@
+//! RECONSTRUCTED AFTER EXECUTOR RESET; UNVERIFIED.
 //! Bounded packet-scoped authority shared by independently owned effect domains.
 //!
 //! The arena retains the actual affine receipt minted by a key owner. Wire IDs
@@ -9,11 +10,19 @@ use core::cell::RefCell;
 use zeroize::Zeroize;
 pub const AUTHENTICATED_PAYLOAD_CAPACITY: usize = 1536;
 
+pub mod scoped;
+pub use scoped::{
+    RecoveryBinding, ScopedAckGrant, ScopedArena, ScopedDeliveryGrant, ScopedPacketTicket,
+    ScopedReceiveEvidence,
+};
+
 /// Only successful ordinary packet opens can enter this arena. Early data has
 /// a separate quarantine and cannot authorize ordinary ACK/STREAM/path effects.
 pub enum ReceiveEvidence {
     Initial(super::packet_protection::OpenReceipt),
     Tls(super::tls_owner::OpenReceipt),
+    /// Opaque evidence consumed from the actual scoped directional RX owner.
+    Directional(scoped::DirectionalReceiveEvidence),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,6 +88,7 @@ impl ReceiveEvidence {
                 opened.packet_number(),
                 opened.key_generation(),
             ),
+            Self::Directional(opened) => return Ok(opened.facts()),
             _ => return Err(Error::UnsupportedProtection),
         };
         Ok(AuthenticatedPacket {
@@ -500,6 +510,7 @@ impl<const P: usize, const E: usize> Arena<P, E> {
         let binds = match &evidence {
             ReceiveEvidence::Initial(receipt) => receipt.authenticates_plaintext(plaintext),
             ReceiveEvidence::Tls(receipt) => receipt.authenticates_plaintext(plaintext),
+            ReceiveEvidence::Directional(receipt) => receipt.authenticates_plaintext(plaintext),
         };
         if !binds {
             return Err(Error::InvalidFrame);
