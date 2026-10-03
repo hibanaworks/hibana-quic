@@ -12,6 +12,7 @@ pub enum Options {
 }
 impl Options {
     pub fn timeout(&self) -> Duration { match self { Self::Client { timeout, .. } | Self::Server { timeout, .. } => *timeout } }
+    #[cfg(test)]
     pub fn application_requested(&self) -> bool { match self { Self::Client { files, .. } => files.is_some(), Self::Server { files, .. } => files.is_some() } }
 }
 type Result<T> = std::result::Result<T, String>;

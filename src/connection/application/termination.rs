@@ -58,7 +58,7 @@ impl<'a, 'gate, 'scope> Exchange<'a, 'gate, 'scope> {
 
     fn apply(&self, permission: &Permission<'scope>) -> Result<(), Error> {
         self.check_scope(permission.scope)?;
-        self.control.shutdown(permission.kind)
+        self.control.revoke()
     }
 
     fn sequence(&self) -> u64 {
@@ -142,8 +142,8 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
             return check(endpoint.recv::<p::CompletionSeen>().await?, sequence);
         }
         // Actual failed application IO raises this readiness observation.
-        // It does not set the close kind: the receiver of this wire permission
-        // alone applies shutdown. An existing stop takes cancellation priority.
+        // The actual wire permission retains the close reason; no outer phase
+        // flag supplies it. An existing stop takes cancellation priority.
         if exchange.control.failed() {
             exchange.files.put(Permission {
                 scope: exchange.scope,

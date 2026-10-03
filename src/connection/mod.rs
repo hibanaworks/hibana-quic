@@ -2,7 +2,7 @@
 //! APPROXIMATE SOURCE RECOVERY after executor replacement, 2026-10-03.
 //! This reconstructs the historical handshake orchestration from retained API
 //! and control-flow descriptions. It has not been compiled or tested. The
-//! application runner and old-space retirement changes remain unfinished.
+//! reconstructed and subsequent implementation requires fresh compilation and tests.
 
 pub mod protocol;
 pub mod tls;
@@ -11,6 +11,7 @@ pub mod application_wire;
 pub mod parameters;
 pub mod application_stream;
 pub mod application;
+mod initial;
 mod locals;
 mod transcript;
 mod timer;
@@ -115,18 +116,19 @@ pub struct Roles<'a> {
     pub rx: Endpoint<'a, {protocol::RX}>, pub tls_rx: Endpoint<'a, {protocol::TLS_RX}>,
     pub tx: Endpoint<'a, {protocol::TX}>, pub tls_tx: Endpoint<'a, {protocol::TLS_TX}>,
     pub udp: Endpoint<'a, {protocol::UDP}>, pub timer: Endpoint<'a, {protocol::TIMER}>,
+    pub initial_event: Endpoint<'a, {protocol::INITIAL_EVENT}>, pub initial_owner: Endpoint<'a, {protocol::INITIAL_OWNER}>,
     pub timer_tx: Endpoint<'a, {protocol::TIMER_TX}>, pub tx_wire: Endpoint<'a, {protocol::TX_WIRE}>,
 }
 
 struct Schedule {
-    revision: Cell<u64>, wakers: [RefCell<Option<Waker>>; 3],
-    timer_ready: Cell<bool>, stop_timer: Cell<bool>, transmit_done: Cell<bool>,
+    revision: Cell<u64>, wakers: [RefCell<Option<Waker>>; 4],
+    stop_timer: Cell<bool>, transmit_done: Cell<bool>,
     keys: Cell<[bool; 2]>,
 }
 impl Schedule {
     fn new() -> Self {
         Self { revision: Cell::new(0), wakers: core::array::from_fn(|_| RefCell::new(None)),
-            timer_ready: Cell::new(false), stop_timer: Cell::new(false), transmit_done: Cell::new(false), keys: Cell::new([true, false]) }
+            stop_timer: Cell::new(false), transmit_done: Cell::new(false), keys: Cell::new([true, false]) }
     }
     fn register(&self, lane: usize, waker: &Waker) {
         let next = waker.clone();
@@ -190,35 +192,47 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
         || storage.peer.borrow().bytes() != config.peer_connection_id {
         return Err(Error::Binding);
     }
-    // Recovery note: original preflight also compared source.side() to config
-    // and retired unused early key material. Exact helper names were lost and
-    // must be restored against the reconstructed KeySource before execution.
+    let expected_side = match config.side { Side::Client => crate::tls_schedule::Side::Client,
+        Side::Server => crate::tls_schedule::Side::Server };
+    if source.side() != expected_side { return Err(Error::Binding); }
     storage.claim()?;
     let _clear = Clear(storage);
     let scope = source.scope();
     let integrity = source.take_integrity_budget()?;
     let initial = crypto::initial_keys(config.original_destination_id)?;
     let (read, write) = match config.side { Side::Client => (initial.server, initial.client), Side::Server => (initial.client, initial.server) };
+    let initial = initial::Keys::new(scope, read, write)?;
+    let initial_exchange = initial::Exchange::new();
     let numbers = transcript::Numbers::new(source);
-    // The exact split return syntax must be checked when recovery.rs is rebuilt.
     let (mut tx, mut rx, mut clock_book, mut publication, mut retirement) = book.split()?;
+    let mut initial_owner = tx.initial_retirement_owner();
+    let (mut receive_initial, mut publish_initial) = match config.side {
+        Side::Client => (None, Some(&mut roles.initial_event)),
+        Side::Server => (Some(&mut roles.initial_event), None),
+    };
     let mut received = None;
     let mut transmitted = None;
     {
         let mut receive = pin!(async {
-            received = Some(locals::receive(&mut roles.rx, receive_io, storage, config, scope, read, integrity, reassembly, &mut rx, clock).await?);
+            received = Some(locals::receive(&mut roles.rx, receive_io, storage, config, scope, &initial, &initial_exchange, receive_initial.as_deref_mut(), integrity, reassembly, &mut rx, clock).await?);
             Ok(())
         });
         let mut transmit = pin!(async {
-            transmitted = Some(locals::transmit(&mut roles.tx, &mut roles.tx_wire, &mut roles.timer_tx, storage, config, scope, write, &mut tx, clock).await?);
+            transmitted = Some(locals::transmit(&mut roles.tx, &mut roles.tx_wire, storage, config, scope, &initial, &mut tx, clock).await?);
             Ok(())
         });
         let mut tls_receive = pin!(transcript::receive(&mut roles.tls_rx, &numbers, storage, tls_outcome));
         let mut tls_transmit = pin!(transcript::transmit(&mut roles.tls_tx, &numbers, storage));
-        let mut publish = pin!(locals::publish(&mut roles.udp, send_io, storage, issuer, adapter_outcome, &mut publication));
+        let mut publish = pin!(locals::publish(&mut roles.udp, send_io, storage, &initial, &initial_exchange, publish_initial.as_deref_mut(), issuer, adapter_outcome, &mut publication));
         let mut timer = pin!(timer::run(&mut roles.timer, storage, &mut clock_book, clock));
-        crate::runtime::TaskSet::new([receive.as_mut(), transmit.as_mut(), tls_receive.as_mut(), tls_transmit.as_mut(), publish.as_mut(), timer.as_mut()]).await?;
+        let mut timer_receiver = pin!(timer::receive(&mut roles.timer_tx, &storage.schedule));
+        let mut initial_retirement = pin!(initial::retire(&mut roles.initial_owner, &initial,
+            &initial_exchange, &storage.schedule, &mut initial_owner, config.side));
+        crate::runtime::TaskSet::new([receive.as_mut(), transmit.as_mut(), tls_receive.as_mut(),
+            tls_transmit.as_mut(), publish.as_mut(), timer.as_mut(), timer_receiver.as_mut(),
+            initial_retirement.as_mut()]).await?;
     }
+    if initial.available() { return Err(Error::Binding); }
     retirement.disarm();
     Ok((received.ok_or(Error::Binding)?, transmitted.ok_or(Error::Binding)?))
 }

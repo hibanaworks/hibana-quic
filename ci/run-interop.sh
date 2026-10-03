@@ -9,6 +9,9 @@ export ROOT
 source ci/pins.env
 mkdir -p ci-safe-results .ci-work/raw
 python3 ci/audit_source.py --check
+if [[ -f ci/recovery-compile-only ]]; then
+  exec bash ci/compile-recovery.sh
+fi
 python3 - <<'PY'
 import json,os,platform,subprocess
 from pathlib import Path

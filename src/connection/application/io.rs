@@ -35,15 +35,17 @@ pub(crate) struct OwnedRequest {
 pub(crate) struct State<const CHUNK: usize> {
     chunks: Inbox<Chunk<CHUNK>>,
     submitted: Cell<usize>,
+    bodies_finished: Cell<usize>,
     done: Cell<bool>,
     completed: RefCell<[Option<u64>; MAX_LIVE_STREAMS]>,
 }
 impl<const CHUNK: usize> State<CHUNK> {
     pub(crate) const fn new() -> Self {
-        Self { chunks: Inbox::new(), submitted: Cell::new(0), done: Cell::new(false),
+        Self { chunks: Inbox::new(), submitted: Cell::new(0), bodies_finished: Cell::new(0), done: Cell::new(false),
             completed: RefCell::new([None; MAX_LIVE_STREAMS]) }
     }
     pub(crate) fn submitted_count(&self) -> usize { self.submitted.get() }
+    pub(crate) fn bodies_finished(&self) -> usize { self.bodies_finished.get() }
     pub(crate) fn completed_count(&self) -> usize {
         self.completed.borrow().iter().flatten().count()
     }
@@ -231,7 +233,12 @@ async fn server_responses<const CHUNK: usize>(
             chunk.len = len;
             chunk.fin = len == 0;
             if !submit(endpoint, state, sequence, chunk).await? { return Ok(()); }
-            if len == 0 { break; }
+            if len == 0 {
+                // Count actual EOF only after its FIN chunk was admitted.
+                state.bodies_finished.set(state.bodies_finished.get().checked_add(1).ok_or(Error::Capacity)?);
+                control.changed()?;
+                break;
+            }
             crate::runtime::yield_now().await;
         }
     }

@@ -34,8 +34,6 @@ pub(crate) async fn run<const N: usize>(
         if !expired { continue; }
         match book.expire(deadline, clock.now()) {
             Ok(Some(_)) => {
-                control.timer_ready.set(true);
-                control.changed()?;
                 endpoint.send::<p::Expired>(&sequence).await?;
                 check(endpoint.recv::<p::TimerTaken>().await?, sequence)?;
                 sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
@@ -47,32 +45,20 @@ pub(crate) async fn run<const N: usize>(
     }
 }
 
-/// TX acknowledges the actual projected timeout edge before using its numbers.
-pub(crate) async fn take(
+/// This distinct logical facet remains runnable while TRANSMIT waits on UDP.
+/// Only after observing the actual timeout edge does it wake packet preparation.
+/// No shared endpoint borrow or queued timer frame can block adapter settlement.
+pub(crate) async fn receive(
     endpoint: &mut Endpoint<'_, { p::TX_CLOCK }>,
     control: &Control<'_, '_>,
 ) -> Result<(), Error> {
-    if control.timer_ready.replace(false) {
-        let sequence = endpoint.recv::<p::Expired>().await?;
-        endpoint.send::<p::TimerTaken>(&sequence).await?;
-    }
-    Ok(())
-}
-
-/// Drain a timeout already sent before accepting clock retirement. The global
-/// join cannot overtake a timer edge simply because stop became ready first.
-pub(crate) async fn retire(
-    endpoint: &mut Endpoint<'_, { p::TX_CLOCK }>,
-    control: &Control<'_, '_>,
-) -> Result<(), Error> {
-    if !control.stopping() { return Err(Error::Binding); }
     loop {
         let offered = endpoint.offer().await?;
         match offered.label() {
             22 => {
                 let sequence = offered.recv::<p::Expired>().await?;
-                control.timer_ready.set(false);
                 endpoint.send::<p::TimerTaken>(&sequence).await?;
+                control.changed()?;
             }
             24 => {
                 let sequence = offered.recv::<p::ClockRetired>().await?;
@@ -81,6 +67,7 @@ pub(crate) async fn retire(
             }
             label => return Err(Error::UnexpectedLabel(label)),
         }
+        crate::runtime::yield_now().await;
     }
 }
 

@@ -45,7 +45,7 @@ connection-target-budget = "unavailable: legacy controller probes removed; recov
 
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"
-branch = "perf/certified-route-metadata-20261002"
+branch = "fix/elastic-roll-wire-colors-20261002"
 revision = "e75d413bb3c3adc6e61ba92f267bd14795d8525e"
 upstream-base = "5cd7a6a570886c592a88f0f35a01d5a7daa158d7"
 local-patches = false

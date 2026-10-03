@@ -166,6 +166,9 @@ impl<'a> ScopedHandshakeConfirmation<'a> {
 pub struct ValidatedKeyAck<'a> {
     scope: &'a ApplicationKeyScope,
     sent_packet_number: u64,
+    // The actual connection path always supplies Some(actual accepted epoch).
+    // None is legacy cleanup debt only, never a production connection fallback.
+    sent_key_generation: Option<u64>,
     received_key_generation: u64,
 }
 impl<'a> ValidatedKeyAck<'a> {
@@ -179,11 +182,15 @@ impl<'a> ValidatedKeyAck<'a> {
             return Err(Error::KeyUpdateError);
         }
         Ok(Self { scope: grant.scope(), sent_packet_number: grant.sent_packet_number(),
+            sent_key_generation: Some(grant.sent_key_generation()),
             received_key_generation: grant.received_key_generation() })
     }
+    /// Legacy cleanup debt: remove with the old KeyAckGrant control path. The
+    /// actual connection exclusively uses from_connection_ack with its epoch.
     pub(crate) fn from_validated(scope: &'a ApplicationKeyScope, grant: KeyAckGrant) -> Result<Self, Error> {
         if grant.generation() != scope.connection_generation { return Err(Error::InvalidAcknowledgment); }
-        Ok(Self { scope, sent_packet_number: grant.sent_packet_number(), received_key_generation: grant.received_key_generation() })
+        Ok(Self { scope, sent_packet_number: grant.sent_packet_number(), sent_key_generation: None,
+            received_key_generation: grant.received_key_generation() })
     }
 }
 
@@ -521,11 +528,42 @@ impl<'a> ApplicationWriteKeys<'a> {
     /// ```
     pub fn acknowledge(&mut self, grant: ValidatedKeyAck<'a>, now: u64, pto: u64) -> Result<(), Error> {
         if !core::ptr::eq(self.scope, grant.scope) { return Err(Error::InvalidAcknowledgment); }
-        self.acknowledge_validated(grant.sent_packet_number, grant.received_key_generation, now, pto)
+        self.acknowledge_epoch(grant.sent_packet_number, grant.sent_key_generation,
+            grant.received_key_generation, now, pto)
     }
     fn acknowledge_validated(&mut self, pn: u64, received_generation: u64, now: u64, pto: u64) -> Result<(), Error> {
+        self.acknowledge_epoch(pn, None, received_generation, now, pto)
+    }
+    fn acknowledge_epoch(&mut self, pn: u64, sent_generation: Option<u64>,
+        received_generation: u64, now: u64, pto: u64) -> Result<(), Error>
+    {
         let deadline = time(self.active, &mut self.last_now, now, pto)?;
-        if self.current.last_sealed.is_none_or(|last| pn > last) || received_generation > self.receive_generation {
+        if pn > super::MAX_PACKET_NUMBER || received_generation > self.receive_generation {
+            return Err(Error::InvalidAcknowledgment);
+        }
+        if let Some(sent_generation) = sent_generation {
+            if sent_generation > self.generation { return Err(Error::InvalidAcknowledgment); }
+            if received_generation < sent_generation {
+                self.discard(); return Err(Error::KeyUpdateError);
+            }
+            if sent_generation < self.generation {
+                // Recovery already proved that this exact packet was accepted
+                // in an older send epoch. Its ACK remains valid before the
+                // current epoch seals anything, but cannot open this epoch's
+                // update barrier. Retain every available local PN bound.
+                if self.current.last_sealed.is_some_and(|last| pn > last)
+                    || self.first_sent.is_some_and(|first| pn >= first)
+                { return Err(Error::InvalidAcknowledgment); }
+                return Ok(());
+            }
+            // A current-epoch ACK must refer to an actual current-epoch seal,
+            // even when the PacketKey inherited a previous PN high-water mark.
+            if self.first_sent.is_none_or(|first| pn < first) {
+                return Err(Error::InvalidAcknowledgment);
+            }
+        }
+        // Epoch-less legacy evidence cannot use the older-epoch exception.
+        if self.current.last_sealed.is_none_or(|last| pn > last) {
             return Err(Error::InvalidAcknowledgment);
         }
         if self.first_sent.is_some_and(|first| pn >= first) {

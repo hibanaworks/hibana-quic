@@ -1,6 +1,6 @@
-//! Approximate reconstruction of the unfinished application continuation.
-//! Reconstructed after executor replacement, 2026-10-03. NOT compiled or tested.
-//! The combined prefix/application runner had not been implemented before loss.
+//! A single projected connection from authenticated application admission to
+//! bounded stream IO, ordinary retirement, closing and draining.
+//! Recovered foundations and new integration await fresh compiler/test checks.
 
 pub mod protocol;
 mod io;
@@ -72,7 +72,9 @@ pub struct Report {
     pub completed_streams: usize,
     pub all_streams_acked: bool,
     pub close_completed: bool,
+    /// Actual admitted-path datagram bytes before closing starts.
     pub received_bytes: u64,
+    /// Actual UDP-accepted datagram bytes before closing starts.
     pub sent_bytes: u64,
 }
 
@@ -106,6 +108,7 @@ pub enum Error {
     Binding,
     Capacity,
     Application,
+    Incomplete,
     KeyControl,
     UnexpectedLabel(u8),
 }
@@ -137,20 +140,17 @@ pub(crate) enum CloseKind {
 pub(crate) struct Control<'gate, 'scope> {
     revision: Cell<u64>,
     wakers: [RefCell<Option<Waker>>; 8],
-    close: Cell<Option<CloseKind>>,
     failed: Cell<bool>,
     stop: RefCell<Option<publication_gate::Stop<'gate, 'scope>>>,
-    timer_ready: Cell<bool>,
 }
 impl<'gate, 'scope> Control<'gate, 'scope> {
     pub(crate) fn new(stop: publication_gate::Stop<'gate, 'scope>) -> Self {
         Self { revision: Cell::new(0), wakers: core::array::from_fn(|_| RefCell::new(None)),
-            close: Cell::new(None), failed: Cell::new(false), stop: RefCell::new(Some(stop)), timer_ready: Cell::new(false) }
+            failed: Cell::new(false), stop: RefCell::new(Some(stop)) }
     }
     pub(crate) fn stopping(&self) -> bool { self.stop.borrow().is_none() }
     pub(crate) fn revision(&self) -> u64 { self.revision.get() }
     pub(crate) fn failed(&self) -> bool { self.failed.get() }
-    pub(crate) fn close(&self) -> Option<CloseKind> { self.close.get() }
     pub(crate) fn changed(&self) -> Result<(), Error> {
         self.revision.set(self.revision.get().checked_add(1).ok_or(Error::Binding)?);
         for slot in &self.wakers {
@@ -185,15 +185,10 @@ impl<'gate, 'scope> Control<'gate, 'scope> {
         if let Some(stop) = stop { stop.revoke(); }
         self.changed()
     }
-    pub(crate) fn shutdown(&self, kind: CloseKind) -> Result<(), Error> {
-        if self.close.get().is_none() || matches!(kind, CloseKind::Peer { .. }) { self.close.set(Some(kind)); }
-        self.revoke()
-    }
     pub(crate) fn fail(&self) -> Result<(), Error> { self.failed.set(true); self.changed() }
 }
 
-/// Intended to be minted only after every ordinary projected role retires.
-/// No minting path or closing runner was implemented before executor loss.
+/// Minted privately only after every ordinary projected role has retired.
 pub struct OrdinaryRetired<'scope> { scope: &'scope crypto::directional::ApplicationKeyScope }
 impl<'scope> OrdinaryRetired<'scope> {
     pub(crate) fn scope(&self) -> &'scope crypto::directional::ApplicationKeyScope { self.scope }

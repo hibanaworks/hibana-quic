@@ -337,11 +337,11 @@ fn same_generation_foreign_handshake_and_validated_ack_scopes_cannot_authorize_u
     assert_eq!(tx.scope().connection_generation(), foreign.connection_generation());
     assert_eq!(tx.confirm_handshake(ScopedHandshakeConfirmation { scope: foreign }), Err(Error::KeyUpdateNotAllowed));
     assert!(!tx.handshake_confirmed);
-    assert_eq!(tx.acknowledge(ValidatedKeyAck { scope: foreign, sent_packet_number: 0, received_key_generation: 0 }, 0, 10), Err(Error::InvalidAcknowledgment));
+    assert_eq!(tx.acknowledge(ValidatedKeyAck { scope: foreign, sent_packet_number: 0, sent_key_generation: Some(0), received_key_generation: 0 }, 0, 10), Err(Error::InvalidAcknowledgment));
     assert!(!tx.current_acked);
     let own = tx.scope();
     tx.confirm_handshake(ScopedHandshakeConfirmation { scope: own }).unwrap();
-    tx.acknowledge(ValidatedKeyAck { scope: own, sent_packet_number: 0, received_key_generation: 0 }, 0, 10).unwrap();
+    tx.acknowledge(ValidatedKeyAck { scope: own, sent_packet_number: 0, sent_key_generation: Some(0), received_key_generation: 0 }, 0, 10).unwrap();
     initiate(&mut rx, &mut tx, 0); assert_eq!(tx.generation(), 1);
 }
 
@@ -364,4 +364,122 @@ fn local_update_cannot_predate_rx_readiness_and_rejected_readiness_can_be_cancel
     let refused = tx.initiate(rx.prepare_local_update().unwrap(), 99, 10).unwrap_err();
     assert_eq!(refused.error, Error::InvalidTime); rx.cancel_local_update(refused.ready).unwrap();
     initiate(&mut rx, &mut tx, 100); assert_eq!(tx.generation(), 1);
+}
+
+// These helpers model already-issued sent-ledger evidence for the TX numeric
+// policy. Actual Recovery receipt construction remains its integration boundary.
+fn epoch_ack<'a>(scope: &'a ApplicationKeyScope, pn: u64, sent: u64, received: u64) -> ValidatedKeyAck<'a> {
+    ValidatedKeyAck { scope, sent_packet_number: pn, sent_key_generation: Some(sent), received_key_generation: received }
+}
+fn install_peer_epoch_one<'a>(rx: &mut ApplicationReadKeys<'a>, tx: &mut ApplicationWriteKeys<'a>, suite: CipherSuite) {
+    let mut peer = key(suite, 1);
+    peer.update_key().unwrap();
+    let mut body = [0; 20]; body[..4].copy_from_slice(b"test");
+    peer.seal(10, &[0x44], &mut body, 4).unwrap();
+    let mut budget = IntegrityBudget::new();
+    let authenticated = open(rx, 10, ([0x44], body), &mut budget, 10).unwrap();
+    let eligible = settle(rx, tx, authenticated);
+    assert_eq!(eligible.opened().generation, 1);
+    assert_eq!(tx.generation(), 1);
+    assert_eq!(tx.first_sent, None);
+}
+
+#[test]
+fn old_epoch_ack_before_current_send_preserves_progress_without_current_update_permission() {
+    let measured = NoAlloc::start();
+    for suite in [CipherSuite::Aes128GcmSha256, CipherSuite::ChaCha20Poly1305Sha256] {
+        for current_key_has_high_water in [true, false] {
+            let mut scope = ApplicationKeyScope::new(101);
+            let (mut rx, mut tx) = install(&mut scope, suite, true);
+            packet(&mut tx, 7);
+            install_peer_epoch_one(&mut rx, &mut tx, suite);
+            assert_eq!(tx.current.last_sealed, Some(7));
+            tx.handshake_confirmed = true;
+            if !current_key_has_high_water {
+                // Private numeric fixture for the reported empty-current-key
+                // accounting case. Normal promote() retains the old PN bound.
+                tx.current.last_sealed = None;
+                assert_eq!(tx.acknowledge_validated(7, 0, 10, 10), Err(Error::InvalidAcknowledgment));
+            }
+            let own_scope = tx.scope();
+            assert_eq!(tx.acknowledge(epoch_ack(own_scope, 7, 0, 0), 10, 10), Ok(()));
+            assert_eq!(tx.acknowledge(epoch_ack(own_scope, 7, 0, 1), 10, 10), Ok(()));
+            assert_eq!(tx.first_sent, None);
+            assert!(!tx.current_acked);
+            assert_eq!(tx.update_after, None);
+            assert_eq!(tx.generation(), 1);
+            tx.maintain(10, 10).unwrap(); rx.maintain(10, 10).unwrap();
+            let rejected = tx.initiate(rx.prepare_local_update().unwrap(), 10, 10).unwrap_err();
+            assert_eq!(rejected.error, Error::KeyUpdateNotAllowed);
+            rx.cancel_local_update(rejected.ready).unwrap();
+            if current_key_has_high_water {
+                assert_eq!(tx.seal(7, &[0x44], &mut [0; 16], 0), Err(Error::PacketNumberReuse));
+            }
+        }
+    }
+    measured.finish();
+}
+
+#[test]
+fn current_epoch_ack_requires_a_current_seal_and_matching_epoch_packet_bounds() {
+    let mut scope = ApplicationKeyScope::new(102);
+    let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
+    packet(&mut tx, 7);
+    install_peer_epoch_one(&mut rx, &mut tx, CipherSuite::Aes128GcmSha256);
+    tx.handshake_confirmed = true;
+    let own_scope = tx.scope();
+    // A prior packet cannot be mislabeled current merely because the new key
+    // inherited its packet-number high-water mark.
+    assert_eq!(tx.acknowledge(epoch_ack(own_scope, 7, 1, 1), 10, 10), Err(Error::InvalidAcknowledgment));
+    packet(&mut tx, 8);
+    for (pn, sent, received) in [(7, 1, 1), (9, 1, 1), (8, 0, 1), (8, 2, 1), (8, 1, 2)] {
+        assert_eq!(tx.acknowledge(epoch_ack(own_scope, pn, sent, received), 10, 10), Err(Error::InvalidAcknowledgment));
+        assert!(!tx.current_acked);
+        assert_eq!(tx.update_after, None);
+        assert!(tx.active);
+    }
+    tx.acknowledge(epoch_ack(own_scope, 8, 1, 1), 10, 10).unwrap();
+    assert!(tx.current_acked);
+    assert_eq!(tx.update_after, Some(40));
+    // A later old-epoch ACK must neither reauthorize nor postpone the current
+    // epoch's already-established three-PTO barrier.
+    tx.acknowledge(epoch_ack(own_scope, 7, 0, 0), 20, 10).unwrap();
+    assert_eq!(tx.update_after, Some(40));
+    tx.maintain(20, 10).unwrap(); rx.maintain(20, 10).unwrap();
+    let rejected = tx.initiate(rx.prepare_local_update().unwrap(), 39, 10).unwrap_err();
+    assert_eq!(rejected.error, Error::KeyUpdateNotAllowed);
+    rx.cancel_local_update(rejected.ready).unwrap();
+    initiate(&mut rx, &mut tx, 40);
+    assert_eq!(tx.generation(), 2);
+}
+
+#[test]
+fn old_epoch_exception_retains_scope_packet_number_and_authenticated_receive_bounds() {
+    let mut scope = ApplicationKeyScope::new(103);
+    let foreign_scope = ApplicationKeyScope::new(103);
+    let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
+    packet(&mut tx, 7);
+    install_peer_epoch_one(&mut rx, &mut tx, CipherSuite::Aes128GcmSha256);
+    let own_scope = tx.scope();
+    assert_eq!(tx.acknowledge(epoch_ack(&foreign_scope, 7, 0, 1), 10, 10), Err(Error::InvalidAcknowledgment));
+    assert_eq!(tx.acknowledge(epoch_ack(own_scope, 8, 0, 1), 10, 10), Err(Error::InvalidAcknowledgment));
+    tx.current.last_sealed = None;
+    assert_eq!(tx.acknowledge(epoch_ack(own_scope, super::super::MAX_PACKET_NUMBER + 1, 0, 1), 10, 10), Err(Error::InvalidAcknowledgment));
+    assert_eq!(tx.acknowledge(epoch_ack(own_scope, 7, 0, 2), 10, 10), Err(Error::InvalidAcknowledgment));
+    assert_eq!(tx.acknowledge(epoch_ack(own_scope, 7, 2, 1), 10, 10), Err(Error::InvalidAcknowledgment));
+    assert_eq!(tx.acknowledge(epoch_ack(own_scope, 7, 0, 1), 10, 10), Ok(()));
+    assert!(!tx.current_acked);
+    assert_eq!(tx.update_after, None);
+}
+
+#[test]
+fn epoch_bound_ack_carried_under_older_read_keys_remains_terminal() {
+    let mut scope = ApplicationKeyScope::new(104);
+    let (mut rx, mut tx) = install(&mut scope, CipherSuite::ChaCha20Poly1305Sha256, true);
+    packet(&mut tx, 7);
+    install_peer_epoch_one(&mut rx, &mut tx, CipherSuite::ChaCha20Poly1305Sha256);
+    packet(&mut tx, 8);
+    let own_scope = tx.scope();
+    assert_eq!(tx.acknowledge(epoch_ack(own_scope, 8, 1, 0), 10, 10), Err(Error::KeyUpdateError));
+    assert_eq!(tx.header_mask(&[0; 16]), Err(Error::KeyDiscarded));
 }

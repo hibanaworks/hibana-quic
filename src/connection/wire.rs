@@ -2,21 +2,25 @@
 use super::*;
 use crate::{crypto::PacketKey,packet::{self,Frame,LongHeader,LongType}};
 
+/// A successful prefix has already consumed actual Initial retirement evidence.
+/// Handshake keys remain owned here until authenticated confirmation.
 pub struct ReceiveContinuation<'scope,const P:usize>{
- pub initial:ReceivePacketKey<'scope>,pub handshake:ReceivePacketKey<'scope>,pub application:ApplicationReadKeys<'scope>,pub integrity:IntegrityBudget,pub finished:Finished<'scope,P>,pub largest_received:[Option<u64>;2],pub(super) peer:ConnectionId,
+ pub initial:Option<ReceivePacketKey<'scope>>,pub handshake:ReceivePacketKey<'scope>,pub application:ApplicationReadKeys<'scope>,pub integrity:IntegrityBudget,pub finished:Finished<'scope,P>,pub largest_received:[Option<u64>;2],pub(super) peer:ConnectionId,
 }
 impl<'scope,const P:usize> ReceiveContinuation<'scope,P>{
  pub fn peer_connection_id(&self)->&[u8]{self.peer.bytes()}
  pub fn into_parts(self)->(ReceiveMaterial<'scope>,Finished<'scope,P>){(ReceiveMaterial{initial:self.initial,handshake:self.handshake,application:self.application,integrity:self.integrity,largest_received:self.largest_received,peer:self.peer},self.finished)}
 }
-pub struct ReceiveMaterial<'scope>{pub initial:ReceivePacketKey<'scope>,pub handshake:ReceivePacketKey<'scope>,pub application:ApplicationReadKeys<'scope>,pub integrity:IntegrityBudget,pub largest_received:[Option<u64>;2],pub(super) peer:ConnectionId}
+pub struct ReceiveMaterial<'scope>{pub initial:Option<ReceivePacketKey<'scope>>,pub handshake:ReceivePacketKey<'scope>,pub application:ApplicationReadKeys<'scope>,pub integrity:IntegrityBudget,pub largest_received:[Option<u64>;2],pub(super) peer:ConnectionId}
 impl ReceiveMaterial<'_>{pub fn peer_connection_id(&self)->&[u8]{self.peer.bytes()}}
-pub struct TransmitContinuation<'scope>{pub initial:PacketKey,pub handshake:TransmitPacketKey<'scope>,pub application:ApplicationWriteKeys<'scope>}
+/// Initial is absent after the finite prefix retirement join; unacknowledged
+/// Handshake flights remain in the same recovery book for the application roles.
+pub struct TransmitContinuation<'scope>{pub initial:Option<PacketKey>,pub handshake:TransmitPacketKey<'scope>,pub application:ApplicationWriteKeys<'scope>}
 pub(crate) struct Datagram<'book,const N:usize>{pub(super) sealed:Bytes<N>,pub(super) reservation:recovery::Reservation<'book>,pub(super) acknowledgment:Option<recovery::AckSnapshot<'book>>}
 pub(super) struct Bytes<const N:usize>{data:[u8;N],len:usize}
 impl<const N:usize> Bytes<N>{pub fn bytes(&self)->&[u8]{&self.data[..self.len]}}
 impl<const N:usize> Drop for Bytes<N>{fn drop(&mut self){use zeroize::Zeroize;self.data.zeroize();}}
-pub(super) struct WriteKeys<'scope>{pub initial:PacketKey,pub handshake:Option<TransmitPacketKey<'scope>>,pub application:Option<ApplicationWriteKeys<'scope>>}
+pub(super) struct WriteKeys<'initial,'scope>{pub initial:&'initial super::initial::Keys<'scope>,pub handshake:Option<TransmitPacketKey<'scope>>,pub application:Option<ApplicationWriteKeys<'scope>>}
 pub(super) struct PlainPacket<const N:usize>{bytes:Bytes<N>,header_len:usize,plaintext_len:usize,level:Level,padded:bool}
 impl<const N:usize> PlainPacket<N>{
  pub fn new(config:Config<'_>,peer:&ConnectionId,level:Level,frame:Frame<'_>)->Result<Self,Error>{
@@ -29,8 +33,8 @@ impl<const N:usize> PlainPacket<N>{
  }
  pub fn len(&self)->usize{self.bytes.len}
  pub fn padded(&self)->bool{self.padded}
- pub fn seal<'book>(self,keys:&mut WriteKeys<'_>,reservation:recovery::Reservation<'book>,acknowledgment:Option<recovery::AckSnapshot<'book>>)->Result<Datagram<'book,N>,(Error,recovery::Reservation<'book>)>{
-  match self.level{Level::Initial=>self.seal_initial(&mut keys.initial,reservation,acknowledgment),Level::Handshake=>match keys.handshake.as_mut(){Some(key)=>self.seal_handshake(key,reservation,acknowledgment),None=>Err((Error::UnsupportedLevel,reservation))},_=>Err((Error::UnsupportedLevel,reservation))}
+ pub fn seal<'book>(self,keys:&mut WriteKeys<'_,'_>,reservation:recovery::Reservation<'book>,acknowledgment:Option<recovery::AckSnapshot<'book>>)->Result<Datagram<'book,N>,(Error,recovery::Reservation<'book>)>{
+  match self.level{Level::Initial=>keys.initial.seal(self,reservation,acknowledgment),Level::Handshake=>match keys.handshake.as_mut(){Some(key)=>self.seal_handshake(key,reservation,acknowledgment),None=>Err((Error::UnsupportedLevel,reservation))},_=>Err((Error::UnsupportedLevel,reservation))}
  }
  pub fn seal_initial<'book>(self,key:&mut PacketKey,reservation:recovery::Reservation<'book>,acknowledgment:Option<recovery::AckSnapshot<'book>>)->Result<Datagram<'book,N>,(Error,recovery::Reservation<'book>)>{self.seal_borrowed(BorrowedWriteKey::Initial(key),reservation,acknowledgment)}
  pub fn seal_handshake<'book>(self,key:&mut TransmitPacketKey<'_>,reservation:recovery::Reservation<'book>,acknowledgment:Option<recovery::AckSnapshot<'book>>)->Result<Datagram<'book,N>,(Error,recovery::Reservation<'book>)>{self.seal_borrowed(BorrowedWriteKey::Handshake(key),reservation,acknowledgment)}

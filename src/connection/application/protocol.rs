@@ -2,6 +2,7 @@
 //! complete ordinary retirement, then closing or draining.
 //! Source implementation is awaiting fresh compiler/global validation.
 use hibana::{g, runtime::program::{RoleProgram, project}};
+use crate::connection::protocol::{RX as PREFIX_RX, TLS_RX as PREFIX_TLS_RX, TX as PREFIX_TX};
 
 pub const SOURCE: u8 = 8;
 pub const INGRESS: u8 = 9;
@@ -96,42 +97,156 @@ pub type PublicationFlow = g::Seq<g::Roll<g::Route<Publish, g::Send<TRANSMIT, AD
 pub type FilesOutcome = g::Msg<52, u64>;
 pub type KeyRetirement = g::Msg<53, u64>;
 pub type CloseAuthority = g::Msg<54, u64>;
-pub type ReceiveStart = g::Msg<160, u64>;
+pub type FinishedValidated = g::Msg<160, u64>;
 pub type TranscriptStart = g::Msg<161, u64>;
 pub type WriteStart = g::Msg<162, u64>;
 pub type StreamAdmission = g::Msg<163, u64>;
 pub type WriteAdmission = g::Msg<164, u64>;
+pub type ReadAdmission = g::Msg<165, u64>;
 
 pub type PeerTerminal = g::Seq<g::Route<g::Send<PEER_EVENT, PEER_CLOSE, PeerClose>, g::Route<g::Send<PEER_EVENT, PEER_CLOSE, PeerFailed>, g::Send<PEER_EVENT, PEER_CLOSE, PeerCancelled>>>, g::Send<PEER_CLOSE, PEER_EVENT, PeerSeen>>;
 pub type FilesTerminal = g::Seq<g::Route<g::Send<FILES_EVENT, FILES_CLOSE, FilesComplete>, g::Route<g::Send<FILES_EVENT, FILES_CLOSE, ApplicationFailed>, g::Send<FILES_EVENT, FILES_CLOSE, CompletionCancelled>>>, g::Send<FILES_CLOSE, FILES_EVENT, CompletionSeen>>;
 pub type Terminal = g::Seq<g::Par<PeerTerminal, FilesTerminal>, g::Send<FILES_CLOSE, PEER_CLOSE, FilesOutcome>>;
 pub type Active = g::Par<SourceFlow, g::Par<ReceiveFlow, g::Par<KeyFlow, g::Par<TimerFlow, g::Par<PublicationFlow, Terminal>>>>>;
-pub type Retirement = g::Seq<g::Send<RX_KEYS, TRANSMIT, KeyRetirement>, g::Send<PEER_CLOSE, TRANSMIT, CloseAuthority>>;
+pub type Retirement = g::Seq<g::Send<RX_KEYS, PEER_CLOSE, KeyRetirement>, g::Send<PEER_CLOSE, TRANSMIT, CloseAuthority>>;
 pub type ClosingDraining = g::Seq<g::Route<Closing, Draining>, g::Seq<g::Send<TRANSMIT, ADAPTER, Retire>, g::Send<ADAPTER, TRANSMIT, Retired>>>;
 pub type Flow = g::Seq<Active, g::Seq<Retirement, ClosingDraining>>;
-pub type Startup = g::Seq<g::Send<0, RECEIVE, ReceiveStart>, g::Seq<g::Send<1, RECEIVE, TranscriptStart>, g::Seq<g::Send<2, TX_KEYS, WriteStart>, g::Seq<g::Send<RECEIVE, SOURCE, StreamAdmission>, g::Send<TX_KEYS, TRANSMIT, WriteAdmission>>>>>;
+pub type Startup = g::Seq<g::Send<PREFIX_RX, PREFIX_TLS_RX, FinishedValidated>, g::Seq<g::Send<PREFIX_TLS_RX, RECEIVE, TranscriptStart>, g::Seq<g::Send<RECEIVE, PREFIX_TX, ReadAdmission>, g::Seq<g::Send<PREFIX_TX, TX_KEYS, WriteStart>, g::Seq<g::Send<TX_KEYS, TRANSMIT, WriteAdmission>, g::Send<TRANSMIT, SOURCE, StreamAdmission>>>>>>;
 
 fn startup() -> g::Program<Startup> {
-    g::seq(g::send::<0, RECEIVE, ReceiveStart>(), g::seq(g::send::<1, RECEIVE, TranscriptStart>(), g::seq(g::send::<2, TX_KEYS, WriteStart>(), g::seq(g::send::<RECEIVE, SOURCE, StreamAdmission>(), g::send::<TX_KEYS, TRANSMIT, WriteAdmission>()))))
+    g::seq(
+        g::send::<PREFIX_RX, PREFIX_TLS_RX, FinishedValidated>(),
+        g::seq(
+            g::send::<PREFIX_TLS_RX, RECEIVE, TranscriptStart>(),
+            g::seq(
+                g::send::<RECEIVE, PREFIX_TX, ReadAdmission>(),
+                g::seq(
+                    g::send::<PREFIX_TX, TX_KEYS, WriteStart>(),
+                    g::seq(
+                        g::send::<TX_KEYS, TRANSMIT, WriteAdmission>(),
+                        g::send::<TRANSMIT, SOURCE, StreamAdmission>(),
+                    ),
+                ),
+            ),
+        ),
+    )
 }
 
 pub fn choreography() -> g::Program<Flow> {
-    let source = g::seq(g::route(g::seq(g::send::<SOURCE, INGRESS, SourceData>(), g::seq(g::route(g::send::<INGRESS, SOURCE, SourceAccepted>(), g::send::<INGRESS, SOURCE, SourceRejected>()), g::send::<SOURCE, INGRESS, SourceTaken>())), g::send::<SOURCE, INGRESS, SourceDone>()).roll(), g::send::<INGRESS, SOURCE, SourceRetired>());
-    let receive = g::seq(g::route(g::seq(g::send::<RECEIVE, SINK, ReceivedData>(), g::route(g::send::<SINK, RECEIVE, ReceivedMore>(), g::send::<SINK, RECEIVE, ReceivedFin>())), g::send::<RECEIVE, SINK, ReceiveRetire>()).roll(), g::send::<SINK, RECEIVE, ReceiveRetired>());
-    let keys = g::seq(g::route(g::seq(g::send::<RX_KEYS, TX_KEYS, PeerUpdate>(), g::route(g::send::<TX_KEYS, RX_KEYS, WriteInstalled>(), g::send::<TX_KEYS, RX_KEYS, UpdateFailed>())), g::route(g::seq(g::send::<RX_KEYS, TX_KEYS, KeyAck>(), g::route(g::send::<TX_KEYS, RX_KEYS, KeyAckApplied>(), g::send::<TX_KEYS, RX_KEYS, KeyAckFailed>())), g::route(g::seq(g::send::<RX_KEYS, TX_KEYS, Confirmed>(), g::route(g::send::<TX_KEYS, RX_KEYS, ConfirmationApplied>(), g::send::<TX_KEYS, RX_KEYS, ConfirmationFailed>())), g::send::<RX_KEYS, TX_KEYS, KeysRetire>()))).roll(), g::send::<TX_KEYS, RX_KEYS, KeysRetired>());
-    let timer = g::route(g::seq(g::send::<CLOCK, TX_CLOCK, Expired>(), g::send::<TX_CLOCK, CLOCK, TimerTaken>()), g::seq(g::send::<CLOCK, TX_CLOCK, ClockRetired>(), g::send::<TX_CLOCK, CLOCK, ClockAcknowledged>())).roll();
-    let publish = g::seq(g::send::<TRANSMIT, ADAPTER, Datagram>(), g::seq(g::route(g::send::<ADAPTER, TRANSMIT, Accepted>(), g::send::<ADAPTER, TRANSMIT, Rejected>()).resolve::<SUBMISSION_RESULT>(), g::send::<TRANSMIT, ADAPTER, Settled>()));
-    let publication = g::seq(g::route(publish, g::send::<TRANSMIT, ADAPTER, StopPublication>()).roll(), g::send::<ADAPTER, TRANSMIT, PublicationStopped>());
-    let peer = g::seq(g::route(g::send::<PEER_EVENT, PEER_CLOSE, PeerClose>(), g::route(g::send::<PEER_EVENT, PEER_CLOSE, PeerFailed>(), g::send::<PEER_EVENT, PEER_CLOSE, PeerCancelled>())), g::send::<PEER_CLOSE, PEER_EVENT, PeerSeen>());
-    let files = g::seq(g::route(g::send::<FILES_EVENT, FILES_CLOSE, FilesComplete>(), g::route(g::send::<FILES_EVENT, FILES_CLOSE, ApplicationFailed>(), g::send::<FILES_EVENT, FILES_CLOSE, CompletionCancelled>())), g::send::<FILES_CLOSE, FILES_EVENT, CompletionSeen>());
+    let chunks = g::route(
+        g::seq(
+            g::send::<SOURCE, INGRESS, SourceData>(),
+            g::seq(
+                g::route(
+                    g::send::<INGRESS, SOURCE, SourceAccepted>(),
+                    g::send::<INGRESS, SOURCE, SourceRejected>(),
+                ),
+                g::send::<SOURCE, INGRESS, SourceTaken>(),
+            ),
+        ),
+        g::send::<SOURCE, INGRESS, SourceDone>(),
+    ).roll();
+    let source = g::seq(chunks, g::send::<INGRESS, SOURCE, SourceRetired>());
+
+    let deliveries = g::route(
+        g::seq(
+            g::send::<RECEIVE, SINK, ReceivedData>(),
+            g::route(
+                g::send::<SINK, RECEIVE, ReceivedMore>(),
+                g::send::<SINK, RECEIVE, ReceivedFin>(),
+            ),
+        ),
+        g::send::<RECEIVE, SINK, ReceiveRetire>(),
+    ).roll();
+    let receive = g::seq(deliveries, g::send::<SINK, RECEIVE, ReceiveRetired>());
+
+    let peer_update = g::seq(
+        g::send::<RX_KEYS, TX_KEYS, PeerUpdate>(),
+        g::route(
+            g::send::<TX_KEYS, RX_KEYS, WriteInstalled>(),
+            g::send::<TX_KEYS, RX_KEYS, UpdateFailed>(),
+        ),
+    );
+    let key_ack = g::seq(
+        g::send::<RX_KEYS, TX_KEYS, KeyAck>(),
+        g::route(
+            g::send::<TX_KEYS, RX_KEYS, KeyAckApplied>(),
+            g::send::<TX_KEYS, RX_KEYS, KeyAckFailed>(),
+        ),
+    );
+    let confirmation = g::seq(
+        g::send::<RX_KEYS, TX_KEYS, Confirmed>(),
+        g::route(
+            g::send::<TX_KEYS, RX_KEYS, ConfirmationApplied>(),
+            g::send::<TX_KEYS, RX_KEYS, ConfirmationFailed>(),
+        ),
+    );
+    let key_work = g::route(peer_update,
+        g::route(key_ack, g::route(confirmation, g::send::<RX_KEYS, TX_KEYS, KeysRetire>())),
+    ).roll();
+    let keys = g::seq(key_work, g::send::<TX_KEYS, RX_KEYS, KeysRetired>());
+
+    let timer = g::route(
+        g::seq(g::send::<CLOCK, TX_CLOCK, Expired>(), g::send::<TX_CLOCK, CLOCK, TimerTaken>()),
+        g::seq(g::send::<CLOCK, TX_CLOCK, ClockRetired>(), g::send::<TX_CLOCK, CLOCK, ClockAcknowledged>()),
+    ).roll();
+    let publish = g::seq(
+        g::send::<TRANSMIT, ADAPTER, Datagram>(),
+        g::seq(
+            g::route(g::send::<ADAPTER, TRANSMIT, Accepted>(), g::send::<ADAPTER, TRANSMIT, Rejected>())
+                .resolve::<SUBMISSION_RESULT>(),
+            g::send::<TRANSMIT, ADAPTER, Settled>(),
+        ),
+    );
+    let publication = g::seq(
+        g::route(publish, g::send::<TRANSMIT, ADAPTER, StopPublication>()).roll(),
+        g::send::<ADAPTER, TRANSMIT, PublicationStopped>(),
+    );
+
+    let peer = g::seq(
+        g::route(
+            g::send::<PEER_EVENT, PEER_CLOSE, PeerClose>(),
+            g::route(g::send::<PEER_EVENT, PEER_CLOSE, PeerFailed>(), g::send::<PEER_EVENT, PEER_CLOSE, PeerCancelled>()),
+        ),
+        g::send::<PEER_CLOSE, PEER_EVENT, PeerSeen>(),
+    );
+    let files = g::seq(
+        g::route(
+            g::send::<FILES_EVENT, FILES_CLOSE, FilesComplete>(),
+            g::route(g::send::<FILES_EVENT, FILES_CLOSE, ApplicationFailed>(), g::send::<FILES_EVENT, FILES_CLOSE, CompletionCancelled>()),
+        ),
+        g::send::<FILES_CLOSE, FILES_EVENT, CompletionSeen>(),
+    );
     let terminal = g::seq(g::par(peer, files), g::send::<FILES_CLOSE, PEER_CLOSE, FilesOutcome>());
-    let active = g::par(source, g::par(receive, g::par(keys, g::par(timer, g::par(publication, terminal)))));
-    let retirement = g::seq(g::send::<RX_KEYS, TRANSMIT, KeyRetirement>(), g::send::<PEER_CLOSE, TRANSMIT, CloseAuthority>());
-    let close_publish = g::seq(g::send::<TRANSMIT, ADAPTER, CloseDatagram>(), g::seq(g::route(g::send::<ADAPTER, TRANSMIT, CloseAccepted>(), g::send::<ADAPTER, TRANSMIT, CloseRejected>()).resolve::<SUBMISSION_RESULT>(), g::send::<TRANSMIT, ADAPTER, CloseSettled>()));
-    let closing = g::seq(g::route(close_publish, g::send::<TRANSMIT, ADAPTER, CloseFlightDone>()).roll(), g::send::<ADAPTER, TRANSMIT, CloseFlightSettled>());
+
+    // Each lane is an actual bounded IO/key/clock continuation. They all finish
+    // before the closing capability and sole write key can be transferred.
+    let ordinary = g::par(source,
+        g::par(receive, g::par(keys, g::par(timer, g::par(publication, terminal)))),
+    );
+    let retirement = g::seq(
+        g::send::<RX_KEYS, PEER_CLOSE, KeyRetirement>(),
+        g::send::<PEER_CLOSE, TRANSMIT, CloseAuthority>(),
+    );
+
+    let close_packet = g::seq(
+        g::send::<TRANSMIT, ADAPTER, CloseDatagram>(),
+        g::seq(
+            g::route(g::send::<ADAPTER, TRANSMIT, CloseAccepted>(), g::send::<ADAPTER, TRANSMIT, CloseRejected>())
+                .resolve::<SUBMISSION_RESULT>(),
+            g::send::<TRANSMIT, ADAPTER, CloseSettled>(),
+        ),
+    );
+    let closing = g::seq(
+        g::route(close_packet, g::send::<TRANSMIT, ADAPTER, CloseFlightDone>()).roll(),
+        g::send::<ADAPTER, TRANSMIT, CloseFlightSettled>(),
+    );
     let draining = g::seq(g::send::<TRANSMIT, ADAPTER, Drain>(), g::send::<ADAPTER, TRANSMIT, Drained>());
-    let final_phase = g::seq(g::route(closing, draining), g::seq(g::send::<TRANSMIT, ADAPTER, Retire>(), g::send::<ADAPTER, TRANSMIT, Retired>()));
-    g::seq(active, g::seq(retirement, final_phase))
+    let final_phase = g::seq(
+        g::route(closing, draining),
+        g::seq(g::send::<TRANSMIT, ADAPTER, Retire>(), g::send::<ADAPTER, TRANSMIT, Retired>()),
+    );
+    g::seq(ordinary, g::seq(retirement, final_phase))
 }
 
 pub struct Programs {

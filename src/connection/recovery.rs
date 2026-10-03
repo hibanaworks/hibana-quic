@@ -726,11 +726,20 @@ fn settle<const B: usize>(book: &Recovery<'_, B>, reservation: Reservation<'_>, 
     if n.pending[index] == 0 { return Err(Error::Binding); }
     if let Some(at) = accepted_at {
         if at < reservation.prepared_at { return Err(kernel::RecoveryError::TimeWentBackwards.into()); }
-        n.check_time(at)?;
+        // Adapter acceptance is a historical producer timestamp, not a new
+        // clock reading at callback processing. RX or the timer may already
+        // have observed a later instant while this submission was pending.
+        // Keep its exact send time; only the aggregate observation bound takes
+        // the later of two observations of the same monotonic clock.
+        let observed_at = n.last_now.map_or(at, |previous| previous.max(at));
         n.ledger.adapter_accepted(reservation.send, at)?;
         n.path.adapter_accepted(reservation.path)?;
         if let Some(reference) = reservation.flight { n.flights.accepted(reference, at)?; }
-        if reservation.ack_eliciting { n.last_ack_eliciting[index] = Some(at); }
+        n.last_now = Some(observed_at);
+        if reservation.ack_eliciting {
+            let latest = &mut n.last_ack_eliciting[index];
+            *latest = Some(latest.map_or(at, |previous| previous.max(at)));
+        }
         if index == 1 && n.side == Side::Client {
             n.mint_initial_event(InitialRetirementEvent::ClientHandshakeAccepted);
         }
@@ -746,6 +755,13 @@ fn settle<const B: usize>(book: &Recovery<'_, B>, reservation: Reservation<'_>, 
         }
     }
     n.pending[index] -= 1;
+    if accepted_at.is_some() {
+        // A later-PN ACK may have arrived while this record was still Reserved.
+        // Re-evaluate newly accepted history using the observation bound, with
+        // the original PN and send timestamp retained for loss/RTT arithmetic.
+        let observed_at = n.last_now.ok_or(Error::Binding)?;
+        n.detect_loss(packet.space, observed_at)?;
+    }
     n.changed()?; n.reclaim_application()?;
     Ok(())
 }
@@ -1078,6 +1094,126 @@ mod tests {
         assert!(retry.matches_crypto(0, b"first"));
         publication.settle(Completion::from_adapter(retry, Some(at))).unwrap();
         assert_eq!(tx.snapshot().bytes_in_flight, 2400);
+        retirement.disarm();
+    }
+
+    #[test]
+    fn delayed_adapter_completion_keeps_real_send_time_after_later_rx_and_timer_observations() {
+        book!(book, scope, installation, arena, Side::Client, 85);
+        let own_scope = book.scope();
+        let (mut tx, mut rx, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let flight = tx.store_crypto(Level::Initial, 0, b"delayed acceptance").unwrap();
+        let reservation = tx.reserve(Level::Initial, 1200, Some(flight), true, true, false, 10).unwrap();
+        let packet = reservation.packet();
+        let stale = clock.update(30, [true, false]).unwrap().unwrap();
+        let receipt = initial_receipt(own_scope, &mut key(KeyKind::Initial, 7), 0, &[1]);
+        rx.apply_packet(receipt, &[1], 40).unwrap();
+        publication.settle(Completion::from_adapter(reservation, Some(20))).unwrap();
+        {
+            let numbers = tx.book.numbers.borrow();
+            assert_eq!(numbers.last_now, Some(40));
+            assert_eq!(numbers.ledger.sent_at(packet), Some(20));
+            assert_eq!(numbers.flights.sent_at(packet), Some(20));
+            assert_eq!(numbers.last_ack_eliciting[0], Some(20));
+        }
+        assert_eq!(tx.snapshot().next_packet_number[0], Some(1));
+        assert!(matches!(clock.expire(stale, 40), Err(Error::StaleDeadline)));
+        let deadline = clock.update(40, [true, false]).unwrap().unwrap();
+        assert_eq!(deadline.at(), 20 + 999_000);
+        // Ordinary callers still supply current clock readings. Historical
+        // completion handling does not relax their monotonic-time contract.
+        assert!(matches!(tx.reserve(Level::Initial, 1200, None, true, true, false, 39),
+            Err(Error::Recovery(kernel::RecoveryError::TimeWentBackwards))));
+        assert_eq!(tx.snapshot().next_packet_number[0], Some(1));
+        retirement.disarm();
+    }
+
+    #[test]
+    fn completion_before_reservation_preparation_is_rejected_without_acceptance_effects() {
+        book!(book, scope, installation, arena, Side::Client, 86);
+        let (mut tx, _, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let reservation = tx.reserve(Level::Initial, 1200, None, true, true, false, 10).unwrap();
+        let packet = reservation.packet();
+        clock.update(30, [true, false]).unwrap();
+        let before = tx.snapshot();
+        assert_eq!(publication.settle(Completion::from_adapter(reservation, Some(9))),
+            Err(Error::Recovery(kernel::RecoveryError::TimeWentBackwards)));
+        assert_eq!(tx.snapshot(), before);
+        let numbers = tx.book.numbers.borrow();
+        assert_eq!(numbers.last_now, Some(30));
+        assert_eq!(numbers.ledger.sent_at(packet), None);
+        drop(numbers);
+        // Invalid adapter evidence terminates this run; it cannot be changed
+        // into a successful send or silently reclaimed for ordinary reuse.
+        retirement.retire_all();
+        assert_eq!(tx.snapshot().next_packet_number[0], Some(1));
+        assert_eq!(tx.snapshot().reserved_bytes, 0);
+    }
+
+    #[test]
+    fn reordered_completion_callbacks_preserve_pn_send_times_latest_pto_and_rtt_sample() {
+        book!(book, scope, installation, arena, Side::Client, 87);
+        let own_scope = book.scope();
+        let (mut tx, mut rx, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let first = tx.reserve(Level::Initial, 1200, None, true, true, false, 0).unwrap();
+        let first_packet = first.packet();
+        let second = tx.reserve(Level::Initial, 1200, None, true, true, false, 1).unwrap();
+        let second_packet = second.packet();
+        publication.settle(Completion::from_adapter(second, Some(20))).unwrap();
+        clock.update(30, [true, false]).unwrap();
+        publication.settle(Completion::from_adapter(first, Some(10))).unwrap();
+        {
+            let numbers = tx.book.numbers.borrow();
+            assert_eq!(numbers.ledger.sent_at(first_packet), Some(10));
+            assert_eq!(numbers.ledger.sent_at(second_packet), Some(20));
+            assert_eq!(numbers.last_ack_eliciting[0], Some(20));
+            assert_eq!(numbers.last_now, Some(30));
+        }
+        assert_eq!(tx.snapshot().next_packet_number[0], Some(2));
+        assert_eq!(clock.update(30, [true, false]).unwrap().unwrap().at(), 20 + 999_000);
+        let mut plaintext = [0; 64]; let len = ack(first_packet.value, &mut plaintext);
+        let receipt = initial_receipt(own_scope, &mut key(KeyKind::Initial, 7), 0, &plaintext[..len]);
+        rx.apply_packet(receipt, &plaintext[..len], 40).unwrap();
+        // RTT uses actual acceptance at 10, not callback processing after 30.
+        assert_eq!(tx.book.numbers.borrow().rtt.latest_us(), 30);
+        assert_eq!(tx.snapshot().bytes_in_flight, 1200);
+        retirement.disarm();
+    }
+
+    #[test]
+    fn delayed_acceptance_rechecks_loss_after_a_later_packet_was_acknowledged() {
+        book!(book, scope, installation, arena, Side::Client, 88);
+        let (mut read, _) = installation.install(key(KeyKind::OneRtt, 8), key(KeyKind::OneRtt, 9)).unwrap();
+        let mut peer = key(KeyKind::OneRtt, 9);
+        let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
+        let delayed = tx.reserve_application(&[1], 0, 32, false, 0).unwrap();
+        let delayed_packet = delayed.packet();
+        // Prepare all packets before processing their completion callbacks.
+        let second = tx.reserve_application(&[1], 0, 32, false, 1).unwrap();
+        let third = tx.reserve_application(&[1], 0, 32, false, 2).unwrap();
+        let fourth = tx.reserve_application(&[1], 0, 32, false, 3).unwrap();
+        publication.settle(Completion::from_adapter(second, Some(11))).unwrap();
+        publication.settle(Completion::from_adapter(third, Some(12))).unwrap();
+        publication.settle(Completion::from_adapter(fourth, Some(13))).unwrap();
+        let mut plaintext = [0; 64]; let len = ack(3, &mut plaintext);
+        let receipt = app_receipt(&mut read, &mut peer, 0, &plaintext[..len], 20);
+        rx.apply_application_packet(receipt, &plaintext[..len], 20).unwrap();
+        assert_eq!(tx.take_lost_application(), None);
+        assert_eq!(tx.snapshot().reserved_in_flight, 32);
+        publication.settle(Completion::from_adapter(delayed, Some(10))).unwrap();
+        // Only now does PN 0 carry actual accepted-send evidence; its three
+        // genuinely accepted successors already establish packet-threshold loss.
+        assert_eq!(tx.take_lost_application(), Some(delayed_packet));
+        assert_eq!(tx.take_lost_application(), None);
+        assert_eq!(tx.snapshot().history_floor[2], 1);
+        assert_eq!(tx.snapshot().bytes_in_flight, 64);
+        assert_eq!(tx.snapshot().accepted_bytes, 128);
+        assert_eq!(tx.snapshot().next_packet_number[2], Some(4));
+        let numbers = tx.book.numbers.borrow();
+        assert_eq!(numbers.last_now, Some(20));
+        assert_eq!(numbers.last_ack_eliciting[2], Some(13));
+        assert_eq!(numbers.rtt.latest_us(), 7);
+        drop(numbers);
         retirement.disarm();
     }
 

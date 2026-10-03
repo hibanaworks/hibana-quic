@@ -137,7 +137,8 @@ async fn connected<'scope, const N: usize, const P: usize, const RX: usize, cons
         });
         let mut key_control = pin!(async { keys::run(&mut roles.tx_keys, &owner, &exchange).await.map_err(Error::from) });
         let mut clock_role = pin!(timer::run(&mut roles.clock, &control, &owner, &mut book_clock, clock));
-        let mut transmitting = pin!(transmit::run(&mut roles.transmit, &mut roles.tx_clock,
+        let mut timer_receive = pin!(timer::receive(&mut roles.tx_clock, &control));
+        let mut transmitting = pin!(transmit::run(&mut roles.transmit,
             &control, &publication_state, writer, &mut book_tx, &mut tx, handshake_done, config, &peer_id, clock));
         let mut publishing = pin!(transmit::publish(&mut roles.adapter, &control, &publication_state,
             issuer, &outcomes.application_adapter, send_io));
@@ -148,7 +149,7 @@ async fn connected<'scope, const N: usize, const P: usize, const RX: usize, cons
             Ok::<(), Error>(())
         });
         crate::runtime::TaskSet::new([source.as_mut(), ingress.as_mut(), sink.as_mut(), receiving.as_mut(),
-            key_control.as_mut(), clock_role.as_mut(), transmitting.as_mut(), publishing.as_mut(),
+            key_control.as_mut(), clock_role.as_mut(), timer_receive.as_mut(), transmitting.as_mut(), publishing.as_mut(),
             completion.as_mut(), terminal_receive.as_mut()]).await
     };
     if let Err(error) = result {
@@ -159,7 +160,10 @@ async fn connected<'scope, const N: usize, const P: usize, const RX: usize, cons
     }
 
     let before_close = book_tx.snapshot();
-    let all_streams_acked = app.borrow().queued_chunks()? == 0;
+    let completed_streams = if config.side == Side::Client { state.completed_count() } else { state.bodies_finished() };
+    let all_streams_acked = app.borrow().queued_chunks()? == 0
+        && completed_streams == state.submitted_count()
+        && (config.side == Side::Client || state.completed_count() == completed_streams);
     // This constructor is reached only after every ordinary future completed,
     // including adapter cancellation, timer acknowledgement and key retirement.
     let closing = startup::retire(roles, OrdinaryRetired { scope },
@@ -179,8 +183,12 @@ async fn connected<'scope, const N: usize, const P: usize, const RX: usize, cons
     if !matches!(close_kind, super::CloseKind::Local { application: true, code: 0 } | super::CloseKind::Peer { code: 0 }) {
         return Err(Error::Application);
     }
+    if config.side == Side::Client && (!before_close.handshake_confirmed || !all_streams_acked
+        || completed_streams == 0 || !publication_state.close_completed()) {
+        return Err(Error::Incomplete);
+    }
     Ok(Report { confirmed: before_close.handshake_confirmed,
-        submitted_streams: state.submitted_count(), completed_streams: state.completed_count(),
+        submitted_streams: state.submitted_count(), completed_streams,
         all_streams_acked, close_completed: publication_state.close_completed(),
         received_bytes: before_close.received_bytes, sent_bytes: before_close.accepted_bytes })
 }

@@ -21,7 +21,7 @@ macro_rules! tx_phase{($name:ident,$b:literal)=>{pub struct $name;impl TransmitP
  type BatchEnd=g::Msg<{$b+25},u64>;type BatchSettled=g::Msg<{$b+26},u64>;type WireBoundary=g::Msg<{$b+27},u64>;type WireBoundarySeen=g::Msg<{$b+28},u64>;
 }};}
 tx_phase!(InitialTransmit,32);tx_phase!(HandshakeTransmit,64);tx_phase!(ApplicationTransmit,96);
-pub type WriteHandshake=g::Msg<61,u64>;pub type WriteApplication=g::Msg<93,u64>;pub type DrainAck=Emission<128,129,130,131>;pub type DrainProbe=Emission<132,133,134,135>;pub type RecoveryDrained=g::Msg<136,u64>;pub type TransmitComplete=g::Msg<137,u64>;pub type TransmitContinuation=g::Msg<138,u64>;pub type AdapterComplete=g::Msg<139,u64>;pub type AdapterRetired=g::Msg<140,u64>;pub type TimerExpired=g::Msg<141,u64>;pub type TimerTaken=g::Msg<142,u64>;pub type TimerRetired=g::Msg<143,u64>;pub type TimerAcknowledged=g::Msg<144,u64>;
+pub type WriteHandshake=g::Msg<61,u64>;pub type WriteApplication=g::Msg<93,u64>;pub type DrainAck=Emission<128,129,130,131>;pub type DrainProbe=Emission<132,133,134,135>;pub type HandshakeRecoveryTransferred=g::Msg<136,u64>;pub type TransmitComplete=g::Msg<137,u64>;pub type TransmitContinuation=g::Msg<138,u64>;pub type AdapterComplete=g::Msg<139,u64>;pub type AdapterRetired=g::Msg<140,u64>;pub type TimerExpired=g::Msg<141,u64>;pub type TimerTaken=g::Msg<142,u64>;pub type TimerRetired=g::Msg<143,u64>;pub type TimerAcknowledged=g::Msg<144,u64>;
 type RxWork<P>=g::Roll<g::Route<g::Seq<g::Send<TLS_RX,RX,<P as ReceivePhase>::Need>,g::Seq<g::Send<RX,TLS_RX,<P as ReceivePhase>::Input>,g::Seq<g::Resolve<g::Route<g::Send<TLS_RX,RX,<P as ReceivePhase>::Accepted>,g::Send<TLS_RX,RX,<P as ReceivePhase>::Rejected>>,CRYPTO_RESULT>,g::Send<RX,TLS_RX,<P as ReceivePhase>::Taken>>>>,g::Send<TLS_RX,RX,<P as ReceivePhase>::Boundary>>>;
 fn rx_work<P:ReceivePhase>()->g::Program<RxWork<P>>{g::route(g::seq(g::send::<TLS_RX,RX,P::Need>(),g::seq(g::send::<RX,TLS_RX,P::Input>(),g::seq(g::route(g::send::<TLS_RX,RX,P::Accepted>(),g::send::<TLS_RX,RX,P::Rejected>()).resolve::<CRYPTO_RESULT>(),g::send::<RX,TLS_RX,P::Taken>()))),g::send::<TLS_RX,RX,P::Boundary>()).roll()}
 type Publish<P>=g::Seq<g::Send<TX_WIRE,UDP,<P as Publication>::Datagram>,g::Seq<g::Resolve<g::Route<g::Send<UDP,TX_WIRE,<P as Publication>::Accepted>,g::Send<UDP,TX_WIRE,<P as Publication>::Rejected>>,ADAPTER_RESULT>,g::Send<TX_WIRE,UDP,<P as Publication>::Settled>>>;
@@ -55,7 +55,7 @@ pub type ReceiveFlow = g::Seq<RxWork<InitialReceive>,
     g::Seq<RxWork<HandshakeReceive>,
     g::Seq<g::Send<TLS_RX, RX, ReadApplication>, ReceiveTail>>>>;
 pub type DrainFlow = g::Roll<g::Route<Publish<DrainAck>,
-    g::Route<Publish<DrainProbe>, g::Send<TX_WIRE, UDP, RecoveryDrained>>>>;
+    g::Route<Publish<DrainProbe>, g::Send<TX_WIRE, UDP, HandshakeRecoveryTransferred>>>>;
 pub type CompleteFlow = g::Seq<g::Send<TX, TLS_TX, TransmitComplete>,
     g::Seq<g::Send<TLS_TX, TX, TransmitContinuation>,
     g::Seq<g::Send<TX_WIRE, UDP, AdapterComplete>, g::Send<UDP, TX_WIRE, AdapterRetired>>>>;
@@ -72,7 +72,7 @@ pub type Flow = g::Par<ReceiveFlow,
 
 pub fn choreography() -> g::Program<Flow> {
  let receive=g::seq(rx_work::<InitialReceive>(),g::seq(g::send::<TLS_RX,RX,ReadHandshake>(),g::seq(rx_work::<HandshakeReceive>(),g::seq(g::send::<TLS_RX,RX,ReadApplication>(),g::seq(rx_work::<FinishedReceive>(),g::seq(g::send::<RX,TLS_RX,ReceiveComplete>(),g::send::<TLS_RX,RX,ReceiveContinuation>()))))));
- let drain=g::route(publication::<DrainAck>(),g::route(publication::<DrainProbe>(),g::send::<TX_WIRE,UDP,RecoveryDrained>())).roll();
+ let drain=g::route(publication::<DrainAck>(),g::route(publication::<DrainProbe>(),g::send::<TX_WIRE,UDP,HandshakeRecoveryTransferred>())).roll();
  let complete=g::seq(g::send::<TX,TLS_TX,TransmitComplete>(),g::seq(g::send::<TLS_TX,TX,TransmitContinuation>(),g::seq(g::send::<TX_WIRE,UDP,AdapterComplete>(),g::send::<UDP,TX_WIRE,AdapterRetired>())));
  let transmit=g::seq(tx_work::<InitialTransmit>(),g::seq(g::send::<TLS_TX,TX,WriteHandshake>(),g::seq(tx_work::<HandshakeTransmit>(),g::seq(g::send::<TLS_TX,TX,WriteApplication>(),g::seq(tx_work::<ApplicationTransmit>(),g::seq(drain,complete))))));
  let timer=g::route(g::seq(g::send::<TIMER,TIMER_TX,TimerExpired>(),g::send::<TIMER_TX,TIMER,TimerTaken>()),g::seq(g::send::<TIMER,TIMER_TX,TimerRetired>(),g::send::<TIMER_TX,TIMER,TimerAcknowledged>())).roll();

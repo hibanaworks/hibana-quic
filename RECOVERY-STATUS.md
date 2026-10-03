@@ -20,3 +20,9 @@ Open correctness/integration work:
 - fresh build, allocation, authentication, cancellation, loss and actual Neqo/runner tests
 
 Numerical/TLS adapter bodies and the connected runner have now been reconstructed. They have not been compiled. Initial retirement role wiring and API reconciliation remain incomplete. Legacy endpoint tests/targets and dead role bridges need final migration/removal before validation.
+
+## Subsequent reconstruction, awaiting first fresh compilation
+
+The current working source now contains the finite Initial-retirement roles, retained Handshake recovery, one affine connected startup, parallel application roles and post-retirement close/drain. The primary host file mode invokes that connected global. Five real-TLS connection tests cover single/multiple transfers and actual authenticated confirmation/ACK loss. These are source-only test bodies, not passing results. Adapter rejection currently terminates the prefix after cancelling its reservation; retry semantics remain unqualified.
+
+The dedicated recovery compile diagnostic records interoperability as NOT_RUN. The standard runner path retains its existing checks and requires the diagnostic marker to be removed.
