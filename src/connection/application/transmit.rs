@@ -651,8 +651,10 @@ mod tests {
             let peer = Limits { max_data: 1024, max_streams_bidi: 1,
                 stream_data_bidi_local: 1024, stream_data_bidi_remote: 1024,
                 ..Limits::ZERO };
-            let local = Limits { max_data: 1024, stream_data_bidi_local: 1024,
-                stream_data_bidi_remote: 1024, ..Limits::ZERO };
+            // Receive credit is backed by this one CHUNK-sized slot. Peer
+            // send credit is independent and may legitimately be larger.
+            let local = Limits { max_data: CHUNK as u64, stream_data_bidi_local: CHUNK as u64,
+                stream_data_bidi_remote: CHUNK as u64, ..Limits::ZERO };
             let mut $streams = application_stream::StreamNumbers::new(
                 $scope, Role::Client, peer, local, &mut slots, &mut chunks,
                 &mut references).unwrap();

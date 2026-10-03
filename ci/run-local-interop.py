@@ -80,6 +80,10 @@ def main():
         images['hibana-quic'] = args.candidate_image
     image_ids = {name: output(['docker', 'image', 'inspect', '--format', '{{.Id}}', image])
                  for name, image in images.items()}
+    if args.mode != 'baseline':
+        built_source = output(['docker', 'image', 'inspect', '--format',
+            '{{index .Config.Labels "org.opencontainers.image.revision"}}', args.candidate_image])
+        assert built_source == source, 'candidate image source SHA differs from checkout'
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     attempt = work / ('attempt-' + stamp)
     attempt.mkdir()
@@ -160,16 +164,36 @@ def main():
             phase(f'client-{repetition}', 'hibana-quic', 'neqo', list(cases), repetition)
             phase(f'server-{repetition}', 'neqo', 'hibana-quic', list(cases), repetition)
     clean = not output(['git', '-C', str(runner), 'status', '--porcelain'])
+    target_cases = list(cases) if args.mode == 'matrix' else ['handshake', 'transfer']
+    repetitions = range(1, args.repetitions + 1) if args.mode == 'matrix' else [1]
+    cells = []
+    if args.mode != 'baseline':
+        for repetition in repetitions:
+            for direction, client, peer in [('client', 'hibana-quic', 'neqo'),
+                                             ('server', 'neqo', 'hibana-quic')]:
+                phase_name = f'{direction}-{repetition}' if args.mode == 'matrix' else f'pilot-{direction}'
+                record = next((r for r in records if r['phase'] == phase_name), None)
+                for case in target_cases:
+                    row = next((r for r in record['results'] if r['name'] == case), None) if record else None
+                    result = row['result'] if row else None
+                    cells.append(dict(direction=direction, client=client, server=peer,
+                        repetition=repetition, case=case, result=result,
+                        blocked_by=None if record else ('baseline' if not baseline_ok else 'pilot')))
+    counts = {status: sum(c['result'] == status for c in cells)
+              for status in ['succeeded', 'failed', 'unsupported', None]}
+    counts = dict(passed=counts['succeeded'], executed=counts['succeeded'] + counts['failed'],
+                  unsupported=counts['unsupported'], not_run=counts[None], total=len(cells))
+    full_passed = bool(cells) and all(c['result'] == 'succeeded' for c in cells)
     summary = dict(source_commit=source, runner_revision=pins['RUNNER_REVISION'],
         neqo_revision=pins['NEQO_REVISION'], hibana_revision=pins['HIBANA_REVISION'],
         image_ids=image_ids, simulator_image=args.sim_image, docker=server['Version'],
         docker_api=server['ApiVersion'], compose=compose, tshark=tshark,
         scope='hq-interop QUIC v1; 20 upstream cases; excludes http3 and v2',
         runner_source_unchanged=clean, baseline_passed=baseline_ok, pilot_passed=pilot_ok,
-        records=records)
+        full_selected_scope_passed=full_passed, counts=counts, cells=cells, records=records)
     save(attempt / 'summary.json', summary)
     print('Evidence: ' + str(attempt / 'summary.json'), flush=True)
-    return 0 if clean and baseline_ok and (args.mode == 'baseline' or pilot_ok) else 1
+    return 0 if clean and baseline_ok and (args.mode == 'baseline' or full_passed) else 1
 
 
 if __name__ == '__main__':
