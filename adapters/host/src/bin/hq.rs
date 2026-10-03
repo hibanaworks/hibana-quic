@@ -147,9 +147,36 @@ async fn admit_initial(socket: &HostSocket<'_>, first: &mut [u8]) -> Result<(Add
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => continue,
             Err(error) => return Err(format!("Initial admission: {error}")),
         };
-        if metadata.len < 1200 { continue; }
         let packet = PacketIter::new(&first[..metadata.len], 8, 8).ok()
             .and_then(|mut packets| packets.next()).and_then(std::result::Result::ok);
+        if let Some(packet) = &packet
+            && let Header::UnsupportedVersion { destination_id, source_id, .. } = packet.header
+            && destination_id.len() <= 20 && source_id.len() <= 20
+        {
+            // Stateless version selection precedes connection/key ownership.
+            // Unknown versions have a version-independent CID envelope; even
+            // a small probe may elicit VN (RFC 9000 section 6). Reverse CIDs,
+            // advertise only v1, and stay below the threefold response budget.
+            let mut reply = [0; 51];
+            reply[0] = 0x80 | (random::<1>()?[0] & 0x7f);
+            let mut end = 5;
+            reply[end] = source_id.len() as u8;
+            end += 1;
+            reply[end..end + source_id.len()].copy_from_slice(source_id);
+            end += source_id.len();
+            reply[end] = destination_id.len() as u8;
+            end += 1;
+            reply[end..end + destination_id.len()].copy_from_slice(destination_id);
+            end += destination_id.len();
+            reply[end..end + 4].copy_from_slice(&hibana_quic::packet::QUIC_V1.to_be_bytes());
+            end += 4;
+            if end <= metadata.len.saturating_mul(3) {
+                socket.send_to(&reply[..end], metadata.source, hibana_quic::ecn::Codepoint::NotEct).await
+                    .map_err(|error| format!("Version Negotiation: {error}"))?;
+            }
+            continue;
+        }
+        if metadata.len < 1200 { continue; }
         if let Some(packet) = packet
             && let Header::Long { kind: LongType::Initial, destination_id, source_id, token, .. } = packet.header
             && destination_id.len() >= 8 && token.is_empty()
@@ -209,6 +236,37 @@ fn main() -> ExitCode {
 mod admission_tests {
     use super::*;
     use std::{future::Future, task::{Context, Waker}, time::Duration};
+
+    #[test]
+    fn unknown_version_probe_gets_reversed_cids_and_v1_without_initial_admission() {
+        let reactor = HostReactor::new().unwrap();
+        let socket = reactor.register_udp(UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        // The simulator's WAIT version is deliberately not a v1 Initial.
+        let probe = b"\xc0WAIT\x04dest\x03src";
+        peer.send_to(probe, socket.local_addr().unwrap()).unwrap();
+        let mut first = vec![0; direct_bootstrap::DATAGRAM];
+        {
+            let mut admission = Box::pin(admit_initial(&socket, &mut first));
+            let mut context = Context::from_waker(Waker::noop());
+            assert!(admission.as_mut().poll(&mut context).is_pending());
+            assert!(admission.as_mut().poll(&mut context).is_pending());
+        }
+        let mut reply = [0; 64];
+        let (len, source) = peer.recv_from(&mut reply).unwrap();
+        assert_eq!(source, socket.local_addr().unwrap());
+        assert!(len <= 3 * probe.len());
+        let packet = PacketIter::new(&reply[..len], 8, 8).unwrap().next().unwrap().unwrap();
+        match packet.header {
+            Header::VersionNegotiation { destination_id, source_id, versions } => {
+                assert_eq!(destination_id, b"src");
+                assert_eq!(source_id, b"dest");
+                assert_eq!(versions.iter().collect::<Vec<_>>(), [hibana_quic::packet::QUIC_V1]);
+            }
+            other => panic!("unexpected version selection reply: {other:?}"),
+        }
+    }
 
     #[test]
     fn rejected_initials_yield_before_consuming_the_next_datagram() {

@@ -17,7 +17,7 @@
   "adapters/host/HQ.md": "db064498cff4896b06bb4f422598cc17fa86d39039e39e889c2f6f7ad1fc6510",
   "adapters/host/README.md": "0abdd2faf6a072d8a578542c00cd864dece9ce6ac953b86c6d4b8008c158fbf0",
   "adapters/host/src/async_io.rs": "fae6b762589eeb405b6f18b19a20c5d44d49563ef6ef7152dd750f2e5bfb4cde",
-  "adapters/host/src/bin/hq.rs": "9eab5efba6dc07a4de6570f80eddeee2d716a411256f3e20ef11435b790cc320",
+  "adapters/host/src/bin/hq.rs": "b5c6ef5ae09258e52de2b52a98bbf636e49871f77318119488a491c877a35861",
   "adapters/host/src/bin/support/application_storage.rs": "ae80cb34060af867ee849f037f2ec6c18da7db4e3cc2fed04366e918af92bc84",
   "adapters/host/src/bin/support/cli.rs": "01ce911467feefb36c78d312f4e9de01baea0b9f9d63330806b0c9ab6ff3cbf5",
   "adapters/host/src/bin/support/direct_bootstrap.rs": "aa2e47504ceb8bd159a4e2ba78415c8fd2876a8b25dc975b56a34f36c600305f",
