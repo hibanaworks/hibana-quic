@@ -1,0 +1,11 @@
+{
+  "source_commit": "c8a1809166c30d96aa8f3cc65d79ee9e05ba3f23",
+  "run_id": 37114351857,
+  "job_id": 111178139143,
+  "compiler": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "source_audit_files": 1610,
+  "core_library_and_tests_check": "PASSED",
+  "host_hq_and_tests_check": "PASSED",
+  "runtime_tests": "NOT_RUN",
+  "interop": "NOT_RUN"
+}

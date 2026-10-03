@@ -30,3 +30,5 @@ The dedicated recovery compile diagnostic records interoperability as NOT_RUN. T
 ## First reconstructed-source compiler result
 
 GitHub run 37113879862 checked source29569a5 using official pinned Rust1.95. Source audit passed; compilation failed on four library borrow/lifetime diagnostics and one test error-type inference site. See artifacts/reconstruction/compile-29569a5.json and its source-only compiler log. Runtime tests and interoperability remain NOT_RUN. Subsequent fixes require a fresh compiler run.
+
+Source c8a1809 passed both Rust1.95 cargo-check stages in run37114351857. The next diagnostic stage runs application_wire, connected_application and host hq runtime suites with unchanged assertions/default stack limits. Formal interoperability remains NOT_RUN until the recovery-diagnostics marker is removed.
