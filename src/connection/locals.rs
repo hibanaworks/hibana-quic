@@ -33,7 +33,7 @@ impl<'scope,const N:usize> ReceiveWire<'scope,'_,N>{
 }
 async fn receive_phase<'scope,Stage,const N:usize,const P:usize>(endpoint:&mut Endpoint<'_,{p::RX}>,io:&mut impl DatagramRx,slots:&Storage<'scope,'_,N,P>,config:Config<'_>,scope:&'scope ApplicationKeyScope,wire:&mut ReceiveWire<'scope,'_,N>,book:&mut recovery::Rx<'_,'scope,N>,clock:&impl Clock,id:&mut u64)->Result<(),Error> where Stage:p::ReceivePhase{
  loop{let route=endpoint.offer().await?;if route.label()==Stage::Boundary::LOGICAL_LABEL{check(route.recv::<Stage::Boundary>().await?,*id)?;return Ok(());}if route.label()!=Stage::Need::LOGICAL_LABEL{return Err(Error::UnexpectedLabel(route.label()));}check(route.recv::<Stage::Need>().await?,*id)?;
-  let(input,index,count)=loop{if let Some(input)=wire.ready(scope)?{break input;}wire.packet(io,slots,config,book,clock,false).await?;};
+  let(input,index,count)=loop{if let Some(input)=wire.ready(scope)?{break input;}wire.packet(io,slots,config,book,clock,false).await?;crate::runtime::yield_now().await;};
   slots.input.put(input)?;endpoint.send::<Stage::Input>(id).await?;let result=endpoint.offer().await?;
   match result.label(){label if label==Stage::Accepted::LOGICAL_LABEL=>check(result.recv::<Stage::Accepted>().await?,*id)?,label if label==Stage::Rejected::LOGICAL_LABEL=>{check(result.recv::<Stage::Rejected>().await?,*id)?;endpoint.send::<Stage::Taken>(id).await?;return Err(slots.failure.get().unwrap_or(crate::tls::Error::Handshake).into());},label=>return Err(Error::UnexpectedLabel(label))}
   wire.reassembly[index].consume(count)?;endpoint.send::<Stage::Taken>(id).await?;*id=id.checked_add(1).ok_or(Error::Binding)?;
@@ -46,11 +46,11 @@ pub(super) async fn receive<'scope,const N:usize,const P:usize>(endpoint:&mut En
  receive_phase::<p::HandshakeReceive,N,P>(endpoint,io,slots,config,scope,&mut wire,book,clock,&mut id).await?;check(endpoint.recv::<p::ReadApplication>().await?,id)?;let application=slots.read_application.take()?;
  receive_phase::<p::FinishedReceive,N,P>(endpoint,io,slots,config,scope,&mut wire,book,clock,&mut id).await?;let finished=slots.finished.take()?;let peer=*slots.peer.borrow();
  if !finished.receipt().authenticates_peer_parameters(finished.parameters()){return Err(Error::Binding);}let parameters=Parameters::parse(finished.parameters(),if config.side==Side::Client{Peer::Server}else{Peer::Client},&mut[0;64]).map_err(|_|Error::Binding)?;parameters.verify_connection_ids(peer.bytes(),if config.side==Side::Client{Some(config.original_destination_id)}else{None},None).map_err(|_|Error::Binding)?;
- while wire.packet(io,slots,config,book,clock,true).await?{}
+ while wire.packet(io,slots,config,book,clock,true).await?{crate::runtime::yield_now().await;}
  endpoint.send::<p::ReceiveComplete>(&id).await?;check(endpoint.recv::<p::ReceiveContinuation>().await?,id)?;
- // Parent added peer to ReceiveContinuation immediately before replacement;
- // the initializer fix was the command which never ran. Keep recovery explicit.
- Ok(ReceiveContinuation{initial:wire.initial,handshake:wire.handshake.ok_or(Error::Binding)?,application,integrity:wire.integrity,finished,largest_received:wire.largest})
+ // Recovery reconciliation: the last pre-loss peer field is now initialized.
+ // This and the bounded packet-loop yields above require fresh validation.
+ Ok(ReceiveContinuation{initial:wire.initial,handshake:wire.handshake.ok_or(Error::Binding)?,application,integrity:wire.integrity,finished,largest_received:wire.largest,peer})
 }
 fn limited(error:&recovery::Error)->bool{matches!(error,recovery::Error::CongestionLimited|recovery::Error::Accounting(crate::accounting::AccountingError::AmplificationLimited))}
 #[allow(clippy::too_many_arguments)]
