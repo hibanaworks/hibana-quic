@@ -1,0 +1,15 @@
+{
+  "recovery_pass": "2026-10-03 after executor reset",
+  "rust_checks": {
+    "status": "NOT_RUN",
+    "reason": "Rust binaries unavailable; parent prohibited rustup and compilation during this recovery pass. Earlier binaries/logs and passes do not validate this reconstructed tree."
+  },
+  "python_checks": {
+    "command": "python3 -m unittest tests/test_target_budget.py tests/test_async_storage_budget.py",
+    "status": "passed",
+    "count": 9,
+    "log": "historical-budget-reader-tests.log"
+  },
+  "static_audit": "source-audit.json",
+  "removed_tests": "removed-files-and-tests.json; removal is never counted as a pass"
+}

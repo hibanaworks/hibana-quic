@@ -1,0 +1,58 @@
+{
+  "source_revision": "a9371bea437bbc1f4303ceeb3fc833f605efe730",
+  "performance_only": true,
+  "external_correctness_fix": false,
+  "residual_early_arms": [
+    "OpenEarly",
+    "EarlyHeaderMask",
+    "TakeEarlyReplayClaim",
+    "DiscardEarly"
+  ],
+  "still_excluded": [
+    "SealEarly",
+    "Handshake crypto",
+    "Repeated ConfirmHandshake"
+  ],
+  "graph_enforces": "Five ordered consuming TLS phase capabilities with explicit phase admission; residual early requests remain admitted after Handshake retirement.",
+  "provider_enforces": "Exclusive Provider owns actual retained server early key; DiscardEarly destroys it, subsequent early open/header mask return KeysUnavailable. Graph does not seal this independent key lifetime.",
+  "prefix_runtime": {
+    "command": "cargo test --locked --test tls_initial_phase_prefix -- --nocapture",
+    "status": "passed",
+    "passed": 5,
+    "failed": 0,
+    "elapsed_seconds": 34.56,
+    "max_child_rss_kib": 789724,
+    "zero_allocation_assertions": true,
+    "log": "prefix-runtime.log"
+  },
+  "full_graph_integrity": {
+    "command": "cargo test --locked --test tls_integrity_loan -- --nocapture",
+    "status": "memory_guard_stopped_const_lowering",
+    "tests_ran": false,
+    "elapsed_seconds": 52.95,
+    "peak_process_group_rss_kib": 2637548,
+    "guard_exit": 124,
+    "cargo_signal": "SIGTERM",
+    "log": "full-graph-integrity.log"
+  },
+  "application_early_fixture": {
+    "path": "src/roles/tls_owner/application_early_tests.rs",
+    "status": "pending_source_only_not_typechecked_or_run",
+    "scope": "Direct real resumed Provider setup, then unchanged Application-local functions. No full-root phase-transition qualification."
+  },
+  "environment": {
+    "rust": "1.95.0",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "RUSTFLAGS": "unset",
+    "shared_heavy_lock": true
+  },
+  "graph_size": {
+    "sends": 333,
+    "routes": 140,
+    "rolls": 5
+  },
+  "full_runtime_qualified": false,
+  "prior_checkpoint": "artifacts/tls-phase-production"
+}

@@ -74,7 +74,7 @@ impl<'scope> KeyOwner<'scope> {
         Ok(Self {
             scope,
             owned: RefCell::new(Owned {
-                initial: Some(continuation.initial),
+                initial: continuation.initial,
                 handshake: Some(continuation.handshake),
                 application: Some(continuation.application),
                 retired: false,
@@ -94,6 +94,41 @@ impl<'scope> KeyOwner<'scope> {
     pub(crate) fn phase(&self) -> Result<bool, Error> {
         let owned = self.owned.try_borrow().map_err(|_| Error::Binding)?;
         Ok(owned.application.as_ref().ok_or(Error::Retired)?.phase())
+    }
+
+    /// Only short synchronous inspection; no key borrow escapes this call.
+    pub(crate) fn available_levels(&self) -> Result<[bool; 3], Error> {
+        let owned = self.owned.try_borrow().map_err(|_| Error::Binding)?;
+        Ok([owned.initial.is_some(), owned.handshake.is_some(),
+            owned.application.is_some() && !owned.retired])
+    }
+
+    /// Retained Handshake CRYPTO/ACK packets are sealed while borrowing only
+    /// their actual key. Application key control remains independently usable.
+    pub(crate) fn seal_long<'book, const N: usize>(
+        &self,
+        level: crate::tls::Level,
+        plain: connection::wire::PlainPacket<N>,
+        reservation: Reservation<'book>,
+        acknowledgment: Option<connection::recovery::AckSnapshot<'book>>,
+    ) -> Result<connection::wire::Datagram<'book, N>, (connection::Error, Reservation<'book>)> {
+        let Ok(mut owned) = self.owned.try_borrow_mut() else {
+            return Err((connection::Error::Binding, reservation));
+        };
+        if owned.retired || !core::ptr::eq(self.scope, reservation.scope()) {
+            return Err((connection::Error::Binding, reservation));
+        }
+        match level {
+            crate::tls::Level::Initial => match owned.initial.as_mut() {
+                Some(key) => plain.seal_initial(key, reservation, acknowledgment),
+                None => Err((connection::Error::UnsupportedLevel, reservation)),
+            },
+            crate::tls::Level::Handshake => match owned.handshake.as_mut() {
+                Some(key) => plain.seal_handshake(key, reservation, acknowledgment),
+                None => Err((connection::Error::UnsupportedLevel, reservation)),
+            },
+            crate::tls::Level::OneRtt => Err((connection::Error::UnsupportedLevel, reservation)),
+        }
     }
 
     pub(crate) fn seal<'book, const N: usize>(

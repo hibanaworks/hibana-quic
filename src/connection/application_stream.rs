@@ -332,6 +332,40 @@ impl Transmission<'_> {
 }
 
 impl<'book, const RX: usize, const CHUNK: usize> Tx<'book, '_, '_, RX, CHUNK> {
+    /// Cancel a reservation which TX could not seal/transfer to the adapter.
+    /// Accepted packets can be committed only through the publication facet.
+    pub(super) fn cancel_transmission(&mut self, transmission: Transmission<'_>) -> Result<(), Error> {
+        Publication { core: self.core }.cancel(transmission)
+    }
+
+    // Recovery-driven arithmetic is also available to the transmit facet.
+    // It never grants permission to authenticate or apply peer frames.
+    pub(super) fn lost(&mut self, packet_number: u64) -> Result<(), Error> {
+        let mut n = self.core.numbers.try_borrow_mut().map_err(|_| Error::Borrowed)?;
+        n.queue.on_packet_lost(packet_number);
+        for index in 0..CONTROL_CAPACITY {
+            let reference = n.controls[index];
+            if reference.packet == packet_number && reference.state == ReferenceState::Sent {
+                n.controls[index].state = ReferenceState::Lost;
+                n.retry_control(reference.contents);
+            }
+        }
+        Ok(())
+    }
+
+    /// Only call when Recovery has explicitly stopped retaining this lost PN.
+    pub(super) fn forget_lost(&mut self, packet_number: u64) -> Result<(), Error> {
+        let mut n = self.core.numbers.try_borrow_mut().map_err(|_| Error::Borrowed)?;
+        let Numbers { table, queue, .. } = &mut *n;
+        queue.forget_lost_packet(table, packet_number)?;
+        for r in &mut n.controls {
+            if r.packet == packet_number && r.state == ReferenceState::Lost {
+                r.state = ReferenceState::Free;
+            }
+        }
+        Ok(())
+    }
+
     /// Prefer a pending STREAM chunk; on a PTO an outstanding range may be
     /// copied under a fresh packet number without declaring the old copy lost.
     /// Dirty control limits/reset are encoded before the chunk. A caller may

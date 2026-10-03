@@ -44,7 +44,7 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
 ) -> Result<keys::KeysQuiesced<'owner, 'scope>, Error> {
     let scope = material.application.scope();
     if !core::ptr::eq(scope, transcript.scope())
-        || !core::ptr::eq(scope, material.initial.scope())
+        || material.initial.as_ref().is_some_and(|key| !core::ptr::eq(scope, key.scope()))
         || !core::ptr::eq(scope, material.handshake.scope())
         || crypto.consumed() != transcript.received_offset(Level::OneRtt)
     {
@@ -160,7 +160,7 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
     receive.send::<p::ReceiveRetire>(&0).await?;
     check(receive.recv::<p::ReceiveRetired>().await?, 0)?;
     material.application.discard();
-    material.initial.discard();
+    if let Some(mut initial) = material.initial.take() { initial.discard(); }
     material.handshake.discard();
     Ok(keys.retire(rx_keys).await?)
 }
@@ -223,11 +223,7 @@ async fn application<'scope, const N: usize, const RX: usize, const CHUNK: usize
     if outcome.duplicate {
         return Ok(None);
     }
-    for frame in FrameIter::new(
-        opened.plaintext(),
-        packet::EncryptionLevel::OneRtt,
-        ParseLimits::default(),
-    )? {
+    for frame in received_frames(opened.plaintext(), packet::EncryptionLevel::OneRtt)? {
         let frame = frame?;
         match frame {
             Frame::Stream { .. }
@@ -320,7 +316,12 @@ fn old<const N: usize>(
     if packet.bytes.len() > N {
         return Ok(None);
     }
-    let key = if index == 0 { &material.initial } else { &material.handshake };
+    let key = if index == 0 {
+        // Initial retirement has its own finite projected lane in the prefix.
+        // Once that lane consumes the key, late Initial packets are discarded.
+        let Some(initial) = material.initial.as_ref() else { return Ok(None); };
+        initial
+    } else { &material.handshake };
     let mut opened = Zeroizing::new([0u8; N]);
     opened[..packet.bytes.len()].copy_from_slice(packet.bytes);
     let bytes = &mut opened[..packet.bytes.len()];
@@ -357,7 +358,7 @@ fn old<const N: usize>(
         Err(error) => return Err(error.into()),
     };
     if !outcome.duplicate {
-        for frame in FrameIter::new(plaintext, encryption, ParseLimits::default())? {
+        for frame in received_frames(plaintext, encryption)? {
             match frame? {
                 Frame::Crypto { offset, data } => {
                     let end = offset.checked_add(data.len() as u64).ok_or(Error::Capacity)?;
@@ -376,6 +377,17 @@ fn old<const N: usize>(
     Ok(None)
 }
 
+/// Keep the effect pass bounded identically to recovery's complete preflight.
+/// The caller retains the exact authenticated plaintext throughout both passes;
+/// no copied packet number or frame alone grants application delivery.
+fn received_frames(plaintext: &[u8], level: packet::EncryptionLevel) -> Result<FrameIter<'_>, Error> {
+    Ok(FrameIter::new(plaintext, level, ParseLimits {
+        max_bytes: plaintext.len(),
+        max_frames: 256,
+        max_ack_ranges: recovery::ACK_CAPACITY,
+    })?)
+}
+
 async fn confirm<'scope, const N: usize>(
     endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
     keys: &mut keys::RxControl<'_, '_, 'scope>,
@@ -390,12 +402,16 @@ async fn confirm<'scope, const N: usize>(
             Ok(_) => break,
             Err(recovery::Error::Accounting(AccountingError::OutstandingPackets)) => {
                 control.wait(3, revision).await;
+                // A concurrent terminal permission makes wait immediately
+                // ready. The old-space adapter still has to settle its
+                // cancellation before recovery and key retirement can finish.
+                crate::runtime::yield_now().await;
             }
             Err(error) => return Err(error.into()),
         }
     }
     keys.confirm(endpoint, ScopedHandshakeConfirmation::from_connection(confirmation)).await?;
-    material.initial.discard();
+    if let Some(mut initial) = material.initial.take() { initial.discard(); }
     material.handshake.discard();
     control.changed()?;
     Ok(())
@@ -407,7 +423,9 @@ async fn notify_ready<const RX: usize, const CHUNK: usize>(
     state: &io::State<CHUNK>,
     app: &RefCell<application_stream::App<'_, '_, '_, RX, CHUNK>>,
 ) -> Result<(), Error> {
-    while !control.stopping() {
+    // A sink error asks the independent completion lane to close. Do not keep
+    // redispatching that same ready stream while that lane is being scheduled.
+    while !control.stopping() && !control.failed() {
         let ready = app.try_borrow().map_err(|_| Error::Binding)?.ready_streams()?;
         let Some(stream) = ready.into_iter().flatten().find(|stream| !state.is_complete(stream.id())) else {
             break;

@@ -1,0 +1,502 @@
+[
+  {
+    "file": "adapters/host/tests/path_kernels.rs",
+    "lines": 180,
+    "source_sha256": "ab8eb15debfdef3a5a7e21daa3281943b52a7320c48ec40688671fd4355984d6",
+    "test_names": [
+      "path_cid_and_typed_outcomes_allocate_zero_on_exercised_success_and_rejection"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed",
+    "migrated_checks": {
+      "path_cid_and_typed_outcomes_allocate_zero_on_exercised_success_and_rejection": "tests/path_cid_no_alloc.rs::path_cid_kernels_allocate_zero_on_exercised_success_and_rejection (kernel assertions only; Driver ticket assertions removed)"
+    }
+  },
+  {
+    "file": "adapters/host/tests/path_streams.rs",
+    "lines": 653,
+    "source_sha256": "f63d19d3717c5fb29b7aa6a76e572ce564df4578406dd8c1cde3f055c41a82cd",
+    "test_names": [
+      "five_mebibytes_survive_port_and_ip_rebinding_with_lost_old_flight_without_allocating",
+      "bounded_transport_bad_ca_fails_terminally_and_drops_without_allocating"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "adapters/host/tests/path_wire.rs",
+    "lines": 844,
+    "source_sha256": "5d30ef77fa5a98c3979a89c2ccb23d555224856b8e4aee2a48973f4855e1e8ec",
+    "test_names": [
+      "bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero",
+      "verified_preferred_address_uses_actual_cid_advertisement_and_path_validation"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "examples/async_storage_budget.rs",
+    "lines": 171,
+    "source_sha256": "77f991bb7a08b9c12bc5371ee3eac503112bd6034699e7fe6e01bc22e10c3062",
+    "test_names": [],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "examples/thumb_budget.rs",
+    "lines": 63,
+    "source_sha256": "85fe16d842bec00c9b851171800feb57461e993ceac19985a9e15e703be404d3",
+    "test_names": [],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/src/bin/bounded-handshake.rs",
+    "lines": 665,
+    "source_sha256": "4abc08c8a4b29427cf9b8c69e287146ab7d21e58c33509dabbfdabd18a7a6831",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "reference-tls/src/bin/handshake.rs",
+    "lines": 752,
+    "source_sha256": "5570e28470984c11eedde762e6c5a2365ac504928c36e8f9b09e823b2a0ebdb1",
+    "test_names": [
+      "verified_client_and_server_complete_over_real_udp",
+      "wrong_hostname_fails_and_never_reports_success",
+      "deadline_expiration_is_failure",
+      "cli_requires_explicit_roots_and_rejects_unsupported_transfer_flags"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "reference-tls/src/bin/hq.rs",
+    "lines": 4581,
+    "source_sha256": "afbe8996bbc08d11723fc46c351680baeec702ee2def4ce64282b37dbb23a656",
+    "test_names": [
+      "progress_diagnostics_are_opt_in_and_activity_rate_bounded",
+      "host_root_future_storage_is_measured_without_constructing_it",
+      "overdue_soft_send_deadline_does_not_prevent_ready_udp",
+      "soft_send_wake_cancels_only_a_pending_operation",
+      "hard_send_expiry_wins_over_ready_and_pending_operations",
+      "expired_async_send_deadline_never_attempts_submission",
+      "readable_udp_progresses_even_when_soft_transport_deadline_is_overdue",
+      "expired_hard_deadline_does_not_admit_or_consume_readable_udp",
+      "async_path_selection_retains_actual_buffer_and_cancels_other_receive",
+      "completed_server_close_requires_explicit_goal_and_no_live_owners",
+      "version_negotiation_routes_retired_aliases_before_listener_and_uses_valid_capacity",
+      "cipher_policy_cli_is_strict_and_preserves_defaults_on_both_roles",
+      "resumption_cli_is_bounded_and_requires_two_distinct_requests",
+      "resumption_server_policy_and_generation_bounds_are_explicit",
+      "first_connection_has_exactly_first_file_and_second_has_all_remaining",
+      "key_update_threshold_and_retry_errors_are_explicit",
+      "local_key_rotation_alone_cannot_satisfy_update_mode",
+      "path_decoder_rejects_traversal_separators_and_injection",
+      "get_parser_requires_method_line_end_and_no_extra_headers",
+      "url_authority_is_bound_to_verified_name_and_port",
+      "symlink_parent_cannot_escape_server_or_download_root",
+      "final_symlink_is_never_followed_or_overwritten",
+      "held_root_descriptor_survives_path_replacement_without_escape",
+      "complete_download_publishes_only_at_fin_without_overwrite",
+      "failed_download_removes_staging_and_racing_destination_is_preserved",
+      "cli_rejects_missing_roots_unknown_modes_and_duplicate_downloads",
+      "named_pipe_cannot_block_the_server_before_regular_file_check",
+      "retry_dispatcher_roundtrip_retransmits_before_admission_and_rejects_fresh_replay",
+      "retry_dispatcher_rejects_corruption_expiry_address_and_cid_changes_without_retry",
+      "retry_dispatcher_small_and_malformed_datagrams_never_issue_tokens",
+      "server_retry_parameters_bind_original_initial_and_retry_ids",
+      "retry_cli_is_unary_server_only_with_explicit_lifetime",
+      "preferred_address_cli_rejects_unknown_family_wildcard_and_zero_port",
+      "preferred_parameter_roundtrips_exact_address_cid_and_token",
+      "early_cli_requires_explicit_replay_policy_two_connections_and_independent_freshness",
+      "early_profile_bounds_request_credit_without_changing_normal_profile",
+      "early_service_reports_actual_retirement_unused_cancellation_and_absence",
+      "owned_stream_backpressure_does_not_hide_service_failure",
+      "early_success_requires_actual_output_or_admission_and_finished_acceptance"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "reference-tls/src/bin/support/connection_roles.rs",
+    "lines": 476,
+    "source_sha256": "3655c7c63e7764e51b2b21de5f814e7501002835541c276e92efb0ea5bfd658b",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "reference-tls/src/bin/support/handshake_io.rs",
+    "lines": 52,
+    "source_sha256": "ef69952dab4d3779138de20711ca564f749af29fda245359259ff768dc3231ab",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "reference-tls/src/bin/support/host_udp.rs",
+    "lines": 336,
+    "source_sha256": "1105286ec924613e98a05422774a54716ae559a5e3aca57eb6428e63d91c9139",
+    "test_names": [
+      "whole_real_datagram_records_actual_acceptance_and_source",
+      "preferred_path_uses_the_actual_preferred_socket",
+      "socket_errors_are_retained_and_never_become_acceptance",
+      "missing_preferred_socket_is_an_explicit_failure",
+      "hard_expiry_prevents_even_ready_udp",
+      "soft_wake_rejects_only_an_actually_pending_operation"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "reference-tls/src/bin/support/initial_roles.rs",
+    "lines": 246,
+    "source_sha256": "c9f5eefa907a5a7d63334af56be265cbb5f1569bc8e577af03b8f80de6a8b23a",
+    "test_names": [
+      "real_bootstrap_uses_correct_directions_and_retires_without_udp"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/async_bounded_wire.rs",
+    "lines": 764,
+    "source_sha256": "1cd7a3aa6f6fd69a7ea6a931d188575030534ebd2df2d47cfd924e720ad8eb56",
+    "test_names": [
+      "bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero",
+      "real_trace_covers_authenticated_packets_keys_and_rejects_phantom_sends",
+      "trace_capacity_loss_is_sticky_and_never_changes_transport_outcome"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/bounded_streams.rs",
+    "lines": 532,
+    "source_sha256": "802604a010344c59de1d709fc1587cfa461458ad20a5f1080a7b59ac3ceb58f6",
+    "test_names": [
+      "full_bounded_five_mebibyte_stream_loss_corruption_key_updates_and_retirement_allocate_zero",
+      "bounded_transport_bad_ca_fails_terminally_and_drops_without_allocating"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/bounded_wire.rs",
+    "lines": 559,
+    "source_sha256": "6a8d2aa94b7d23d07a97083a5efd343260db328dbdd3e96165adb4042b90b3ca",
+    "test_names": [
+      "bounded_tls_quic_wire_hibana_corruption_loss_recovery_and_1rtt_allocate_zero",
+      "real_trace_covers_authenticated_packets_keys_and_rejects_phantom_sends",
+      "trace_capacity_loss_is_sticky_and_never_changes_transport_outcome"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/connection_bootstrap.rs",
+    "lines": 160,
+    "source_sha256": "0a03c8197e635f851211d4bab9d1c7f7f150a7b55f51b57fcf2b77100ca16416",
+    "test_names": [
+      "ordinary_bootstrap_connects_actual_owners_and_retires",
+      "optional_unactivated_early_is_explicit_resource_cancellation"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/early_wire.rs",
+    "lines": 1914,
+    "source_sha256": "60e98585906dd4270b86e97ac41431784c6b4c305d47d2655aff7211efc1aab7",
+    "test_names": [
+      "real_early_wire_is_quarantined_or_requeued_with_shared_pn_and_zero_allocation",
+      "sparse_early_quarantine_yields_after128_ranges_and_drains_without_network",
+      "terminal_and_closing_endpoints_invalidate_early_handles_and_enqueue",
+      "idle_version_negotiation_and_peer_close_retire_pending_early_intent",
+      "empty_configured_early_journal_closes_after_finished_without_stream_zero_conflict",
+      "rejecting_ee_preserves_a_pending_initial_adapter_callback",
+      "deferred_controls_and_reset_are_held_until_finished_with_original_credit",
+      "deferred_capacity_drop_preserves_stream_bytes_and_same_packet_can_be_retried_after_finished",
+      "early_control_remembered_limit_direction_and_final_size_violations_are_rejected",
+      "only_authenticated_accepted_early_close_enters_draining_without_finished_or_delivery",
+      "changed_fresh_limits_reject_old_early_control_and_fall_back_to_full_authentication",
+      "valid_early_packet_over_frame_budget_is_dropped_without_retirement_or_ack",
+      "legal_credit_blocked_and_stop_controls_use_finished_authority_and_real_reset_output",
+      "managed_early_new_cid_and_challenge_release_after_finished_on_original_path",
+      "managed_early_cid_admission_counts_held_ids_and_rejects_conflicts_before_stream_effects",
+      "managed_early_cid_retirement_floor_selects_a_real_replacement_destination",
+      "managed_early_retire_checks_advertisement_and_retains_original_packet_dcid"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/handshake_wire.rs",
+    "lines": 792,
+    "source_sha256": "19947033bc4a06b884cb1d1439bab6f9cfdf39e70c3da9586d16f186566d1c70",
+    "test_names": [
+      "real_protected_quic_handshake_in_both_roles",
+      "corrupt_and_oversized_unauthenticated_input_does_not_retire",
+      "cancelled_adapter_submission_repacketizes_tls_under_new_pn",
+      "rejected_sends_reuse_bounded_history_without_reusing_pn",
+      "ack_snapshot_preserves_new_out_of_order_receive",
+      "duplicate_eliciting_packet_rearms_ack",
+      "crypto_failure_after_reservation_retires_without_ghost_success",
+      "temporarily_unavailable_receive_keys_discard_without_retirement",
+      "lost_initial_is_repacketized_on_pto_without_plaintext_or_pn_reuse",
+      "ack_of_padding_only_packet_never_creates_rtt_sample",
+      "zero_length_peer_connection_ids_use_standard_wire_and_verified_parameters",
+      "first_retry_after_processed_server_initial_is_ignored",
+      "client_initial_dcid_requires_eight_bytes",
+      "authenticated_zero_frame_payload_is_protocol_violation",
+      "adapter_descriptor_is_bound_to_connection_generation",
+      "protected_close_drains_without_reply_and_retires_at_deadline",
+      "close_rejection_uses_fresh_pn_and_expired_output_cannot_submit",
+      "early_server_close_uses_lower_level_fallback_and_hides_application_reason"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/idle_wire.rs",
+    "lines": 564,
+    "source_sha256": "4334a2aff9ee06627cabbb62677247fdcbdaf3b45f6b0992456817be8ba6e68d",
+    "test_names": [
+      "idle_negotiation_uses_authenticated_nonzero_minimum_without_allocations",
+      "idle_activity_requires_valid_receive_or_first_actual_eliciting_send",
+      "idle_expiry_silently_invalidates_prepared_output_and_discards_keys",
+      "queued_idle_timers_reject_foreign_and_superseded_descriptors_without_clock_effects",
+      "idle_setup_freezes_before_io_and_closing_uses_its_own_retention",
+      "transport_pending_stream_output_cannot_pin_an_idle_connection"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/retry_wire.rs",
+    "lines": 635,
+    "source_sha256": "7d456e0710a79e4ead06c49e295be3fab38e281367e5aab17d7f28db582a5c47",
+    "test_names": [
+      "retry_full_authenticated_handshake_allocates_zero",
+      "retry_waits_for_accepted_adapter_ownership",
+      "retry_waits_for_cancelled_adapter_ownership",
+      "retry_twenty_byte_cids_changed_initial_scid",
+      "retry_missing_authenticated_retry_scid_parameter_fails",
+      "retry_wrong_authenticated_retry_scid_fails",
+      "retry_wrong_authenticated_original_dcid_fails",
+      "max_token_cids_crypto_defer_ack_without_truncating"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/streams_wire.rs",
+    "lines": 577,
+    "source_sha256": "dd5ba5d942cf5644c62a52887f73a7267c3e7aa2d8e9112f21780ada9176e4d5",
+    "test_names": [
+      "hq_style_request_and_five_mebibyte_encrypted_response",
+      "rejected_application_output_uses_fresh_packet_number_and_keeps_bytes",
+      "lost_stream_packet_retransmits_on_pto_and_duplicates_do_not_redeliver",
+      "corrupted_one_rtt_never_reaches_stream_owner",
+      "stop_sending_resets_only_target_direction_and_reliably_reports_final_size",
+      "nineteen_ninety_nine_encrypted_streams_recycle_live_slots",
+      "lost_max_stream_data_is_reliably_repeated_by_application_pto",
+      "packet_threshold_requeues_exact_lost_chunk_despite_other_pending_controls",
+      "time_threshold_requeues_exact_lost_chunk_despite_other_pending_controls"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/support/async_initial_pair.rs",
+    "lines": 290,
+    "source_sha256": "b33b50797884301d07c7f6e8d1c139f6b6405affed8351f2cef6a240d5cc566d",
+    "test_names": [],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "reference-tls/tests/version_negotiation_wire.rs",
+    "lines": 579,
+    "source_sha256": "909aab09e4c07052852695268439fb7e569da2c89ea2e5e74a457b95ac5b603f",
+    "test_names": [
+      "vn_abandons_only_after_initial_acceptance_and_never_restarts_or_authenticates",
+      "vn_containing_v1_wrong_cids_or_truncated_versions_cannot_derail_real_handshake",
+      "authenticated_initial_closes_vn_window_before_tls_handshake_finishes",
+      "corrupt_initial_cannot_count_as_successful_peer_processing",
+      "valid_retry_closes_vn_window_without_claiming_authenticated_tls",
+      "server_ignores_vn_without_response_or_peer_authentication",
+      "listener_real_entropy_bounded_responses_and_failures_allocate_zero"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "src/driver/early.rs",
+    "lines": 899,
+    "source_sha256": "0aa9594b05e042c2b3aa41b445f3e7f9816ba1b45408fff99cb6631db6c56670",
+    "test_names": [
+      "early_open_and_quarantine_authority_are_distinct_and_single_consumption_checked",
+      "actual_finished_gate_and_quarantine_revision_reject_forbidden_release",
+      "retired_early_tickets_cannot_complete_new_connection_with_same_local_ids",
+      "actual_open_receipt_requires_matching_live_replay_claim_generation",
+      "client_intent_import_requires_finished_and_completion_does_not_fake_success",
+      "deferred_control_authority_is_finished_gated_and_cannot_repeat_or_overlap",
+      "authenticated_early_peer_close_has_terminal_authority_before_finished"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/driver/path.rs",
+    "lines": 953,
+    "source_sha256": "3273e4c94e709abc9b1c710470c4e9f57f59c458e3909f10fee7e4492e061292",
+    "test_names": [
+      "timer_path_grants_are_exact_single_use_and_cannot_be_superseded_mid_effect",
+      "complete_service_graph_supports_timer_as_the_first_action",
+      "path_and_cid_effects_require_exact_live_ordinary_receive_and_exclude_other_effects",
+      "accepted_path_has_distinct_single_use_advertisement_authority_without_address_validation",
+      "rejected_send_cannot_mint_acceptance_or_reuse_a_previous_accepted_ticket",
+      "stale_path_and_cid_generations_cannot_bind_current_transmit",
+      "path_effect_and_timer_progress_do_not_authorize_early_or_completed_receives"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/driver/test_support.rs",
+    "lines": 452,
+    "source_sha256": "80f0dcedc4de63096f1598c27109fa37ac7491458dfd6db17cb1706db8cebab2",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/driver.rs",
+    "lines": 973,
+    "source_sha256": "c0b35f1da8263153626b0e4fd4f03e39702805fc12ab6fcff9cf1a364b76c1b2",
+    "test_names": [
+      "runtime_driver_progresses_independently_and_rejects_stale_completions",
+      "retired_and_wrong_generation_tickets_cannot_advance_runtime",
+      "finite_descriptor_namespace_exhaustion_is_terminal_not_wraparound",
+      "insufficient_carrier_payload_capacity_fails_closed_without_ticket",
+      "unexpected_pending_after_carrier_acceptance_retires_without_ghost_success",
+      "only_matching_generation_and_ordinary_actor_receipts_admit_receive",
+      "ack_and_delivery_require_live_authenticated_receive_and_exact_effect_ticket",
+      "complete_service_profile_fits_declared_slab_ports_and_message_budget"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/handshake_endpoint/early.rs",
+    "lines": 489,
+    "source_sha256": "06a8c0d487e2e620a2ac7d9e50d58e2611911f818480fc7bea7df35981af27dd",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/handshake_endpoint/initial.rs",
+    "lines": 314,
+    "source_sha256": "b00affc6a32f786988446efcc272fdfe1a3fef9d00c92c4f76bf113d596c0188",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/handshake_endpoint/path.rs",
+    "lines": 536,
+    "source_sha256": "c9faeb4c1ddd95b77c61c1430c96a55da44bd389dc7141a9d52bde0fb7b81bf8",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/handshake_endpoint/recovery_actor.rs",
+    "lines": 300,
+    "source_sha256": "441df87b068712d0e1f441ee03b7293bffd374463ff9fea7f3fb80b645c308b9",
+    "test_names": [
+      "actual_packet_scope_authorizes_multiple_frames_then_rejects_late_ids",
+      "finishing_with_an_outstanding_effect_revokes_its_late_grant"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/handshake_endpoint/stream_actor.rs",
+    "lines": 233,
+    "source_sha256": "8a7a304bfcfa67c0c5c0d8c556168b350b90b40397da3545c451fe082367ba72",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/handshake_endpoint/tls_actor.rs",
+    "lines": 293,
+    "source_sha256": "072674dd486c0270d6f9a1802a1c29ce0afc2567a75cc3e8af4c2c06c098ef11",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/handshake_endpoint/trace.rs",
+    "lines": 223,
+    "source_sha256": "653ba9fc640c4b41451f1cee1237d667200f984ff5a8d4df98aa19dd119fa6e2",
+    "test_names": [
+      "overflow_remains_visible_after_drain_and_later_success",
+      "clock_error_is_loss_not_fabricated_timestamp",
+      "diagnostic_counter_exhaustion_is_sticky_and_does_not_wrap"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/handshake_endpoint/tx_actor.rs",
+    "lines": 744,
+    "source_sha256": "5c9796b46838c2ff158a805389fa42bad54a6e59045d56bd2134e46d8d53c08c",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/handshake_endpoint.rs",
+    "lines": 1869,
+    "source_sha256": "37c23451ec1cb3219c0b32da811924bfa1f077f982610e46db0318d62bb24feb",
+    "test_names": [
+      "reclaimed_ack_only_and_lost_ce_react_without_fabricated_exact_time",
+      "unknown_history_uses_explicit_conservative_now_bound"
+    ],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed",
+    "migrated_checks": {
+      "reclaimed_ack_only_and_lost_ce_react_without_fabricated_exact_time": "tests/ecn_history.rs::reclaimed_ack_only_and_lost_ce_react_without_fabricated_exact_time",
+      "unknown_history_uses_explicit_conservative_now_bound": "tests/ecn_history.rs::unknown_history_uses_explicit_conservative_now_bound"
+    }
+  },
+  {
+    "file": "src/protocol.rs",
+    "lines": 249,
+    "source_sha256": "a44b4159426072f9e04db5fb47a578567c60238469fc0d06c82d738991c740cd",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "src/transport_endpoint.rs",
+    "lines": 366,
+    "source_sha256": "f1766a99380035e39d39c67e2f8e7925dc837966540184fe24703dfbacc490f3",
+    "test_names": [],
+    "disposition": "already_removed_in_recovery_assembly; baseline inventory only, not executed or passed"
+  },
+  {
+    "file": "tests/async_initial_endpoint.rs",
+    "lines": 689,
+    "source_sha256": "b1372005fc03fcd42cafe2abb76789fe17be8c3a300aa55bf252864c12cc6e5f",
+    "test_names": [
+      "actor_initial_endpoint_preserves_retry_packet_numbers_budget_and_graceful_retirement",
+      "cancelled_pending_initial_operation_retires_endpoint_without_reopening_admission",
+      "cancelled_transport_open_closes_stream_admission_and_actor_clients",
+      "cancelled_owned_transport_retirement_closes_stream_admission",
+      "closing_timer_awaits_actual_owner_retirement",
+      "synchronous_closing_expiry_revokes_output_then_awaits_owner_retirement"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "tests/managed_zero_peer_cid.rs",
+    "lines": 908,
+    "source_sha256": "a966257f7131ded29320856e3b6494949a2826a36683acbd89197f7bd4b89528",
+    "test_names": [
+      "zero_peer_cid_preserves_encrypted_path_accounting_and_rejects_migration",
+      "zero_peer_cid_rejects_authenticated_new_connection_id",
+      "zero_peer_cid_keeps_current_local_cid_retirement_rejection"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  },
+  {
+    "file": "tests/protocol.rs",
+    "lines": 394,
+    "source_sha256": "fd0809cf072ef8bcca6cd88a221a1d0548a3f44374e6a42e8922ffeaebdb4356",
+    "test_names": [
+      "independent_guarded_tx_and_timer_progress_while_rx_is_parked",
+      "carrier_backpressure_wakes_current_sender_and_delivers_fifo_once",
+      "carrier_close_wakes_pending_receive_and_quarantines_queue",
+      "forbidden_publish_without_reservation_fails_closed",
+      "forbidden_authentication_before_key_installation_fails_closed",
+      "forbidden_delivery_and_credit_before_authentication_fail_closed",
+      "legal_typed_contract_completes",
+      "forbidden_reservation_reuse_before_adapter_result_fails_closed",
+      "actual_key_services_reject_use_before_install_at_hibana_endpoint",
+      "actual_service_rejects_early_release_before_verified_finished",
+      "actual_service_rejects_client_intent_import_before_finished",
+      "actual_service_rejects_deferred_control_release_before_finished"
+    ],
+    "disposition": "removed_in_this_recovery_pass; not executed or passed"
+  }
+]

@@ -147,6 +147,11 @@ impl<'a> PublicationGateInstallation<'a> {
 #[derive(Debug)]
 pub struct ScopedHandshakeConfirmation<'a> { scope: &'a ApplicationKeyScope }
 impl<'a> ScopedHandshakeConfirmation<'a> {
+    /// Consume the direct connection's actual validated peer-Finished or
+    /// authenticated HANDSHAKE_DONE receipt. No caller supplies a replacement scope.
+    pub(crate) fn from_connection(confirmation: crate::connection::recovery::HandshakeConfirmed<'a>) -> Self {
+        Self { scope: confirmation.scope() }
+    }
     pub(crate) fn from_confirmed(scope: &'a ApplicationKeyScope, confirmation: HandshakeConfirmation)
         -> Result<Self, Error>
     {
@@ -164,6 +169,18 @@ pub struct ValidatedKeyAck<'a> {
     received_key_generation: u64,
 }
 impl<'a> ValidatedKeyAck<'a> {
+    /// The connection receipt retains both the actually accepted TX epoch and
+    /// the authenticated receiving epoch. Earlier read keys cannot acknowledge
+    /// a later write generation for the key-update barrier.
+    pub(crate) fn from_connection_ack(grant: crate::connection::recovery::KeyAcknowledged<'a>) -> Result<Self, Error> {
+        if grant.packet().space != crate::accounting::PacketNumberSpace::ApplicationData
+            || grant.received_key_generation() < grant.sent_key_generation()
+        {
+            return Err(Error::KeyUpdateError);
+        }
+        Ok(Self { scope: grant.scope(), sent_packet_number: grant.sent_packet_number(),
+            received_key_generation: grant.received_key_generation() })
+    }
     pub(crate) fn from_validated(scope: &'a ApplicationKeyScope, grant: KeyAckGrant) -> Result<Self, Error> {
         if grant.generation() != scope.connection_generation { return Err(Error::InvalidAcknowledgment); }
         Ok(Self { scope, sent_packet_number: grant.sent_packet_number(), received_key_generation: grant.received_key_generation() })

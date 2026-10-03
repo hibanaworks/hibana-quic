@@ -52,4 +52,19 @@ mod tests{
  #[test]fn revocation_does_not_repoll_pending_adapter(){let mut scope=ApplicationKeyScope::new(2);let mut gate=install(&mut scope);let(mut issuer,stop)=gate.split().unwrap();let calls=Cell::new(0);let adapter=poll_fn(|_|{calls.set(calls.get()+1);Poll::<()>::Pending});let mut future=core::pin::pin!(issuer.begin().unwrap().submit(adapter));let mut cx=Context::from_waker(Waker::noop());assert!(future.as_mut().poll(&mut cx).is_pending());stop.revoke();assert_eq!(future.as_mut().poll(&mut cx),Poll::Ready(Err(Error::Revoked)));assert_eq!(calls.get(),1);}
  #[test]fn revoked_permission_never_polls_adapter(){let mut scope=ApplicationKeyScope::new(3);let mut gate=install(&mut scope);let(mut issuer,stop)=gate.split().unwrap();let calls=Cell::new(0);let permit=issuer.begin().unwrap();stop.revoke();let adapter=poll_fn(|_|{calls.set(calls.get()+1);Poll::Ready(())});let mut future=core::pin::pin!(permit.submit(adapter));let mut cx=Context::from_waker(Waker::noop());assert_eq!(future.as_mut().poll(&mut cx),Poll::Ready(Err(Error::Revoked)));assert_eq!(calls.get(),0);}
  #[test]fn dropping_stop_permanently_revokes_issuer(){let mut scope=ApplicationKeyScope::new(4);let mut gate=install(&mut scope);let(mut issuer,stop)=gate.split().unwrap();drop(stop);assert!(matches!(issuer.begin(),Err(Error::Revoked)));}
+ std::thread_local! {static REVOKE_HOOK:RefCell<Option<std::boxed::Box<dyn Fn()>>>=RefCell::new(None);}
+ struct RevokeOnDrop;
+ impl std::task::Wake for RevokeOnDrop{fn wake(self:std::sync::Arc<Self>) {}}
+ impl Drop for RevokeOnDrop{fn drop(&mut self){let hook=REVOKE_HOOK.with(|slot|slot.borrow_mut().take());if let Some(hook)=hook{hook();}}}
+ #[test]fn reentrant_waker_drop_revokes_before_adapter_poll(){
+  let scope=std::boxed::Box::leak(std::boxed::Box::new(ApplicationKeyScope::new(5)));
+  let gate=std::boxed::Box::leak(std::boxed::Box::new(install(scope)));
+  let(mut issuer,_stop)=gate.split().unwrap();let shared=issuer.gate;
+  REVOKE_HOOK.with(|slot|*slot.borrow_mut()=Some(std::boxed::Box::new(move||shared.revoke())));
+  *shared.waker.borrow_mut()=Some(Waker::from(std::sync::Arc::new(RevokeOnDrop)));
+  let calls=Cell::new(0);let adapter=poll_fn(|_|{calls.set(calls.get()+1);Poll::Ready(())});
+  let mut future=core::pin::pin!(issuer.begin().unwrap().submit(adapter));let mut cx=Context::from_waker(Waker::noop());
+  assert_eq!(future.as_mut().poll(&mut cx),Poll::Ready(Err(Error::Revoked)));assert_eq!(calls.get(),0);
+ }
+
 }

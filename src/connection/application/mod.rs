@@ -7,6 +7,12 @@ mod io;
 mod keys;
 mod receive;
 mod termination;
+mod startup;
+mod run;
+mod transmit;
+mod timer;
+
+pub use run::{client, server};
 
 use core::{cell::{Cell, RefCell}, future::{Future, poll_fn}, pin::pin, task::{Poll, Waker}};
 use hibana::{Endpoint, EndpointError};
@@ -100,6 +106,7 @@ pub enum Error {
     Binding,
     Capacity,
     Application,
+    KeyControl,
     UnexpectedLabel(u8),
 }
 impl From<super::Error> for Error { fn from(value: super::Error) -> Self { Self::Connection(value) } }
@@ -109,6 +116,15 @@ impl From<application_stream::Error> for Error { fn from(value: application_stre
 impl From<crypto::Error> for Error { fn from(value: crypto::Error) -> Self { Self::Crypto(value) } }
 impl From<packet::Error> for Error { fn from(value: packet::Error) -> Self { Self::Packet(value) } }
 impl From<parameters::Error> for Error { fn from(value: parameters::Error) -> Self { Self::Parameters(value) } }
+impl From<keys::Error> for Error {
+    fn from(value: keys::Error) -> Self {
+        match value {
+            keys::Error::Crypto(error) => Self::Crypto(error),
+            keys::Error::Endpoint(error) => Self::Endpoint(error),
+            _ => Self::KeyControl,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CloseKind {

@@ -45,6 +45,28 @@ pub struct ScopedReceiveEvidence<'a> {
     evidence: ReceiveEvidence,
 }
 impl<'a> ScopedReceiveEvidence<'a> {
+    /// Consume actual Initial/Handshake AEAD evidence owned by this key scope.
+    /// OneRtt must continue through AckEligible's epoch-installation barrier.
+    pub(crate) fn from_owned_level(
+        receipt: crate::bounded_tls::key_source::AuthenticatedLevelRead<'a>,
+        operation_id: u64,
+        plaintext: &[u8],
+    ) -> Result<Self, Error> {
+        if receipt.len() != plaintext.len() || !receipt.authenticates_plaintext(plaintext) {
+            return Err(Error::InvalidFrame);
+        }
+        let space = match receipt.kind() {
+            crate::crypto::KeyKind::Initial => crate::accounting::PacketNumberSpace::Initial,
+            crate::crypto::KeyKind::Handshake => crate::accounting::PacketNumberSpace::Handshake,
+            _ => return Err(Error::UnsupportedProtection),
+        };
+        let scope = receipt.scope();
+        Ok(Self { scope, evidence: ReceiveEvidence::Directional(DirectionalReceiveEvidence {
+            facts: AuthenticatedPacket { generation: scope.connection_generation(), operation_id,
+                space, packet_number: receipt.packet_number(), key_generation: 0 },
+            plaintext_digest: crate::roles::sealed_packet::plaintext_digest(plaintext),
+        }) })
+    }
     /// Called by the fixed-scope RX producer immediately after actual legacy
     /// AEAD success. This is never a consumer-side raw-grant adapter.
     pub(crate) fn from_received(

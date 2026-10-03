@@ -7,15 +7,15 @@ use core::cell::{Cell, RefCell};
 
 use hibana::Endpoint;
 
-use super::{BodyReader, ClientRequests, Control, Error, ServerHandler, StreamSink, protocol as p};
+use super::{BodyReader, ClientRequests, Control, Error, MAX_REQUEST_BYTES, MAX_REQUESTS, ServerHandler, StreamSink, protocol as p};
 use crate::{
     connection::{application_stream::{self, App, MAX_LIVE_STREAMS}, tls::Inbox},
     mailbox::{Receiver, Sender},
     streams::{self, StreamHandle},
 };
 
-pub(crate) const REQUEST_BYTES: usize = 1024;
-pub(crate) const REQUEST_CAPACITY: usize = MAX_LIVE_STREAMS;
+pub(crate) const REQUEST_BYTES: usize = MAX_REQUEST_BYTES;
+pub(crate) const REQUEST_CAPACITY: usize = MAX_REQUESTS;
 
 pub(crate) struct Chunk<const CHUNK: usize> {
     pub stream: StreamHandle,
@@ -53,7 +53,7 @@ impl<const CHUNK: usize> State<CHUNK> {
     }
     fn submitted(&self) -> Result<(), Error> {
         let count = self.submitted.get().checked_add(1).ok_or(Error::Capacity)?;
-        if count > MAX_LIVE_STREAMS { return Err(Error::Capacity); }
+        if count > MAX_REQUESTS { return Err(Error::Capacity); }
         self.submitted.set(count);
         Ok(())
     }
@@ -133,19 +133,22 @@ async fn client_requests<const RX: usize, const CHUNK: usize>(
     if CHUNK == 0 { return Err(Error::Capacity); }
     let mut request = [0; REQUEST_BYTES];
     while !control.stopping() {
-        let next = match control.until_stop(0, requests.next(&mut request)).await {
-            Some(result) => result.map_err(|_| Error::Application)?,
+        let next = match control.until_stop(0, next_request(state, requests, &mut request)).await {
+            Some(result) => result?,
             None => break,
         };
         let Some(len) = next else { break; };
-        if len == 0 || len > request.len() { return Err(Error::Capacity); }
         let stream = loop {
             if control.stopping() { return Ok(()); }
             let revision = control.revision();
             let result = app.try_borrow_mut().map_err(|_| Error::Binding)?.open_local();
             match result {
                 Ok(stream) => break stream,
-                Err(error) if backpressure(&error) => control.wait(0, revision).await,
+                // Peer MAX_STREAMS can unblock opening; the fixed local
+                // table's Capacity cannot. Its slots are never recycled.
+                Err(application_stream::Error::Streams(streams::Error::StreamLimit)) => {
+                    control.wait(0, revision).await;
+                }
                 Err(error) => return Err(error.into()),
             }
         };
@@ -159,9 +162,26 @@ async fn client_requests<const RX: usize, const CHUNK: usize>(
             chunk.bytes[..count].copy_from_slice(&request[offset..offset + count]);
             if !submit(endpoint, state, sequence, chunk).await? { return Ok(()); }
             offset += count;
+            crate::runtime::yield_now().await;
         }
     }
     Ok(())
+}
+
+/// `next` must still be called at the limit so exactly MAX_REQUESTS requests
+/// can end normally. A seventeenth pending request is rejected before opening
+/// an impossible stream or consuming the caller's pending request via started.
+async fn next_request<const CHUNK: usize>(
+    state: &State<CHUNK>,
+    requests: &mut impl ClientRequests,
+    output: &mut [u8],
+) -> Result<Option<usize>, Error> {
+    let next = requests.next(output).await.map_err(|_| Error::Application)?;
+    let Some(len) = next else { return Ok(None); };
+    if len == 0 || len > output.len() || state.submitted_count() >= MAX_REQUESTS {
+        return Err(Error::Capacity);
+    }
+    Ok(Some(len))
 }
 
 pub(crate) async fn server_source<const CHUNK: usize>(
@@ -193,6 +213,7 @@ async fn server_responses<const CHUNK: usize>(
             Some(Ok(request)) => request,
             Some(Err(_)) | None => break,
         };
+        if state.submitted_count() >= MAX_REQUESTS { return Err(Error::Capacity); }
         let mut body = match control.until_stop(0,
             handler.open(request.stream.id(), &request.bytes[..request.len])).await {
             Some(result) => result.map_err(|_| Error::Application)?,
@@ -211,6 +232,7 @@ async fn server_responses<const CHUNK: usize>(
             chunk.fin = len == 0;
             if !submit(endpoint, state, sequence, chunk).await? { return Ok(()); }
             if len == 0 { break; }
+            crate::runtime::yield_now().await;
         }
     }
     Ok(())
@@ -404,4 +426,75 @@ async fn receive_request<const RX: usize, const CHUNK: usize>(
         control.changed()?;
     }
     Ok(read.fin)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::{future::Future, pin::pin, task::{Context, Poll, Waker}};
+
+    struct Requests {
+        remaining: usize,
+        pending: bool,
+        started: usize,
+    }
+
+    impl ClientRequests for Requests {
+        async fn next(&mut self, output: &mut [u8]) -> Result<Option<usize>, ()> {
+            assert!(!self.pending, "next must not overwrite an unstarted request");
+            if self.remaining == 0 { return Ok(None); }
+            output[0] = b'/';
+            self.pending = true;
+            Ok(Some(1))
+        }
+
+        fn started(&mut self, _stream_id: u64) -> Result<(), ()> {
+            assert!(self.pending, "started must correspond to exactly one next");
+            self.pending = false;
+            self.remaining -= 1;
+            self.started += 1;
+            Ok(())
+        }
+    }
+
+    fn ready<T>(future: impl Future<Output = T>) -> T {
+        match pin!(future).as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(result) => result,
+            Poll::Pending => panic!("bounded request admission unexpectedly parked"),
+        }
+    }
+
+    #[test]
+    fn exactly_sixteen_requests_reach_eof_without_capacity_failure() {
+        let state = State::<8>::new();
+        let mut requests = Requests { remaining: MAX_REQUESTS, pending: false, started: 0 };
+        let mut bytes = [0; REQUEST_BYTES];
+        for index in 0..MAX_REQUESTS {
+            assert_eq!(ready(next_request(&state, &mut requests, &mut bytes)).unwrap(), Some(1));
+            assert!(requests.pending);
+            requests.started(index as u64 * 4).unwrap();
+            state.submitted().unwrap();
+        }
+        assert_eq!(ready(next_request(&state, &mut requests, &mut bytes)).unwrap(), None);
+        assert_eq!(state.submitted_count(), MAX_REQUESTS);
+        assert_eq!(requests.started, MAX_REQUESTS);
+        assert!(!requests.pending);
+    }
+
+    #[test]
+    fn seventeenth_request_is_rejected_while_still_pending() {
+        let state = State::<8>::new();
+        let mut requests = Requests { remaining: MAX_REQUESTS + 1, pending: false, started: 0 };
+        let mut bytes = [0; REQUEST_BYTES];
+        for index in 0..MAX_REQUESTS {
+            ready(next_request(&state, &mut requests, &mut bytes)).unwrap();
+            requests.started(index as u64 * 4).unwrap();
+            state.submitted().unwrap();
+        }
+        assert!(matches!(ready(next_request(&state, &mut requests, &mut bytes)), Err(Error::Capacity)));
+        assert!(requests.pending);
+        assert_eq!(requests.remaining, 1);
+        assert_eq!(requests.started, MAX_REQUESTS);
+        assert_eq!(state.submitted_count(), MAX_REQUESTS);
+    }
 }

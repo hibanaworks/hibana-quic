@@ -1,0 +1,76 @@
+# Bounded 0-RTT implementation and current qualification boundary
+
+Architecture recovery (2026-10-03): the central Driver, HandshakeEndpoint and
+TransportEndpoint production path and its endpoint-only integration tests were
+removed. Descriptions or results below that depend on those entry points are
+historical evidence and do not validate the recovered independent-role
+connection. Independent TLS/crypto and domain-role code remains. See
+[recovery status](../RECOVERY-STATUS.md) and the
+[removed-test inventory and coverage gaps](../artifacts/legacy-migration/coverage.md).
+
+0-RTT is an explicit application opt-in. Ordinary provider constructors and the current default HQ mode do not send early data. The implemented path is a replay-tolerant, bounded request profile with real TLS early traffic secrets, QUIC packet protection, replay admission, remembered limits and Finished-gated application release. It is not a complete `zerortt` runner or hardware qualification.
+
+## Policy and storage
+
+`early_data::RememberedLimits` parses previously authenticated server transport parameters. Its fixed73-byte private-ticket encoding retains the currently processed reusable values: idle timeout, UDP payload limit, connection/stream flow limits, stream counts, active CID limit and migration flag. It does not restore ACK-delay fields, connection IDs, reset tokens or preferred addresses. Unknown extensions are not interpreted. Future supported transport extensions must extend this versioned policy representation.
+
+The current compatibility rule allows supported limits to grow and requires idle/migration policy to remain equal. The ticket's existing full policy binding is stricter and can cause a conservative full-handshake fallback after other server policy changes. 0-RTT packets continue using remembered values, not newly enlarged1RTT values.
+
+`ServerPolicy::BufferedReplaySafeRequests` is explicit and bounded. `ServerEarlyData::buffered(generation, policy, encoded_local_parameters, &quarantine_slots, freshness)` proves that actual caller storage can back the remembered flow/stream geometry before traffic. The engine repeats admission using the ticket's authenticated limits and the actual mutable slots. `ClientEarlyData::replay_safe_requests(generation)` records the client's explicit application decision. This opt-in also authorizes retrying those queued complete requests over 1-RTT after rejection, under newly authenticated limits; applications that do not authorize that retry must not enable the mode. It does not assert network exactly-once behavior.
+
+`EarlyFreshness::new(max_age_skew_ms)` is a separate required0RTT policy. It has no Default and is never derived implicitly from `ServerResumption.max_age_skew_ms`. The profile caps it at60,000ms. Ticket acceptance carries authenticated issue/report timing into a private candidate, and early admission checks freshness again before committing replay state. A freshness failure can still complete valid1RTT PSK resumption. Tests accept999/1000ms and reject1001ms under a1000ms early policy even when ordinary resumption permits10,000ms.
+
+## Ticket and replay ownership
+
+`TicketKey::generate_with_early_replay` generates a real random key/issuer and exclusively borrows `ReplayStorage<N>` for the key lifetime. The storage cannot be reset while that owner is live. Reusing storage after dropping a key starts a fresh random key epoch; previous tickets fail AEAD/key-ID authentication. There is no fixed-key import, persistence or multi-process key sharing.
+
+The current private ticket format is version2,201bytes. ChaCha20Poly1305 authenticates the prior PSK/suite/origin/policy/age fields plus explicit early permission and actual remembered limits. Ordinary tickets carry no permission. `prepare_early` requires an early-capable key. The client only receives early-capable metadata from authenticated NST containing the QUIC `0xffffffff` marker, and cache entries remain bound to actual trust anchors, verifier profile/limits, SNI and ALPN.
+
+`AcceptedTicket` contains a private non-Clone early candidate only after valid ticket AEAD and binder checks. `claim_early` consumes that candidate once. Its bounded single-use ledger burns the claim before accepting early data, never evicts live claims, and never refunds an aborted handshake. Replay/capacity/freshness rejection preserves the valid1RTT schedule. `ReplayClaim` is non-Clone/non-Copy. Its move into the actual quarantine does not release the underlying replay record. A replay claim proves local replay admission; it does not independently prove TLS or packet authentication.
+
+## TLS and key transitions
+
+The explicit early codec emits empty ClientHello/EncryptedExtensions `early_data` extensions and the exact QUIC NST sentinel. The offer requires an actual PSK. PSK-last, single binder, signature and cipher policy, identity continuity and existing strict retry rules remain enforced. HRR removes the early offer from CH2 and rejects early data; it can still complete PSK resumption. A same-group/duplicate retry or CH2 early reoffer remains invalid.
+
+The provider derives `client_early_traffic` through the existing RFC-vector-tested key schedule over the complete CH1, after its binder is filled. Early keys are a distinct `KeyKind::ZeroRtt`. The client can seal and the server can open; reverse directions reject. The same connection-wide integrity budget covers failed early authentication. Clients stop early protection as soon as1RTT keys are installed. The engine owns server key-discard timing and retains buffered application bytes independently of key availability.
+
+`tls::Level` remains Initial/Handshake/OneRtt because QUIC forbids CRYPTO in0RTT. Separate default-disabled provider methods expose `early_status`, generation, remembered limits, the moved replay claim, early HP/AEAD and key discard. `EarlyStatus::AcceptedPendingFinished` never permits application delivery; `Accepted` follows verified Finished. Generation must match the actual driver/engine configuration.
+
+## Actual transport ownership
+
+The same six-role raw-par Hibana session has distinct early-key, authenticated-early-receive, buffer, Finished, quarantine-release and client-intent-import authorities. Early receive tickets cannot authorize ordinary ACK or delivery effects. The ordinary full-width application PN allocator remains shared by0RTT and1RTT; rejection and Retry do not rewind it.
+
+The client's bounded complete-request journal owns early bytes, private speculative handles, flow credit and packet references. Rejection invalidates that epoch and requeues the owned request against newly authenticated limits. Rejected early packets are removed from flight accounting by a distinct transition; they are not congestion losses or acknowledgments. Accepted references, exact stream IDs/offsets/FIN and state are imported under typed Finished authority before ordinary ACK processing. Ordinary speculative handles do not escape.
+
+The server's quarantine receives only authenticated and validated early STREAM bytes. It stores per-stream coverage and final-size/high-water state. No view is exposed before actual verified Finished and the matching typed authority. Afterwards, a checked opaque release descriptor and the driver grant enclose the actual StreamTable mutation before either completes. Generation, issuer, claim serial and revision prevent stale completion. Missing/Held/Released coverage permits valid reordered early packets after Finished without double delivery/charging; released payload bytes are wiped. Already released duplicate contents are ignored at the consumed-stream boundary, while final size remains checked.
+
+One drain turn processes at most128 contiguous ranges and retains the rest. `TransportEndpoint::drain_early_data()` provides explicit local continuation without waiting for another network event, and transmit also drives it. Terminal/closing paths retire the client journal and invalidate its handles; an empty journal is also sealed at Finished.
+
+## Evidence and remaining work
+
+Current component evidence is under `artifacts/early-data-kernels/`:
+
+- Twelve helper tests cover policy/capacity, remembered fields, replay persistence/expiry, overlap/final-size, generation/issuer separation, pre-Finished withholding, late data and one-shot release
+- Nineteen ticket tests include real AEAD/binder, nonrefundable early replay, independent freshness boundaries and restart rejection
+- Forty-five wire tests include explicit early syntax, HRR removal, exact NST sentinel and the existing strict PSK/RSA/cipher/group profiles
+- `early_tls` checks both AES and ChaCha early HP/AEAD, corrupt tags, Finished quarantine, late retransmission, explicit rejection retaining1RTT, replay after abort, and independent freshness; its successful complete two-handshake path allocates zero
+- `early_rustls` uses actual rustls0.23.45 QUIC in both directions, verifies real early packet keys, explicit rejection, and genuine resumed P-256 HRR rejection of early data with successful1RTT completion
+- `early_wire` uses the real driver/handshake/stream engines, tests acceptance/rejection requeue and shared PN continuity, and measures zero allocations. Expanded regressions cover sparse drain continuation and terminal/empty-journal invalidation; consult their final run log rather than treating an intermediate run as a pass
+
+The independently reviewed request-profile snapshot is preserved at `artifacts/early-data-kernels/profile-checkpoint/`, with the independent report at `artifacts/early-independent-review/REVIEW.md`. Its release results are four provider groups, seven ordinary resumption groups and six actual wire groups, including idle/VN/close invalidation, sparse drain continuation and rejection while an Initial adapter callback is pending. These artifacts precede the deferred-control expansion.
+
+The expansion adds `early_control::Store` in caller-owned fixed slots. Its non-clone `PreparedPacket` retains the immutable payload and exclusive store borrow after complete syntax/capacity preflight. Canonically encoded values preserve the original path identity and packet destination CID. `Quarantine::preflight_authenticated_packet` uses bounded pairwise passes over at most128 frames to check distinct slots, aggregate maximum offsets, final size and overlaps before any packet admission. RESET_STREAM participates in the same remembered high-water/final-size ledger, wipes withheld bytes and leaves terminal metadata that prevents later STREAM from reviving delivery. STOP_SENDING, MAX_STREAM_DATA and STREAM_DATA_BLOCKED references also consume remembered stream identities/counts and enforce direction before Finished. A MAX_STREAM_DATA value grants sending credit and is not miscounted as received bytes. Local capacity failure is distinct from protocol errors. Neither owner changes before all preparations succeed.
+
+Deferred control release uses a separate actual Hibana branch after VerifiedFinished. Opaque copyable view tickets remain subject to both the store's current FIFO revision and the driver's generation/revision checks; copying a token cannot repeat its completed effect. Path/CID effects accept that distinct release authority and retain original provenance. They never synthesize ordinary receive authority.
+
+CONNECTION_CLOSE is the terminal exception. RFC9000 sections10.2.2/10.2.3 permit it before handshake completion. `terminal_close` validates the whole packet, retains the complete borrowed reason/error fields and routes an accepted, authenticated early close through a distinct terminal authority without exposing quarantined application bytes. Rejected epochs and failed AEAD never enter this path. Other controls remain held until Finished.
+
+The helper/driver expansion has component tests and actual encrypted-wire coverage for held RESET/credit, remembered limit/direction/final-size rejection, accepted versus invalid/rejected early close, exact-packet retry after control-capacity pressure and real ACK exclusion. Positive credit/blocked/STOP tests also observe the actual post-Finished RESET response. The nonfatal frame-budget correction passes its unchanged regression. This expansion's clean-host release checkpoint passes all13 actual wire groups, four provider groups and seven ordinary resumption groups; component helpers24+1 allocation, protocol12, strict Clippy and thumb builds also pass. Source hashes and binaries are preserved in `artifacts/early-data-kernels/deferred-checkpoint/`. These final results were executed by the implementation owner; the final independent pass is not complete. Managed early CID/path encrypted-wire coverage remains separate. Legal early transport controls beyond STREAM/PING/PADDING therefore remain a receive-profile gap in the frozen request-profile snapshot. The initial engine drops such whole packets without ACK or mutation, rather than misclassifying legal frames as forbidden. ACK, CRYPTO, NEW_TOKEN, PATH_RESPONSE and HANDSHAKE_DONE are actually forbidden in0RTT. The bounded deferred-control path must pass the integrated receive gates before a broad0RTT claim.
+
+The complete host/Neqo runner0RTT case, Retry+early/loss combinations, all adversarial allocation paths and final hardware memory/stack/flash qualification remain separate gates. The first successful early packet is not evidence that those gates pass.
+
+Primary specifications: [RFC9000 transport-parameter reuse](https://www.rfc-editor.org/rfc/rfc9000.html#section-7.4.1), [RFC9001 early-data integration](https://www.rfc-editor.org/rfc/rfc9001.html#section-4.6), [RFC8446 replay considerations](https://www.rfc-editor.org/rfc/rfc8446.html#section-8). Current RFC9846 retains the relevant strict retry requirements; this implementation does not claim blanket RFC9846 conformance.
+
+## Measured fixed storage
+
+The current thumbv6m `size_of` diagnostic is `artifacts/early-data-kernels/thumb-layout.json`: RememberedLimits80 bytes, ReplayStorage<8>384 bytes, ReplayClaim32 bytes, QuarantineSlot<1024>2104 bytes, Quarantine owner144 bytes, release ticket56 bytes, ControlSlot<128>200 bytes, ControlStore owner40 bytes and ControlTicket24 bytes. These values measure the listed layouts, not a complete endpoint or its stack call chains. Hardware RAM/stack/flash validation remains separate.

@@ -1,0 +1,68 @@
+name: Actor graph compile and strict runtime diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character SHA of the audited actor source commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actor-compile-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+      PUBLIC_REPOSITORY: ${{ !github.event.repository.private }}
+      CARGO_BUILD_JOBS: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUST_BACKTRACE: '0'
+      LC_ALL: C
+    steps:
+      - name: Require an immutable source selection
+        run: '[[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]'
+      - name: Check out the exact audited actor source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install the exact Rust toolchain
+        timeout-minutes: 3
+        run: timeout --signal=TERM --kill-after=10s 150s rustup toolchain install 1.95.0 --profile minimal
+      - name: Verify source, vendor pin, and locked dependencies
+        id: prepare
+        timeout-minutes: 3
+        run: python3 ci/actor_compile_diagnostic.py prepare
+      - name: Compile unchanged graph test targets without running them
+        id: compile
+        timeout-minutes: 20
+        run: python3 ci/actor_compile_diagnostic.py compile
+      - name: Run strict selected tests from successfully compiled binaries
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        timeout-minutes: 5
+        run: python3 ci/actor_compile_diagnostic.py test
+      - name: Summarize compile capacity separately from runtime semantics
+        if: always()
+        run: python3 ci/actor_compile_diagnostic.py summary
+      - name: Upload only structured sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: actor-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-safe-results/actor-diagnostic/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 9
+          include-hidden-files: false

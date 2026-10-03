@@ -35,13 +35,64 @@ fn tx_work<P:TransmitPhase>()->g::Program<TxWork<P>>{
  let wire=g::route(publication::<P::Data>(),g::route(publication::<P::Ack>(),g::route(publication::<P::Probe>(),g::seq(g::send::<TX_WIRE,UDP,P::WireBoundary>(),g::send::<UDP,TX_WIRE,P::WireBoundarySeen>())))).roll();
  g::seq(g::par(source,wire),g::send::<TX,TLS_TX,P::PhaseSettled>())
 }
-pub struct Programs{pub rx:RoleProgram<RX>,pub tls_rx:RoleProgram<TLS_RX>,pub tx:RoleProgram<TX>,pub tls_tx:RoleProgram<TLS_TX>,pub udp:RoleProgram<UDP>,pub timer:RoleProgram<TIMER>,pub timer_tx:RoleProgram<TIMER_TX>,pub tx_wire:RoleProgram<TX_WIRE>}
-pub fn programs()->Programs{
+
+/// Actual key-space retirement is independent of TLS flight transport. The
+/// configured producer can only obtain its affine event from accepted Handshake
+/// publication (client) or authenticated Handshake receipt (server).
+pub const INITIAL_EVENT: u8 = 18;
+pub const INITIAL_OWNER: u8 = 19;
+pub type ClientInitialRetire = g::Msg<145, u64>;
+pub type ServerInitialRetire = g::Msg<146, u64>;
+pub type InitialRetired = g::Msg<147, u64>;
+pub type InitialRetirementFlow = g::Seq<
+    g::Route<g::Send<INITIAL_EVENT, INITIAL_OWNER, ClientInitialRetire>,
+             g::Send<INITIAL_EVENT, INITIAL_OWNER, ServerInitialRetire>>,
+    g::Send<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>>;
+pub type ReceiveTail = g::Seq<RxWork<FinishedReceive>,
+    g::Seq<g::Send<RX, TLS_RX, ReceiveComplete>, g::Send<TLS_RX, RX, ReceiveContinuation>>>;
+pub type ReceiveFlow = g::Seq<RxWork<InitialReceive>,
+    g::Seq<g::Send<TLS_RX, RX, ReadHandshake>,
+    g::Seq<RxWork<HandshakeReceive>,
+    g::Seq<g::Send<TLS_RX, RX, ReadApplication>, ReceiveTail>>>>;
+pub type DrainFlow = g::Roll<g::Route<Publish<DrainAck>,
+    g::Route<Publish<DrainProbe>, g::Send<TX_WIRE, UDP, RecoveryDrained>>>>;
+pub type CompleteFlow = g::Seq<g::Send<TX, TLS_TX, TransmitComplete>,
+    g::Seq<g::Send<TLS_TX, TX, TransmitContinuation>,
+    g::Seq<g::Send<TX_WIRE, UDP, AdapterComplete>, g::Send<UDP, TX_WIRE, AdapterRetired>>>>;
+pub type TransmitFlow = g::Seq<TxWork<InitialTransmit>,
+    g::Seq<g::Send<TLS_TX, TX, WriteHandshake>,
+    g::Seq<TxWork<HandshakeTransmit>,
+    g::Seq<g::Send<TLS_TX, TX, WriteApplication>,
+    g::Seq<TxWork<ApplicationTransmit>, g::Seq<DrainFlow, CompleteFlow>>>>>>;
+pub type TimerFlow = g::Roll<g::Route<
+    g::Seq<g::Send<TIMER, TIMER_TX, TimerExpired>, g::Send<TIMER_TX, TIMER, TimerTaken>>,
+    g::Seq<g::Send<TIMER, TIMER_TX, TimerRetired>, g::Send<TIMER_TX, TIMER, TimerAcknowledged>>>>;
+pub type Flow = g::Par<ReceiveFlow,
+    g::Par<TransmitFlow, g::Par<TimerFlow, InitialRetirementFlow>>>;
+
+pub fn choreography() -> g::Program<Flow> {
  let receive=g::seq(rx_work::<InitialReceive>(),g::seq(g::send::<TLS_RX,RX,ReadHandshake>(),g::seq(rx_work::<HandshakeReceive>(),g::seq(g::send::<TLS_RX,RX,ReadApplication>(),g::seq(rx_work::<FinishedReceive>(),g::seq(g::send::<RX,TLS_RX,ReceiveComplete>(),g::send::<TLS_RX,RX,ReceiveContinuation>()))))));
  let drain=g::route(publication::<DrainAck>(),g::route(publication::<DrainProbe>(),g::send::<TX_WIRE,UDP,RecoveryDrained>())).roll();
  let complete=g::seq(g::send::<TX,TLS_TX,TransmitComplete>(),g::seq(g::send::<TLS_TX,TX,TransmitContinuation>(),g::seq(g::send::<TX_WIRE,UDP,AdapterComplete>(),g::send::<UDP,TX_WIRE,AdapterRetired>())));
  let transmit=g::seq(tx_work::<InitialTransmit>(),g::seq(g::send::<TLS_TX,TX,WriteHandshake>(),g::seq(tx_work::<HandshakeTransmit>(),g::seq(g::send::<TLS_TX,TX,WriteApplication>(),g::seq(tx_work::<ApplicationTransmit>(),g::seq(drain,complete))))));
  let timer=g::route(g::seq(g::send::<TIMER,TIMER_TX,TimerExpired>(),g::send::<TIMER_TX,TIMER,TimerTaken>()),g::seq(g::send::<TIMER,TIMER_TX,TimerRetired>(),g::send::<TIMER_TX,TIMER,TimerAcknowledged>())).roll();
- let global=g::par(receive,g::par(transmit,timer));
- Programs{rx:project(&global),tls_rx:project(&global),tx:project(&global),tls_tx:project(&global),udp:project(&global),timer:project(&global),timer_tx:project(&global),tx_wire:project(&global)}
+ let initial = g::seq(
+    g::route(g::send::<INITIAL_EVENT, INITIAL_OWNER, ClientInitialRetire>(),
+             g::send::<INITIAL_EVENT, INITIAL_OWNER, ServerInitialRetire>()),
+    g::send::<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>());
+ g::par(receive, g::par(transmit, g::par(timer, initial)))
+}
+pub struct Programs {
+    pub rx: RoleProgram<RX>, pub tls_rx: RoleProgram<TLS_RX>,
+    pub tx: RoleProgram<TX>, pub tls_tx: RoleProgram<TLS_TX>,
+    pub udp: RoleProgram<UDP>, pub timer: RoleProgram<TIMER>,
+    pub timer_tx: RoleProgram<TIMER_TX>, pub tx_wire: RoleProgram<TX_WIRE>,
+    pub initial_event: RoleProgram<INITIAL_EVENT>, pub initial_owner: RoleProgram<INITIAL_OWNER>,
+}
+pub fn programs() -> Programs {
+    let global = choreography();
+    Programs { rx: project(&global), tls_rx: project(&global), tx: project(&global),
+        tls_tx: project(&global), udp: project(&global), timer: project(&global),
+        timer_tx: project(&global), tx_wire: project(&global),
+        initial_event: project(&global), initial_owner: project(&global) }
 }

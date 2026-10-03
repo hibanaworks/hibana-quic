@@ -18,3 +18,5 @@ Open correctness/integration work:
 - outstanding Handshake recovery carried into application so lost Finished ACK can be resolved by HANDSHAKE_DONE
 - bounded RX work/yields and explicit profile capacity failure
 - fresh build, allocation, authentication, cancellation, loss and actual Neqo/runner tests
+
+Numerical/TLS adapter bodies and the connected runner have now been reconstructed. They have not been compiled. Initial retirement role wiring and API reconciliation remain incomplete. Legacy endpoint tests/targets and dead role bridges need final migration/removal before validation.

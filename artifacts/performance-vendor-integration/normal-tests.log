@@ -1,0 +1,131 @@
+warning: variant `FixedZero` is never constructed
+  --> src/driver/path.rs:78:5
+   |
+77 | enum PeerTarget {
+   |      ---------- variant in this enum
+78 |     FixedZero,
+   |     ^^^^^^^^^
+   |
+   = note: `PeerTarget` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `bind_zero_cid_path_transmit` is never used
+   --> src/driver/path.rs:397:19
+    |
+166 | impl Driver<'_> {
+    | --------------- method in this implementation
+...
+397 |     pub(crate) fn bind_zero_cid_path_transmit(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `recovery_cancel` is never used
+   --> src/handshake_endpoint/recovery_actor.rs:121:25
+    |
+ 66 | impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
+    | -------------------------------------------------------------------------------------- method in this implementation
+...
+121 |     pub(super) async fn recovery_cancel(
+    |                         ^^^^^^^^^^^^^^^
+
+warning: method `stream_cancel` is never used
+   --> src/handshake_endpoint/stream_actor.rs:226:25
+    |
+ 31 | impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
+    | -------------------------------------------------------------------------------------- method in this implementation
+...
+226 |     pub(super) async fn stream_cancel(
+    |                         ^^^^^^^^^^^^^
+
+warning: method `tls_seal_early` is never used
+   --> src/handshake_endpoint/tls_actor.rs:255:25
+    |
+ 13 | impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
+    | -------------------------------------------------------------------------------------- method in this implementation
+...
+255 |     pub(super) async fn tls_seal_early(
+    |                         ^^^^^^^^^^^^^^
+
+warning: type alias `Reservation` is never used
+  --> src/handshake_endpoint/path.rs:17:17
+   |
+17 | pub(super) type Reservation = path_owner::PendingTransmit;
+   |                 ^^^^^^^^^^^
+
+warning: methods `active_path_identity` and `transmit_address` are never used
+   --> src/handshake_endpoint/path.rs:119:19
+    |
+ 95 | impl<'r, 's, 'tc, 'ts, K: InitialKeyProtection> HandshakeEndpoint<'r, 's, 'tc, 'ts, K> {
+    | -------------------------------------------------------------------------------------- methods in this implementation
+...
+119 |     pub(super) fn active_path_identity(&self) -> PathIdentity {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+142 |     pub(super) fn transmit_address(&self) -> Option<Address> {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: function `retirement` is never used
+   --> src/roles/protocol_stream.rs:227:4
+    |
+227 | fn retirement<const C: u8, const O: u8>() -> g::Program<Retirement<C, O>> {
+    |    ^^^^^^^^^^
+
+warning: function `cancel_before_publication` is never used
+   --> src/roles/datagram.rs:502:15
+    |
+502 | pub(crate) fn cancel_before_publication(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `hibana-quic` (lib) generated 9 warnings
+   Compiling hibana-quic v0.1.0 (/workspace/scratch/0915e8fbff81/hibana-quic)
+    Finished `test` profile [unoptimized] target(s) in 8.09s
+     Running tests/mailbox_async.rs (target/debug/deps/mailbox_async-f2518f8d9c08cad2)
+
+running 17 tests
+test actual_async_actors_stop_when_parked_and_resume_on_peer_wakes ... ok
+test canceling_a_consumer_actor_closes_its_command_capability ... ok
+test canceling_a_producer_actor_closes_and_keeps_only_accepted_work ... ok
+test canceling_receive_clears_its_waiter_without_losing_later_publication ... ok
+test canceling_unpolled_and_full_sends_drops_only_the_unpublished_value ... ok
+test cancellation_after_a_wake_does_not_publish_or_consume_a_value ... ok
+test complete_backpressure_cancellation_and_closure_paths_allocate_nothing ... ok
+test empty_receive_parks_and_publication_wakes_only_latest_waker ... ok
+test explicit_close_is_idempotent_and_never_reopens_the_mailbox ... ok
+test full_send_parks_replaces_waker_then_resumes_fifo_across_wraparound ... ok
+test mailbox_drop_recovers_storage_even_when_halves_were_forgotten ... ok
+test messages_need_neither_send_nor_unpin_and_borrowed_data_stays_in_scope ... ok
+test receiver_drop_discards_queued_work_and_returns_blocked_and_later_values ... ok
+test sender_drop_preserves_buffered_values_until_they_are_consumed ... ok
+test sender_drop_wakes_empty_receiver_with_explicit_closed ... ok
+test waker_clone_wake_drop_and_value_drop_can_reenter_read_only_inspection ... ok
+test zero_capacity_and_occupied_storage_are_rejected_without_consuming_values ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/packet_protection_roles.rs (target/debug/deps/packet_protection_roles-b0cb362ad0f915df)
+
+running 7 tests
+test actor_owned_retry_rekey_preserves_nonce_guard_and_returns_same_integrity_budget ... ok
+test cancellation_closes_stale_command_capability_and_clears_queued_owned_packets ... ok
+test initial_rekey_rejects_other_levels_without_losing_their_real_key ... ok
+test one_global_par_keeps_other_owned_key_live_when_first_facet_retires ... ok
+test packet_copy_rejects_unrepresentable_packet_numbers_and_buffer_overflow ... ok
+test real_aead_outcomes_nonce_guard_shared_integrity_budget_and_retirement_do_not_allocate ... ok
+test unused_key_can_retire_without_a_dummy_crypto_operation ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/runtime_async.rs (target/debug/deps/runtime_async-1f2eff14a98f1899)
+
+running 9 tests
+test empty_task_set_is_ready_without_waking ... ok
+test fixed_sweeps_rotate_order_never_repoll_completed_tasks_and_leave_idle_asleep ... ok
+test full_carrier_parks_then_reader_and_writer_wakes_complete_real_awaits ... ok
+test outer_session_drop_closes_pending_generation_wakes_peer_and_prevents_replay ... ok
+test owned_join_drops_every_child_on_error_and_cancellation ... ok
+test ready_loops_yield_after_bounded_work_so_all_six_tasks_progress ... ok
+test real_pending_receive_stores_latest_parent_waker_without_spinning ... ok
+test six_real_roles_repeat_parallel_routes_while_an_independent_receive_is_idle ... ok
+test wake_during_sweep_is_preserved_for_an_already_polled_task ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

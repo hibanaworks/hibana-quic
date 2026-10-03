@@ -7,10 +7,17 @@
 //!
 //! Reconstructed from retained task tool-call bodies after executor replacement;
 //! these recovered bytes have not been compiled or tested.
+//! The later owned-level authentication receipt and fatal-poll distinction were
+//! reimplemented from the recovery contract and likewise remain unverified.
 
 #[cfg(test)]
 #[path = "handoff_tests.rs"]
 mod tests;
+
+// Reimplemented from the later direct-wire recovery contract; not yet executed.
+#[cfg(test)]
+#[path = "owned_level_tests.rs"]
+mod owned_level_tests;
 
 use super::{BoundedTls, DirectionalKeys, Failure, State, map_crypto};
 use crate::{
@@ -73,6 +80,8 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
 impl<'scope> KeySource<'scope, '_, '_> {
     pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
     pub fn state(&self) -> State { self.provider.state() }
+    /// The configured TLS role, obtained from the actual owning provider.
+    pub fn side(&self) -> Side { self.provider.side() }
     pub fn last_failure(&self) -> Option<&Failure> { self.provider.last_failure() }
     pub fn is_handshaking(&self) -> bool { self.provider.is_handshaking() }
     pub fn is_resumed(&self) -> bool { self.provider.is_resumed() }
@@ -112,6 +121,7 @@ impl<'scope> KeySource<'scope, '_, '_> {
     /// completion is not QUIC handshake confirmation; HANDSHAKE_DONE remains
     /// an independently authenticated receive transition.
     pub fn take_finished(&mut self) -> Result<FinishedAuthenticated<'scope>, tls::Error> {
+        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
         if self.finished_taken || self.provider.state != State::Connected {
             return Err(tls::Error::KeysUnavailable);
         }
@@ -131,7 +141,8 @@ impl<'scope> KeySource<'scope, '_, '_> {
     /// failures accumulated by Initial/0-RTT before handoff. No replacement can
     /// be issued, and the source keeps only the existing fail-closed sentinel.
     pub fn take_integrity_budget(&mut self) -> Result<IntegrityBudget, tls::Error> {
-        if self.integrity_taken || self.provider.state == State::Failed {
+        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
+        if self.integrity_taken {
             return Err(tls::Error::KeysUnavailable);
         }
         self.integrity_taken = true;
@@ -140,14 +151,14 @@ impl<'scope> KeySource<'scope, '_, '_> {
     /// Move both actual Handshake PacketKeys once. An unavailable early poll
     /// does not consume a future installation; dropping returned material does.
     pub fn take_handshake_keys(&mut self) -> Result<HandshakeKeyMaterial<'scope>, tls::Error> {
-        if self.provider.state == State::Failed { return Err(tls::Error::KeysUnavailable); }
+        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
         let keys = self.provider.handshake.take().ok_or(tls::Error::KeysUnavailable)?;
         Ok(HandshakeKeyMaterial { scope: self.scope, keys })
     }
     /// The server can emit these keys before client Finished. Their existence
     /// is never a grant to deliver ordinary data, ACK it, or initiate an update.
     pub fn take_application_keys(&mut self) -> Result<ApplicationKeyMaterial<'scope>, tls::Error> {
-        if self.provider.state == State::Failed { return Err(tls::Error::KeysUnavailable); }
+        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
         let keys = self.provider.application.take_handoff().ok_or(tls::Error::KeysUnavailable)?;
         let installation = self.application.take().ok_or(tls::Error::KeysUnavailable)?;
         Ok(ApplicationKeyMaterial { installation, keys })
@@ -155,7 +166,8 @@ impl<'scope> KeySource<'scope, '_, '_> {
     /// Move the sole early direction with unchanged packet usage. RX quarantine
     /// and TX replay policy are separate from this cryptographic capability.
     pub fn take_early_key(&mut self) -> Result<EarlyKeyMaterial<'scope>, tls::Error> {
-        if self.early_taken || self.provider.state == State::Failed {
+        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
+        if self.early_taken {
             return Err(tls::Error::KeysUnavailable);
         }
         let key = self.provider.early_key.take().ok_or(tls::Error::KeysUnavailable)?;
@@ -248,14 +260,92 @@ pub enum EarlyKeyMaterial<'scope> {
     Transmit(TransmitPacketKey<'scope>),
 }
 
-/// One inbound Handshake or 0-RTT key. Successful AEAD is only cryptographic
-/// evidence; graph permissions decide which authenticated frames may proceed.
+/// An actual successful Initial/Handshake authentication in one immutable scope.
+/// Construction happens only after AEAD succeeds through its owning receive key.
+/// The exact plaintext is bound with the existing length-prefixed digest. This
+/// does not grant Finished, early delivery, or application-update authority.
+///
+/// ```compile_fail
+/// use hibana_quic::bounded_tls::key_source::AuthenticatedLevelRead;
+/// fn duplicate(receipt: AuthenticatedLevelRead<'_>) {
+///     let first = receipt;
+///     let second = receipt;
+/// }
+/// ```
+/// ```compile_fail
+/// use hibana_quic::{bounded_tls::key_source::AuthenticatedLevelRead,
+///     crypto::{KeyKind, directional::ApplicationKeyScope}};
+/// fn forge(scope: &ApplicationKeyScope) {
+///     let _ = AuthenticatedLevelRead {
+///         scope, kind: KeyKind::Handshake, packet_number: 0,
+///         len: 1, plaintext_digest: [0; 32],
+///     };
+/// }
+/// ```
+#[derive(Debug)]
+#[must_use = "consume the actual authentication in its scoped receive transition"]
+pub struct AuthenticatedLevelRead<'scope> {
+    scope: &'scope ApplicationKeyScope,
+    kind: KeyKind,
+    packet_number: u64,
+    len: usize,
+    plaintext_digest: [u8; 32],
+}
+impl<'scope> AuthenticatedLevelRead<'scope> {
+    pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
+    pub const fn kind(&self) -> KeyKind { self.kind }
+    pub const fn packet_number(&self) -> u64 { self.packet_number }
+    pub const fn len(&self) -> usize { self.len }
+    pub const fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn authenticates_plaintext(&self, plaintext: &[u8]) -> bool {
+        self.len == plaintext.len()
+            && self.plaintext_digest == crate::roles::sealed_packet::plaintext_digest(plaintext)
+    }
+}
+
+/// One inbound Initial, Handshake or 0-RTT key. Successful AEAD is only
+/// cryptographic evidence; graph permissions decide which authenticated frames
+/// may proceed. Only Initial and Handshake can emit AuthenticatedLevelRead.
 pub struct ReceivePacketKey<'scope> { scope: &'scope ApplicationKeyScope, key: PacketKey }
 impl<'scope> ReceivePacketKey<'scope> {
+    /// Trusted direct RX attachment for an actual independently owned Initial
+    /// key. Application and early keys cannot enter this constructor.
+    pub(crate) fn from_initial(
+        scope: &'scope ApplicationKeyScope,
+        key: PacketKey,
+    ) -> Result<Self, crypto::Error> {
+        if key.kind() != KeyKind::Initial { return Err(crypto::Error::KeyDerivation); }
+        key.ensure_active()?;
+        Ok(Self { scope, key })
+    }
     pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
     pub const fn kind(&self) -> KeyKind { self.key.kind() }
     pub fn open(&self, pn: u64, header: &[u8], buffer: &mut [u8], budget: &mut IntegrityBudget)
         -> Result<usize, crypto::Error> { self.key.open(pn, header, buffer, budget) }
+    /// Perform the actual AEAD and issue its affine, scope-bound evidence.
+    /// 0-RTT requires replay/quarantine authority and 1-RTT requires directional
+    /// epoch/ACK barriers, so both are rejected before touching the buffer/budget.
+    /// Existing PacketKey handles nonce validation, limits and failure wiping.
+    pub fn open_authenticated(
+        &self,
+        packet_number: u64,
+        header: &[u8],
+        buffer: &mut [u8],
+        budget: &mut IntegrityBudget,
+    ) -> Result<AuthenticatedLevelRead<'scope>, crypto::Error> {
+        let kind = self.key.kind();
+        if !matches!(kind, KeyKind::Initial | KeyKind::Handshake) {
+            return Err(crypto::Error::KeyDerivation);
+        }
+        let len = self.key.open(packet_number, header, buffer, budget)?;
+        Ok(AuthenticatedLevelRead {
+            scope: self.scope,
+            kind,
+            packet_number,
+            len,
+            plaintext_digest: crate::roles::sealed_packet::plaintext_digest(&buffer[..len]),
+        })
+    }
     pub fn header_mask(&self, sample: &[u8; 16]) -> Result<[u8; 5], crypto::Error> {
         self.key.header_mask(sample)
     }

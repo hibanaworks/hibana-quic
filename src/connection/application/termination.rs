@@ -18,9 +18,14 @@ use hibana::Endpoint;
 
 /// Only these trusted producer continuations construct terminal permission.
 /// It cannot be cloned or reconstructed from a copied error code or sequence.
-struct Permission<'scope> {
+pub(crate) struct Permission<'scope> {
     scope: &'scope ApplicationKeyScope,
     kind: CloseKind,
+}
+
+impl<'scope> Permission<'scope> {
+    pub(crate) fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
+    pub(crate) fn kind(&self) -> CloseKind { self.kind }
 }
 
 pub(crate) struct Exchange<'a, 'gate, 'scope> {
@@ -51,7 +56,7 @@ impl<'a, 'gate, 'scope> Exchange<'a, 'gate, 'scope> {
         }
     }
 
-    fn apply(&self, permission: Permission<'scope>) -> Result<(), Error> {
+    fn apply(&self, permission: &Permission<'scope>) -> Result<(), Error> {
         self.check_scope(permission.scope)?;
         self.control.shutdown(permission.kind)
     }
@@ -117,11 +122,12 @@ pub(crate) async fn cancel_peer(
 /// Observe completion independently of UDP receive and publication. A client
 /// finishes only when its source retired, at least one request was submitted,
 /// each sink consumed FIN, and no retransmittable request chunks remain.
-pub(crate) async fn completion<const RX: usize, const CHUNK: usize>(
+pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usize>(
     endpoint: &mut Endpoint<'_, { p::FILES_EVENT }>,
     exchange: &Exchange<'_, '_, '_>,
     state: &io::State<CHUNK>,
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
+    book: &crate::connection::recovery::CompletionObserver<'_, '_, N>,
     side: Side,
 ) -> Result<(), Error> {
     let sequence = exchange.sequence();
@@ -156,7 +162,7 @@ pub(crate) async fn completion<const RX: usize, const CHUNK: usize>(
                 .try_borrow()
                 .map_err(|_| Error::Binding)?
                 .queued_chunks()?;
-            if queued == 0 {
+            if queued == 0 && book.handshake_confirmed()? && book.ordinary_settled()? {
                 exchange.files.put(Permission {
                     scope: exchange.scope,
                     kind: CloseKind::Local { application: true, code: 0 },
@@ -173,12 +179,14 @@ pub(crate) async fn completion<const RX: usize, const CHUNK: usize>(
 /// Consume the two independent projected terminal lanes concurrently. Each
 /// permission is applied only after receiving its declared wire arm. Finishing
 /// one lane does not cancel or impersonate retirement of the other lane.
-pub(crate) async fn receive(
+pub(crate) async fn receive<'scope>(
     peer: &mut Endpoint<'_, { p::PEER_CLOSE }>,
     files: &mut Endpoint<'_, { p::FILES_CLOSE }>,
-    exchange: &Exchange<'_, '_, '_>,
-) -> Result<(), Error> {
+    exchange: &Exchange<'_, '_, 'scope>,
+) -> Result<Permission<'scope>, Error> {
     let sequence = exchange.sequence();
+    let mut peer_permission = None;
+    let mut files_permission = None;
     let mut peer_done = false;
     let mut files_done = false;
     while !peer_done || !files_done {
@@ -206,7 +214,8 @@ pub(crate) async fn receive(
                         if !matches!(permission.kind, CloseKind::Peer { .. }) {
                             return Err(Error::Binding);
                         }
-                        exchange.apply(permission)?;
+                        exchange.apply(&permission)?;
+                        peer_permission = Some(permission);
                     }
                     45 => {
                         check(offered.recv::<p::PeerFailed>().await?, sequence)?;
@@ -214,7 +223,8 @@ pub(crate) async fn receive(
                         if !matches!(permission.kind, CloseKind::Local { application: false, .. }) {
                             return Err(Error::Binding);
                         }
-                        exchange.apply(permission)?;
+                        exchange.apply(&permission)?;
+                        peer_permission = Some(permission);
                     }
                     46 => {
                         check(offered.recv::<p::PeerCancelled>().await?, sequence)?;
@@ -236,7 +246,8 @@ pub(crate) async fn receive(
                         if !matches!(permission.kind, CloseKind::Local { application: true, code: 0 }) {
                             return Err(Error::Binding);
                         }
-                        exchange.apply(permission)?;
+                        exchange.apply(&permission)?;
+                        files_permission = Some(permission);
                     }
                     49 => {
                         check(offered.recv::<p::ApplicationFailed>().await?, sequence)?;
@@ -244,7 +255,8 @@ pub(crate) async fn receive(
                         if !matches!(permission.kind, CloseKind::Local { application: true, code: 0x100 }) {
                             return Err(Error::Binding);
                         }
-                        exchange.apply(permission)?;
+                        exchange.apply(&permission)?;
+                        files_permission = Some(permission);
                     }
                     50 => {
                         check(offered.recv::<p::CompletionCancelled>().await?, sequence)?;
@@ -260,7 +272,21 @@ pub(crate) async fn receive(
             _ => return Err(Error::Binding),
         }
     }
-    Ok(())
+    // Both lanes have independently settled. The file facet transfers its
+    // actual optional permission to the peer facet before one closing owner
+    // may choose between local closing and authenticated peer draining.
+    let handoff = Inbox::new();
+    handoff.put(files_permission).map_err(|_| Error::Binding)?;
+    let mut from_files = None;
+    crate::runtime::join2(
+        async { files.send::<p::FilesOutcome>(&sequence).await?; Ok::<(), Error>(()) },
+        async {
+            check(peer.recv::<p::FilesOutcome>().await?, sequence)?;
+            from_files = Some(handoff.take().map_err(|_| Error::Binding)?);
+            Ok::<(), Error>(())
+        },
+    ).await?;
+    peer_permission.or(from_files.ok_or(Error::Binding)?).ok_or(Error::Binding)
 }
 
 fn check(actual: u64, expected: u64) -> Result<(), Error> {
