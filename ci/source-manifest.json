@@ -265,7 +265,7 @@
   "tests/TLS_AUTHORITY_TESTS.md": "aab90ef8b40f1b842503397b803f38dd1b1983cc0bbecbf2470fa0eb00c9260d",
   "tests/application_wire.rs": "883407758f60e2a8d51451b7ab84f79d43f2da9a42c0c6e342f93a41b0864484",
   "tests/bounded_trace.rs": "e1aa9656a5e2782bddc621e9b31ebe0c087654ad78690fee36a1cf2b0142a97f",
-  "tests/connected_application.rs": "f0ee7c9481085e8da2b38dbdbbf870c952597eacdb87e19233aa81ae30a44243",
+  "tests/connected_application.rs": "bb2e0adb032c2f6ac9972250007d52611fa1496243461fb8bf31f98e09c07c75",
   "tests/early_owner_no_alloc.rs": "42de02d803d01a8b0d1519f9b85bf54e5960020f3a21db599d8e10e3fd0fe494",
   "tests/ecn_history.rs": "ee3f9e7ae3044e179173eec7bab76d3ff37743aa22d0313e5cbb7876b2d58d23",
   "tests/mailbox_async.rs": "871709ce288846baa32b741b96afcb69bd6d357b05b0fb6b3313cebeea25c205",

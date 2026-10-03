@@ -37,10 +37,10 @@ const SERVER_ID: &[u8] = b"server01";
 const REQUESTS: [&[u8]; STREAMS] = [b"GET /alpha\r\n", b"GET /beta\r\n", b"GET /gamma\r\n"];
 const BODY_SIZES: [usize; STREAMS] = [1537, 2051, 3073];
 
-fn limits() -> Limits {
-    Limits { max_data: 64 * 1024, stream_data_bidi_local: RECEIVE_WINDOW as u64,
+fn limits(side: Side) -> Limits {
+    Limits { max_data: (STREAMS * RECEIVE_WINDOW) as u64, stream_data_bidi_local: RECEIVE_WINDOW as u64,
         stream_data_bidi_remote: RECEIVE_WINDOW as u64, stream_data_uni: 0,
-        max_streams_bidi: STREAMS as u64, max_streams_uni: 0 }
+        max_streams_bidi: if side == Side::Server { STREAMS as u64 } else { 0 }, max_streams_uni: 0 }
 }
 
 fn parameters(id: &[u8], original: Option<&[u8]>) -> Vec<u8> {
@@ -55,7 +55,7 @@ fn parameters(id: &[u8], original: Option<&[u8]>) -> Vec<u8> {
     let mut out = Vec::new();
     field(&mut out, 15, id);
     if let Some(original) = original { field(&mut out, 0, original); }
-    let limits = limits();
+    let limits = limits(if original.is_some() { Side::Server } else { Side::Client });
     for (kind, value) in [(3, DATAGRAM as u64), (4, limits.max_data),
         (5, limits.stream_data_bidi_local), (6, limits.stream_data_bidi_remote),
         (8, limits.max_streams_bidi)] {
@@ -416,6 +416,37 @@ macro_rules! roles {
 fn actual_get_selects_encrypted_body_and_completes_close() { run_connection(1, Loss::None); }
 
 #[test]
+fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
+    use hibana_quic::connection::application_stream::{Error, StreamNumbers};
+    let scope = ApplicationKeyScope::new(101);
+    let mut slots: Vec<_> = (0..STREAMS).map(|_| StreamSlot::<RECEIVE_WINDOW>::EMPTY).collect();
+    let mut chunks: Vec<_> = (0..8).map(|_| SendChunk::<CHUNK>::EMPTY).collect();
+    let mut references = [PacketReference::EMPTY; 64];
+    let mut unbacked = limits(Side::Client);
+    unbacked.max_data = 64 * 1024;
+    assert!(matches!(StreamNumbers::new(&scope, hibana_quic::streams::Role::Client,
+        limits(Side::Server), unbacked, &mut slots, &mut chunks, &mut references),
+        Err(Error::Streams(hibana_quic::streams::Error::InvalidConfiguration))));
+    StreamNumbers::new(&scope, hibana_quic::streams::Role::Client,
+        limits(Side::Server), limits(Side::Client), &mut slots, &mut chunks, &mut references).unwrap();
+}
+
+#[test]
+fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
+    use hibana_quic::connection::application_stream::StreamNumbers;
+    let scope = ApplicationKeyScope::new(102);
+    let mut slots: Vec<_> = (0..STREAMS).map(|_| StreamSlot::<RECEIVE_WINDOW>::EMPTY).collect();
+    let mut chunks: Vec<_> = (0..8).map(|_| SendChunk::<CHUNK>::EMPTY).collect();
+    let mut references = [PacketReference::EMPTY; 64];
+    let mut numbers = StreamNumbers::new(&scope, hibana_quic::streams::Role::Client,
+        limits(Side::Server), limits(Side::Client), &mut slots, &mut chunks, &mut references).unwrap();
+    let mut facets = numbers.split();
+    for id in [0, 4, 8] { assert_eq!(facets.app.open_local().unwrap().id(), id); }
+    assert!(matches!(facets.app.open_local(), Err(hibana_quic::connection::application_stream::Error::Streams(
+        hibana_quic::streams::Error::StreamLimit))));
+}
+
+#[test]
 fn three_distinct_stream_requests_deliver_each_body_and_fin_once() { run_connection(3, Loss::None); }
 
 #[test]
@@ -480,8 +511,11 @@ fn connection_case(count: usize, loss: Loss) {
     let server_outcomes = application::Outcomes::new();
     let client_carrier = CarrierStorage::<1, 16, 128>::new();
     let server_carrier = CarrierStorage::<1, 16, 128>::new();
-    let mut client_slab = [0; 262144];
-    let mut server_slab = [0; 262144];
+    // The host fixture owns these fixed-size rendezvous slabs, as the real
+    // adapter does. Keep them off libtest's default stack; this does not change
+    // any carrier capacity or let the no-alloc core allocate its own storage.
+    let mut client_slab = vec![0; 262144];
+    let mut server_slab = vec![0; 262144];
     let mut client_kit = SessionKitStorage::uninit();
     let mut server_kit = SessionKitStorage::uninit();
     let client_sid = SessionId::new(11);
@@ -516,7 +550,7 @@ fn connection_case(count: usize, loss: Loss) {
     let client_setup = application::Setup {
         config: Config { side: Side::Client, local_connection_id: CLIENT_ID,
             original_destination_id: ORIGINAL, peer_connection_id: ORIGINAL },
-        local_limits: limits(),
+        local_limits: limits(Side::Client),
         handshake_crypto: [CryptoBuffer::new(c0, cm0).unwrap(), CryptoBuffer::new(c1, cm1).unwrap()],
         application: application::Buffers { streams: &mut client_streams, chunks: &mut client_chunks,
             references: &mut client_refs, crypto: CryptoBuffer::new(ca, cma).unwrap() },
@@ -524,7 +558,7 @@ fn connection_case(count: usize, loss: Loss) {
     let server_setup = application::Setup {
         config: Config { side: Side::Server, local_connection_id: SERVER_ID,
             original_destination_id: ORIGINAL, peer_connection_id: CLIENT_ID },
-        local_limits: limits(),
+        local_limits: limits(Side::Server),
         handshake_crypto: [CryptoBuffer::new(s0, sm0).unwrap(), CryptoBuffer::new(s1, sm1).unwrap()],
         application: application::Buffers { streams: &mut server_streams, chunks: &mut server_chunks,
             references: &mut server_refs, crypto: CryptoBuffer::new(sa, sma).unwrap() },
@@ -541,19 +575,23 @@ fn connection_case(count: usize, loss: Loss) {
     let mut sink = Sink { bytes: core::array::from_fn(|_| Vec::new()), finished: [0; STREAMS] };
     let mut client_report = None;
     let mut server_report = None;
-    execute(&clock, hibana_quic::runtime::join2(async {
+    // Pin the connection futures in caller-owned host storage too. The
+    // executor polls a pointer, rather than moving both peers onto its stack.
+    let client = Box::pin(async {
         client_report = Some(application::client::<DATAGRAM, PARAMS, RECEIVE_WINDOW, CHUNK>(
             &mut client_roles, &mut client_transcript, client_setup, &mut client_rx, &mut client_tx,
             &clock, &mut client_issuer, client_stop, &mut client_book, &client_outcomes,
             &mut requests, &mut sink).await?);
         Ok::<(), application::Error>(())
-    }, async {
+    });
+    let server = Box::pin(async {
         server_report = Some(application::server::<DATAGRAM, PARAMS, RECEIVE_WINDOW, CHUNK>(
             &mut server_roles, &mut server_transcript, server_setup, &mut server_rx, &mut server_tx,
             &clock, &mut server_issuer, server_stop, &mut server_book, &server_outcomes,
             &mut handler).await?);
         Ok::<(), application::Error>(())
-    })).unwrap();
+    });
+    execute(&clock, hibana_quic::runtime::join2(client, server)).unwrap();
     let client = client_report.unwrap();
     let server = server_report.unwrap();
     assert_eq!(client_transcript.state(), State::Connected);
