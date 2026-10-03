@@ -18,6 +18,8 @@ pub const PEER_EVENT: u8 = 22;
 pub const PEER_CLOSE: u8 = 23;
 pub const FILES_EVENT: u8 = 24;
 pub const FILES_CLOSE: u8 = 25;
+/// Finite owner of the joined publication, key and terminal retirement grants.
+pub const CLOSE_JOIN: u8 = 26;
 pub const SUBMISSION_RESULT: u16 = 1100;
 
 pub type SourceData = g::Msg<0, u64>;
@@ -97,39 +99,55 @@ pub type PublicationFlow = g::Seq<g::Roll<g::Route<Publish, g::Send<TRANSMIT, AD
 pub type FilesOutcome = g::Msg<52, u64>;
 pub type KeyRetirement = g::Msg<53, u64>;
 pub type CloseAuthority = g::Msg<54, u64>;
+pub type PublicationRetired = g::Msg<55, u64>;
+pub type PeerOutcome = g::Msg<56, u64>;
+pub type KeyRetirementGrant = g::Msg<57, u64>;
+pub type PeerRetirementGrant = g::Msg<58, u64>;
+pub type FilesRetirementGrant = g::Msg<59, u64>;
 pub type FinishedValidated = g::Msg<160, u64>;
 pub type TranscriptStart = g::Msg<161, u64>;
 pub type WriteStart = g::Msg<162, u64>;
 pub type StreamAdmission = g::Msg<163, u64>;
 pub type WriteAdmission = g::Msg<164, u64>;
 pub type ReadAdmission = g::Msg<165, u64>;
+pub type KeyControlAdmission = g::Msg<166, u64>;
+pub type WriteForAdmission = g::Msg<167, u64>;
 
 pub type PeerTerminal = g::Seq<g::Route<g::Send<PEER_EVENT, PEER_CLOSE, PeerClose>, g::Route<g::Send<PEER_EVENT, PEER_CLOSE, PeerFailed>, g::Send<PEER_EVENT, PEER_CLOSE, PeerCancelled>>>, g::Send<PEER_CLOSE, PEER_EVENT, PeerSeen>>;
 pub type FilesTerminal = g::Seq<g::Route<g::Send<FILES_EVENT, FILES_CLOSE, FilesComplete>, g::Route<g::Send<FILES_EVENT, FILES_CLOSE, ApplicationFailed>, g::Send<FILES_EVENT, FILES_CLOSE, CompletionCancelled>>>, g::Send<FILES_CLOSE, FILES_EVENT, CompletionSeen>>;
-pub type Terminal = g::Seq<g::Par<PeerTerminal, FilesTerminal>, g::Send<FILES_CLOSE, PEER_CLOSE, FilesOutcome>>;
+pub type Terminal = g::Par<PeerTerminal, FilesTerminal>;
 pub type Active = g::Par<SourceFlow, g::Par<ReceiveFlow, g::Par<KeyFlow, g::Par<TimerFlow, g::Par<PublicationFlow, Terminal>>>>>;
-pub type Retirement = g::Seq<g::Send<RX_KEYS, PEER_CLOSE, KeyRetirement>, g::Send<PEER_CLOSE, TRANSMIT, CloseAuthority>>;
+pub type Retirement = g::Seq<
+    g::Par<g::Send<TRANSMIT, CLOSE_JOIN, PublicationRetired>,
+        g::Par<g::Seq<g::Send<CLOSE_JOIN, RX_KEYS, KeyRetirementGrant>, g::Send<RX_KEYS, CLOSE_JOIN, KeyRetirement>>,
+            g::Par<g::Seq<g::Send<CLOSE_JOIN, PEER_CLOSE, PeerRetirementGrant>, g::Send<PEER_CLOSE, CLOSE_JOIN, PeerOutcome>>,
+                g::Seq<g::Send<CLOSE_JOIN, FILES_CLOSE, FilesRetirementGrant>, g::Send<FILES_CLOSE, CLOSE_JOIN, FilesOutcome>>>>>,
+    g::Send<CLOSE_JOIN, TRANSMIT, CloseAuthority>>;
 pub type ClosingDraining = g::Seq<g::Route<Closing, Draining>, g::Seq<g::Send<TRANSMIT, ADAPTER, Retire>, g::Send<ADAPTER, TRANSMIT, Retired>>>;
 pub type Flow = g::Seq<Active, g::Seq<Retirement, ClosingDraining>>;
-pub type Startup = g::Seq<g::Send<PREFIX_RX, PREFIX_TLS_RX, FinishedValidated>, g::Seq<g::Send<PREFIX_TLS_RX, RECEIVE, TranscriptStart>, g::Seq<g::Send<RECEIVE, PREFIX_TX, ReadAdmission>, g::Seq<g::Send<PREFIX_TX, TX_KEYS, WriteStart>, g::Seq<g::Send<TX_KEYS, TRANSMIT, WriteAdmission>, g::Send<TRANSMIT, SOURCE, StreamAdmission>>>>>>;
+pub type Startup = g::Seq<
+    g::Par<g::Seq<g::Send<PREFIX_RX, PREFIX_TLS_RX, FinishedValidated>,
+            g::Seq<g::Send<PREFIX_TLS_RX, RECEIVE, TranscriptStart>, g::Send<RECEIVE, TX_KEYS, ReadAdmission>>>,
+        g::Seq<g::Send<PREFIX_TX, TX_KEYS, WriteStart>, g::Send<TX_KEYS, PREFIX_RX, WriteForAdmission>>>,
+    g::Seq<g::Send<TX_KEYS, RX_KEYS, KeyControlAdmission>,
+        g::Seq<g::Send<TX_KEYS, TRANSMIT, WriteAdmission>, g::Send<TRANSMIT, SOURCE, StreamAdmission>>>>;
 
 fn startup() -> g::Program<Startup> {
-    g::seq(
+    // The write continuation visits RX for the actual Finished/parameter/scope
+    // check. Its owned bundle then returns through the transcript/read path.
+    // RX cannot publish FinishedValidated before receiving WriteForAdmission,
+    // so a capacity-one carrier has no unordered arrivals at TX_KEYS.
+    let authenticated_read = g::seq(
         g::send::<PREFIX_RX, PREFIX_TLS_RX, FinishedValidated>(),
-        g::seq(
-            g::send::<PREFIX_TLS_RX, RECEIVE, TranscriptStart>(),
-            g::seq(
-                g::send::<RECEIVE, PREFIX_TX, ReadAdmission>(),
-                g::seq(
-                    g::send::<PREFIX_TX, TX_KEYS, WriteStart>(),
-                    g::seq(
-                        g::send::<TX_KEYS, TRANSMIT, WriteAdmission>(),
-                        g::send::<TRANSMIT, SOURCE, StreamAdmission>(),
-                    ),
-                ),
-            ),
-        ),
-    )
+        g::seq(g::send::<PREFIX_TLS_RX, RECEIVE, TranscriptStart>(),
+            g::send::<RECEIVE, TX_KEYS, ReadAdmission>()),
+    );
+    let settled_write = g::seq(g::send::<PREFIX_TX, TX_KEYS, WriteStart>(),
+        g::send::<TX_KEYS, PREFIX_RX, WriteForAdmission>());
+    g::seq(g::par(authenticated_read, settled_write),
+        g::seq(g::send::<TX_KEYS, RX_KEYS, KeyControlAdmission>(),
+            g::seq(g::send::<TX_KEYS, TRANSMIT, WriteAdmission>(),
+                g::send::<TRANSMIT, SOURCE, StreamAdmission>())))
 }
 
 pub fn choreography() -> g::Program<Flow> {
@@ -217,16 +235,26 @@ pub fn choreography() -> g::Program<Flow> {
         ),
         g::send::<FILES_CLOSE, FILES_EVENT, CompletionSeen>(),
     );
-    let terminal = g::seq(g::par(peer, files), g::send::<FILES_CLOSE, PEER_CLOSE, FilesOutcome>());
+    let terminal = g::par(peer, files);
 
     // Each lane is an actual bounded IO/key/clock continuation. They all finish
     // before the closing capability and sole write key can be transferred.
     let ordinary = g::par(source,
         g::par(receive, g::par(keys, g::par(timer, g::par(publication, terminal)))),
     );
+    // The fresh close owner passes the actual accumulated grant to one
+    // retired owner at a time. Each response requires consuming that grant;
+    // no unsolicited input can occupy a capacity-one carrier ahead of it.
+    let retired_keys = g::seq(g::send::<CLOSE_JOIN, RX_KEYS, KeyRetirementGrant>(),
+        g::send::<RX_KEYS, CLOSE_JOIN, KeyRetirement>());
+    let retired_peer = g::seq(g::send::<CLOSE_JOIN, PEER_CLOSE, PeerRetirementGrant>(),
+        g::send::<PEER_CLOSE, CLOSE_JOIN, PeerOutcome>());
+    let retired_files = g::seq(g::send::<CLOSE_JOIN, FILES_CLOSE, FilesRetirementGrant>(),
+        g::send::<FILES_CLOSE, CLOSE_JOIN, FilesOutcome>());
     let retirement = g::seq(
-        g::send::<RX_KEYS, PEER_CLOSE, KeyRetirement>(),
-        g::send::<PEER_CLOSE, TRANSMIT, CloseAuthority>(),
+        g::par(g::send::<TRANSMIT, CLOSE_JOIN, PublicationRetired>(),
+            g::par(retired_keys, g::par(retired_peer, retired_files))),
+        g::send::<CLOSE_JOIN, TRANSMIT, CloseAuthority>(),
     );
 
     let close_packet = g::seq(
@@ -258,6 +286,7 @@ pub struct Programs {
     pub transmit: RoleProgram<TRANSMIT>, pub adapter: RoleProgram<ADAPTER>,
     pub peer_event: RoleProgram<PEER_EVENT>, pub peer_close: RoleProgram<PEER_CLOSE>,
     pub files_event: RoleProgram<FILES_EVENT>, pub files_close: RoleProgram<FILES_CLOSE>,
+    pub close_join: RoleProgram<CLOSE_JOIN>,
 }
 
 /// One projected session includes the actual TLS prefix and every subsequent
@@ -273,6 +302,6 @@ pub fn programs() -> Programs {
         source: project(&global), ingress: project(&global), receive: project(&global), sink: project(&global),
         rx_keys: project(&global), tx_keys: project(&global), clock: project(&global), tx_clock: project(&global),
         transmit: project(&global), adapter: project(&global), peer_event: project(&global), peer_close: project(&global),
-        files_event: project(&global), files_close: project(&global),
+        files_event: project(&global), files_close: project(&global), close_join: project(&global),
     }
 }

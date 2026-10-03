@@ -176,6 +176,18 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
     }
 }
 
+/// The two terminal facets retain their separate affine results until the
+/// post-ordinary close owner requests and consumes each result.
+pub(crate) struct TerminalOutcomes<'scope> {
+    peer: Option<Permission<'scope>>,
+    files: Option<Permission<'scope>>,
+}
+impl<'scope> TerminalOutcomes<'scope> {
+    pub(crate) fn into_parts(self) -> (Option<Permission<'scope>>, Option<Permission<'scope>>) {
+        (self.peer, self.files)
+    }
+}
+
 /// Consume the two independent projected terminal lanes concurrently. Each
 /// permission is applied only after receiving its declared wire arm. Finishing
 /// one lane does not cancel or impersonate retirement of the other lane.
@@ -183,7 +195,7 @@ pub(crate) async fn receive<'scope>(
     peer: &mut Endpoint<'_, { p::PEER_CLOSE }>,
     files: &mut Endpoint<'_, { p::FILES_CLOSE }>,
     exchange: &Exchange<'_, '_, 'scope>,
-) -> Result<Permission<'scope>, Error> {
+) -> Result<TerminalOutcomes<'scope>, Error> {
     let sequence = exchange.sequence();
     let mut peer_permission = None;
     let mut files_permission = None;
@@ -289,21 +301,7 @@ pub(crate) async fn receive<'scope>(
             }
         }
     }
-    // Both lanes have independently settled. The file facet transfers its
-    // actual optional permission to the peer facet before one closing owner
-    // may choose between local closing and authenticated peer draining.
-    let handoff = Inbox::new();
-    handoff.put(files_permission).map_err(|_| Error::Binding)?;
-    let mut from_files = None;
-    crate::runtime::join2(
-        async { files.send::<p::FilesOutcome>(&sequence).await?; Ok::<(), Error>(()) },
-        async {
-            check(peer.recv::<p::FilesOutcome>().await?, sequence)?;
-            from_files = Some(handoff.take().map_err(|_| Error::Binding)?);
-            Ok::<(), Error>(())
-        },
-    ).await?;
-    peer_permission.or(from_files.ok_or(Error::Binding)?).ok_or(Error::Binding)
+    Ok(TerminalOutcomes { peer: peer_permission, files: files_permission })
 }
 
 fn check(actual: u64, expected: u64) -> Result<(), Error> {

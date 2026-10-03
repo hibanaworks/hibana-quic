@@ -80,7 +80,8 @@ async fn connected<'scope, const N: usize, const P: usize, const RX: usize, cons
     };
     let (received, write, transcript) = startup::transfer(roles, source, config, read, write).await?;
     let owner = keys::KeyOwner::new(scope, write)?;
-    let (peer, writer) = startup::admit(roles, received.peer, &owner).await?;
+    let exchange = keys::Exchange::new(&owner);
+    let (peer, writer, rx_control) = startup::admit(roles, received.peer, &owner, &exchange).await?;
     if peer.max_udp_payload() < (CHUNK + 192) as u64 { return Err(Error::Capacity); }
     let peer_id = ConnectionId::new(received.material.peer_connection_id())?;
     let confirmation = book.bind_validated_peer(&peer)?;
@@ -95,7 +96,6 @@ async fn connected<'scope, const N: usize, const P: usize, const RX: usize, cons
     let control = Control::new(stop);
     let state = io::State::<CHUNK>::new();
     let publication_state = transmit::State::new(book_publication, publication);
-    let exchange = keys::Exchange::new(&owner);
     let terminal = termination::Exchange::new(&control, scope);
     let mut request_slots = [const { None }; io::REQUEST_CAPACITY];
     let requests = Mailbox::<io::OwnedRequest, {io::REQUEST_CAPACITY}>::new(&mut request_slots).map_err(|_| Error::Capacity)?;
@@ -131,7 +131,7 @@ async fn connected<'scope, const N: usize, const P: usize, const RX: usize, cons
         let mut receiving = pin!(async {
             quiesced = Some(receive::run::<N, RX, CHUNK>(&mut roles.receive, &mut roles.rx_keys,
                 &mut roles.peer_event, received.material, config, transcript, buffers.crypto,
-                &mut book_rx, &mut rx, &app, &state, keys::RxControl::new(&exchange),
+                &mut book_rx, &mut rx, &app, &state, rx_control,
                 &control, clock, receive_io, &terminal, confirmation).await?);
             Ok::<(), Error>(())
         });

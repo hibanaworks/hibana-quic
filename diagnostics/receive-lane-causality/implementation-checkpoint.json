@@ -1,0 +1,48 @@
+{
+  "source_base": "74280de429eb37f86b9aa2e9f9573735eb65f53b",
+  "status": "Source patch; Python receive-causality models executed; no Rust compilation or runtime execution",
+  "modeled": {
+    "events": 173,
+    "markers": 306,
+    "lanes": 4,
+    "structured_failures": 0,
+    "roll_reentry_failures": 0
+  },
+  "files": [
+    {
+      "path": "src/connection/application/protocol.rs",
+      "bytes": 16235,
+      "sha256": "540af68a72cb166acc08c4a1bd8bcd31330bb2bf036214a410c67f9fbeb12e42"
+    },
+    {
+      "path": "src/connection/application/startup.rs",
+      "bytes": 12186,
+      "sha256": "0f8d95e872277305e59772db627226c7686626a7c9e81033b3cdcef94296e709"
+    },
+    {
+      "path": "src/connection/application/termination.rs",
+      "bytes": 12777,
+      "sha256": "5851747cb3cb892fd8856f49ebb1350bf62647f6fba17c44dae8c808552dbd86"
+    },
+    {
+      "path": "src/connection/application/mod.rs",
+      "bytes": 7921,
+      "sha256": "18e5a4d4e3bccc5d52ecb44ab8cb3a6cdebfab23dfb4057a4fd6469cc059367c"
+    },
+    {
+      "path": "src/connection/application/run.rs",
+      "bytes": 11944,
+      "sha256": "e2383409366c25c6f04456cfc7b18933a7af1aea4af9a8b6d5275ee88bb05a9d"
+    },
+    {
+      "path": "tests/connected_application.rs",
+      "bytes": 30444,
+      "sha256": "f0ee7c9481085e8da2b38dbdbbf870c952597eacdb87e19233aa81ae30a44243"
+    },
+    {
+      "path": "adapters/host/src/bin/support/direct_bootstrap.rs",
+      "bytes": 7578,
+      "sha256": "aa2e47504ceb8bd159a4e2ba78415c8fd2876a8b25dc975b56a34f36c600305f"
+    }
+  ]
+}

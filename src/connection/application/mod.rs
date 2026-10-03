@@ -94,6 +94,7 @@ pub struct Roles<'a> {
     pub peer_close: Endpoint<'a, {protocol::PEER_CLOSE}>,
     pub files_event: Endpoint<'a, {protocol::FILES_EVENT}>,
     pub files_close: Endpoint<'a, {protocol::FILES_CLOSE}>,
+    pub close_join: Endpoint<'a, {protocol::CLOSE_JOIN}>,
 }
 
 #[derive(Debug)]

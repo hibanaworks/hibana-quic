@@ -32,3 +32,7 @@ The dedicated recovery compile diagnostic records interoperability as NOT_RUN. T
 GitHub run 37113879862 checked source29569a5 using official pinned Rust1.95. Source audit passed; compilation failed on four library borrow/lifetime diagnostics and one test error-type inference site. See artifacts/reconstruction/compile-29569a5.json and its source-only compiler log. Runtime tests and interoperability remain NOT_RUN. Subsequent fixes require a fresh compiler run.
 
 Source c8a1809 passed both Rust1.95 cargo-check stages in run37114351857. The next diagnostic stage runs application_wire, connected_application and host hq runtime suites with unchanged assertions/default stack limits. Formal interoperability remains NOT_RUN until the recovery-diagnostics marker is removed.
+
+Run37115827016 on74280de passed type checking but failed code generation when Hibana evaluated the complete choreography: a receive-lane sender change lacks an explicit causal handoff. No runtime tests executed. The global/local capability flow is being corrected; this is not classified as a Hibana core defect.
+
+The next ownership-flow patch replaces the missing handoffs with actual key/Finished/retirement capability transfers. Two source-level Python ports now agree on173events/306markers/4lanes and zero modeled receive-causality violations. This is not a Rust validation or runtime pass. Capacity-one progress and all existing execution assertions remain mandatory.

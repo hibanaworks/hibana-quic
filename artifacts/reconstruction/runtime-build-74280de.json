@@ -1,0 +1,11 @@
+{
+  "source_commit": "74280de429eb37f86b9aa2e9f9573735eb65f53b",
+  "run_id": 37115827016,
+  "job_id": 111182346274,
+  "typecheck": "PASSED",
+  "code_generation": "FAILED",
+  "diagnostic": "E0080: receive lane sender change requires a causal handoff or exclusive route arms",
+  "runtime_tests": "NOT_RUN",
+  "interop": "NOT_RUN",
+  "cause_classification": "combined QUIC choreography missing explicit receive-sender causal handoffs; no core fix proposed"
+}

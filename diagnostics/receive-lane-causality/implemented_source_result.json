@@ -1,0 +1,1745 @@
+{
+  "source_base": "74280de429eb37f86b9aa2e9f9573735eb65f53b",
+  "caveat": "Executed source-level Python models only. Not Rust compilation, Hibana global validation, runtime, QUIC or interop execution.",
+  "source_sha256": {
+    "src/connection/protocol.rs": "2a7a15876cd81c828f4f07449a4c35e73a0c6b48cc3593229d002a6bd7f7c425",
+    "src/connection/application/protocol.rs": "540af68a72cb166acc08c4a1bd8bcd31330bb2bf036214a410c67f9fbeb12e42"
+  },
+  "events": 173,
+  "markers": 306,
+  "lane_span": 4,
+  "structured_failures": [],
+  "roll_reentry_failures": [],
+  "event_rows": [
+    {
+      "index": 0,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "InitialReceive.Need",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 1,
+      "from": 0,
+      "from_name": "RX",
+      "to": 1,
+      "to_name": "TLS_RX",
+      "message": "InitialReceive.Input",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 2,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "InitialReceive.Accepted",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 3,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "InitialReceive.Rejected",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 4,
+      "from": 0,
+      "from_name": "RX",
+      "to": 1,
+      "to_name": "TLS_RX",
+      "message": "InitialReceive.Taken",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 5,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "InitialReceive.Boundary",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 6,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "ReadHandshake",
+      "lane": 0,
+      "origin": "prefix:ReceiveFlow:53"
+    },
+    {
+      "index": 7,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "HandshakeReceive.Need",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 8,
+      "from": 0,
+      "from_name": "RX",
+      "to": 1,
+      "to_name": "TLS_RX",
+      "message": "HandshakeReceive.Input",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 9,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "HandshakeReceive.Accepted",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 10,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "HandshakeReceive.Rejected",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 11,
+      "from": 0,
+      "from_name": "RX",
+      "to": 1,
+      "to_name": "TLS_RX",
+      "message": "HandshakeReceive.Taken",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 12,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "HandshakeReceive.Boundary",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 13,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "ReadApplication",
+      "lane": 0,
+      "origin": "prefix:ReceiveFlow:53"
+    },
+    {
+      "index": 14,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "FinishedReceive.Need",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 15,
+      "from": 0,
+      "from_name": "RX",
+      "to": 1,
+      "to_name": "TLS_RX",
+      "message": "FinishedReceive.Input",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 16,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "FinishedReceive.Accepted",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 17,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "FinishedReceive.Rejected",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 18,
+      "from": 0,
+      "from_name": "RX",
+      "to": 1,
+      "to_name": "TLS_RX",
+      "message": "FinishedReceive.Taken",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 19,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "FinishedReceive.Boundary",
+      "lane": 0,
+      "origin": "prefix:RxWork:25"
+    },
+    {
+      "index": 20,
+      "from": 0,
+      "from_name": "RX",
+      "to": 1,
+      "to_name": "TLS_RX",
+      "message": "ReceiveComplete",
+      "lane": 0,
+      "origin": "prefix:ReceiveTail:51"
+    },
+    {
+      "index": 21,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 0,
+      "to_name": "RX",
+      "message": "ReceiveContinuation",
+      "lane": 0,
+      "origin": "prefix:ReceiveTail:51"
+    },
+    {
+      "index": 22,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "InitialTransmit.Request",
+      "lane": 0,
+      "origin": "prefix:SourceWork:30"
+    },
+    {
+      "index": 23,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "InitialTransmit.Flight",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 24,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "InitialTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 25,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "InitialTransmit.Idle",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 26,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "InitialTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 27,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "InitialTransmit.Boundary",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 28,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "InitialTransmit.Data.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 29,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "InitialTransmit.Data.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 30,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "InitialTransmit.Data.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 31,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "InitialTransmit.Data.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 32,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "InitialTransmit.Ack.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 33,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "InitialTransmit.Ack.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 34,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "InitialTransmit.Ack.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 35,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "InitialTransmit.Ack.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 36,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "InitialTransmit.Probe.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 37,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "InitialTransmit.Probe.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 38,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "InitialTransmit.Probe.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 39,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "InitialTransmit.Probe.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 40,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "InitialTransmit.WireBoundary",
+      "lane": 0,
+      "origin": "prefix:WireWork:31"
+    },
+    {
+      "index": 41,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "InitialTransmit.WireBoundarySeen",
+      "lane": 0,
+      "origin": "prefix:WireWork:31"
+    },
+    {
+      "index": 42,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "InitialTransmit.PhaseSettled",
+      "lane": 0,
+      "origin": "prefix:TxWork:32"
+    },
+    {
+      "index": 43,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "WriteHandshake",
+      "lane": 0,
+      "origin": "prefix:TransmitFlow:62"
+    },
+    {
+      "index": 44,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "HandshakeTransmit.Request",
+      "lane": 0,
+      "origin": "prefix:SourceWork:30"
+    },
+    {
+      "index": 45,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "HandshakeTransmit.Flight",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 46,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "HandshakeTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 47,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "HandshakeTransmit.Idle",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 48,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "HandshakeTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 49,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "HandshakeTransmit.Boundary",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 50,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.Data.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 51,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.Data.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 52,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.Data.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 53,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.Data.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 54,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.Ack.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 55,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.Ack.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 56,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.Ack.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 57,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.Ack.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 58,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.Probe.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 59,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.Probe.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 60,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.Probe.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 61,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.Probe.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 62,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.WireBoundary",
+      "lane": 0,
+      "origin": "prefix:WireWork:31"
+    },
+    {
+      "index": 63,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.WireBoundarySeen",
+      "lane": 0,
+      "origin": "prefix:WireWork:31"
+    },
+    {
+      "index": 64,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "HandshakeTransmit.PhaseSettled",
+      "lane": 0,
+      "origin": "prefix:TxWork:32"
+    },
+    {
+      "index": 65,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "WriteApplication",
+      "lane": 0,
+      "origin": "prefix:TransmitFlow:62"
+    },
+    {
+      "index": 66,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "ApplicationTransmit.Request",
+      "lane": 0,
+      "origin": "prefix:SourceWork:30"
+    },
+    {
+      "index": 67,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "ApplicationTransmit.Flight",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 68,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "ApplicationTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 69,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "ApplicationTransmit.Idle",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 70,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "ApplicationTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 71,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "ApplicationTransmit.Boundary",
+      "lane": 0,
+      "origin": "prefix:TxResponse:29"
+    },
+    {
+      "index": 72,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Data.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 73,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Data.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 74,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Data.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 75,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Data.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 76,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Ack.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 77,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Ack.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 78,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Ack.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 79,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Ack.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 80,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Probe.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 81,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Probe.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 82,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Probe.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 83,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Probe.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 84,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.WireBoundary",
+      "lane": 0,
+      "origin": "prefix:WireWork:31"
+    },
+    {
+      "index": 85,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.WireBoundarySeen",
+      "lane": 0,
+      "origin": "prefix:WireWork:31"
+    },
+    {
+      "index": 86,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "ApplicationTransmit.PhaseSettled",
+      "lane": 0,
+      "origin": "prefix:TxWork:32"
+    },
+    {
+      "index": 87,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "DrainAck.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 88,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "DrainAck.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 89,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "DrainAck.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 90,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "DrainAck.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 91,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "DrainProbe.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 92,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "DrainProbe.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 93,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "DrainProbe.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 94,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "DrainProbe.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:27"
+    },
+    {
+      "index": 95,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeRecoveryTransferred",
+      "lane": 0,
+      "origin": "prefix:DrainFlow:57"
+    },
+    {
+      "index": 96,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "TransmitComplete",
+      "lane": 0,
+      "origin": "prefix:CompleteFlow:59"
+    },
+    {
+      "index": 97,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "TransmitContinuation",
+      "lane": 0,
+      "origin": "prefix:CompleteFlow:59"
+    },
+    {
+      "index": 98,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "AdapterComplete",
+      "lane": 0,
+      "origin": "prefix:CompleteFlow:59"
+    },
+    {
+      "index": 99,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "AdapterRetired",
+      "lane": 0,
+      "origin": "prefix:CompleteFlow:59"
+    },
+    {
+      "index": 100,
+      "from": 5,
+      "from_name": "TIMER",
+      "to": 6,
+      "to_name": "TIMER_TX",
+      "message": "TimerExpired",
+      "lane": 0,
+      "origin": "prefix:TimerFlow:67"
+    },
+    {
+      "index": 101,
+      "from": 6,
+      "from_name": "TIMER_TX",
+      "to": 5,
+      "to_name": "TIMER",
+      "message": "TimerTaken",
+      "lane": 0,
+      "origin": "prefix:TimerFlow:67"
+    },
+    {
+      "index": 102,
+      "from": 5,
+      "from_name": "TIMER",
+      "to": 6,
+      "to_name": "TIMER_TX",
+      "message": "TimerRetired",
+      "lane": 0,
+      "origin": "prefix:TimerFlow:67"
+    },
+    {
+      "index": 103,
+      "from": 6,
+      "from_name": "TIMER_TX",
+      "to": 5,
+      "to_name": "TIMER",
+      "message": "TimerAcknowledged",
+      "lane": 0,
+      "origin": "prefix:TimerFlow:67"
+    },
+    {
+      "index": 104,
+      "from": 18,
+      "from_name": "INITIAL_EVENT",
+      "to": 19,
+      "to_name": "INITIAL_OWNER",
+      "message": "ClientInitialRetire",
+      "lane": 0,
+      "origin": "prefix:InitialRetirementFlow:47"
+    },
+    {
+      "index": 105,
+      "from": 18,
+      "from_name": "INITIAL_EVENT",
+      "to": 19,
+      "to_name": "INITIAL_OWNER",
+      "message": "ServerInitialRetire",
+      "lane": 0,
+      "origin": "prefix:InitialRetirementFlow:47"
+    },
+    {
+      "index": 106,
+      "from": 19,
+      "from_name": "INITIAL_OWNER",
+      "to": 18,
+      "to_name": "INITIAL_EVENT",
+      "message": "InitialRetired",
+      "lane": 0,
+      "origin": "prefix:InitialRetirementFlow:47"
+    },
+    {
+      "index": 107,
+      "from": 0,
+      "from_name": "RX",
+      "to": 1,
+      "to_name": "TLS_RX",
+      "message": "FinishedValidated",
+      "lane": 0,
+      "origin": "app:Startup:128"
+    },
+    {
+      "index": 108,
+      "from": 1,
+      "from_name": "TLS_RX",
+      "to": 10,
+      "to_name": "RECEIVE",
+      "message": "TranscriptStart",
+      "lane": 0,
+      "origin": "app:Startup:128"
+    },
+    {
+      "index": 109,
+      "from": 10,
+      "from_name": "RECEIVE",
+      "to": 13,
+      "to_name": "TX_KEYS",
+      "message": "ReadAdmission",
+      "lane": 0,
+      "origin": "app:Startup:128"
+    },
+    {
+      "index": 110,
+      "from": 2,
+      "from_name": "TX",
+      "to": 13,
+      "to_name": "TX_KEYS",
+      "message": "WriteStart",
+      "lane": 1,
+      "origin": "app:Startup:128"
+    },
+    {
+      "index": 111,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 0,
+      "to_name": "RX",
+      "message": "WriteForAdmission",
+      "lane": 1,
+      "origin": "app:Startup:128"
+    },
+    {
+      "index": 112,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 12,
+      "to_name": "RX_KEYS",
+      "message": "KeyControlAdmission",
+      "lane": 0,
+      "origin": "app:Startup:128"
+    },
+    {
+      "index": 113,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "WriteAdmission",
+      "lane": 0,
+      "origin": "app:Startup:128"
+    },
+    {
+      "index": 114,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 8,
+      "to_name": "SOURCE",
+      "message": "StreamAdmission",
+      "lane": 0,
+      "origin": "app:Startup:128"
+    },
+    {
+      "index": 115,
+      "from": 8,
+      "from_name": "SOURCE",
+      "to": 9,
+      "to_name": "INGRESS",
+      "message": "SourceData",
+      "lane": 0,
+      "origin": "app:SourceFlow:80"
+    },
+    {
+      "index": 116,
+      "from": 9,
+      "from_name": "INGRESS",
+      "to": 8,
+      "to_name": "SOURCE",
+      "message": "SourceAccepted",
+      "lane": 0,
+      "origin": "app:SourceFlow:80"
+    },
+    {
+      "index": 117,
+      "from": 9,
+      "from_name": "INGRESS",
+      "to": 8,
+      "to_name": "SOURCE",
+      "message": "SourceRejected",
+      "lane": 0,
+      "origin": "app:SourceFlow:80"
+    },
+    {
+      "index": 118,
+      "from": 8,
+      "from_name": "SOURCE",
+      "to": 9,
+      "to_name": "INGRESS",
+      "message": "SourceTaken",
+      "lane": 0,
+      "origin": "app:SourceFlow:80"
+    },
+    {
+      "index": 119,
+      "from": 8,
+      "from_name": "SOURCE",
+      "to": 9,
+      "to_name": "INGRESS",
+      "message": "SourceDone",
+      "lane": 0,
+      "origin": "app:SourceFlow:80"
+    },
+    {
+      "index": 120,
+      "from": 9,
+      "from_name": "INGRESS",
+      "to": 8,
+      "to_name": "SOURCE",
+      "message": "SourceRetired",
+      "lane": 0,
+      "origin": "app:SourceFlow:80"
+    },
+    {
+      "index": 121,
+      "from": 10,
+      "from_name": "RECEIVE",
+      "to": 11,
+      "to_name": "SINK",
+      "message": "ReceivedData",
+      "lane": 0,
+      "origin": "app:ReceiveFlow:83"
+    },
+    {
+      "index": 122,
+      "from": 11,
+      "from_name": "SINK",
+      "to": 10,
+      "to_name": "RECEIVE",
+      "message": "ReceivedMore",
+      "lane": 0,
+      "origin": "app:ReceiveFlow:83"
+    },
+    {
+      "index": 123,
+      "from": 11,
+      "from_name": "SINK",
+      "to": 10,
+      "to_name": "RECEIVE",
+      "message": "ReceivedFin",
+      "lane": 0,
+      "origin": "app:ReceiveFlow:83"
+    },
+    {
+      "index": 124,
+      "from": 10,
+      "from_name": "RECEIVE",
+      "to": 11,
+      "to_name": "SINK",
+      "message": "ReceiveRetire",
+      "lane": 0,
+      "origin": "app:ReceiveFlow:83"
+    },
+    {
+      "index": 125,
+      "from": 11,
+      "from_name": "SINK",
+      "to": 10,
+      "to_name": "RECEIVE",
+      "message": "ReceiveRetired",
+      "lane": 0,
+      "origin": "app:ReceiveFlow:83"
+    },
+    {
+      "index": 126,
+      "from": 12,
+      "from_name": "RX_KEYS",
+      "to": 13,
+      "to_name": "TX_KEYS",
+      "message": "PeerUpdate",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 127,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 12,
+      "to_name": "RX_KEYS",
+      "message": "WriteInstalled",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 128,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 12,
+      "to_name": "RX_KEYS",
+      "message": "UpdateFailed",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 129,
+      "from": 12,
+      "from_name": "RX_KEYS",
+      "to": 13,
+      "to_name": "TX_KEYS",
+      "message": "KeyAck",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 130,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 12,
+      "to_name": "RX_KEYS",
+      "message": "KeyAckApplied",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 131,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 12,
+      "to_name": "RX_KEYS",
+      "message": "KeyAckFailed",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 132,
+      "from": 12,
+      "from_name": "RX_KEYS",
+      "to": 13,
+      "to_name": "TX_KEYS",
+      "message": "Confirmed",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 133,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 12,
+      "to_name": "RX_KEYS",
+      "message": "ConfirmationApplied",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 134,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 12,
+      "to_name": "RX_KEYS",
+      "message": "ConfirmationFailed",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 135,
+      "from": 12,
+      "from_name": "RX_KEYS",
+      "to": 13,
+      "to_name": "TX_KEYS",
+      "message": "KeysRetire",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 136,
+      "from": 13,
+      "from_name": "TX_KEYS",
+      "to": 12,
+      "to_name": "RX_KEYS",
+      "message": "KeysRetired",
+      "lane": 0,
+      "origin": "app:KeyFlow:86"
+    },
+    {
+      "index": 137,
+      "from": 14,
+      "from_name": "CLOCK",
+      "to": 15,
+      "to_name": "TX_CLOCK",
+      "message": "Expired",
+      "lane": 0,
+      "origin": "app:TimerFlow:91"
+    },
+    {
+      "index": 138,
+      "from": 15,
+      "from_name": "TX_CLOCK",
+      "to": 14,
+      "to_name": "CLOCK",
+      "message": "TimerTaken",
+      "lane": 0,
+      "origin": "app:TimerFlow:91"
+    },
+    {
+      "index": 139,
+      "from": 14,
+      "from_name": "CLOCK",
+      "to": 15,
+      "to_name": "TX_CLOCK",
+      "message": "ClockRetired",
+      "lane": 0,
+      "origin": "app:TimerFlow:91"
+    },
+    {
+      "index": 140,
+      "from": 15,
+      "from_name": "TX_CLOCK",
+      "to": 14,
+      "to_name": "CLOCK",
+      "message": "ClockAcknowledged",
+      "lane": 0,
+      "origin": "app:TimerFlow:91"
+    },
+    {
+      "index": 141,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 17,
+      "to_name": "ADAPTER",
+      "message": "Datagram",
+      "lane": 0,
+      "origin": "app:Publish:94"
+    },
+    {
+      "index": 142,
+      "from": 17,
+      "from_name": "ADAPTER",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "Accepted",
+      "lane": 0,
+      "origin": "app:Publish:94"
+    },
+    {
+      "index": 143,
+      "from": 17,
+      "from_name": "ADAPTER",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "Rejected",
+      "lane": 0,
+      "origin": "app:Publish:94"
+    },
+    {
+      "index": 144,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 17,
+      "to_name": "ADAPTER",
+      "message": "Settled",
+      "lane": 0,
+      "origin": "app:Publish:94"
+    },
+    {
+      "index": 145,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 17,
+      "to_name": "ADAPTER",
+      "message": "StopPublication",
+      "lane": 0,
+      "origin": "app:PublicationFlow:98"
+    },
+    {
+      "index": 146,
+      "from": 17,
+      "from_name": "ADAPTER",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "PublicationStopped",
+      "lane": 0,
+      "origin": "app:PublicationFlow:98"
+    },
+    {
+      "index": 147,
+      "from": 22,
+      "from_name": "PEER_EVENT",
+      "to": 23,
+      "to_name": "PEER_CLOSE",
+      "message": "PeerClose",
+      "lane": 0,
+      "origin": "app:PeerTerminal:116"
+    },
+    {
+      "index": 148,
+      "from": 22,
+      "from_name": "PEER_EVENT",
+      "to": 23,
+      "to_name": "PEER_CLOSE",
+      "message": "PeerFailed",
+      "lane": 0,
+      "origin": "app:PeerTerminal:116"
+    },
+    {
+      "index": 149,
+      "from": 22,
+      "from_name": "PEER_EVENT",
+      "to": 23,
+      "to_name": "PEER_CLOSE",
+      "message": "PeerCancelled",
+      "lane": 0,
+      "origin": "app:PeerTerminal:116"
+    },
+    {
+      "index": 150,
+      "from": 23,
+      "from_name": "PEER_CLOSE",
+      "to": 22,
+      "to_name": "PEER_EVENT",
+      "message": "PeerSeen",
+      "lane": 0,
+      "origin": "app:PeerTerminal:116"
+    },
+    {
+      "index": 151,
+      "from": 24,
+      "from_name": "FILES_EVENT",
+      "to": 25,
+      "to_name": "FILES_CLOSE",
+      "message": "FilesComplete",
+      "lane": 0,
+      "origin": "app:FilesTerminal:117"
+    },
+    {
+      "index": 152,
+      "from": 24,
+      "from_name": "FILES_EVENT",
+      "to": 25,
+      "to_name": "FILES_CLOSE",
+      "message": "ApplicationFailed",
+      "lane": 0,
+      "origin": "app:FilesTerminal:117"
+    },
+    {
+      "index": 153,
+      "from": 24,
+      "from_name": "FILES_EVENT",
+      "to": 25,
+      "to_name": "FILES_CLOSE",
+      "message": "CompletionCancelled",
+      "lane": 0,
+      "origin": "app:FilesTerminal:117"
+    },
+    {
+      "index": 154,
+      "from": 25,
+      "from_name": "FILES_CLOSE",
+      "to": 24,
+      "to_name": "FILES_EVENT",
+      "message": "CompletionSeen",
+      "lane": 0,
+      "origin": "app:FilesTerminal:117"
+    },
+    {
+      "index": 155,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 26,
+      "to_name": "CLOSE_JOIN",
+      "message": "PublicationRetired",
+      "lane": 0,
+      "origin": "app:Retirement:120"
+    },
+    {
+      "index": 156,
+      "from": 26,
+      "from_name": "CLOSE_JOIN",
+      "to": 12,
+      "to_name": "RX_KEYS",
+      "message": "KeyRetirementGrant",
+      "lane": 1,
+      "origin": "app:Retirement:120"
+    },
+    {
+      "index": 157,
+      "from": 12,
+      "from_name": "RX_KEYS",
+      "to": 26,
+      "to_name": "CLOSE_JOIN",
+      "message": "KeyRetirement",
+      "lane": 1,
+      "origin": "app:Retirement:120"
+    },
+    {
+      "index": 158,
+      "from": 26,
+      "from_name": "CLOSE_JOIN",
+      "to": 23,
+      "to_name": "PEER_CLOSE",
+      "message": "PeerRetirementGrant",
+      "lane": 2,
+      "origin": "app:Retirement:120"
+    },
+    {
+      "index": 159,
+      "from": 23,
+      "from_name": "PEER_CLOSE",
+      "to": 26,
+      "to_name": "CLOSE_JOIN",
+      "message": "PeerOutcome",
+      "lane": 2,
+      "origin": "app:Retirement:120"
+    },
+    {
+      "index": 160,
+      "from": 26,
+      "from_name": "CLOSE_JOIN",
+      "to": 25,
+      "to_name": "FILES_CLOSE",
+      "message": "FilesRetirementGrant",
+      "lane": 3,
+      "origin": "app:Retirement:120"
+    },
+    {
+      "index": 161,
+      "from": 25,
+      "from_name": "FILES_CLOSE",
+      "to": 26,
+      "to_name": "CLOSE_JOIN",
+      "message": "FilesOutcome",
+      "lane": 3,
+      "origin": "app:Retirement:120"
+    },
+    {
+      "index": 162,
+      "from": 26,
+      "from_name": "CLOSE_JOIN",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "CloseAuthority",
+      "lane": 0,
+      "origin": "app:Retirement:120"
+    },
+    {
+      "index": 163,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 17,
+      "to_name": "ADAPTER",
+      "message": "CloseDatagram",
+      "lane": 0,
+      "origin": "app:ClosePublish:95"
+    },
+    {
+      "index": 164,
+      "from": 17,
+      "from_name": "ADAPTER",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "CloseAccepted",
+      "lane": 0,
+      "origin": "app:ClosePublish:95"
+    },
+    {
+      "index": 165,
+      "from": 17,
+      "from_name": "ADAPTER",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "CloseRejected",
+      "lane": 0,
+      "origin": "app:ClosePublish:95"
+    },
+    {
+      "index": 166,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 17,
+      "to_name": "ADAPTER",
+      "message": "CloseSettled",
+      "lane": 0,
+      "origin": "app:ClosePublish:95"
+    },
+    {
+      "index": 167,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 17,
+      "to_name": "ADAPTER",
+      "message": "CloseFlightDone",
+      "lane": 0,
+      "origin": "app:Closing:96"
+    },
+    {
+      "index": 168,
+      "from": 17,
+      "from_name": "ADAPTER",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "CloseFlightSettled",
+      "lane": 0,
+      "origin": "app:Closing:96"
+    },
+    {
+      "index": 169,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 17,
+      "to_name": "ADAPTER",
+      "message": "Drain",
+      "lane": 0,
+      "origin": "app:Draining:97"
+    },
+    {
+      "index": 170,
+      "from": 17,
+      "from_name": "ADAPTER",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "Drained",
+      "lane": 0,
+      "origin": "app:Draining:97"
+    },
+    {
+      "index": 171,
+      "from": 16,
+      "from_name": "TRANSMIT",
+      "to": 17,
+      "to_name": "ADAPTER",
+      "message": "Retire",
+      "lane": 0,
+      "origin": "app:ClosingDraining:126"
+    },
+    {
+      "index": 172,
+      "from": 17,
+      "from_name": "ADAPTER",
+      "to": 16,
+      "to_name": "TRANSMIT",
+      "message": "Retired",
+      "lane": 0,
+      "origin": "app:ClosingDraining:126"
+    }
+  ]
+}

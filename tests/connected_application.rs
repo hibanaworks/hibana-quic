@@ -408,6 +408,7 @@ macro_rules! roles {
         peer_close: $rv.enter($sid, &$program.peer_close).unwrap(),
         files_event: $rv.enter($sid, &$program.files_event).unwrap(),
         files_close: $rv.enter($sid, &$program.files_close).unwrap(),
+        close_join: $rv.enter($sid, &$program.close_join).unwrap(),
     } };
 }
 
