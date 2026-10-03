@@ -26,3 +26,7 @@ Numerical/TLS adapter bodies and the connected runner have now been reconstructe
 The current working source now contains the finite Initial-retirement roles, retained Handshake recovery, one affine connected startup, parallel application roles and post-retirement close/drain. The primary host file mode invokes that connected global. Five real-TLS connection tests cover single/multiple transfers and actual authenticated confirmation/ACK loss. These are source-only test bodies, not passing results. Adapter rejection currently terminates the prefix after cancelling its reservation; retry semantics remain unqualified.
 
 The dedicated recovery compile diagnostic records interoperability as NOT_RUN. The standard runner path retains its existing checks and requires the diagnostic marker to be removed.
+
+## First reconstructed-source compiler result
+
+GitHub run 37113879862 checked source29569a5 using official pinned Rust1.95. Source audit passed; compilation failed on four library borrow/lifetime diagnostics and one test error-type inference site. See artifacts/reconstruction/compile-29569a5.json and its source-only compiler log. Runtime tests and interoperability remain NOT_RUN. Subsequent fixes require a fresh compiler run.

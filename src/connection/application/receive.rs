@@ -280,13 +280,13 @@ async fn application<'scope, const N: usize, const RX: usize, const CHUNK: usize
 }
 
 #[allow(clippy::too_many_arguments)]
-fn old<const N: usize>(
-    material: &mut ReceiveMaterial<'_>,
+fn old<'book, 'scope, const N: usize>(
+    material: &mut ReceiveMaterial<'scope>,
     packet: packet::Packet<'_>,
     datagram_len: usize,
     config: Config<'_>,
-    transcript: &Transcript<'_, '_, '_>,
-    book: &mut recovery::Rx<'_, '_, N>,
+    transcript: &Transcript<'scope, '_, '_>,
+    book: &mut recovery::Rx<'book, 'scope, N>,
     now: u64,
 ) -> Result<Option<u64>, Error> {
     let Header::Long {

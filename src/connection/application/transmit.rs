@@ -2,7 +2,7 @@
 //!
 //! A pending packet owns both numerical reservations and immutable sealed
 //! bytes. Key borrows finish before any endpoint or adapter is awaited.
-use super::{CloseKind, Control, Error, keys, protocol as p, startup, timer};
+use super::{CloseKind, Control, Error, keys, protocol as p, startup};
 use crate::{
     accounting::AccountingError,
     connection::{self, Clock, Config, ConnectionId, DatagramTx, Outcome,
@@ -196,10 +196,10 @@ pub(crate) async fn run<'book, 'streams, 'scope, const N: usize, const RX: usize
     check(endpoint.recv::<p::PublicationStopped>().await?, sequence)
 }
 
-fn cancel_prepared<const N: usize, const RX: usize, const CHUNK: usize>(
-    packet: Pending<'_, '_, N>,
-    book: &mut recovery::Tx<'_, '_, N>,
-    streams: &mut application_stream::Tx<'_, '_, '_, RX, CHUNK>,
+fn cancel_prepared<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(
+    packet: Pending<'book, 'streams, N>,
+    book: &mut recovery::Tx<'book, 'scope, N>,
+    streams: &mut application_stream::Tx<'streams, '_, 'scope, RX, CHUNK>,
 ) -> Result<(), Error> {
     let (reservation, _) = packet.sealed.into_parts();
     let recovery_result = book.cancel(reservation);

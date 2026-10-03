@@ -189,87 +189,104 @@ pub(crate) async fn receive<'scope>(
     let mut files_permission = None;
     let mut peer_done = false;
     let mut files_done = false;
+    enum Received<'scope> {
+        Peer(Option<Permission<'scope>>),
+        Files(Option<Permission<'scope>>),
+    }
     while !peer_done || !files_done {
-        let (peer_offer, files_offer) = if peer_done {
-            (None, Some(files.offer().await))
-        } else if files_done {
-            (Some(peer.offer().await), None)
-        } else {
-            let mut peer_wait = pin!(peer.offer());
-            let mut files_wait = pin!(files.offer());
-            poll_fn(|cx| {
-                if let Poll::Ready(offered) = peer_wait.as_mut().poll(cx) {
-                    return Poll::Ready((Some(offered), None));
+        // Consume the selected RouteBranch and drop the offer tuple before
+        // borrowing either endpoint again for its acknowledgment. The value
+        // crossing this block owns the actual permission or cancellation.
+        let received = {
+            let (peer_offer, files_offer) = if peer_done {
+                (None, Some(files.offer().await))
+            } else if files_done {
+                (Some(peer.offer().await), None)
+            } else {
+                let mut peer_wait = pin!(peer.offer());
+                let mut files_wait = pin!(files.offer());
+                poll_fn(|cx| {
+                    if let Poll::Ready(offered) = peer_wait.as_mut().poll(cx) {
+                        return Poll::Ready((Some(offered), None));
+                    }
+                    files_wait.as_mut().poll(cx).map(|offered| (None, Some(offered)))
+                }).await
+            };
+            match (peer_offer, files_offer) {
+                (Some(offered), None) => {
+                    let offered = offered?;
+                    let permission = match offered.label() {
+                        44 => {
+                            check(offered.recv::<p::PeerClose>().await?, sequence)?;
+                            let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
+                            if !matches!(permission.kind, CloseKind::Peer { .. }) {
+                                return Err(Error::Binding);
+                            }
+                            exchange.apply(&permission)?;
+                            Some(permission)
+                        }
+                        45 => {
+                            check(offered.recv::<p::PeerFailed>().await?, sequence)?;
+                            let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
+                            if !matches!(permission.kind, CloseKind::Local { application: false, .. }) {
+                                return Err(Error::Binding);
+                            }
+                            exchange.apply(&permission)?;
+                            Some(permission)
+                        }
+                        46 => {
+                            check(offered.recv::<p::PeerCancelled>().await?, sequence)?;
+                            if !exchange.peer.is_empty() { return Err(Error::Binding); }
+                            None
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    };
+                    Received::Peer(permission)
                 }
-                files_wait.as_mut().poll(cx).map(|offered| (None, Some(offered)))
-            }).await
+                (None, Some(offered)) => {
+                    let offered = offered?;
+                    let permission = match offered.label() {
+                        48 => {
+                            check(offered.recv::<p::FilesComplete>().await?, sequence)?;
+                            let permission = exchange.files.take().map_err(|_| Error::Binding)?;
+                            if !matches!(permission.kind, CloseKind::Local { application: true, code: 0 }) {
+                                return Err(Error::Binding);
+                            }
+                            exchange.apply(&permission)?;
+                            Some(permission)
+                        }
+                        49 => {
+                            check(offered.recv::<p::ApplicationFailed>().await?, sequence)?;
+                            let permission = exchange.files.take().map_err(|_| Error::Binding)?;
+                            if !matches!(permission.kind, CloseKind::Local { application: true, code: 0x100 }) {
+                                return Err(Error::Binding);
+                            }
+                            exchange.apply(&permission)?;
+                            Some(permission)
+                        }
+                        50 => {
+                            check(offered.recv::<p::CompletionCancelled>().await?, sequence)?;
+                            if !exchange.files.is_empty() { return Err(Error::Binding); }
+                            None
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    };
+                    Received::Files(permission)
+                }
+                _ => return Err(Error::Binding),
+            }
         };
-        match (peer_offer, files_offer) {
-            (Some(offered), None) => {
-                let offered = offered?;
-                match offered.label() {
-                    44 => {
-                        check(offered.recv::<p::PeerClose>().await?, sequence)?;
-                        let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
-                        if !matches!(permission.kind, CloseKind::Peer { .. }) {
-                            return Err(Error::Binding);
-                        }
-                        exchange.apply(&permission)?;
-                        peer_permission = Some(permission);
-                    }
-                    45 => {
-                        check(offered.recv::<p::PeerFailed>().await?, sequence)?;
-                        let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
-                        if !matches!(permission.kind, CloseKind::Local { application: false, .. }) {
-                            return Err(Error::Binding);
-                        }
-                        exchange.apply(&permission)?;
-                        peer_permission = Some(permission);
-                    }
-                    46 => {
-                        check(offered.recv::<p::PeerCancelled>().await?, sequence)?;
-                        if !exchange.peer.is_empty() {
-                            return Err(Error::Binding);
-                        }
-                    }
-                    label => return Err(Error::UnexpectedLabel(label)),
-                }
+        match received {
+            Received::Peer(permission) => {
+                peer_permission = permission;
                 peer.send::<p::PeerSeen>(&sequence).await?;
                 peer_done = true;
             }
-            (None, Some(offered)) => {
-                let offered = offered?;
-                match offered.label() {
-                    48 => {
-                        check(offered.recv::<p::FilesComplete>().await?, sequence)?;
-                        let permission = exchange.files.take().map_err(|_| Error::Binding)?;
-                        if !matches!(permission.kind, CloseKind::Local { application: true, code: 0 }) {
-                            return Err(Error::Binding);
-                        }
-                        exchange.apply(&permission)?;
-                        files_permission = Some(permission);
-                    }
-                    49 => {
-                        check(offered.recv::<p::ApplicationFailed>().await?, sequence)?;
-                        let permission = exchange.files.take().map_err(|_| Error::Binding)?;
-                        if !matches!(permission.kind, CloseKind::Local { application: true, code: 0x100 }) {
-                            return Err(Error::Binding);
-                        }
-                        exchange.apply(&permission)?;
-                        files_permission = Some(permission);
-                    }
-                    50 => {
-                        check(offered.recv::<p::CompletionCancelled>().await?, sequence)?;
-                        if !exchange.files.is_empty() {
-                            return Err(Error::Binding);
-                        }
-                    }
-                    label => return Err(Error::UnexpectedLabel(label)),
-                }
+            Received::Files(permission) => {
+                files_permission = permission;
                 files.send::<p::CompletionSeen>(&sequence).await?;
                 files_done = true;
             }
-            _ => return Err(Error::Binding),
         }
     }
     // Both lanes have independently settled. The file facet transfers its

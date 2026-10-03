@@ -362,7 +362,7 @@ fn application_local_retains_late_zero_rtt_then_destroys_actual_early_keys() {
             Ok(())
         };
         drive(runtime::join2(
-            runtime::join2(command_local, provider_local),
+            runtime::join2::<_, _, Error>(command_local, provider_local),
             consumer,
         ))
         .unwrap();

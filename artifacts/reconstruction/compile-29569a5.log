@@ -1,0 +1,375 @@
+    Checking hibana-quic v0.1.0 (/source)
+warning: unused import: `timer`
+ --> src/connection/application/transmit.rs:5:70
+  |
+5 | use super::{CloseKind, Control, Error, keys, protocol as p, startup, timer};
+  |                                                                      ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0499]: cannot borrow `*peer` as mutable more than once at a time
+   --> src/connection/application/termination.rs:237:17
+    |
+196 |             (Some(peer.offer().await), None)
+    |                   ---- first mutable borrow occurs here
+...
+207 |         match (peer_offer, files_offer) {
+    |               ------------------------- a temporary with access to the first borrow is created here ...
+...
+237 |                 peer.send::<p::PeerSeen>(&sequence).await?;
+    |                 ^^^^ second mutable borrow occurs here
+...
+273 |         }
+    |         - ... and the first borrow might be used here, when that temporary is dropped and runs the destructor for type `(Option<core::result::Result<RouteBranch<'_, '_, 23>, EndpointError>>, Option<core::result::Result<RouteBranch<'_, '_, 25>, EndpointError>>)`
+
+error[E0499]: cannot borrow `*files` as mutable more than once at a time
+   --> src/connection/application/termination.rs:269:17
+    |
+194 |             (None, Some(files.offer().await))
+    |                         ----- first mutable borrow occurs here
+...
+207 |         match (peer_offer, files_offer) {
+    |               ------------------------- a temporary with access to the first borrow is created here ...
+...
+269 |                 files.send::<p::CompletionSeen>(&sequence).await?;
+    |                 ^^^^^ second mutable borrow occurs here
+...
+273 |         }
+    |         - ... and the first borrow might be used here, when that temporary is dropped and runs the destructor for type `(Option<core::result::Result<RouteBranch<'_, '_, 23>, EndpointError>>, Option<core::result::Result<RouteBranch<'_, '_, 25>, EndpointError>>)`
+
+error[E0282]: type annotations needed
+   --> src/roles/tls_owner/application_early_tests.rs:365:13
+    |
+299 |             Ok(())
+    |             ------ type must be known at this point
+...
+365 |             runtime::join2(command_local, provider_local),
+    |             ^^^^^^^^^^^^^^ cannot infer type of the type parameter `E` declared on the function `join2`
+    |
+help: consider specifying the generic arguments
+    |
+365 |             runtime::join2::<_, _, E>(command_local, provider_local),
+    |                           +++++++++++
+
+error[E0283]: type annotations needed
+    --> src/roles/tls_owner/application_early_tests.rs:365:13
+     |
+ 290 |                     same(c.recv::<p::application::Retired>().await?, wire)?;
+     |                                                                   - type must be known at this point
+...
+ 365 |             runtime::join2(command_local, provider_local),
+     |             ^^^^^^^^^^^^^^ cannot infer type of the type parameter `E` declared on the function `join2`
+     |
+note: multiple `impl`s satisfying `_: From<EndpointError>` found
+    --> src/roles/packet_protection.rs:287:1
+     |
+ 287 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/tls_owner.rs:469:1
+     |
+ 469 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/recovery_owner.rs:1732:1
+     |
+1732 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/path_owner.rs:2190:1
+     |
+2190 | impl From<EndpointError> for ServiceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/stream_owner.rs:1141:1
+     |
+1141 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/early_owner/service.rs:119:1
+     |
+ 119 | impl From<EndpointError> for ServiceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/mod.rs:74:1
+     |
+  74 | impl From<EndpointError> for Error { fn from(v: EndpointError) -> Self { Self::Endpoint(v) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/application/mod.rs:116:1
+     |
+ 116 | impl From<EndpointError> for Error { fn from(value: EndpointError) -> Self { Self::Endpoint(value) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/application/keys.rs:33:1
+     |
+  33 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: consider specifying the generic arguments
+     |
+ 365 |             runtime::join2::<_, _, E>(command_local, provider_local),
+     |                           +++++++++++
+
+error[E0283]: type annotations needed
+    --> src/roles/tls_owner/application_early_tests.rs:365:13
+     |
+ 292 |                         .await?;
+     |                               - type must be known at this point
+...
+ 365 |             runtime::join2(command_local, provider_local),
+     |             ^^^^^^^^^^^^^^ cannot infer type of the type parameter `E` declared on the function `join2`
+     |
+note: multiple `impl`s satisfying `_: From<EndpointError>` found
+    --> src/roles/packet_protection.rs:287:1
+     |
+ 287 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/tls_owner.rs:469:1
+     |
+ 469 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/recovery_owner.rs:1732:1
+     |
+1732 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/path_owner.rs:2190:1
+     |
+2190 | impl From<EndpointError> for ServiceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/stream_owner.rs:1141:1
+     |
+1141 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/early_owner/service.rs:119:1
+     |
+ 119 | impl From<EndpointError> for ServiceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/mod.rs:74:1
+     |
+  74 | impl From<EndpointError> for Error { fn from(v: EndpointError) -> Self { Self::Endpoint(v) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/application/mod.rs:116:1
+     |
+ 116 | impl From<EndpointError> for Error { fn from(value: EndpointError) -> Self { Self::Endpoint(value) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/application/keys.rs:33:1
+     |
+  33 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: consider specifying the generic arguments
+     |
+ 365 |             runtime::join2::<_, _, E>(command_local, provider_local),
+     |                           +++++++++++
+
+error[E0283]: type annotations needed
+    --> src/roles/tls_owner/application_early_tests.rs:365:13
+     |
+ 315 |                     o.send::<p::application::Retired>(&wire).await?;
+     |                                                                   - type must be known at this point
+...
+ 365 |             runtime::join2(command_local, provider_local),
+     |             ^^^^^^^^^^^^^^ cannot infer type of the type parameter `E` declared on the function `join2`
+     |
+note: multiple `impl`s satisfying `_: From<EndpointError>` found
+    --> src/roles/packet_protection.rs:287:1
+     |
+ 287 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/tls_owner.rs:469:1
+     |
+ 469 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/recovery_owner.rs:1732:1
+     |
+1732 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/path_owner.rs:2190:1
+     |
+2190 | impl From<EndpointError> for ServiceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/stream_owner.rs:1141:1
+     |
+1141 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/early_owner/service.rs:119:1
+     |
+ 119 | impl From<EndpointError> for ServiceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/mod.rs:74:1
+     |
+  74 | impl From<EndpointError> for Error { fn from(v: EndpointError) -> Self { Self::Endpoint(v) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/application/mod.rs:116:1
+     |
+ 116 | impl From<EndpointError> for Error { fn from(value: EndpointError) -> Self { Self::Endpoint(value) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/application/keys.rs:33:1
+     |
+  33 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: consider specifying the generic arguments
+     |
+ 365 |             runtime::join2::<_, _, E>(command_local, provider_local),
+     |                           +++++++++++
+
+error[E0283]: type annotations needed
+    --> src/roles/tls_owner/application_early_tests.rs:365:13
+     |
+ 317 |                         o.recv::<p::application::RetirementAcknowledged>().await?,
+     |                                                                                 - type must be known at this point
+...
+ 365 |             runtime::join2(command_local, provider_local),
+     |             ^^^^^^^^^^^^^^ cannot infer type of the type parameter `E` declared on the function `join2`
+     |
+note: multiple `impl`s satisfying `_: From<EndpointError>` found
+    --> src/roles/packet_protection.rs:287:1
+     |
+ 287 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/tls_owner.rs:469:1
+     |
+ 469 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/recovery_owner.rs:1732:1
+     |
+1732 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/path_owner.rs:2190:1
+     |
+2190 | impl From<EndpointError> for ServiceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/stream_owner.rs:1141:1
+     |
+1141 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/roles/early_owner/service.rs:119:1
+     |
+ 119 | impl From<EndpointError> for ServiceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/mod.rs:74:1
+     |
+  74 | impl From<EndpointError> for Error { fn from(v: EndpointError) -> Self { Self::Endpoint(v) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/application/mod.rs:116:1
+     |
+ 116 | impl From<EndpointError> for Error { fn from(value: EndpointError) -> Self { Self::Endpoint(value) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/connection/application/keys.rs:33:1
+     |
+  33 | impl From<EndpointError> for Error {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: consider specifying the generic arguments
+     |
+ 365 |             runtime::join2::<_, _, E>(command_local, provider_local),
+     |                           +++++++++++
+
+warning: unreachable pattern
+   --> src/connection/recovery.rs:256:95
+    |
+256 |     match level { Level::Initial => Ok(0), Level::Handshake => Ok(1), Level::OneRtt => Ok(2), _ => Err(Error::UnsupportedLevel) }
+    |                                                                                               ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> src/connection/recovery.rs:256:95
+    |
+256 |     match level { Level::Initial => Ok(0), Level::Handshake => Ok(1), Level::OneRtt => Ok(2), _ => Err(Error::UnsupportedLevel) }
+    |                   --------------           ----------------           -------------           ^ collectively making this unreachable
+    |                   |                        |                          |
+    |                   |                        |                          matches some of the same values
+    |                   |                        matches some of the same values
+    |                   matches some of the same values
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+error: lifetime may not live long enough
+   --> src/connection/application/receive.rs:355:25
+    |
+284 |     material: &mut ReceiveMaterial<'_>,
+    |     -------- has type `&mut ReceiveMaterial<'1>`
+...
+289 |     book: &mut recovery::Rx<'_, '_, N>,
+    |     ---- has type `&mut connection::recovery::Rx<'2, '_, N>`
+...
+355 |     let outcome = match book.apply_packet(receipt, plaintext, now) {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'1` must outlive `'2`
+    |
+    = note: requirement occurs because of a mutable reference to `connection::recovery::Rx<'_, '_, N>`
+    = note: mutable references are invariant over their type parameter
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+help: consider introducing a named lifetime parameter
+    |
+283 ~ fn old<'a, const N: usize>(
+284 ~     material: &mut ReceiveMaterial<'a>,
+285 |     packet: packet::Packet<'_>,
+...
+288 |     transcript: &Transcript<'_, '_, '_>,
+289 ~     book: &mut recovery::Rx<'a, 'a, N>,
+    |
+
+error: lifetime may not live long enough
+   --> src/connection/application/transmit.rs:205:27
+    |
+200 |     packet: Pending<'_, '_, N>,
+    |     ------ has type `transmit::Pending<'1, '_, N>`
+201 |     book: &mut recovery::Tx<'_, '_, N>,
+    |     ---- has type `&mut connection::recovery::Tx<'2, '_, N>`
+...
+205 |     let recovery_result = book.cancel(reservation);
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'1` must outlive `'2`
+    |
+    = note: requirement occurs because of a mutable reference to `connection::recovery::Tx<'_, '_, N>`
+    = note: mutable references are invariant over their type parameter
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+help: consider introducing a named lifetime parameter
+    |
+199 ~ fn cancel_prepared<'a, const N: usize, const RX: usize, const CHUNK: usize>(
+200 ~     packet: Pending<'a, 'a, N>,
+201 ~     book: &mut recovery::Tx<'a, 'a, N>,
+    |
+
+For more information about this error, try `rustc --explain E0499`.
+warning: `hibana-quic` (lib) generated 2 warnings
+error: could not compile `hibana-quic` (lib) due to 4 previous errors; 2 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: variable does not need to be mutable
+    --> src/connection/recovery.rs:1023:17
+     |
+1023 |             let mut $book = Recovery::<2048>::new($arena.claim_recovery().unwrap(), $side, 333_000, 1200).unwrap();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+...
+1425 |         book!(book, scope, installation, arena, Side::Client, 78);
+     |         --------------------------------------------------------- in this macro invocation
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+     = note: this warning originates in the macro `book` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Some errors have detailed explanations: E0282, E0283, E0499.
+For more information about an error, try `rustc --explain E0282`.
+warning: `hibana-quic` (lib test) generated 3 warnings (2 duplicates)
+error: could not compile `hibana-quic` (lib test) due to 9 previous errors; 3 warnings emitted
+##[error]Process completed with exit code 101.
