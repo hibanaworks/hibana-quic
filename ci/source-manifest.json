@@ -73,6 +73,7 @@
   "ci/pins.env": "e04d123839219e958e2d0fb904ad2711b7107950c647f5a0675deb6d65258ecc",
   "ci/recovery-diagnostics": "8d65f277d6ff46e47d7c78b61028b574129408f47365260b7b0cd4d848a64624",
   "ci/run-interop.sh": "38c8e9aaf5b70813f3a99f8b4c9b4958ae39582ac1013120a25d7271a4aa50f0",
+  "ci/run-local-interop.py": "257347b87593c96cd5c8dfd610cdf0ee5841d0106a9f692a2e00360afe1bdc1c",
   "ci/run_in_tools.py": "1a347fca8d5d8251ea511afe73dba8494cbfb44b5d3da21eb99f564d23de6ef1",
   "ci/runner-tools.Dockerfile": "73ffcd6009551b6850cc864fe86d56dcadd22b3fb0e0821bcdc2d89350163d63",
   "ci/test-recovery.sh": "e93948a00344c9e31be01746dfe308e87e500fa3e9472746ead74aacd1515667",
