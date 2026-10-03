@@ -6,6 +6,20 @@ image pins. Do not set `GITHUB_ACTIONS` or `PUBLIC_REPOSITORY` locally.
 `ci/compile-recovery.sh` / `ci/test-recovery.sh` are separate compilation
 diagnostics; `run-local-interop.py` always invokes the official runner.
 
+Docker **28.0.2 and later** add per-container `raw PREROUTING` rules which
+reject packets addressed to an endpoint through another bridge. QNS deliberately
+routes these packets to the simulator on the client's bridge. Configure the
+test daemon with `"allow-direct-routing": true` (daemon JSON), or start it with
+`--allow-direct-routing=true`, before creating the runner containers. Retain the
+existing firewall and Docker isolation rules. This is a daemon prerequisite;
+the wrapper does not remove firewall rules or change the upstream topology.
+
+If diagnosing a failure, inspect `iptables -t raw -vnL` **while the endpoint
+containers are running**. Docker removes those rules when endpoints stop. A
+DROP counter on the destination server's address explains a packet disappearing
+before the simulator's AF_PACKET capture. See the executed minimal reproduction
+and counter in `artifacts/direct-recovery/20261003/`.
+
 Keep all work, private certificates, TLS secrets, packet captures, generated
 binaries and Cargo targets **outside** the source checkout. The source audit
 also checks ignored paths. Use a fresh output directory for each build.

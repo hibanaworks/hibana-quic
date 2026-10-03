@@ -1,0 +1,10 @@
+src/endpoint/kernel/core/offer_refresh.rs: OK
+src/endpoint/kernel/core/decision_resolver/impls/select.rs: OK
+src/endpoint/kernel/core/decision_resolver/impls/send.rs: OK
+src/endpoint/kernel/offer.rs: OK
+src/endpoint/kernel/offer/commit.rs: OK
+src/endpoint/kernel/offer/select_alignment.rs: OK
+src/global/typestate/cursor/scope_route/navigation.rs: OK
+tests/nested_resolver_self_continuations.rs: OK
+proofs/controller-offer/ControllerOffer.lean: OK
+proofs/controller-offer/ControllerOffer.smt2: OK

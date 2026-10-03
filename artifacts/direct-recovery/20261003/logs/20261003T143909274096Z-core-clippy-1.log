@@ -1,0 +1,36 @@
+    Checking memchr v2.7.6
+    Checking serde_core v1.0.228
+    Checking pin-project-lite v0.2.16
+    Checking futures-core v0.3.31
+    Checking futures-sink v0.3.31
+    Checking libc v0.2.177
+    Checking futures-channel v0.3.31
+    Checking slab v0.4.11
+    Checking futures-task v0.3.31
+    Checking pin-utils v0.1.0
+    Checking futures-io v0.3.31
+    Checking winnow v0.7.13
+    Checking futures-util v0.3.31
+    Checking ryu v1.0.20
+    Checking toml_writer v1.0.4
+    Checking itoa v1.0.15
+    Checking target-triple v0.1.4
+    Checking mio v1.1.0
+    Checking socket2 v0.6.2
+    Checking termcolor v1.4.1
+    Checking glob v0.3.3
+    Checking bytes v1.11.1
+    Checking toml_parser v1.0.4
+    Checking toml_datetime v0.7.3
+    Checking serde_spanned v1.0.3
+    Checking serde v1.0.228
+    Checking serde_json v1.0.145
+    Checking toml v0.9.8
+    Checking tokio v1.48.0
+    Checking static_assertions v1.1.0
+    Checking hibana v0.9.6 (/workspace/hibana)
+    Checking trybuild v1.0.112
+    Checking futures-executor v0.3.31
+    Checking futures v0.3.31
+   Compiling hibana-repo-tests v0.0.0 (/workspace/hibana/.github/repo-tests)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.69s

@@ -1,0 +1,5 @@
+info: component rust-std for target thumbv6m-none-eabi is up to date
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana)
+   Compiling hibana-route-arm-heavy-1 v0.0.0 (/tmp/hibana-route-arm-pressure-Rpcq6V/route_arm_1)
+compile pressure guard violation: route-arm-heavy 1 exceeded 132MiB RSS: process pid=50303 rss_mib=135 total_rss_mib=135 comm=rustc matched=1

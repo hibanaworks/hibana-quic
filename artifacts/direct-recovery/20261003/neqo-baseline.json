@@ -1,0 +1,96 @@
+{
+  "source_commit": "b09c7e6f1175924d1ab6728da3f39cc216b67b7f",
+  "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
+  "neqo_revision": "ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95",
+  "hibana_revision": "67cbf9f0a57fe89a8486766456a769b646f2a3e1",
+  "image_ids": {
+    "neqo": "sha256:df055f99a9c9b38475c8d1f38fbaf4d2865e47c32bf700dbdb49bde62b5b8d32",
+    "sim": "sha256:fcd0b8adb1eb8f098de3a45af5e9bab8d56499791c5d435fa3598b7af87978b9",
+    "tools": "sha256:e5b9ac75d9a18475d3e30a810deed3a2603dcb135702f36543d8a15cfe7df939"
+  },
+  "simulator_image": "martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9",
+  "docker": "28.4.0",
+  "docker_api": "1.51",
+  "compose": "Docker Compose version 2.40.3+ds1-0ubuntu1",
+  "tshark": "TShark (Wireshark) 4.6.4.",
+  "scope": "hq-interop QUIC v1; 20 upstream cases; excludes http3 and v2",
+  "runner_source_unchanged": true,
+  "baseline_passed": false,
+  "pilot_passed": false,
+  "full_selected_scope_passed": false,
+  "counts": {
+    "passed": 0,
+    "executed": 0,
+    "unsupported": 0,
+    "not_run": 0,
+    "total": 0
+  },
+  "cells": [],
+  "records": [
+    {
+      "phase": "neqo-baseline",
+      "client": "neqo",
+      "server": "neqo",
+      "repetition": 1,
+      "command": [
+        "/opt/runner-venv/bin/python3",
+        "/workspace/interop/runner/run.py",
+        "-s",
+        "neqo",
+        "-c",
+        "neqo",
+        "-d",
+        "-t",
+        "handshake,transfer",
+        "-n",
+        "neqo,neqo",
+        "-j",
+        "/workspace/interop/attempt-20261003T161236Z/neqo-baseline/raw.json",
+        "-l",
+        "/workspace/interop/attempt-20261003T161236Z/neqo-baseline/logs",
+        "-f",
+        "true"
+      ],
+      "cwd": "/workspace/interop/attempt-20261003T161236Z/neqo-baseline",
+      "results": [
+        {
+          "name": "handshake",
+          "result": "failed",
+          "abbr": "H"
+        },
+        {
+          "name": "transfer",
+          "result": "failed",
+          "abbr": "DC"
+        }
+      ],
+      "exit_code": 2,
+      "quic_version": "0x1",
+      "original_json_sha256": "be713c79c8adeb4f8389738dc7746dc4f908ee22a0e81a785c1484de1e525df9",
+      "non_null_case_results": 2,
+      "unexecuted_case_results": 0,
+      "passed": false,
+      "cleanup_exit_code": 0,
+      "duration_seconds": 107.204,
+      "console_sha256": "e8812e252b2d431100e5d40f48003bec8eca6329d220dfab50e04d4013ac56a7",
+      "console_diagnostics": {
+        "parse_state": "parsed",
+        "line_count": 836,
+        "error_classes": [
+          "certificate"
+        ],
+        "runner_classes": [
+          "container-exit-abort"
+        ],
+        "console_error_classes": [],
+        "container_exit_codes": {
+          "client": [],
+          "server": [],
+          "sim": []
+        },
+        "case_timeout_count": 0,
+        "case_timeout_seconds": []
+      }
+    }
+  ]
+}

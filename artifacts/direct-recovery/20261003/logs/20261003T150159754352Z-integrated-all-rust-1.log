@@ -1,0 +1,598 @@
+warning: unreachable pattern
+   --> src/connection/recovery.rs:256:95
+    |
+256 |     match level { Level::Initial => Ok(0), Level::Handshake => Ok(1), Level::OneRtt => Ok(2), _ => Err(Error::UnsupportedLevel) }
+    |                                                                                               ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> src/connection/recovery.rs:256:95
+    |
+256 |     match level { Level::Initial => Ok(0), Level::Handshake => Ok(1), Level::OneRtt => Ok(2), _ => Err(Error::UnsupportedLevel) }
+    |                   --------------           ----------------           -------------           ^ collectively making this unreachable
+    |                   |                        |                          |
+    |                   |                        |                          matches some of the same values
+    |                   |                        matches some of the same values
+    |                   matches some of the same values
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `into_directional` is never used
+   --> src/crypto.rs:519:19
+    |
+515 | impl ApplicationKeys {
+    | -------------------- method in this implementation
+...
+519 |     pub(crate) fn into_directional<'a>(
+    |                   ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `install_existing` is never used
+   --> src/crypto/directional.rs:107:19
+    |
+ 66 | impl<'a> ApplicationKeyInstallation<'a> {
+    | --------------------------------------- method in this implementation
+...
+107 |     pub(crate) fn install_existing(self, keys: ApplicationKeys)
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: associated function `from_confirmed` is never used
+   --> src/crypto/directional.rs:155:19
+    |
+149 | impl<'a> ScopedHandshakeConfirmation<'a> {
+    | ---------------------------------------- associated function in this implementation
+...
+155 |     pub(crate) fn from_confirmed(scope: &'a ApplicationKeyScope, confirmation: HandshakeConfirmation)
+    |                   ^^^^^^^^^^^^^^
+
+warning: associated function `from_validated` is never used
+   --> src/crypto/directional.rs:190:19
+    |
+174 | impl<'a> ValidatedKeyAck<'a> {
+    | ---------------------------- associated function in this implementation
+...
+190 |     pub(crate) fn from_validated(scope: &'a ApplicationKeyScope, grant: KeyAckGrant) -> Result<Self, Error> {
+    |                   ^^^^^^^^^^^^^^
+
+warning: function `split` is never used
+   --> src/crypto/directional.rs:336:15
+    |
+336 | pub(super) fn split<'a>(keys: ApplicationKeys, scope: &'a mut ApplicationKeyScope)
+    |               ^^^^^
+
+warning: function `split_claimed` is never used
+   --> src/crypto/directional.rs:339:4
+    |
+339 | fn split_claimed<'a>(keys: ApplicationKeys, scope: &'a ApplicationKeyScope)
+    |    ^^^^^^^^^^^^^
+
+warning: method `acknowledge_validated` is never used
+   --> src/crypto/directional.rs:534:8
+    |
+503 | impl<'a> ApplicationWriteKeys<'a> {
+    | --------------------------------- method in this implementation
+...
+534 |     fn acknowledge_validated(&mut self, pn: u64, received_generation: u64, now: u64, pto: u64) -> Result<(), Error> {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `commit_with_receipt` is never used
+   --> src/retry.rs:548:19
+    |
+482 | impl<const N: usize> ClientRetry<N> {
+    | ----------------------------------- method in this implementation
+...
+548 |     pub(crate) fn commit_with_receipt(
+    |                   ^^^^^^^^^^^^^^^^^^^
+
+warning: method `accepts_authenticated_generation` is never used
+   --> src/early_data.rs:611:19
+    |
+585 | impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
+    | -------------------------------------------------- method in this implementation
+...
+611 |     pub(crate) fn accepts_authenticated_generation(&self, generation: u64) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `from_committed` is never used
+   --> src/roles/packet_authority.rs:141:19
+    |
+128 | impl RetryPeerCid {
+    | ----------------- associated function in this implementation
+...
+141 |     pub(crate) fn from_committed(generation: u64, retry: crate::retry::CommittedRetry) -> Self {
+    |                   ^^^^^^^^^^^^^^
+
+warning: function `split_retry` is never used
+   --> src/roles/packet_authority.rs:193:15
+    |
+193 | pub(crate) fn split_retry(generation: u64, retry: crate::retry::CommittedRetry) -> RetryGrants {
+    |               ^^^^^^^^^^^
+
+warning: field `context` is never read
+   --> src/roles/packet_authority.rs:462:5
+    |
+456 | struct PacketRecord {
+    |        ------------ field in this struct
+...
+462 |     context: Option<super::path_owner::PathContext>,
+    |     ^^^^^^^
+
+warning: methods `grant_initial_peer_cid`, `bind_path_context`, and `grant_path` are never used
+   --> src/roles/packet_authority.rs:617:19
+    |
+486 | impl<const P: usize, const E: usize> Arena<P, E> {
+    | ------------------------------------------------ methods in this implementation
+...
+617 |     pub(crate) fn grant_initial_peer_cid(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+660 |     pub(crate) fn bind_path_context(
+    |                   ^^^^^^^^^^^^^^^^^
+...
+768 |     pub(crate) fn grant_path(
+    |                   ^^^^^^^^^^
+
+warning: associated functions `from_owned_level`, `from_received`, and `from_directional` are never used
+  --> src/roles/packet_authority/scoped.rs:50:19
+   |
+47 | impl<'a> ScopedReceiveEvidence<'a> {
+   | ---------------------------------- associated functions in this implementation
+...
+50 |     pub(crate) fn from_owned_level(
+   |                   ^^^^^^^^^^^^^^^^
+...
+72 |     pub(crate) fn from_received(
+   |                   ^^^^^^^^^^^^^
+...
+87 |     pub(crate) fn from_directional(
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: function `verify_and_split` is never used
+   --> src/roles/connection_authority.rs:121:15
+    |
+121 | pub(crate) fn verify_and_split(
+    |               ^^^^^^^^^^^^^^^^
+
+warning: function `retirement` is never used
+   --> src/roles/protocol_stream.rs:227:4
+    |
+227 | fn retirement<const C: u8, const O: u8>() -> g::Program<Retirement<C, O>> {
+    |    ^^^^^^^^^^
+
+warning: associated function `from_sealed` is never used
+  --> src/roles/datagram.rs:72:19
+   |
+50 | impl<const N: usize> ProtectedDatagram<N> {
+   | ----------------------------------------- associated function in this implementation
+...
+72 |     pub(crate) fn from_sealed<const M: usize>(
+   |                   ^^^^^^^^^^^
+
+warning: function `managed_application_frame` is never used
+   --> src/roles/datagram.rs:311:4
+    |
+311 | fn managed_application_frame(frame: Frame<'_>) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `prefix` is never used
+   --> src/roles/datagram.rs:371:8
+    |
+370 | impl HandshakeFragment {
+    | ---------------------- associated function in this implementation
+371 |     fn prefix(offset: u64, data: &[u8]) -> Option<Self> {
+    |        ^^^^^^
+
+warning: function `cancel_before_publication` is never used
+   --> src/roles/datagram.rs:502:15
+    |
+502 | pub(crate) fn cancel_before_publication(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> src/roles/early_owner.rs:270:19
+    |
+269 | impl<const N: usize> AuthenticatedPacket<N> {
+    | ------------------------------------------- associated function in this implementation
+270 |     pub(crate) fn new(
+    |                   ^^^
+
+warning: method `into_finished` is never used
+  --> src/connection/parameters.rs:19:16
+   |
+ 9 | impl<'scope,const P:usize> ValidatedPeer<'scope,P>{
+   | -------------------------------------------------- method in this implementation
+...
+19 |  pub(crate) fn into_finished(self)->FinishedAuthenticated<'scope>{self.finished}
+   |                ^^^^^^^^^^^^^
+
+warning: methods `lost` and `forget_lost` are never used
+   --> src/connection/application_stream.rs:279:19
+    |
+216 | impl<const RX: usize, const CHUNK: usize> Rx<'_, '_, '_, RX, CHUNK> {
+    | ------------------------------------------------------------------- methods in this implementation
+...
+279 |     pub(super) fn lost(&mut self, packet_number: u64) -> Result<(), Error> {
+    |                   ^^^^
+...
+293 |     pub(super) fn forget_lost(&mut self, packet_number: u64) -> Result<(), Error> {
+    |                   ^^^^^^^^^^^
+
+warning: field `0` is never read
+  --> src/connection/application/keys.rs:27:10
+   |
+27 |     Slot(InboxError),
+   |     ---- ^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `Error` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+27 -     Slot(InboxError),
+27 +     Slot(()),
+   |
+
+warning: field `0` is never read
+  --> src/connection/application/keys.rs:30:21
+   |
+30 |     UnexpectedLabel(u8),
+   |     --------------- ^^
+   |     |
+   |     field in this variant
+   |
+   = note: `Error` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+30 -     UnexpectedLabel(u8),
+30 +     UnexpectedLabel(()),
+   |
+
+warning: method `phase` is never used
+  --> src/connection/application/keys.rs:94:19
+   |
+64 | impl<'scope> KeyOwner<'scope> {
+   | ----------------------------- method in this implementation
+...
+94 |     pub(crate) fn phase(&self) -> Result<bool, Error> {
+   |                   ^^^^^
+
+warning: method `snapshot` is never used
+  --> src/connection/application/transmit.rs:72:19
+   |
+61 | / impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const CHUNK: usize>
+62 | |     State<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>
+   | |__________________________________________________________- method in this implementation
+...
+72 |       pub(crate) fn snapshot(&self) -> recovery::Snapshot { self.owners.borrow().book.snapshot() }
+   |                     ^^^^^^^^
+
+   Compiling hibana-quic v0.1.0 (/workspace/hibana-quic)
+warning: `hibana-quic` (lib) generated 28 warnings
+warning: constant `SERVER_PARAMS` is never used
+  --> tests/support/tls_actor_fixture.rs:19:11
+   |
+19 | pub const SERVER_PARAMS: &[u8] = &[4, 1, 63];
+   |           ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src/connection/recovery.rs:1023:17
+     |
+1023 |             let mut $book = Recovery::<2048>::new($arena.claim_recovery().unwrap(), $side, 333_000, 1200).unwrap();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+...
+1425 |         book!(book, scope, installation, arena, Side::Client, 78);
+     |         --------------------------------------------------------- in this macro invocation
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+     = note: this warning originates in the macro `book` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: constant `SERVER_PARAMS` is never used
+  --> src/bounded_tls/../../tests/support/tls_actor_fixture.rs:19:11
+   |
+19 | pub const SERVER_PARAMS: &[u8] = &[4, 1, 63];
+   |           ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `signing_key` is never used
+  --> src/bounded_tls/../../tests/support/tls_actor_fixture.rs:20:8
+   |
+20 | pub fn signing_key() -> SigningKey {
+   |        ^^^^^^^^^^^
+
+warning: constant `LEAF_DER` is never used
+   --> src/bounded_tls/../../tests/support/tls_actor_fixture.rs:100:11
+    |
+100 | pub const LEAF_DER: &[u8] = &[
+    |           ^^^^^^^^
+
+warning: constant `CLIENT_PARAMS` is never used
+  --> src/roles/tls_owner/../../../tests/support/tls_actor_fixture.rs:18:11
+   |
+18 | pub const CLIENT_PARAMS: &[u8] = &[4, 1, 42];
+   |           ^^^^^^^^^^^^^
+
+warning: constant `SERVER_PARAMS` is never used
+  --> src/roles/tls_owner/../../../tests/support/tls_actor_fixture.rs:19:11
+   |
+19 | pub const SERVER_PARAMS: &[u8] = &[4, 1, 63];
+   |           ^^^^^^^^^^^^^
+
+warning: associated function `from_received` is never used
+  --> src/roles/packet_authority/scoped.rs:72:19
+   |
+47 | impl<'a> ScopedReceiveEvidence<'a> {
+   | ---------------------------------- associated function in this implementation
+...
+72 |     pub(crate) fn from_received(
+   |                   ^^^^^^^^^^^^^
+
+warning: function `disabled_finished` is never used
+   --> src/roles/path_owner/../../../tests/support/early_owner_fixture.rs:316:8
+    |
+316 | pub fn disabled_finished(generation: u64) -> tls_owner::FinishedReceipt {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: constant `CLIENT_PARAMS` is never used
+  --> src/roles/path_owner/../../../tests/support/tls_actor_fixture.rs:18:11
+   |
+18 | pub const CLIENT_PARAMS: &[u8] = &[4, 1, 42];
+   |           ^^^^^^^^^^^^^
+
+warning: constant `SERVER_PARAMS` is never used
+  --> src/roles/path_owner/../../../tests/support/tls_actor_fixture.rs:19:11
+   |
+19 | pub const SERVER_PARAMS: &[u8] = &[4, 1, 63];
+   |           ^^^^^^^^^^^^^
+
+warning: constant `CLIENT_PARAMS` is never used
+  --> src/roles/stream_owner/../../../tests/support/tls_actor_fixture.rs:18:11
+   |
+18 | pub const CLIENT_PARAMS: &[u8] = &[4, 1, 42];
+   |           ^^^^^^^^^^^^^
+
+warning: constant `CLIENT_PARAMS` is never used
+  --> src/roles/early_owner/../../../tests/support/tls_actor_fixture.rs:18:11
+   |
+18 | pub const CLIENT_PARAMS: &[u8] = &[4, 1, 42];
+   |           ^^^^^^^^^^^^^
+
+warning: constant `CLIENT_PARAMS` is never used
+  --> src/connection/../../tests/support/tls_actor_fixture.rs:18:11
+   |
+18 | pub const CLIENT_PARAMS: &[u8] = &[4, 1, 42];
+   |           ^^^^^^^^^^^^^
+
+warning: constant `SERVER_PARAMS` is never used
+  --> src/connection/../../tests/support/tls_actor_fixture.rs:19:11
+   |
+19 | pub const SERVER_PARAMS: &[u8] = &[4, 1, 63];
+   |           ^^^^^^^^^^^^^
+
+warning: method `forget_lost` is never used
+   --> src/connection/application_stream.rs:293:19
+    |
+216 | impl<const RX: usize, const CHUNK: usize> Rx<'_, '_, '_, RX, CHUNK> {
+    | ------------------------------------------------------------------- method in this implementation
+...
+293 |     pub(super) fn forget_lost(&mut self, packet_number: u64) -> Result<(), Error> {
+    |                   ^^^^^^^^^^^
+
+warning: constant `CLIENT_PARAMS` is never used
+  --> src/../tests/support/tls_actor_fixture.rs:18:11
+   |
+18 | pub const CLIENT_PARAMS: &[u8] = &[4, 1, 42];
+   |           ^^^^^^^^^^^^^
+
+warning: fields `packets` and `finished` are never read
+  --> tests/support/early_owner_fixture.rs:12:9
+   |
+11 | pub struct Evidence {
+   |            -------- fields in this struct
+12 |     pub packets: [Option<tls_owner::EarlyOpenReceipt>; 3],
+   |         ^^^^^^^
+13 |     pub grant: tls_owner::EarlyReplayGrant,
+14 |     pub finished: tls_owner::FinishedReceipt,
+   |         ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `disabled_finished` is never used
+   --> tests/support/early_owner_fixture.rs:316:8
+    |
+316 | pub fn disabled_finished(generation: u64) -> tls_owner::FinishedReceipt {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: constant `CLIENT_PARAMS` is never used
+  --> tests/support/tls_actor_fixture.rs:18:11
+   |
+18 | pub const CLIENT_PARAMS: &[u8] = &[4, 1, 42];
+   |           ^^^^^^^^^^^^^
+
+warning: constant `SERVER_PARAMS` is never used
+  --> tests/support/tls_actor_fixture.rs:19:11
+   |
+19 | pub const SERVER_PARAMS: &[u8] = &[4, 1, 63];
+   |           ^^^^^^^^^^^^^
+
+warning: constant `EARLY_CLIENT` is never used
+  --> tests/support/early_original_choreography.rs:15:11
+   |
+15 | pub const EARLY_CLIENT: u8 = 32;
+   |           ^^^^^^^^^^^^
+
+warning: constant `EARLY_OWNER` is never used
+  --> tests/support/early_original_choreography.rs:16:11
+   |
+16 | pub const EARLY_OWNER: u8 = 33;
+   |           ^^^^^^^^^^^
+
+warning: function `early_program` is never used
+   --> tests/support/early_original_choreography.rs:178:8
+    |
+178 | pub fn early_program<const ROLE: u8>() -> RoleProgram<ROLE> {
+    |        ^^^^^^^^^^^^^
+
+error: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/role_program/image_impl/projection.rs:157:32
+    |
+157 |             && let Some(arm) = route_arm_for_enter(markers, idx)
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this lint makes sure the compiler doesn't get stuck due to infinite loops in const eval.
+            If your compilation actually takes a long time, you can safely allow the lint
+help: the constant being evaluated
+   --> vendor/hibana/src/g/role_projection.rs:164:5
+    |
+164 |     const BUILD: Option<crate::global::role_program::RoleImageBuild<N>> =
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[deny(long_running_const_eval)]` on by default
+
+note: the above error was encountered while instantiating `fn project::<24, Seq<Send<24, 25, Msg<225, [u8; 16]>>, Seq<..., ...>>>`
+  --> vendor/hibana/src/global/program.rs:20:9
+   |
+20 |         crate::g::project(self)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the full name for the type has been written to '/workspace/targets/quic-root/debug/deps/early_owner_no_alloc-03ef1ae4f72906a3.long-type-12953030551164584939.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+warning: `hibana-quic` (test "stream_owner_roles") generated 1 warning
+error: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/const_dsl/scope_ranges.rs:110:9
+    |
+110 |     if !marker.event.is_enter() {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this lint makes sure the compiler doesn't get stuck due to infinite loops in const eval.
+            If your compilation actually takes a long time, you can safely allow the lint
+help: the constant being evaluated
+   --> vendor/hibana/src/g/role_projection.rs:164:5
+    |
+164 |     const BUILD: Option<crate::global::role_program::RoleImageBuild<N>> =
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn project::<25, Seq<Send<24, 25, Msg<225, [u8; 16]>>, Seq<..., ...>>>`
+  --> vendor/hibana/src/global/program.rs:20:9
+   |
+20 |         crate::g::project(self)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the full name for the type has been written to '/workspace/targets/quic-root/debug/deps/early_owner_no_alloc-03ef1ae4f72906a3.long-type-12847582692043452534.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+warning: `hibana-quic` (test "early_owner_no_alloc") generated 7 warnings
+error: could not compile `hibana-quic` (test "early_owner_no_alloc") due to 2 previous errors; 7 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/const_dsl/allocation/frame_labels/reentry_domains.rs:60:13
+    |
+ 60 | /             while prior < event {
+ 61 | |                 let previous = source.atom_at(prior);
+ 62 | |                 if previous.from == current.from
+ 63 | |                     && previous.to == current.to
+...   |
+ 69 | |                 prior += 1;
+ 70 | |             }
+    | |_____________^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g.rs:182:5
+    |
+182 |     const SOURCE: ProgramSourceData<CAPACITY> = ProgramSourceData::lower::<Steps>();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/role_program/image_impl/projection.rs:109:22
+    |
+109 |         let marker = markers.at(idx);
+    |                      ^^^^^^^^^^^^^^^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g/role_projection.rs:27:5
+    |
+ 27 |     const SCOPE_FACTS: crate::global::role_program::ScopeFacts =
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/const_dsl/source_arena.rs:49:9
+    |
+ 49 |         self.at(index).event.is_primary_enter()
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g/role_projection.rs:164:5
+    |
+164 |     const BUILD: Option<crate::global::role_program::RoleImageBuild<N>> =
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/const_dsl/source_arena.rs:79:16
+    |
+ 79 |             if marker.event.is_primary_enter() && marker.scope_id.same(scope) {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g.rs:191:5
+    |
+191 |     const VALIDATION: () = {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/const_dsl/source_arena.rs:77:9
+    |
+ 77 | /         while index < self.len {
+ 78 | |             let marker = self.at(index);
+ 79 | |             if marker.event.is_primary_enter() && marker.scope_id.same(scope) {
+ 80 | |                 return Some(index);
+ 81 | |             }
+ 82 | |             index += 1;
+ 83 | |         }
+    | |_________^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g/role_projection.rs:101:5
+    |
+101 |     const PLAN: crate::global::role_program::RoleImagePlan =
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/const_dsl/scope_ranges.rs:113:15
+    |
+113 |     let end = marker.segment_end();
+    |               ^^^^^^^^^^^^^^^^^^^^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g/role_projection.rs:164:5
+    |
+164 |     const BUILD: Option<crate::global::role_program::RoleImageBuild<N>> =
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/const_dsl/source_arena.rs:79:16
+    |
+ 79 |             if marker.event.is_primary_enter() && marker.scope_id.same(scope) {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g/role_projection.rs:164:5
+    |
+164 |     const BUILD: Option<crate::global::role_program::RoleImageBuild<N>> =
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant evaluation is taking a long time
+   --> vendor/hibana/src/global/role_program/image_impl/projection.rs:254:25
+    |
+254 |             let start = marker.offset();
+    |                         ^^^^^^^^^^^^^^^ the const evaluator is currently interpreting this expression
+    |
+help: the constant being evaluated
+   --> vendor/hibana/src/g/role_projection.rs:164:5
+    |
+164 |     const BUILD: Option<crate::global::role_program::RoleImageBuild<N>> =
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `hibana-quic` (lib test) generated 34 warnings (10 duplicates) (run `cargo fix --lib -p hibana-quic --tests` to apply 1 suggestion)

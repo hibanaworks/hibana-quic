@@ -36,3 +36,92 @@ Source c8a1809 passed both Rust1.95 cargo-check stages in run37114351857. The ne
 Run37115827016 on74280de passed type checking but failed code generation when Hibana evaluated the complete choreography: a receive-lane sender change lacks an explicit causal handoff. No runtime tests executed. The global/local capability flow is being corrected; this is not classified as a Hibana core defect.
 
 The next ownership-flow patch replaces the missing handoffs with actual key/Finished/retirement capability transfers. Two source-level Python ports now agree on173events/306markers/4lanes and zero modeled receive-causality violations. This is not a Rust validation or runtime pass. Capacity-one progress and all existing execution assertions remain mandatory.
+
+## Fresh Linux recovery validation, 2026-10-03
+
+The checkout was cloned from GitHub at `9d545bcac7790ad372ba30ba082114c3a2d1702f`.
+All results below came from freshly compiled source in this environment, using
+Rust 1.95.0; no pre-loss binary or measurement was reused. Safe command records,
+logs, source/tree identity mappings and the case/direction/repetition table are
+in `artifacts/direct-recovery/20261003/`. Raw runner data remains outside Git.
+
+At published source `02efcac40b85adc165c63e61b758a4afd4ca406f`, the six requested
+commands, in order, all exited zero: source audit, the two Python models,
+`application_wire` (4 tests), `connected_application` (7), and host `hq` (27).
+These Rust suites completed const projection, code generation and execution.
+The Python models retain their narrower source-model meaning. Additional direct
+connection tests passed 37/37; no-allocation, TLS Initial-prefix and directional
+packet-role integration tests passed 13/13 at the recorded source identities.
+
+The original connected fixture overflowed the default test stack. Host fixture
+slabs and separately pinned peer futures now live on the host heap, preserving
+their capacities and the core's caller-owned, no-alloc storage. Its advertised
+receive windows now match backing storage, and client/server peer-stream quotas
+reflect their actual roles. Existing loss, FIN, acknowledgement and close
+assertions remain. New regressions cover rejecting unbacked credit and opening
+three client-initiated streams. The application cancellation fixture's receive
+credit was similarly corrected; its allocation/ledger assertions remain.
+
+Hibana was integrated as the exact upstream archive at
+`67cbf9f0a57fe89a8486766456a769b646f2a3e1`, including the nested resolver repair,
+proof sources and manifests. Pins and provenance agree, and no vendor source
+patch is present. Nested resolver regressions passed 8/8, the core workspace
+tests and clippy passed, and the controller-offer contract passed 13 Lean
+theorems, nine expected Z3 UNSAT checks, two SAT old-behavior counterexamples,
+and ten source-hash checks. These results do not prove QUIC interoperability.
+
+Qualification is incomplete. In this environment the unchanged core resource
+gate exits 137: `route_arm_heavy_1` reaches 135 MiB against its 132 MiB budget.
+The e75 baseline passes the same gate at 130 MiB under the same conditions.
+The limit was not increased. Broad QUIC `--all-targets` still exits 101 on
+`early_owner_no_alloc` long-running const evaluation. Broad library tests also
+encounter an early-owner retirement receive `PhaseInvariant` and a path-owner
+pending-cancellation default-stack overflow. The retirement failure was
+reproduced individually. No assertion or compiler/stack limit was relaxed.
+
+### Official runner: no interoperability pass
+
+Runner `740c05a10b61d65e8abd3ad38d60898004d335d9` and Neqo
+`ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95` remain unchanged. Docker 28.4/API 1.51,
+Compose 2.40.3 and tshark 4.6.4 were verified, including the actual required
+simulator interface names/addresses. The fresh Neqo build uses the pinned
+upstream NSS inputs/build flags; its chef image's Rust version is recorded
+separately from the QUIC Rust 1.95.0 builds.
+
+The latest normal Neqo/Neqo baseline ran handshake and transfer: 0 passed,
+2 executed, 2 failed. An earlier four-cell candidate diagnosis using the
+unchanged official cases also yielded 0 passed/4 executed/4 failed. Its source
+was local `4891519`, published with the identical tree as `5fb48d54`; the failed
+baseline means it is not environment qualification. No actual file comparison
+passed. No HTTP/3 result is claimed.
+
+The 20-case x two-direction x three-repetition formal matrix was **not run**:
+0 passed/0 executed/120 target cells, 60 per direction and 20 per repetition.
+Endpoint capabilities are a separate axis: handshake/transfer are implemented;
+the other 18 cases are not implemented. No upstream unsupported verdict was
+obtained for those unexecuted cases.
+
+Two causes were isolated. Hibana's server did not answer the simulator's small
+unknown-version WAIT probe; stateless Version Negotiation now reverses the real
+CIDs, advertises v1 and respects the amplification bound. A real UDP regression
+passes, but this change has not been retested with the official runner. Also,
+Docker 28.4's per-endpoint `raw PREROUTING` rule drops cross-network packets
+before the simulator. The minimal reproduction observed one 1280-byte DROP;
+an unassigned destination and same-bridge UDP/GSO control experiments pass.
+The required daemon setting is `allow-direct-routing=true`; upstream tests,
+verdicts and file comparisons were not changed.
+
+Docker is currently stopped. The local restart helper incorrectly used
+`kill -0` as a liveness check, mistook the terminated dockerd's zombie PID 198
+for a running daemon, and refused to launch its replacement. This is a recovery
+procedure error. The agent has no remaining root command runner; root recovery
+was requested. Source, images, builds and logs remain on disk. Resume by
+starting the original daemon with `--allow-direct-routing=true`, then rebuild
+the candidate at a clean current SHA and run `ci/run-local-interop.py` in matrix
+mode: it gates candidate pilot and matrix execution on a passing Neqo baseline.
+Do not kill a replacement daemon based only on the old zombie PID.
+
+The five source commits have been published through GitHub's Git data API and
+their trees verified against the locally tested commits. The core integration
+branch is published at 67cbf9f0. Main was not merged. Comparable QUIC performance
+measurements and performance improvement remain uncompleted.

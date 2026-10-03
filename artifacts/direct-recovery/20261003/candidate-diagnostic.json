@@ -1,0 +1,561 @@
+{
+  "source_commit": "4891519aa2fbdbeca643d13dfce50290225f34df",
+  "neqo_revision": "ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95",
+  "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
+  "baseline_passed": false,
+  "qualification_passed": false,
+  "scope": "four unchanged upstream cases; diagnosis after baseline failed; no environment qualification",
+  "records": [
+    {
+      "phase": "diagnostic-client-20261003T154102Z",
+      "client": "hibana-quic",
+      "server": "neqo",
+      "status": "FAILED",
+      "exit_code": 2,
+      "quic_version": "0x1",
+      "results": [
+        {
+          "name": "handshake",
+          "result": "failed",
+          "abbr": "H"
+        },
+        {
+          "name": "transfer",
+          "result": "failed",
+          "abbr": "DC"
+        }
+      ],
+      "original_json_sha256": "6f4beb4d0977084513db402b4046b1e5f3176bc047e7a4b99f8340692c9d7622",
+      "non_null_case_results": 2,
+      "unexecuted_case_results": 0,
+      "passed": false,
+      "cleanup_exit_code": 0,
+      "console_file": {
+        "state": "present",
+        "bytes": 18377,
+        "sha256": "3e47cc5795b66c067114223cbf46d2775ebb4d2b6f0feab8281cab7be55577b8"
+      },
+      "console_parse_state": "parsed",
+      "console_diagnostics": {
+        "parse_state": "parsed",
+        "line_count": 328,
+        "error_classes": [
+          "certificate"
+        ],
+        "runner_classes": [
+          "case-timeout"
+        ],
+        "console_error_classes": [],
+        "container_exit_codes": {
+          "client": [],
+          "server": [],
+          "sim": []
+        },
+        "case_timeout_count": 2,
+        "case_timeout_seconds": [
+          60
+        ]
+      },
+      "runner_log_sha256": "3e47cc5795b66c067114223cbf46d2775ebb4d2b6f0feab8281cab7be55577b8",
+      "console_error_classes": [],
+      "runner_tracebacks": [],
+      "runner_progress": {
+        "server_compliance_passed": true,
+        "client_compliance_passed": true,
+        "announced_cases": [
+          "handshake",
+          "transfer"
+        ]
+      },
+      "duration_seconds": 157.272,
+      "case_diagnostics": {
+        "handshake": {
+          "runner_output": {
+            "state": "present",
+            "bytes": 8794,
+            "sha256": "59336d103a580457424d2d8a314da895de757ca869723febb6ea51cde751068c",
+            "parse_state": "parsed",
+            "line_count": 154,
+            "error_classes": [
+              "certificate"
+            ],
+            "runner_classes": [
+              "case-timeout"
+            ],
+            "console_error_classes": [],
+            "container_exit_codes": {
+              "client": [],
+              "server": [],
+              "sim": []
+            },
+            "case_timeout_count": 1,
+            "case_timeout_seconds": [
+              60
+            ]
+          },
+          "client_log": {
+            "state": "present",
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "parse_state": "parsed",
+            "line_count": 0,
+            "error_classes": [],
+            "json_record_count": 0,
+            "json_state": "parsed",
+            "json_records_omitted": 0,
+            "json_records": []
+          },
+          "server_log": {
+            "state": "present",
+            "bytes": 397,
+            "sha256": "8d12230708db85f1770c62dc1608d446512f1b7021e87a7b05a5ccdf7a4cb827",
+            "parse_state": "parsed",
+            "line_count": 6,
+            "error_classes": [],
+            "json_record_count": 0,
+            "json_state": "parsed",
+            "json_records_omitted": 0,
+            "json_records": []
+          },
+          "captures": {
+            "left": {
+              "state": "present",
+              "bytes": 6164,
+              "sha256": "a9ec2a63ac6cc79df7510c62a843aded48582f21620d2d92a71fa82b6b4de999"
+            },
+            "right": {
+              "state": "present",
+              "bytes": 4224,
+              "sha256": "966faed83d8e55bd7e3a098db5e8ac8dcb56222fd1a3cb53ab1cd603ef8fc1ec"
+            }
+          },
+          "application_files": {
+            "server_www": {
+              "state": "present",
+              "file_count": 1,
+              "total_bytes": 1024,
+              "file_sizes": [
+                1024
+              ]
+            },
+            "client_downloads": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": [],
+              "length_complete_files": 0,
+              "length_complete_bytes": 0,
+              "partial_files": 0,
+              "partial_bytes": 0,
+              "unclassified_files": 0,
+              "missing_expected_files": 1,
+              "length_only_not_content_verified": true
+            },
+            "client_www": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": []
+            },
+            "server_downloads": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": [],
+              "length_complete_files": 0,
+              "length_complete_bytes": 0,
+              "partial_files": 0,
+              "partial_bytes": 0,
+              "unclassified_files": 0,
+              "missing_expected_files": 0,
+              "length_only_not_content_verified": true
+            }
+          }
+        },
+        "transfer": {
+          "runner_output": {
+            "state": "present",
+            "bytes": 9072,
+            "sha256": "d0bc164228e07691fc9530b82f0d86fed8341d5663089b257446d8112ab5e836",
+            "parse_state": "parsed",
+            "line_count": 154,
+            "error_classes": [
+              "certificate"
+            ],
+            "runner_classes": [
+              "case-timeout"
+            ],
+            "console_error_classes": [],
+            "container_exit_codes": {
+              "client": [],
+              "server": [],
+              "sim": []
+            },
+            "case_timeout_count": 1,
+            "case_timeout_seconds": [
+              60
+            ]
+          },
+          "client_log": {
+            "state": "present",
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "parse_state": "parsed",
+            "line_count": 0,
+            "error_classes": [],
+            "json_record_count": 0,
+            "json_state": "parsed",
+            "json_records_omitted": 0,
+            "json_records": []
+          },
+          "server_log": {
+            "state": "present",
+            "bytes": 397,
+            "sha256": "fcb74cb27233536692ecf8e0bd8acbfa49f95586853f038d22de3d8277c71edb",
+            "parse_state": "parsed",
+            "line_count": 6,
+            "error_classes": [],
+            "json_record_count": 0,
+            "json_state": "parsed",
+            "json_records_omitted": 0,
+            "json_records": []
+          },
+          "captures": {
+            "left": {
+              "state": "present",
+              "bytes": 6232,
+              "sha256": "e19d8cd93152b7d0cc8936ff913bd31d25474340b507d4302e778ae75824a611"
+            },
+            "right": {
+              "state": "present",
+              "bytes": 4168,
+              "sha256": "680a8d4ba3ad332b3c2f2783b4176c9fc29ee61dd289d9ab05f65dfc1859ca79"
+            }
+          },
+          "application_files": {
+            "server_www": {
+              "state": "present",
+              "file_count": 3,
+              "total_bytes": 10485760,
+              "file_sizes": [
+                2097152,
+                3145728,
+                5242880
+              ]
+            },
+            "client_downloads": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": [],
+              "length_complete_files": 0,
+              "length_complete_bytes": 0,
+              "partial_files": 0,
+              "partial_bytes": 0,
+              "unclassified_files": 0,
+              "missing_expected_files": 3,
+              "length_only_not_content_verified": true
+            },
+            "client_www": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": []
+            },
+            "server_downloads": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": [],
+              "length_complete_files": 0,
+              "length_complete_bytes": 0,
+              "partial_files": 0,
+              "partial_bytes": 0,
+              "unclassified_files": 0,
+              "missing_expected_files": 0,
+              "length_only_not_content_verified": true
+            }
+          }
+        }
+      },
+      "captures": [
+        {
+          "state": "present",
+          "bytes": 6164,
+          "sha256": "a9ec2a63ac6cc79df7510c62a843aded48582f21620d2d92a71fa82b6b4de999",
+          "case": "handshake",
+          "side": "left"
+        },
+        {
+          "state": "present",
+          "bytes": 4224,
+          "sha256": "966faed83d8e55bd7e3a098db5e8ac8dcb56222fd1a3cb53ab1cd603ef8fc1ec",
+          "case": "handshake",
+          "side": "right"
+        },
+        {
+          "state": "present",
+          "bytes": 6232,
+          "sha256": "e19d8cd93152b7d0cc8936ff913bd31d25474340b507d4302e778ae75824a611",
+          "case": "transfer",
+          "side": "left"
+        },
+        {
+          "state": "present",
+          "bytes": 4168,
+          "sha256": "680a8d4ba3ad332b3c2f2783b4176c9fc29ee61dd289d9ab05f65dfc1859ca79",
+          "case": "transfer",
+          "side": "right"
+        }
+      ]
+    },
+    {
+      "phase": "diagnostic-server-20261003T154102Z",
+      "client": "neqo",
+      "server": "hibana-quic",
+      "status": "FAILED",
+      "exit_code": 2,
+      "quic_version": "0x1",
+      "results": [
+        {
+          "name": "handshake",
+          "result": "failed",
+          "abbr": "H"
+        },
+        {
+          "name": "transfer",
+          "result": "failed",
+          "abbr": "DC"
+        }
+      ],
+      "original_json_sha256": "c660296c3fe89e60e890249cba1726278a6d09b5d2b4c6c9732662b41f87bcd4",
+      "non_null_case_results": 2,
+      "unexecuted_case_results": 0,
+      "passed": false,
+      "cleanup_exit_code": 0,
+      "console_file": {
+        "state": "present",
+        "bytes": 7590,
+        "sha256": "bb5a7fd1da605eb92f0fa60adf83f2097d675d4ef73a31193e2be2e8987146a3"
+      },
+      "console_parse_state": "parsed",
+      "console_diagnostics": {
+        "parse_state": "parsed",
+        "line_count": 146,
+        "error_classes": [],
+        "runner_classes": [
+          "container-exit-abort"
+        ],
+        "console_error_classes": [],
+        "container_exit_codes": {
+          "client": [],
+          "server": [],
+          "sim": []
+        },
+        "case_timeout_count": 0,
+        "case_timeout_seconds": []
+      },
+      "runner_log_sha256": "bb5a7fd1da605eb92f0fa60adf83f2097d675d4ef73a31193e2be2e8987146a3",
+      "console_error_classes": [],
+      "runner_tracebacks": [],
+      "runner_progress": {
+        "server_compliance_passed": true,
+        "client_compliance_passed": true,
+        "announced_cases": [
+          "handshake",
+          "transfer"
+        ]
+      },
+      "duration_seconds": 82.238,
+      "case_diagnostics": {
+        "handshake": {
+          "runner_output": {
+            "state": "present",
+            "bytes": 3366,
+            "sha256": "f6029d3dc86b91f5c27de927229fe0310bec9ce18277a6f8ac77468e94a5cdd1",
+            "parse_state": "parsed",
+            "line_count": 63,
+            "error_classes": [],
+            "runner_classes": [
+              "container-exit-abort"
+            ],
+            "console_error_classes": [],
+            "container_exit_codes": {
+              "client": [
+                137
+              ],
+              "server": [
+                137
+              ],
+              "sim": [
+                1
+              ]
+            },
+            "case_timeout_count": 0,
+            "case_timeout_seconds": []
+          },
+          "client_log": {
+            "state": "missing"
+          },
+          "server_log": {
+            "state": "present",
+            "bytes": 43,
+            "sha256": "4d34093c289ca4445fd3d15f69eeaa85cf4fc960559970730cb9e18ba84ab649",
+            "parse_state": "parsed",
+            "line_count": 1,
+            "error_classes": [],
+            "json_record_count": 0,
+            "json_state": "parsed",
+            "json_records_omitted": 0,
+            "json_records": []
+          },
+          "captures": {
+            "left": {
+              "state": "missing"
+            },
+            "right": {
+              "state": "missing"
+            }
+          },
+          "application_files": {
+            "server_www": {
+              "state": "present",
+              "file_count": 1,
+              "total_bytes": 1024,
+              "file_sizes": [
+                1024
+              ]
+            },
+            "client_downloads": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": [],
+              "length_complete_files": 0,
+              "length_complete_bytes": 0,
+              "partial_files": 0,
+              "partial_bytes": 0,
+              "unclassified_files": 0,
+              "missing_expected_files": 1,
+              "length_only_not_content_verified": true
+            },
+            "client_www": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": []
+            },
+            "server_downloads": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": [],
+              "length_complete_files": 0,
+              "length_complete_bytes": 0,
+              "partial_files": 0,
+              "partial_bytes": 0,
+              "unclassified_files": 0,
+              "missing_expected_files": 0,
+              "length_only_not_content_verified": true
+            }
+          }
+        },
+        "transfer": {
+          "runner_output": {
+            "state": "present",
+            "bytes": 3643,
+            "sha256": "42929da8a3e26ad95868ae5e4c3b3b63253936ea8125eaedec417826e31bc07c",
+            "parse_state": "parsed",
+            "line_count": 63,
+            "error_classes": [],
+            "runner_classes": [
+              "container-exit-abort"
+            ],
+            "console_error_classes": [],
+            "container_exit_codes": {
+              "client": [
+                137
+              ],
+              "server": [
+                137
+              ],
+              "sim": [
+                1
+              ]
+            },
+            "case_timeout_count": 0,
+            "case_timeout_seconds": []
+          },
+          "client_log": {
+            "state": "missing"
+          },
+          "server_log": {
+            "state": "present",
+            "bytes": 43,
+            "sha256": "4d34093c289ca4445fd3d15f69eeaa85cf4fc960559970730cb9e18ba84ab649",
+            "parse_state": "parsed",
+            "line_count": 1,
+            "error_classes": [],
+            "json_record_count": 0,
+            "json_state": "parsed",
+            "json_records_omitted": 0,
+            "json_records": []
+          },
+          "captures": {
+            "left": {
+              "state": "missing"
+            },
+            "right": {
+              "state": "missing"
+            }
+          },
+          "application_files": {
+            "server_www": {
+              "state": "present",
+              "file_count": 3,
+              "total_bytes": 10485760,
+              "file_sizes": [
+                2097152,
+                3145728,
+                5242880
+              ]
+            },
+            "client_downloads": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": [],
+              "length_complete_files": 0,
+              "length_complete_bytes": 0,
+              "partial_files": 0,
+              "partial_bytes": 0,
+              "unclassified_files": 0,
+              "missing_expected_files": 3,
+              "length_only_not_content_verified": true
+            },
+            "client_www": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": []
+            },
+            "server_downloads": {
+              "state": "present",
+              "file_count": 0,
+              "total_bytes": 0,
+              "file_sizes": [],
+              "length_complete_files": 0,
+              "length_complete_bytes": 0,
+              "partial_files": 0,
+              "partial_bytes": 0,
+              "unclassified_files": 0,
+              "missing_expected_files": 0,
+              "length_only_not_content_verified": true
+            }
+          }
+        }
+      },
+      "captures": []
+    }
+  ]
+}
