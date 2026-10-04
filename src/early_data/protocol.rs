@@ -112,3 +112,33 @@ pub fn choreography() -> g::Program<Flow> {
         ),
     )
 }
+
+// The finite optional bridge reuses the completed prefix's four endpoint roles.
+// Every role observes the skip, so projection never guesses hidden knowledge.
+pub type Skip = g::Msg<19, u64>;
+pub type SkipOwner = g::Msg<20, u64>;
+pub type SkipTls = g::Msg<21, u64>;
+pub type SkipDone = g::Msg<22, u64>;
+pub type SkipFlow = g::Seq<
+    g::Send<INPUT, OWNER, Skip>,
+    g::Seq<
+        g::Send<OWNER, TLS, SkipOwner>,
+        g::Seq<g::Send<TLS, APPLICATION, SkipTls>, g::Send<APPLICATION, INPUT, SkipDone>>,
+    >,
+>;
+pub type Bridge = g::Route<Flow, SkipFlow>;
+pub fn bridge() -> g::Program<Bridge> {
+    g::route(
+        choreography(),
+        g::seq(
+            g::send::<INPUT, OWNER, Skip>(),
+            g::seq(
+                g::send::<OWNER, TLS, SkipOwner>(),
+                g::seq(
+                    g::send::<TLS, APPLICATION, SkipTls>(),
+                    g::send::<APPLICATION, INPUT, SkipDone>(),
+                ),
+            ),
+        ),
+    )
+}

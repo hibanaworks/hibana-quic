@@ -77,6 +77,7 @@ fn run_discard(cancel: bool, missing_finished: bool, release: bool, controls: bo
                 .unwrap();
             input.send::<p::Packet>(&0).await?;
             assert_eq!(input.offer().await?.recv::<p::PacketStored>().await?, 0);
+            assert_eq!(exchange.take_stored()?.packet_number(), 0);
             input.send::<p::InputEnd>(&7).await?;
             assert_eq!(input.recv::<p::InputEnded>().await?, 7);
             input.send::<p::InputRetired>(&7).await?;

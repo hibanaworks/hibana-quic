@@ -708,7 +708,7 @@ Hibana API. With Rust `1.95.0`, the tracked release measurements are:
 | Modeled runtime SRAM envelope | 5,290 B | 8,954 B |
 | Minimal linked protocol artifact | 352 B | 2,048 B |
 | Largest linked artifact in the tracked protocol matrix | 1,824 B | 16,384 B |
-| Complete no-default `libhibana.rlib` sections | 88,013 B | 169,965 B |
+| Complete no-default `libhibana.rlib` sections | 93,899 B | 169,965 B |
 | Library `.data + .bss` | 0 B | 0 B |
 
 The linked-artifact and library rows are `thumbv6m-none-eabi` release
@@ -805,3 +805,28 @@ with distributed fidelity, progress, and cancellation conclusions stated under
 explicit carrier, deployment, codec, and scheduling requirements.
 
 Hibana is licensed under either Apache-2.0 or MIT, at your option.
+
+### Explaining projection failures
+
+Projection errors identify the affected role, structured scope, arm event ranges,
+and source messages when a witness is available. For example, a receive-lane
+error can name `event#0(8->9 label=168 lane=0)` followed by
+`event#1(27->9 label=190 lane=0)` and request a causal handoff. A rolled error also
+identifies the reentry scope. Missing branch knowledge names the passive role
+and shows which arm has no local event.
+
+For a read-only structured explanation without constructing endpoints, call
+`g::diagnose(&program)`. It returns `Option<g::ProjectionDiagnostic>` and supports
+`Display` and `Debug`. `None` means the existing projection checks accept; it is
+not evidence about payload algorithms or physical I/O. Projection itself remains
+fail-closed and includes the available explanation in its compile-time error.
+Scope and event numbers are zero-based source-order ordinals, not Rust line
+numbers. Some selector/passive-child failures currently have only a category;
+missing witnesses are never guessed. See `proofs/projection-diagnostics` for the
+verification scope and regression checks.
+
+### Explicit completion and resource return
+
+For finite RX/TX completion, failure, and resource-return boundaries using the
+existing API, see the [executable explicit-resource-join example and verification](proofs/explicit-resource-join/README.md). This preserves independent emergency
+stop and long-running parallel loops; it adds no automatic native-resource guarantee.

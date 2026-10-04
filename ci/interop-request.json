@@ -1,12 +1,12 @@
 {
-  "request": "Qualify the completed existing-control Hibana migration before adding 0-RTT",
-  "requested_at": "2026-10-04T12:13:00Z",
+  "request": "Requalify the existing 14 cells after receive and flow-credit batching with the exact published Hibana dependency",
+  "requested_at": "2026-10-04T16:20:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"
   ],
   "approval": "User authorized the existing interop workflow for these unchanged cases.",
-  "local_evidence": "docs/control-migration-audit.md",
+  "local_evidence": "docs/client-performance.md",
   "cases": [
     "handshake",
     "transfer",
@@ -16,5 +16,5 @@
     "ipv6",
     "chacha20"
   ],
-  "source_control_checkpoint": "aae9f1f176ba49f124e9764d929c2ed4aee2d382"
+  "qualification": "No new supported cases are claimed; server early receive and client performance remain separately scoped."
 }

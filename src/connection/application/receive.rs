@@ -18,7 +18,12 @@ use crate::{
     streams,
     tls::Level,
 };
-use core::cell::RefCell;
+use core::{
+    cell::RefCell,
+    future::{Future, poll_fn},
+    pin::pin,
+    task::Poll,
+};
 use hibana::Endpoint;
 use zeroize::Zeroizing;
 
@@ -50,7 +55,7 @@ pub(crate) async fn run<
     socket: &mut impl DatagramRx,
     termination: &termination::Exchange<'_, '_, 'scope>,
     initial_confirmation: Option<recovery::HandshakeConfirmed<'scope>>,
-) -> Result<keys::KeysQuiesced<'owner, 'scope>, Error> {
+) -> Result<(), Error> {
     let scope = material.application.scope();
     if !core::ptr::eq(scope, transcript.scope())
         || material
@@ -78,10 +83,32 @@ pub(crate) async fn run<
     let mut datagram = [0; N];
     let mut largest = None;
     let mut peer_reported = false;
+    // A Finished-gated early bridge may already have retained request bytes.
+    notify_ready(receive, control, state, app).await?;
+    // Bounded opportunistic batching: flush ready streams before actually
+    // waiting for input, and after at most sixteen datagrams or one millisecond of work. Pending receive IO
+    // stays pinned/owned while delivery runs; it is not cancelled for batching.
+    let mut burst = 0usize;
+    let mut burst_started = 0u64;
     'receive: while !control.stopping() {
-        let Some(result) = control.until_stop(3, socket.receive(&mut datagram)).await else {
+        let result = {
+            let mut input = pin!(control.until_stop(3, socket.receive(&mut datagram)));
+            match poll_fn(|cx| Poll::Ready(input.as_mut().poll(cx))).await {
+                Poll::Ready(result) => result,
+                Poll::Pending => {
+                    notify_ready(receive, control, state, app).await?;
+                    burst = 0;
+                    input.await
+                }
+            }
+        };
+        let Some(result) = result else {
             break;
         };
+        if burst == 0 {
+            burst_started = clock.now();
+        }
+        burst += 1;
         let len = result.map_err(connection::Error::from)?;
         if len > N {
             return Err(Error::Capacity);
@@ -138,6 +165,9 @@ pub(crate) async fn run<
             };
             match result {
                 Ok(Some(code)) => {
+                    // Preserve delivery of already authenticated buffered FINs
+                    // before publishing the actual peer-close observation.
+                    notify_ready(receive, control, state, app).await?;
                     termination::peer_close(peer_event, termination, scope, code).await?;
                     peer_reported = true;
                     break 'receive;
@@ -152,12 +182,19 @@ pub(crate) async fn run<
                 }
             }
             control.changed()?;
+            // Let the adapter consume retained ACK grants before another
+            // packet can add more evidence to the bounded receipt slot.
+            if !acknowledgments.pending.is_empty() {
+                notify_ready(receive, control, state, app).await?;
+                burst = 0;
+                crate::runtime::yield_now().await;
+            }
+        }
+        if burst >= 16 || clock.now().saturating_sub(burst_started) >= 1_000 {
             notify_ready(receive, control, state, app).await?;
-            // A socket with immediately ready buffered packets must still let
-            // TX, the adapter and the deadline role make bounded progress.
+            burst = 0;
             crate::runtime::yield_now().await;
         }
-        crate::runtime::yield_now().await;
     }
     if !peer_reported {
         termination::cancel_peer(peer_event, termination).await?;

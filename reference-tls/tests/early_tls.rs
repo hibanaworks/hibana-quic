@@ -285,16 +285,23 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
 
             let mut client_scope = hibana_quic::crypto::directional::ApplicationKeyScope::new(2300);
             let mut server_scope = hibana_quic::crypto::directional::ApplicationKeyScope::new(2301);
-            let mut client = client
-                .into_key_source(client_scope.claim().unwrap())
-                .unwrap();
+            let mut installation = client_scope.claim().unwrap();
+            let mut recovery = hibana_quic::connection::recovery::Recovery::<256>::new(
+                installation.take_recovery().unwrap(),
+                hibana_quic::connection::Side::Client,
+                333_000,
+                1200,
+            )
+            .unwrap();
+            let (mut book, _, _, _, mut retirement) = recovery.split().unwrap();
+            let mut client = client.into_key_source(installation).unwrap();
             let mut server = server
                 .into_key_source(server_scope.claim().unwrap())
                 .unwrap();
             let request = b"GET /early\r\n";
-            let mut late = [0; 64];
+            let mut late = [0; 256];
             let mut late_n = 0;
-            let mut plain_n = 0;
+            let mut plaintext = [0; 64];
             let mut observed = false;
             async_fixture::handshake_key_sources_observe(
                 &mut client,
@@ -309,17 +316,37 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                     else {
                         panic!("client early key must transmit")
                     };
-                    plain_n = hibana_quic::packet::encode_frame(
+                    let plain_n = hibana_quic::packet::encode_frame(
                         &hibana_quic::packet::Frame::Stream {
                             id: 0,
                             offset: 0,
                             fin: true,
                             data: request,
                         },
-                        &mut late,
+                        &mut plaintext,
                     )
                     .unwrap();
-                    late_n = tx.seal(1, b"header", &mut late, plain_n).unwrap();
+                    let size = hibana_quic::connection::early_wire::encoded_len(
+                        b"server01",
+                        b"client01",
+                        plain_n,
+                    )
+                    .unwrap();
+                    let reservation = book
+                        .reserve_early(&tx, &plaintext[..plain_n], size as u64, 0)
+                        .unwrap();
+                    let sealed = hibana_quic::connection::early_wire::seal::<256>(
+                        &mut tx,
+                        reservation,
+                        b"server01",
+                        b"client01",
+                        &plaintext[..plain_n],
+                    )
+                    .unwrap_or_else(|(error, _)| panic!("early seal: {error:?}"));
+                    late_n = sealed.bytes().len();
+                    late[..late_n].copy_from_slice(sealed.bytes());
+                    // Packet-protection fixture only: no UDP acceptance is claimed.
+                    book.cancel(sealed.into_reservation()).unwrap();
                     // The actual early transmitter is retired after its finite input.
                     tx.discard();
                 },
@@ -340,26 +367,55 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             let mut bad = late;
             bad[late_n - 1] ^= 1;
             assert!(
-                key.open_early_authenticated(1, b"header", &mut bad[..late_n], &mut budget)
-                    .is_err()
+                hibana_quic::connection::early_wire::open::<256>(
+                    &key,
+                    &mut budget,
+                    &bad[..late_n],
+                    b"server01",
+                    None
+                )
+                .is_err()
             );
-            assert!(bad[..late_n].iter().all(|b| *b == 0));
-            let authenticated = key
-                .open_early_authenticated(1, b"header", &mut late[..late_n], &mut budget)
-                .unwrap();
+            assert!(
+                hibana_quic::connection::early_wire::open::<256>(
+                    &key,
+                    &mut budget,
+                    &late[..late_n],
+                    b"wrongcid",
+                    None
+                )
+                .is_err()
+            );
+            let mut opened = hibana_quic::connection::early_wire::open::<256>(
+                &key,
+                &mut budget,
+                &late[..late_n],
+                b"server01",
+                None,
+            )
+            .unwrap();
+            let authenticated = opened.take_receipt().unwrap();
+            assert!(opened.take_receipt().is_none());
             let input =
                 hibana_quic::early_data::owner::AuthenticatedInput::<64>::from_authentication(
                     authenticated,
                     2,
-                    &late[..plain_n],
+                    opened.plaintext(),
                 )
                 .unwrap();
             projected_early_release(admission, finished, input, &mut held, request);
             key.discard();
             assert!(
-                key.open_early_authenticated(1, b"header", &mut late[..late_n], &mut budget)
-                    .is_err()
+                hibana_quic::connection::early_wire::open::<256>(
+                    &key,
+                    &mut budget,
+                    &late[..late_n],
+                    b"server01",
+                    None
+                )
+                .is_err()
             );
+            retirement.disarm();
         });
     }
 }
@@ -654,11 +710,16 @@ fn projected_early_release<'scope>(
     let mut app = rv.enter(sid, &ap).unwrap();
     let exchange = owner::Exchange::<64>::new();
     let generation = admission.generation();
+    let packet_number = input.packet_number();
     {
         let mut input_task = pin!(async {
             exchange.store_input(input)?;
-            source.send::<p::Packet>(&1).await?;
-            assert_eq!(source.offer().await?.recv::<p::PacketStored>().await?, 1);
+            source.send::<p::Packet>(&packet_number).await?;
+            assert_eq!(
+                source.offer().await?.recv::<p::PacketStored>().await?,
+                packet_number
+            );
+            assert_eq!(exchange.take_stored()?.packet_number(), packet_number);
             source.send::<p::InputEnd>(&generation).await?;
             assert_eq!(source.recv::<p::InputEnded>().await?, generation);
             source.send::<p::InputRetired>(&generation).await?;

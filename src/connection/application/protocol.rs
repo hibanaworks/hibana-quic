@@ -809,7 +809,10 @@ pub struct Programs {
 pub fn programs() -> Programs {
     let global = g::seq(
         crate::connection::protocol::choreography(),
-        g::seq(startup(), choreography()),
+        g::seq(
+            startup(),
+            g::seq(crate::early_data::protocol::bridge(), choreography()),
+        ),
     );
     Programs {
         handshake: crate::connection::protocol::Programs {

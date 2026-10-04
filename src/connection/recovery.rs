@@ -175,6 +175,7 @@ pub struct Reservation<'book> {
     ack_eliciting: bool,
     padded: bool,
     key_generation: u64,
+    kind: PacketKind,
     plaintext: Option<PlaintextBinding>,
 }
 impl<'book> Reservation<'book> {
@@ -189,6 +190,9 @@ impl<'book> Reservation<'book> {
     }
     pub fn key_generation(&self) -> u64 {
         self.key_generation
+    }
+    pub fn kind(&self) -> PacketKind {
+        self.kind
     }
     pub fn matches_crypto(&self, offset: u64, bytes: &[u8]) -> bool {
         self.crypto
@@ -526,7 +530,6 @@ fn level_index(level: Level) -> Result<usize, Error> {
         Level::Initial => Ok(0),
         Level::Handshake => Ok(1),
         Level::OneRtt => Ok(2),
-        _ => Err(Error::UnsupportedLevel),
     }
 }
 pub(super) fn frames(plaintext: &[u8], level: EncryptionLevel) -> Result<FrameIter<'_>, Error> {
@@ -1043,9 +1046,6 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         bytes: &[u8],
     ) -> Result<FlightId, Error> {
         let index = level_index(level)?;
-        if index == 2 {
-            return Err(Error::UnsupportedLevel);
-        }
         let mut n = self.book.numbers.borrow_mut();
         n.ordinary()?;
         if n.retired_space[index] {
@@ -1136,6 +1136,48 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
             false,
         )
     }
+    /// A real client early key authorizes only this scoped early reservation.
+    /// The ordinary application allocator is shared; a rejected send burns its PN.
+    pub fn reserve_early(
+        &mut self,
+        key: &crate::bounded_tls::key_source::TransmitPacketKey<'_>,
+        plaintext: &[u8],
+        bytes: u64,
+        now: u64,
+    ) -> Result<Reservation<'book>, Error> {
+        if key.kind() != KeyKind::ZeroRtt
+            || !core::ptr::eq(key.scope(), self.book.scope)
+            || self.book.numbers.borrow().side != Side::Client
+        {
+            return Err(Error::Binding);
+        }
+        let mut eliciting = false;
+        let mut padded = false;
+        for frame in frames(plaintext, EncryptionLevel::ZeroRtt)? {
+            let frame = frame?;
+            eliciting |= frame.ack_eliciting();
+            if let Frame::Padding { length } = frame {
+                padded |= length != 0;
+            }
+        }
+        if plaintext.is_empty() {
+            return Err(Error::Binding);
+        }
+        reserve_kind(
+            self.book,
+            PacketKind::ZeroRtt,
+            bytes,
+            None,
+            eliciting,
+            padded,
+            false,
+            now,
+            0,
+            Some(PlaintextBinding::new(plaintext)),
+            None,
+            false,
+        )
+    }
     pub fn reserve_application(
         &mut self,
         plaintext: &[u8],
@@ -1160,6 +1202,59 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
             key_generation,
             Some(PlaintextBinding::new(plaintext)),
             None,
+            false,
+        )
+    }
+    /// Retain the exact post-handshake CRYPTO flight across loss, in the same
+    /// application packet-number ledger used by ordinary data.
+    pub fn reserve_application_crypto(
+        &mut self,
+        plaintext: &[u8],
+        key_generation: u64,
+        bytes: u64,
+        flight: FlightId,
+        pto_probe: bool,
+        now: u64,
+    ) -> Result<Reservation<'book>, Error> {
+        let binding = {
+            let n = self.book.numbers.borrow();
+            let (level, offset, data) = n.flights.data(flight)?;
+            if level != Level::OneRtt || n.flights.is_handshake_done(flight)? {
+                return Err(Error::Binding);
+            }
+            CryptoBinding {
+                offset,
+                bytes: PlaintextBinding::new(data),
+            }
+        };
+        let mut count = 0;
+        let mut padded = false;
+        for frame in frames(plaintext, EncryptionLevel::OneRtt)? {
+            match frame? {
+                Frame::Crypto { offset, data }
+                    if offset == binding.offset && binding.bytes.matches(data) =>
+                {
+                    count += 1
+                }
+                Frame::Padding { length } => padded |= length != 0,
+                _ => return Err(Error::Binding),
+            }
+        }
+        if count != 1 {
+            return Err(Error::Binding);
+        }
+        reserve(
+            self.book,
+            2,
+            bytes,
+            Some(flight),
+            true,
+            padded,
+            pto_probe,
+            now,
+            key_generation,
+            Some(PlaintextBinding::new(plaintext)),
+            Some(binding),
             false,
         )
     }
@@ -1286,10 +1381,10 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         if n.retired_next.is_some() || n.closing.is_some() {
             return None;
         }
-        if n.probe_credits != 0 {
-            if let Some(id) = n.probe_space.and_then(|space| n.flights.probe(space)) {
-                return Some((id, true));
-            }
+        if n.probe_credits != 0
+            && let Some(id) = n.probe_space.and_then(|space| n.flights.probe(space))
+        {
+            return Some((id, true));
         }
         n.flights.next_lost().map(|id| (id, false))
     }
@@ -1386,6 +1481,41 @@ fn reserve<'book, const B: usize>(
     crypto: Option<CryptoBinding>,
     closing: bool,
 ) -> Result<Reservation<'book>, Error> {
+    reserve_kind(
+        book,
+        [
+            PacketKind::Initial,
+            PacketKind::Handshake,
+            PacketKind::OneRtt,
+        ][index],
+        bytes,
+        flight,
+        ack_eliciting,
+        padded,
+        pto_probe,
+        now,
+        key_generation,
+        plaintext,
+        crypto,
+        closing,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn reserve_kind<'book, const B: usize>(
+    book: &'book Recovery<'_, B>,
+    kind: PacketKind,
+    bytes: u64,
+    flight: Option<FlightId>,
+    ack_eliciting: bool,
+    padded: bool,
+    pto_probe: bool,
+    now: u64,
+    key_generation: u64,
+    plaintext: Option<PlaintextBinding>,
+    crypto: Option<CryptoBinding>,
+    closing: bool,
+) -> Result<Reservation<'book>, Error> {
+    let index = kind.space() as usize;
     let mut n = book.numbers.borrow_mut();
     n.active()?;
     if n.closing.is_some() != closing || n.retired_space[index] {
@@ -1396,7 +1526,7 @@ fn reserve<'book, const B: usize>(
     }
     n.check_time(now)?;
     n.reclaim_application()?;
-    if index == 2 && n.epochs.iter().all(Option::is_some) {
+    if kind == PacketKind::OneRtt && n.epochs.iter().all(Option::is_some) {
         return Err(AccountingError::Full.into());
     }
     let probe_epoch = if pto_probe {
@@ -1421,11 +1551,6 @@ fn reserve<'book, const B: usize>(
         return Err(Error::CongestionLimited);
     }
     let path = n.path.reserve(bytes)?;
-    let kind = [
-        PacketKind::Initial,
-        PacketKind::Handshake,
-        PacketKind::OneRtt,
-    ][index];
     let send =
         match n
             .ledger
@@ -1449,7 +1574,7 @@ fn reserve<'book, const B: usize>(
             return Err(error.into());
         }
     };
-    if index == 2 {
+    if kind == PacketKind::OneRtt {
         let slot = n
             .epochs
             .iter_mut()
@@ -1478,6 +1603,7 @@ fn reserve<'book, const B: usize>(
         ack_eliciting,
         padded,
         key_generation,
+        kind,
         plaintext,
     })
 }
@@ -1665,6 +1791,41 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
             newly_acknowledged: outcome.newly_acknowledged,
         })
     }
+    /// Only actual quarantine retention and an accepted, same-generation server
+    /// Finished can add early packets to the application ACK history.
+    pub fn apply_stored_early(
+        &mut self,
+        packet: crate::early_data::owner::StoredPacket<'scope>,
+        finished: &crate::bounded_tls::key_source::FinishedAuthenticated<'scope>,
+        now: u64,
+    ) -> Result<PacketOutcome, Error> {
+        if !core::ptr::eq(self.book.scope, packet.scope())
+            || !core::ptr::eq(self.book.scope, finished.scope())
+            || finished.side() != crate::tls_schedule::Side::Server
+            || finished.early_status() != crate::early_data::EarlyStatus::Accepted
+            || finished.early_generation() != Some(packet.generation())
+        {
+            return Err(Error::Binding);
+        }
+        let mut n = self.book.numbers.borrow_mut();
+        n.ordinary()?;
+        if n.side != Side::Server {
+            return Err(Error::Binding);
+        }
+        if n.retired_space[2] || packet.packet_number() < n.received[2].floor {
+            return Err(AccountingError::HistoryUnavailable.into());
+        }
+        n.check_time(now)?;
+        let mut received = n.received[2];
+        let duplicate = received.insert(packet.packet_number())?;
+        commit_received(&mut n, 2, received, packet.ack_eliciting(), now)?;
+        Ok(PacketOutcome {
+            duplicate,
+            ack_eliciting: packet.ack_eliciting(),
+            newly_acknowledged: 0,
+        })
+    }
+
     pub fn apply_application_packet(
         &mut self,
         receipt: AckEligible<'scope>,
@@ -1782,16 +1943,7 @@ fn process_packet<'scope, const B: usize>(
     }
     // Even an incoming packet below a newly pruned cutoff commits that cutoff.
     // No frame effects are applied when the insertion reported it discarded.
-    n.received[index] = received;
-    if ack_eliciting {
-        n.ack_revision[index] = n.ack_revision[index]
-            .checked_add(1)
-            .ok_or(AccountingError::Overflow)?;
-        n.ack_pending[index] = true;
-    }
-    n.detect_loss(space, now)?;
-    n.reclaim_application()?;
-    n.changed()?;
+    commit_received(n, index, received, ack_eliciting, now)?;
     outcome.history_floor = n.floor[2];
     if space == PacketNumberSpace::ApplicationData && outcome.packets.iter().any(Option::is_some) {
         outcome.frame_acks = Some(FrameAcknowledgments {
@@ -1800,6 +1952,25 @@ fn process_packet<'scope, const B: usize>(
         });
     }
     Ok(outcome)
+}
+fn commit_received<const B: usize>(
+    n: &mut Numbers<'_, B>,
+    index: usize,
+    received: Received,
+    ack_eliciting: bool,
+    now: u64,
+) -> Result<(), Error> {
+    n.received[index] = received;
+    if ack_eliciting {
+        n.ack_revision[index] = n.ack_revision[index]
+            .checked_add(1)
+            .ok_or(AccountingError::Overflow)?;
+        n.ack_pending[index] = true;
+    }
+    n.detect_loss(SPACES[index], now)?;
+    n.reclaim_application()?;
+    n.changed()?;
+    Ok(())
 }
 #[allow(clippy::too_many_arguments)]
 fn apply_ack<'scope, const B: usize>(
@@ -1842,14 +2013,22 @@ fn apply_ack<'scope, const B: usize>(
         }
         let received_key_generation = received_epoch.ok_or(Error::Binding)?;
         for (offset, packet) in packets[..count].iter().flatten().enumerate() {
+            let slot = output.newly_acknowledged + offset;
+            output.packets[slot] = Some(packet.packet);
+            // Acknowledging early data retires its bytes, but cannot authorize
+            // an update of the later 1-RTT key generation.
+            if n.ledger.sent_kind(packet.packet) == Some(PacketKind::ZeroRtt) {
+                continue;
+            }
+            if n.ledger.sent_kind(packet.packet) != Some(PacketKind::OneRtt) {
+                return Err(Error::Binding);
+            }
             let epoch = n
                 .epochs
                 .iter()
                 .flatten()
                 .find(|epoch| epoch.packet == packet.packet)
                 .ok_or(Error::Binding)?;
-            let slot = output.newly_acknowledged + offset;
-            output.packets[slot] = Some(packet.packet);
             output.key_acks[slot] = Some(KeyAcknowledged {
                 scope,
                 packet: packet.packet,
@@ -2100,6 +2279,147 @@ mod tests {
             output,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn early_and_application_share_pns_but_early_acks_never_grant_key_updates() {
+        // Numerical accounting fixture: the public early entry additionally
+        // requires an actual scoped TLS-owned ZeroRtt key.
+        book!(book, scope, installation, arena, Side::Client, 172);
+        let (mut read, _) = installation
+            .install(key(KeyKind::OneRtt, 8), key(KeyKind::OneRtt, 7))
+            .unwrap();
+        let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
+        let guard = NoAlloc::start();
+        let cancelled = reserve_kind(
+            tx.book,
+            PacketKind::ZeroRtt,
+            64,
+            None,
+            true,
+            false,
+            false,
+            0,
+            0,
+            Some(PlaintextBinding::new(&[1])),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(cancelled.packet().value, 0);
+        tx.cancel(cancelled).unwrap();
+        let early = reserve_kind(
+            tx.book,
+            PacketKind::ZeroRtt,
+            64,
+            None,
+            true,
+            false,
+            false,
+            1,
+            0,
+            Some(PlaintextBinding::new(&[1])),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(early.packet().value, 1);
+        assert_eq!(early.kind(), PacketKind::ZeroRtt);
+        publication
+            .settle(Completion::from_adapter(early, Some(1)))
+            .unwrap();
+        let ordinary = tx.reserve_application(&[1], 0, 64, false, 2).unwrap();
+        assert_eq!(ordinary.packet().value, 2);
+        publication
+            .settle(Completion::from_adapter(ordinary, Some(2)))
+            .unwrap();
+        let mut plain = [0; 128];
+        let len = ack(1, &mut plain);
+        let receipt = app_receipt(
+            &mut read,
+            &mut key(KeyKind::OneRtt, 7),
+            0,
+            &plain[..len],
+            10,
+        );
+        let outcome = rx
+            .apply_application_packet(receipt, &plain[..len], 10)
+            .unwrap();
+        assert_eq!(outcome.newly_acknowledged, 1);
+        assert!(outcome.key_acks.iter().all(Option::is_none));
+        assert_eq!(outcome.packets[0].unwrap().value, 1);
+        let len = ack(2, &mut plain);
+        let receipt = app_receipt(
+            &mut read,
+            &mut key(KeyKind::OneRtt, 7),
+            1,
+            &plain[..len],
+            11,
+        );
+        let outcome = rx
+            .apply_application_packet(receipt, &plain[..len], 11)
+            .unwrap();
+        assert!(outcome.key_acks.iter().any(Option::is_some));
+        retirement.disarm();
+        drop(guard);
+    }
+
+    #[test]
+    fn application_crypto_is_bound_to_the_retained_flight_and_acked_in_application_space() {
+        book!(book, scope, installation, arena, Side::Client, 171);
+        let (mut read, _) = installation
+            .install(key(KeyKind::OneRtt, 8), key(KeyKind::OneRtt, 7))
+            .unwrap();
+        let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
+        let guard = NoAlloc::start();
+        let flight = tx.store_crypto(Level::OneRtt, 0, b"ticket").unwrap();
+        let mut plaintext = [0; 128];
+        let len = packet::encode_frame(
+            &Frame::Crypto {
+                offset: 0,
+                data: b"ticket",
+            },
+            &mut plaintext,
+        )
+        .unwrap();
+        let reservation = tx
+            .reserve_application_crypto(&plaintext[..len], 0, 64, flight, false, 0)
+            .unwrap();
+        assert!(reservation.matches_plaintext(&plaintext[..len]).unwrap());
+        assert!(reservation.matches_crypto(0, b"ticket"));
+        let pn = reservation.packet().value;
+        assert_eq!(
+            reservation.packet().space,
+            PacketNumberSpace::ApplicationData
+        );
+        publication
+            .settle(Completion::from_adapter(reservation, Some(0)))
+            .unwrap();
+        let wrong = packet::encode_frame(
+            &Frame::Crypto {
+                offset: 1,
+                data: b"ticket",
+            },
+            &mut plaintext,
+        )
+        .unwrap();
+        assert!(matches!(
+            tx.reserve_application_crypto(&plaintext[..wrong], 0, 64, flight, false, 1),
+            Err(Error::Binding)
+        ));
+        let len = ack(pn, &mut plaintext);
+        let receipt = app_receipt(
+            &mut read,
+            &mut key(KeyKind::OneRtt, 7),
+            0,
+            &plaintext[..len],
+            10,
+        );
+        rx.apply_application_packet(receipt, &plaintext[..len], 10)
+            .unwrap();
+        assert_eq!(tx.snapshot().active_flights, 0);
+        retirement.disarm();
+        drop(guard);
     }
 
     #[test]

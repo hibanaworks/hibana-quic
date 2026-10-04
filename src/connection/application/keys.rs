@@ -207,39 +207,38 @@ impl<'scope> KeyOwner<'scope> {
         Ok(())
     }
 
-    fn retire(&self) -> Result<KeysQuiesced<'_, 'scope>, Error> {
-        let mut owned = self.owned.try_borrow_mut().map_err(|_| Error::Binding)?;
-        // The projected retirement edge transfers the actual final write key.
-        // No parallel boolean keeps a second authority to ordinary sealing.
-        let application = owned.application.take().ok_or(Error::Retired)?;
-        owned.initial = None;
-        owned.handshake = None;
-        Ok(KeysQuiesced {
-            owner: self,
-            scope: self.scope,
-            application,
-        })
+    fn retire_control(&self) -> Result<(), Error> {
+        // This edge retires key-control work, not the independent ordinary TX
+        // owner. Keep the actual key until the joined ordinary-retirement
+        // receipt is consumed at the finite closing boundary.
+        if self
+            .owned
+            .try_borrow()
+            .map_err(|_| Error::Binding)?
+            .application
+            .is_none()
+        {
+            return Err(Error::Retired);
+        }
+        Ok(())
     }
 
     /// The finite close continuation can acquire the actual application key
-    /// only after the projected key-control role has retired. The grant and
-    /// key are each consumed once; ordinary sealing stays permanently stopped.
+    /// only after all ordinary roles, including actual KeysRetired receive and
+    /// independent TX settlement, have joined. The existing ordinary receipt
+    /// carries that boundary; no second key-control completion token is needed.
     pub(crate) fn take_closing(
         &self,
-        quiesced: KeysQuiesced<'_, 'scope>,
+        ordinary: &super::OrdinaryRetired<'scope>,
     ) -> Result<ApplicationWriteKeys<'scope>, Error> {
-        if !core::ptr::eq(self, quiesced.owner) || !core::ptr::eq(self.scope, quiesced.scope) {
+        if !core::ptr::eq(self.scope, ordinary.scope()) {
             return Err(Error::Binding);
         }
-        Ok(quiesced.application)
+        let mut owned = self.owned.try_borrow_mut().map_err(|_| Error::Binding)?;
+        owned.initial = None;
+        owned.handshake = None;
+        owned.application.take().ok_or(Error::Retired)
     }
-}
-
-#[must_use = "the closing continuation must consume actual key-role retirement"]
-pub(crate) struct KeysQuiesced<'owner, 'scope> {
-    owner: &'owner KeyOwner<'scope>,
-    scope: &'scope ApplicationKeyScope,
-    application: ApplicationWriteKeys<'scope>,
 }
 
 struct PeerUpdate<'scope> {
@@ -270,7 +269,6 @@ pub(crate) struct Exchange<'owner, 'scope> {
     key_ack_applied: Inbox<Result<(), Error>>,
     confirmation: Inbox<ScopedHandshakeConfirmation<'scope>>,
     confirmation_applied: Inbox<Result<(), Error>>,
-    quiesced: Inbox<KeysQuiesced<'owner, 'scope>>,
 }
 
 impl<'owner, 'scope> Exchange<'owner, 'scope> {
@@ -285,7 +283,6 @@ impl<'owner, 'scope> Exchange<'owner, 'scope> {
             key_ack_applied: Inbox::new(),
             confirmation: Inbox::new(),
             confirmation_applied: Inbox::new(),
-            quiesced: Inbox::new(),
         }
     }
 }
@@ -450,12 +447,11 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
     pub(crate) async fn retire(
         self,
         endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
-    ) -> Result<KeysQuiesced<'owner, 'scope>, Error> {
+    ) -> Result<(), Error> {
         let sequence = self.sequence;
         endpoint.send::<p::KeysRetire>(&sequence).await?;
         check(endpoint.recv::<p::KeysRetired>().await?, sequence)?;
-        let quiesced = self.exchange.quiesced.take()?;
-        Ok(quiesced)
+        Ok(())
     }
 }
 
@@ -521,7 +517,7 @@ pub(crate) async fn run<'owner, 'scope>(
             }
             20 => {
                 check(request.recv::<p::KeysRetire>().await?, sequence)?;
-                exchange.quiesced.put(owner.retire()?)?;
+                owner.retire_control()?;
                 endpoint.send::<p::KeysRetired>(&sequence).await?;
                 return Ok(());
             }
@@ -626,9 +622,16 @@ mod tests {
                     assert_eq!(owner.generation().unwrap(), 0);
                 }
                 assert_eq!(read.header_mask(&[0; 16]).unwrap(), expected);
-                let closing = control.retire(&mut rx).await?;
+                control.retire(&mut rx).await?;
+                assert!(
+                    owner.generation().is_ok(),
+                    "key-control retirement must preserve independent TX ownership"
+                );
+                // Isolated role fixture: production constructs this receipt
+                // only after every ordinary future and adapter has completed.
+                let ordinary = super::super::OrdinaryRetired { scope };
+                let _actual_closing_key = owner.take_closing(&ordinary)?;
                 assert!(matches!(owner.generation(), Err(Error::Retired)));
-                let _actual_closing_key = owner.take_closing(closing)?;
                 Ok::<_, Error>(())
             });
             let mut writing = pin!(run(&mut tx, &owner, &exchange));

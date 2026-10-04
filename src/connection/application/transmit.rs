@@ -231,10 +231,10 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
     };
     recovery_result?;
     stream_result?;
-    if accepted_at.is_some() {
-        if let Some(ack) = acknowledgment.or(long_ack) {
-            book.acknowledgment_sent(ack)?;
-        }
+    if accepted_at.is_some()
+        && let Some(ack) = acknowledgment.or(long_ack)
+    {
+        book.acknowledgment_sent(ack)?;
     }
     Ok(())
 }
@@ -419,45 +419,46 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     let available = keys.available_levels()?;
     // Initial/Handshake receive and recovery survive until their actual scoped
     // retirement, including ACKs and CRYPTO retransmission after TLS Finished.
-    if let Some(ack) = book.pending_ack() {
-        if ack.level() != Level::OneRtt && available[level_index(ack.level())] {
-            let frame = Frame::Ack {
-                delay: 0,
-                ranges: packet::AckRanges::new(ack.ranges())?,
-                ecn: None,
+    if let Some(ack) = book.pending_ack()
+        && ack.level() != Level::OneRtt
+        && available[level_index(ack.level())]
+    {
+        let frame = Frame::Ack {
+            delay: 0,
+            ranges: packet::AckRanges::new(ack.ranges())?,
+            ecn: None,
+        };
+        let plain = wire::PlainPacket::<N>::new(config, peer, ack.level(), frame)?;
+        let reservation = match book.reserve(
+            ack.level(),
+            plain.len() as u64,
+            None,
+            false,
+            plain.padded(),
+            false,
+            now,
+        ) {
+            Ok(reservation) => Some(reservation),
+            Err(error) if limited(&error) => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(reservation) = reservation {
+            let scope = reservation.scope();
+            let sealed = match keys.seal_long(ack.level(), plain, reservation, Some(ack)) {
+                Ok(sealed) => sealed,
+                Err((error, reservation)) => {
+                    book.cancel(reservation)?;
+                    return Err(error.into());
+                }
             };
-            let plain = wire::PlainPacket::<N>::new(config, peer, ack.level(), frame)?;
-            let reservation = match book.reserve(
-                ack.level(),
-                plain.len() as u64,
-                None,
-                false,
-                plain.padded(),
-                false,
-                now,
-            ) {
-                Ok(reservation) => Some(reservation),
-                Err(error) if limited(&error) => None,
-                Err(error) => return Err(error.into()),
-            };
-            if let Some(reservation) = reservation {
-                let scope = reservation.scope();
-                let sealed = match keys.seal_long(ack.level(), plain, reservation, Some(ack)) {
-                    Ok(sealed) => sealed,
-                    Err((error, reservation)) => {
-                        book.cancel(reservation)?;
-                        return Err(error.into());
-                    }
-                };
-                return Ok(Some(Pending {
-                    scope,
-                    sealed: Sealed::Long(sealed),
-                    stream: None,
-                    acknowledgment: None,
-                    close_deadline: None,
-                    initial_handshake_done: false,
-                }));
-            }
+            return Ok(Some(Pending {
+                scope,
+                sealed: Sealed::Long(sealed),
+                stream: None,
+                acknowledgment: None,
+                close_deadline: None,
+                initial_handshake_done: false,
+            }));
         }
     }
     // A newly appended control flight has never been sent and is neither
@@ -496,7 +497,28 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
                     offset: flight_data.offset(),
                     data: flight_data.bytes(),
                 };
-                if let Some(pending) = long_packet(
+                if level == Level::OneRtt {
+                    let mut plaintext = Zeroizing::new([0; N]);
+                    let mut len = packet::encode_frame(&frame, &mut plaintext[..])?;
+                    pad_probe(
+                        &mut plaintext,
+                        &mut len,
+                        peer,
+                        probe,
+                        book.pending_probe_minimum(),
+                    )?;
+                    if let Some(pending) = application_control_packet(
+                        keys,
+                        book,
+                        peer,
+                        &plaintext[..len],
+                        flight,
+                        probe,
+                        now,
+                    )? {
+                        return Ok(Some(pending));
+                    }
+                } else if let Some(pending) = long_packet(
                     keys,
                     book,
                     config,
@@ -512,22 +534,22 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
             }
         }
     }
-    if let Some(level) = book.pending_probe() {
-        if level != Level::OneRtt && available[level_index(level)] {
-            if let Some(pending) = long_packet(
-                keys,
-                book,
-                config,
-                peer,
-                level,
-                Frame::Ping,
-                None,
-                true,
-                now,
-            )? {
-                return Ok(Some(pending));
-            }
-        }
+    if let Some(level) = book.pending_probe()
+        && level != Level::OneRtt
+        && available[level_index(level)]
+        && let Some(pending) = long_packet(
+            keys,
+            book,
+            config,
+            peer,
+            level,
+            Frame::Ping,
+            None,
+            true,
+            now,
+        )?
+    {
+        return Ok(Some(pending));
     }
     let probe = book.pending_probe() == Some(Level::OneRtt);
     let acknowledgment = book
@@ -678,8 +700,11 @@ fn application_control_packet<'book, 'streams, 'scope, const N: usize>(
         .len()
         .checked_add(short_overhead(peer)?)
         .ok_or(Error::Capacity)? as u64;
-    let reservation =
-        book.reserve_application_control(plaintext, generation, bytes, flight, probe, now);
+    let reservation = if book.is_handshake_done(flight)? {
+        book.reserve_application_control(plaintext, generation, bytes, flight, probe, now)
+    } else {
+        book.reserve_application_crypto(plaintext, generation, bytes, flight, probe, now)
+    };
     let reservation = match reservation {
         Ok(reservation) => reservation,
         Err(error) if limited(&error) => return Ok(None),
@@ -899,14 +924,13 @@ pub(crate) async fn close<
     control: &Control<'_, 'scope>,
     state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
     owner: &'owner keys::KeyOwner<'scope>,
-    closing: startup::Closing<'owner, 'scope>,
+    closing: startup::Closing<'scope>,
     book: &mut recovery::Tx<'book, 'scope, N>,
     peer: &ConnectionId,
     clock: &impl Clock,
 ) -> Result<(), Error> {
     let startup::Closing {
         ordinary: retired,
-        keys: quiesced,
         permission,
     } = closing;
     if !core::ptr::eq(owner.scope(), retired.scope())
@@ -922,8 +946,8 @@ pub(crate) async fn close<
     let deadline = started_at
         .checked_add(pto.checked_mul(3).ok_or(Error::Capacity)?)
         .ok_or(Error::Capacity)?;
+    let mut keys = owner.take_closing(&retired)?;
     book.discard_for_close(retired)?;
-    let mut keys = owner.take_closing(quiesced)?;
     state.drain_deadline.set(Some(deadline));
     let mut sequence = 0u64;
     let mut close_accepted = matches!(kind, CloseKind::Peer { .. });

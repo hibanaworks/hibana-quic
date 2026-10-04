@@ -21,13 +21,17 @@ use direct_wire::{
     HostClock, HostReactor, HostSocket, Receive, Statistics, Transmit, before_deadline,
 };
 use hibana_quic::{
-    bounded_tls::{BoundedTls, ClientConfig, ServerConfig, SigningKey, Storage as TlsStorage},
+    bounded_tls::{
+        BoundedTls, ClientConfig, ClientResumption, ServerConfig, ServerResumption, SigningKey,
+        Storage as TlsStorage,
+    },
     connection::publication_gate::PublicationGate,
     connection::{Config, Side, application, recovery::Recovery, tls::Transcript},
     crypto::directional::ApplicationKeyScope,
     packet::{Header, LongType, PacketIter, encode_varint},
     path::Address,
     tls_certificate::{Limits, UnixTime, trust_anchor_from_der},
+    tls_ticket::{self as ticket, TicketClock},
 };
 use p256::pkcs8::DecodePrivateKey;
 use rand_core::{OsRng, RngCore};
@@ -123,6 +127,8 @@ fn signing_key(key: &PrivateKeyDer<'_>) -> Result<SigningKey> {
     }
 }
 struct Report {
+    connections: usize,
+    resumed: bool,
     side: Side,
     peer: SocketAddr,
     sent: u64,
@@ -134,11 +140,70 @@ struct Report {
     body_bytes: u64,
 }
 impl Report {
+    fn append(mut self, previous: Report) -> Result<Self> {
+        self.connections = self
+            .connections
+            .checked_add(previous.connections)
+            .ok_or("report counter overflow")?;
+        self.sent = self
+            .sent
+            .checked_add(previous.sent)
+            .ok_or("report counter overflow")?;
+        self.received = self
+            .received
+            .checked_add(previous.received)
+            .ok_or("report counter overflow")?;
+        self.foreign = self
+            .foreign
+            .checked_add(previous.foreign)
+            .ok_or("report counter overflow")?;
+        self.body_bytes = self
+            .body_bytes
+            .checked_add(previous.body_bytes)
+            .ok_or("report counter overflow")?;
+        if let (Some(current), Some(old)) = (&mut self.application, previous.application) {
+            current.early_accepted_packets = current
+                .early_accepted_packets
+                .checked_add(old.early_accepted_packets)
+                .ok_or("report counter overflow")?;
+            current.early_stream_bytes = current
+                .early_stream_bytes
+                .checked_add(old.early_stream_bytes)
+                .ok_or("report counter overflow")?;
+            current.early_finished_streams = current
+                .early_finished_streams
+                .checked_add(old.early_finished_streams)
+                .ok_or("report counter overflow")?;
+            current.confirmed &= old.confirmed;
+            current.all_streams_acked &= old.all_streams_acked;
+            current.close_completed &= old.close_completed;
+            current.submitted_streams = current
+                .submitted_streams
+                .checked_add(old.submitted_streams)
+                .ok_or("report counter overflow")?;
+            current.completed_streams = current
+                .completed_streams
+                .checked_add(old.completed_streams)
+                .ok_or("report counter overflow")?;
+            current.received_bytes = current
+                .received_bytes
+                .checked_add(old.received_bytes)
+                .ok_or("report counter overflow")?;
+            current.sent_bytes = current
+                .sent_bytes
+                .checked_add(old.sent_bytes)
+                .ok_or("report counter overflow")?;
+        }
+        Ok(self)
+    }
     fn json(&self, reactor: &HostReactor) -> String {
         let stats = reactor.statistics();
         let transfer = if let Some(report) = self.application {
             format!(
-                "\"scope\":\"authenticated-file-transfer\",\"quic_handshake_confirmed\":{},\"http_transfer_complete\":true,\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{}",
+                "\"scope\":\"authenticated-file-transfer\",\"early_accepted_packets\":{},\"early_stream_bytes\":{},\"early_finished_streams\":{},\"quic_handshake_confirmed\":{},\"http_transfer_complete\":true,\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{}",
+                report.early_accepted_packets,
+                report.early_stream_bytes,
+                report.early_finished_streams,
                 report.confirmed,
                 report.close_completed,
                 report.all_streams_acked,
@@ -152,7 +217,9 @@ impl Report {
             "\"scope\":\"authenticated-handshake-prefix\",\"owned_application_continuations\":true,\"quic_handshake_confirmed\":false,\"http_transfer_complete\":false,\"lifecycle_closed\":false".to_owned()
         };
         format!(
-            "{{\"backend\":\"direct-hibana-roles\",\"status\":\"success\",{transfer},\"role\":\"{}\",\"peer\":\"{}\",\"tls_finished_authenticated\":true,\"datagrams_sent\":{},\"datagrams_received\":{},\"foreign_datagrams_ignored\":{},\"last_os_acceptance_us\":{},\"duration_ms\":{},\"reactor_polls\":{},\"reactor_waits\":{},\"reactor_socket_events\":{},\"reactor_timer_events\":{}}}",
+            "{{\"connections\":{},\"resumed\":{},\"backend\":\"direct-hibana-roles\",\"status\":\"success\",{transfer},\"role\":\"{}\",\"peer\":\"{}\",\"tls_finished_authenticated\":true,\"datagrams_sent\":{},\"datagrams_received\":{},\"foreign_datagrams_ignored\":{},\"last_os_acceptance_us\":{},\"duration_ms\":{},\"reactor_polls\":{},\"reactor_waits\":{},\"reactor_socket_events\":{},\"reactor_timer_events\":{}}}",
+            self.connections,
+            self.resumed,
             if self.side == Side::Client {
                 "client"
             } else {
@@ -180,6 +247,7 @@ async fn connected(
     tls: BoundedTls<'_, '_>,
     first: Option<&[u8]>,
     mut files: Option<direct_bootstrap::Files>,
+    early: Option<application_storage::EarlyStorage>,
 ) -> Result<Report> {
     let generation = u64::from_be_bytes(random::<8>()?);
     let mut scope = ApplicationKeyScope::new(generation);
@@ -247,6 +315,7 @@ async fn connected(
             &mut book,
             generation,
             files,
+            early,
         ))
         .await
         .map_err(|error| match diagnostics.take() {
@@ -254,7 +323,10 @@ async fn connected(
             None => error,
         })?;
         if !report.confirmed
-            || !report.all_streams_acked
+            // A real peer close retires the server's retained response even
+            // when the peer did not include its final ACK. Keep that fact false
+            // in the report; do not require or fabricate an acknowledgment.
+            || (config.side == Side::Client && !report.all_streams_acked)
             || !report.close_completed
             || report.completed_streams == 0
             || report.completed_streams != report.submitted_streams
@@ -293,6 +365,8 @@ async fn connected(
         return Err("server peer path was not validated".into());
     }
     Ok(Report {
+        connections: 1,
+        resumed: source.resumed(),
         side: config.side,
         peer: address.remote,
         sent: statistics.sent.get(),
@@ -391,6 +465,18 @@ async fn admit_initial(
         }
     }
 }
+struct WallTicketClock;
+impl TicketClock for WallTicketClock {
+    fn now_ms(&self) -> std::result::Result<u64, ticket::Error> {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ticket::Error::ClockRollback)?
+            .as_millis()
+            .try_into()
+            .map_err(|_| ticket::Error::ClockOverflow)
+    }
+}
+
 async fn run_async(
     reactor: &HostReactor,
     clock: &HostClock<'_>,
@@ -401,101 +487,183 @@ async fn run_async(
             connect,
             server_name,
             cipher,
+            resumption,
             ca,
             files,
             ..
         } => {
-            let files = files
-                .map(|files| {
-                    host_files::Client::new(&files.downloads, files.requests)
-                        .map(direct_bootstrap::Files::Client)
-                })
-                .transpose()?;
+            let mut groups = if resumption {
+                let mut files = files.ok_or("resumption requires files")?;
+                if files.requests.len() < 2 {
+                    return Err("resumption needs at least two requests".into());
+                }
+                let rest = files.requests.split_off(1);
+                vec![
+                    Some(cli::ClientFiles {
+                        requests: files.requests,
+                        downloads: files.downloads.clone(),
+                    }),
+                    Some(cli::ClientFiles {
+                        requests: rest,
+                        downloads: files.downloads,
+                    }),
+                ]
+            } else {
+                vec![files]
+            }
+            .into_iter()
+            .peekable();
+            let mut cache_slots: Vec<ticket::ClientSlot<4096>> =
+                (0..4).map(|_| ticket::ClientSlot::empty()).collect();
+            let mut cache = ticket::ClientCache::new(&mut cache_slots);
+            let ticket_clock = WallTicketClock;
+            let mut offer = None;
+            let mut previous: Option<Report> = None;
             let roots = pem::certificates(&ca)?;
             let anchors = roots
                 .iter()
                 .map(trust_anchor_from_der)
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|e| format!("trust anchor: {e:?}"))?;
-            // Routing-only connect chooses a source IP without transmitting.
-            let route = UdpSocket::bind(if connect.is_ipv4() {
-                "0.0.0.0:0"
-            } else {
-                "[::]:0"
-            })
-            .map_err(|e| format!("route socket: {e}"))?;
-            route
-                .connect(connect)
-                .map_err(|e| format!("route selection: {e}"))?;
-            let mut bind = route
-                .local_addr()
-                .map_err(|e| format!("route address: {e}"))?;
-            bind.set_port(0);
-            drop(route);
-            let socket = reactor
-                .register_udp(UdpSocket::bind(bind).map_err(|e| format!("UDP bind: {e}"))?)
-                .map_err(|e| format!("UDP registration: {e}"))?;
-            let address = Address {
-                local: socket
+            while let Some(files) = groups.next() {
+                let files = files
+                    .map(|files| {
+                        host_files::Client::new(&files.downloads, files.requests)
+                            .map(direct_bootstrap::Files::Client)
+                    })
+                    .transpose()?;
+                // Routing-only connect chooses a source IP without transmitting.
+                let route = UdpSocket::bind(if connect.is_ipv4() {
+                    "0.0.0.0:0"
+                } else {
+                    "[::]:0"
+                })
+                .map_err(|e| format!("route socket: {e}"))?;
+                route
+                    .connect(connect)
+                    .map_err(|e| format!("route selection: {e}"))?;
+                let mut bind = route
                     .local_addr()
-                    .map_err(|e| format!("local address: {e}"))?,
-                remote: connect,
-            };
-            let local = random::<8>()?;
-            let original = random::<8>()?;
-            let parameters = parameters(&local, None, files.as_ref().map(|_| Side::Client))?;
-            let mut buffers = TlsBuffers::new();
-            let now = UnixTime::since_unix_epoch(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|_| "system clock precedes Unix epoch")?,
-            );
-            let tls = BoundedTls::client_with_policy(
-                ClientConfig {
+                    .map_err(|e| format!("route address: {e}"))?;
+                bind.set_port(0);
+                drop(route);
+                let socket = reactor
+                    .register_udp(UdpSocket::bind(bind).map_err(|e| format!("UDP bind: {e}"))?)
+                    .map_err(|e| format!("UDP registration: {e}"))?;
+                let address = Address {
+                    local: socket
+                        .local_addr()
+                        .map_err(|e| format!("local address: {e}"))?,
+                    remote: connect,
+                };
+                let local = random::<8>()?;
+                let original = random::<8>()?;
+                let parameters = parameters(&local, None, files.as_ref().map(|_| Side::Client))?;
+                let mut buffers = TlsBuffers::new();
+                let now = UnixTime::since_unix_epoch(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|_| "system clock precedes Unix epoch")?,
+                );
+                let config = ClientConfig {
                     server_name: &server_name,
                     trust_anchors: &anchors,
                     now,
                     certificate_limits: Limits::default(),
                     transport_parameters: &parameters,
-                },
-                buffers.storage(),
-                &mut OsRng,
-                cipher,
-            )
-            .map_err(|e| format!("client TLS: {e:?}"))?;
-            Box::pin(connected(
-                &socket,
-                clock,
-                address,
-                Config {
-                    side: Side::Client,
-                    local_connection_id: &local,
-                    original_destination_id: &original,
-                    peer_connection_id: &original,
-                },
-                tls,
-                None,
-                files,
-            ))
-            .await
+                };
+                let tls = if let Some(offer) = offer.take() {
+                    BoundedTls::client_resuming_with_policy(
+                        config,
+                        buffers.storage(),
+                        &mut OsRng,
+                        ClientResumption {
+                            store: &mut cache,
+                            clock: &ticket_clock,
+                        },
+                        offer,
+                        cipher,
+                    )
+                } else if resumption {
+                    BoundedTls::client_with_tickets_and_policy(
+                        config,
+                        buffers.storage(),
+                        &mut OsRng,
+                        ClientResumption {
+                            store: &mut cache,
+                            clock: &ticket_clock,
+                        },
+                        cipher,
+                    )
+                } else {
+                    BoundedTls::client_with_policy(config, buffers.storage(), &mut OsRng, cipher)
+                }
+                .map_err(|e| format!("client TLS: {e:?}"))?;
+                let report = Box::pin(connected(
+                    &socket,
+                    clock,
+                    address,
+                    Config {
+                        side: Side::Client,
+                        local_connection_id: &local,
+                        original_destination_id: &original,
+                        peer_connection_id: &original,
+                    },
+                    tls,
+                    None,
+                    files,
+                    None,
+                ))
+                .await?;
+                if resumption && previous.is_some() && !report.resumed {
+                    return Err("second connection did not actually resume TLS".into());
+                }
+                previous = Some(match previous.take() {
+                    Some(old) => report.append(old)?,
+                    None => report,
+                });
+                if groups.peek().is_some() {
+                    let origin = ticket::Binding::new(&server_name, b"hq-interop", &[])
+                        .map_err(|e| format!("ticket origin: {e:?}"))?;
+                    let context = ticket::VerificationContext::new(&anchors, Limits::default())
+                        .map_err(|e| format!("ticket trust: {e:?}"))?;
+                    let suites: &[u16] = match cipher {
+                        hibana_quic::bounded_tls::CipherPolicy::Aes128Only => &[0x1301],
+                        hibana_quic::bounded_tls::CipherPolicy::ChaCha20Only => &[0x1303],
+                        _ => &[0x1301, 0x1303],
+                    };
+                    for suite in suites {
+                        offer = cache
+                            .take_verified_for_origin(
+                                ticket_clock
+                                    .now_ms()
+                                    .map_err(|e| format!("ticket time: {e:?}"))?,
+                                &origin,
+                                *suite,
+                                context,
+                            )
+                            .map_err(|e| format!("ticket selection: {e:?}"))?;
+                        if offer.is_some() {
+                            break;
+                        }
+                    }
+                    if offer.is_none() {
+                        return Err("no authenticated resumption ticket was received".into());
+                    }
+                }
+            }
+            previous.ok_or_else(|| "no client connection executed".into())
         }
         Options::Server {
             listen,
             cert,
             cipher,
+            resumption,
+            early,
             key,
             files,
             ..
         } => {
-            let files = files
-                .map(|files| {
-                    host_files::FileServer::new(
-                        &files.www,
-                        files.max_requests.unwrap_or(host_files::MAX_REQUESTS),
-                    )
-                    .map(direct_bootstrap::Files::Server)
-                })
-                .transpose()?;
             let certificates = pem::certificates(&cert)?;
             let key = signing_key(&pem::private_key(&key)?)?;
             let chain: Vec<&[u8]> = certificates.iter().map(|cert| cert.as_ref()).collect();
@@ -508,41 +676,121 @@ async fn run_async(
                     .local_addr()
                     .map_err(|e| format!("listen address: {e}"))?
             );
-            let mut first = vec![0; direct_bootstrap::DATAGRAM];
-            let (address, original, peer, len) = admit_initial(&socket, &mut first).await?;
-            let local = random::<8>()?;
-            let parameters = parameters(
-                &local,
-                Some(&original),
-                files.as_ref().map(|_| Side::Server),
-            )?;
-            let mut buffers = TlsBuffers::new();
-            let tls = BoundedTls::server_with_policy(
-                ServerConfig {
+            let mut replay = [const { ticket::ReplaySlot::empty() }; 8];
+            let mut early_replay = hibana_quic::early_data::ReplayStorage::<64>::new();
+            let mut tickets = if early {
+                ticket::TicketKey::generate_with_early_replay(
+                    &mut OsRng,
+                    ticket::ReplayPolicy::ReusableOneRtt,
+                    &mut replay,
+                    &mut early_replay,
+                )
+            } else {
+                ticket::TicketKey::generate(
+                    &mut OsRng,
+                    ticket::ReplayPolicy::SingleUseOneRtt,
+                    &mut replay,
+                )
+            }
+            .map_err(|e| format!("ticket key: {e:?}"))?;
+            let ticket_clock = WallTicketClock;
+            let mut entropy = OsRng;
+            let mut previous: Option<Report> = None;
+            for connection_index in 0..if resumption { 2 } else { 1 } {
+                let files = files
+                    .as_ref()
+                    .map(|files| {
+                        host_files::FileServer::new(
+                            &files.www,
+                            files.max_requests.unwrap_or(host_files::MAX_REQUESTS),
+                        )
+                        .map(direct_bootstrap::Files::Server)
+                    })
+                    .transpose()?;
+                let mut first = vec![0; direct_bootstrap::DATAGRAM];
+                let (address, original, peer, len) = admit_initial(&socket, &mut first).await?;
+                let local = random::<8>()?;
+                let parameters = parameters(
+                    &local,
+                    Some(&original),
+                    files.as_ref().map(|_| Side::Server),
+                )?;
+                let mut buffers = TlsBuffers::new();
+                let config = ServerConfig {
                     certificate_chain: &chain,
                     signing_key: &key,
                     transport_parameters: &parameters,
-                },
-                buffers.storage(),
-                &mut OsRng,
-                cipher,
-            )
-            .map_err(|e| format!("server TLS: {e:?}"))?;
-            Box::pin(connected(
-                &socket,
-                clock,
-                address,
-                Config {
-                    side: Side::Server,
-                    local_connection_id: &local,
-                    original_destination_id: &original,
-                    peer_connection_id: &peer,
-                },
-                tls,
-                Some(&first[..len]),
-                files,
-            ))
-            .await
+                };
+                let early_storage = early.then(application_storage::EarlyStorage::new);
+                let tls = if let Some(storage) = early_storage.as_ref() {
+                    let early_config = hibana_quic::bounded_tls::ServerEarlyData::buffered(
+                        connection_index + 1,
+                        application_storage::EarlyStorage::policy(),
+                        &parameters,
+                        &storage.slots,
+                        hibana_quic::early_data::EarlyFreshness::new(10000)
+                            .map_err(|e| format!("early freshness: {e:?}"))?,
+                    )
+                    .map_err(|e| format!("early capacity: {e:?}"))?;
+                    BoundedTls::server_with_early_data_and_policy(
+                        config,
+                        buffers.storage(),
+                        &mut OsRng,
+                        ServerResumption {
+                            store: &mut tickets,
+                            entropy: &mut entropy,
+                            clock: &ticket_clock,
+                            policy: b"hibana-quic fixed-path hq v1",
+                            lifetime_seconds: 3600,
+                            max_age_skew_ms: 300000,
+                        },
+                        early_config,
+                        cipher,
+                    )
+                } else if resumption {
+                    BoundedTls::server_with_tickets_and_policy(
+                        config,
+                        buffers.storage(),
+                        &mut OsRng,
+                        ServerResumption {
+                            store: &mut tickets,
+                            entropy: &mut entropy,
+                            clock: &ticket_clock,
+                            policy: b"hibana-quic fixed-path hq v1",
+                            lifetime_seconds: 3600,
+                            max_age_skew_ms: 300000,
+                        },
+                        cipher,
+                    )
+                } else {
+                    BoundedTls::server_with_policy(config, buffers.storage(), &mut OsRng, cipher)
+                }
+                .map_err(|e| format!("server TLS: {e:?}"))?;
+                let report = Box::pin(connected(
+                    &socket,
+                    clock,
+                    address,
+                    Config {
+                        side: Side::Server,
+                        local_connection_id: &local,
+                        original_destination_id: &original,
+                        peer_connection_id: &peer,
+                    },
+                    tls,
+                    Some(&first[..len]),
+                    files,
+                    early_storage,
+                ))
+                .await?;
+                if resumption && previous.is_some() && !report.resumed {
+                    return Err("second connection did not actually resume TLS".into());
+                }
+                previous = Some(match previous.take() {
+                    Some(old) => report.append(old)?,
+                    None => report,
+                });
+            }
+            previous.ok_or_else(|| "no server connection executed".into())
         }
     }
 }

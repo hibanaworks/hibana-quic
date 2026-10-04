@@ -134,6 +134,9 @@ impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
     pub fn transmit(&mut self, output: &mut [u8]) -> Result<Option<Output>, tls::Error> {
         self.provider.transmit(output)
     }
+    pub fn resumed(&self) -> bool {
+        self.provider.is_resumed()
+    }
     pub fn early_status(&self) -> EarlyStatus {
         self.provider.early_status()
     }

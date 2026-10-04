@@ -93,7 +93,7 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             } => {
                 if destination_id != config.local_connection_id
                     && !(config.side == Side::Server
-                        && kind == LongType::Initial
+                        && matches!(kind, LongType::Initial | LongType::ZeroRtt)
                         && destination_id == config.original_destination_id)
                 {
                     return Ok(true);
@@ -103,6 +103,14 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                         (Level::Initial, 0, packet_number_offset, source_id)
                     }
                     LongType::Handshake => (Level::Handshake, 1, packet_number_offset, source_id),
+                    LongType::ZeroRtt if config.side == Side::Server => {
+                        if source_id == slots.peer.borrow().bytes()
+                            && let Some(pending) = slots.early_packets.borrow_mut().as_mut()
+                        {
+                            pending.retain_packet(untrusted.bytes);
+                        }
+                        return Ok(true);
+                    }
                     _ => return Ok(true),
                 }
             }
@@ -172,10 +180,10 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                 }
             }
         }
-        if let Some(endpoint) = initial_endpoint.as_deref_mut() {
-            if let Some(evidence) = book.take_initial_retirement() {
-                initial::announce(endpoint, exchange, evidence).await?;
-            }
+        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+            && let Some(evidence) = book.take_initial_retirement()
+        {
+            initial::announce(endpoint, exchange, evidence).await?;
         }
         Ok(true)
     }
@@ -376,6 +384,41 @@ fn prepare<'book, 'scope, const N: usize>(
     ack: Option<recovery::AckSnapshot<'book>>,
     now: u64,
 ) -> Result<Option<wire::Datagram<'book, N>>, Error> {
+    if level == Level::OneRtt {
+        let keys = keys.application.as_mut().ok_or(Error::Binding)?;
+        let mut plaintext = zeroize::Zeroizing::new([0u8; N]);
+        let len = packet::encode_frame(&frame, &mut plaintext[..])?;
+        let bytes = (1 + peer.bytes().len() + 4 + len + 16) as u64;
+        let reservation = if let Some(flight) = flight {
+            book.reserve_application_crypto(
+                &plaintext[..len],
+                keys.generation(),
+                bytes,
+                flight,
+                probe,
+                now,
+            )
+        } else {
+            book.reserve_application(&plaintext[..len], keys.generation(), bytes, probe, now)
+        };
+        let reservation = match reservation {
+            Ok(value) => value,
+            Err(error) if limited(&error) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        return match super::application_wire::seal(
+            keys,
+            reservation,
+            peer.bytes(),
+            &plaintext[..len],
+        ) {
+            Ok(packet) => Ok(Some(wire::Datagram::from_application(packet, ack))),
+            Err((error, reservation)) => {
+                book.cancel(reservation)?;
+                Err(error)
+            }
+        };
+    }
     let ack_eliciting = frame.ack_eliciting();
     let plain = PlainPacket::<N>::new(config, peer, level, frame)?;
     let reservation = match book.reserve(
@@ -764,16 +807,16 @@ async fn publish_result<'scope, 'book, Pub: p::Publication, const N: usize, cons
         _ => None,
     };
     book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
-    if accepted_at.is_some() {
-        if let Some(ack) = acknowledgment {
-            book.acknowledgment_sent(ack)?;
-        }
+    if accepted_at.is_some()
+        && let Some(ack) = acknowledgment
+    {
+        book.acknowledgment_sent(ack)?;
     }
     slots.schedule.changed()?;
-    if let Some(endpoint) = initial_endpoint.as_deref_mut() {
-        if let Some(evidence) = book.take_initial_retirement() {
-            initial::announce(endpoint, exchange, evidence).await?;
-        }
+    if let Some(endpoint) = initial_endpoint.as_deref_mut()
+        && let Some(evidence) = book.take_initial_retirement()
+    {
+        initial::announce(endpoint, exchange, evidence).await?;
     }
     outcome.set(accepted_at.is_some())?;
     match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {

@@ -252,9 +252,18 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
         self.ensure_live()?;
         self.source.take_integrity_budget()
     }
+    pub fn take_early_admission(
+        &mut self,
+    ) -> Result<crate::early_data::owner::Admission<'scope>, Error> {
+        self.ensure_live()?;
+        self.source.take_early_admission()
+    }
     pub fn take_early_key(&mut self) -> Result<EarlyKeyMaterial<'scope>, Error> {
         self.ensure_live()?;
         self.source.take_early_key()
+    }
+    pub fn resumed(&self) -> bool {
+        self.source.resumed()
     }
     pub fn early_status(&self) -> EarlyStatus {
         self.source.early_status()

@@ -43,6 +43,30 @@ impl<const N: usize> Drop for AuthenticatedInput<'_, N> {
         self.bytes.zeroize();
     }
 }
+/// Proof that every authenticated frame in this packet was retained by the
+/// quarantine owner. This authorizes ACK accounting only after real Finished.
+#[must_use]
+pub struct StoredPacket<'scope> {
+    scope: &'scope ApplicationKeyScope,
+    generation: u64,
+    packet: u64,
+    ack_eliciting: bool,
+}
+impl<'scope> StoredPacket<'scope> {
+    pub(crate) fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.scope
+    }
+    pub fn packet_number(&self) -> u64 {
+        self.packet
+    }
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub(crate) fn ack_eliciting(&self) -> bool {
+        self.ack_eliciting
+    }
+}
+
 pub struct Range<const N: usize> {
     pub id: u64,
     pub offset: u64,
@@ -66,6 +90,7 @@ impl<const N: usize> Drop for ControlBlock<N> {
 }
 pub struct Exchange<'scope, const N: usize> {
     pub(crate) input: Inbox<AuthenticatedInput<'scope, N>>,
+    stored: Inbox<StoredPacket<'scope>>,
     pub(crate) finished: Inbox<FinishedAuthenticated<'scope>>,
     pub(crate) returned_finished: Inbox<FinishedAuthenticated<'scope>>,
     pub(crate) output: Inbox<Range<N>>,
@@ -75,6 +100,7 @@ impl<const N: usize> Exchange<'_, N> {
     pub const fn new() -> Self {
         Self {
             input: Inbox::new(),
+            stored: Inbox::new(),
             finished: Inbox::new(),
             returned_finished: Inbox::new(),
             output: Inbox::new(),
@@ -162,6 +188,7 @@ pub async fn run<'scope, const BYTES: usize, const PACKET: usize>(
                     endpoint.send::<p::PacketDropped>(&packet).await?;
                     continue;
                 }
+                let mut ack_eliciting = false;
                 for frame in FrameIter::new(
                     &input.bytes[..input.len],
                     EncryptionLevel::ZeroRtt,
@@ -173,6 +200,7 @@ pub async fn run<'scope, const BYTES: usize, const PACKET: usize>(
                 .map_err(Error::Packet)?
                 {
                     let frame = frame.map_err(Error::Packet)?;
+                    ack_eliciting |= frame.ack_eliciting();
                     match frame {
                         Frame::Stream {
                             id,
@@ -186,6 +214,15 @@ pub async fn run<'scope, const BYTES: usize, const PACKET: usize>(
                 deferred[deferred_len..deferred_len + extra_len]
                     .copy_from_slice(&extra[..extra_len]);
                 deferred_len += extra_len;
+                exchange
+                    .stored
+                    .put(StoredPacket {
+                        scope: input.scope,
+                        generation: input.generation,
+                        packet: input.packet,
+                        ack_eliciting,
+                    })
+                    .map_err(|_| Failure::Binding)?;
                 endpoint.send::<p::PacketStored>(&packet).await?;
             }
             3 => {
@@ -315,6 +352,9 @@ impl<'scope> Admission<'scope> {
     }
 }
 impl<'scope, const N: usize> AuthenticatedInput<'scope, N> {
+    pub fn packet_number(&self) -> u64 {
+        self.packet
+    }
     pub fn from_authentication(
         receipt: crate::bounded_tls::key_source::AuthenticatedEarlyRead<'scope>,
         generation: u64,
@@ -345,6 +385,9 @@ impl<const N: usize> ControlBlock<N> {
     }
 }
 impl<'scope, const N: usize> Exchange<'scope, N> {
+    pub fn take_stored(&self) -> Result<StoredPacket<'scope>, Failure> {
+        self.stored.take().map_err(|_| Failure::Binding)
+    }
     pub fn store_input(&self, value: AuthenticatedInput<'scope, N>) -> Result<(), Failure> {
         self.input.put(value).map_err(|_| Failure::Binding)
     }

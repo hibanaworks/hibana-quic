@@ -21,7 +21,7 @@ use core::{cell::RefCell, pin::pin};
 
 /// Run the single connected global with client request and response handlers.
 #[allow(clippy::too_many_arguments)]
-pub async fn client<'scope, const N: usize, const P: usize, const RX: usize, const CHUNK: usize>(
+pub fn client<'scope, const N: usize, const P: usize, const RX: usize, const CHUNK: usize>(
     roles: &mut Roles<'_>,
     source: &mut Transcript<'scope, '_, '_>,
     setup: Setup<'_, RX, CHUNK>,
@@ -34,10 +34,7 @@ pub async fn client<'scope, const N: usize, const P: usize, const RX: usize, con
     outcomes: &Outcomes,
     requests: &mut impl ClientRequests,
     sink: &mut impl StreamSink,
-) -> Result<Report, Error> {
-    if setup.config.side != Side::Client {
-        return Err(Error::Binding);
-    }
+) -> impl core::future::Future<Output = Result<Report, Error>> {
     connected::<N, P, RX, CHUNK, _, Unused, _>(
         roles,
         source,
@@ -52,13 +49,12 @@ pub async fn client<'scope, const N: usize, const P: usize, const RX: usize, con
         Source::Client(requests),
         Sink::Client(sink),
     )
-    .await
 }
 
 /// Each actual authenticated request is passed to the handler only after FIN.
 /// Response bodies are read incrementally into the caller's fixed send chunks.
 #[allow(clippy::too_many_arguments)]
-pub async fn server<'scope, const N: usize, const P: usize, const RX: usize, const CHUNK: usize>(
+pub fn server<'scope, const N: usize, const P: usize, const RX: usize, const CHUNK: usize>(
     roles: &mut Roles<'_>,
     source: &mut Transcript<'scope, '_, '_>,
     setup: Setup<'_, RX, CHUNK>,
@@ -70,10 +66,7 @@ pub async fn server<'scope, const N: usize, const P: usize, const RX: usize, con
     book: &mut Recovery<'scope, N>,
     outcomes: &Outcomes,
     handler: &mut impl ServerHandler,
-) -> Result<Report, Error> {
-    if setup.config.side != Side::Server {
-        return Err(Error::Binding);
-    }
+) -> impl core::future::Future<Output = Result<Report, Error>> {
     connected::<N, P, RX, CHUNK, Unused, _, Unused>(
         roles,
         source,
@@ -88,7 +81,6 @@ pub async fn server<'scope, const N: usize, const P: usize, const RX: usize, con
         Source::Server(handler),
         Sink::Server,
     )
-    .await
 }
 
 // These variants select the fixed local application role, never a packet or
@@ -154,11 +146,18 @@ async fn connected<
     source_io: Source<'_, C, H>,
     sink_io: Sink<'_, S>,
 ) -> Result<Report, Error> {
+    if !matches!(
+        (&source_io, setup.config.side),
+        (Source::Client(_), Side::Client) | (Source::Server(_), Side::Server)
+    ) {
+        return Err(Error::Binding);
+    }
     let Setup {
         config,
         local_limits,
         handshake_crypto,
         application: buffers,
+        mut early,
     } = setup;
     if CHUNK == 0
         || CHUNK.checked_add(192).is_none_or(|required| required > N)
@@ -174,7 +173,12 @@ async fn connected<
     let (read, write) = {
         // Storage is bounded and owned by this finite prefix; dropping it ends
         // every reservation borrow before application facets are issued.
-        let storage = Storage::<N, P>::new(config.peer_connection_id)?;
+        let storage = if let Some(early) = early.as_mut() {
+            Storage::<N, P>::with_early_packets(config.peer_connection_id, &mut early.packets)?
+        } else {
+            Storage::<N, P>::new(config.peer_connection_id)?
+        };
+
         connection::handshake(
             &mut roles.handshake,
             source,
@@ -191,7 +195,7 @@ async fn connected<
         )
         .await?
     };
-    let (received, write, transcript) =
+    let (mut received, write, transcript) =
         startup::transfer(roles, source, config, read, write).await?;
     let owner = keys::KeyOwner::new(scope, write)?;
     let exchange = keys::Exchange::new(&owner);
@@ -231,6 +235,18 @@ async fn connected<
     } else {
         None
     };
+    let early_received = super::early::receive::<N, RX, CHUNK>(
+        roles,
+        transcript,
+        config,
+        early,
+        peer.into_finished(),
+        &mut received.material.integrity,
+        &mut book_rx,
+        &mut rx,
+        clock,
+    )
+    .await?;
     let control = Control::new(stop);
     let state = io::State::<CHUNK>::new();
     let publication_state = transmit::State::new(book_publication, publication);
@@ -243,7 +259,6 @@ async fn connected<
         .map_err(|_| Error::Capacity)?;
     let (mut request_sender, mut request_receiver) =
         requests.split().map_err(|_| Error::Binding)?;
-    let mut quiesced = None;
     let mut permission = None;
     let first_io_error = RefCell::new(None);
 
@@ -313,31 +328,28 @@ async fn connected<
             }
         });
         let mut receiving = pin!(async {
-            quiesced = Some(
-                receive::run::<N, RX, CHUNK>(
-                    &mut roles.receive,
-                    &mut roles.rx_keys,
-                    &mut roles.peer_event,
-                    received.material,
-                    config,
-                    transcript,
-                    buffers.crypto,
-                    &mut book_rx,
-                    &mut rx,
-                    &reset_exchange,
-                    &acknowledgments,
-                    &app,
-                    &state,
-                    rx_control,
-                    &control,
-                    clock,
-                    receive_io,
-                    &terminal,
-                    confirmation,
-                )
-                .await?,
-            );
-            Ok::<(), Error>(())
+            receive::run::<N, RX, CHUNK>(
+                &mut roles.receive,
+                &mut roles.rx_keys,
+                &mut roles.peer_event,
+                received.material,
+                config,
+                transcript,
+                buffers.crypto,
+                &mut book_rx,
+                &mut rx,
+                &reset_exchange,
+                &acknowledgments,
+                &app,
+                &state,
+                rx_control,
+                &control,
+                clock,
+                receive_io,
+                &terminal,
+                confirmation,
+            )
+            .await
         });
         let mut key_control = pin!(async {
             keys::run(&mut roles.tx_keys, &owner, &exchange)
@@ -449,7 +461,6 @@ async fn connected<
     let closing = startup::retire(
         roles,
         OrdinaryRetired { scope },
-        quiesced.ok_or(Error::Binding)?,
         permission.ok_or(Error::Binding)?,
     )
     .await?;
@@ -504,6 +515,9 @@ async fn connected<
         return Err(Error::Incomplete);
     }
     Ok(Report {
+        early_accepted_packets: early_received.packets,
+        early_stream_bytes: early_received.stream_bytes,
+        early_finished_streams: early_received.finished_streams,
         confirmed: before_close.handshake_confirmed,
         submitted_streams: state.submitted_count(),
         completed_streams,

@@ -235,29 +235,23 @@ pub(crate) async fn admit<'lane, 'owner, 'scope, const P: usize>(
     ))
 }
 
-pub(crate) struct Closing<'owner, 'scope> {
+pub(crate) struct Closing<'scope> {
     pub ordinary: OrdinaryRetired<'scope>,
-    pub keys: keys::KeysQuiesced<'owner, 'scope>,
     pub permission: termination::Permission<'scope>,
 }
-struct RetiredKeys<'owner, 'scope> {
+struct RetiredPeer<'scope> {
     ordinary: OrdinaryRetired<'scope>,
-    keys: keys::KeysQuiesced<'owner, 'scope>,
-}
-struct RetiredPeer<'owner, 'scope> {
-    keys: RetiredKeys<'owner, 'scope>,
     peer: Option<termination::Permission<'scope>>,
 }
 
 /// This finite owner starts only after every ordinary future has completed.
 /// The accumulated affine grant enables one retired owner's response at a time,
 /// so each direct recv has one possible incoming sender even on a Q=1 carrier.
-pub(crate) async fn retire<'owner, 'scope>(
+pub(crate) async fn retire<'scope>(
     roles: &mut Roles<'_>,
     ordinary: OrdinaryRetired<'scope>,
-    keys: keys::KeysQuiesced<'owner, 'scope>,
     outcomes: termination::TerminalOutcomes<'scope>,
-) -> Result<Closing<'owner, 'scope>, Error> {
+) -> Result<Closing<'scope>, Error> {
     let scope = ordinary.scope();
     let sequence = scope.connection_generation();
     let (peer, files) = outcomes.into_parts();
@@ -287,9 +281,7 @@ pub(crate) async fn retire<'owner, 'scope>(
                 sequence,
             )?;
             let ordinary = key_grant.take().map_err(|_| Error::Binding)?;
-            key_result
-                .put(RetiredKeys { ordinary, keys })
-                .map_err(|_| Error::Binding)?;
+            key_result.put(ordinary).map_err(|_| Error::Binding)?;
             roles.rx_keys.send::<p::KeyRetirement>(&sequence).await?;
             Ok::<(), Error>(())
         });
@@ -298,9 +290,9 @@ pub(crate) async fn retire<'owner, 'scope>(
                 roles.peer_close.recv::<p::PeerRetirementGrant>().await?,
                 sequence,
             )?;
-            let keys = peer_grant.take().map_err(|_| Error::Binding)?;
+            let ordinary = peer_grant.take().map_err(|_| Error::Binding)?;
             peer_result
-                .put(RetiredPeer { keys, peer })
+                .put(RetiredPeer { ordinary, peer })
                 .map_err(|_| Error::Binding)?;
             roles.peer_close.send::<p::PeerOutcome>(&sequence).await?;
             Ok::<(), Error>(())
@@ -310,8 +302,7 @@ pub(crate) async fn retire<'owner, 'scope>(
                 roles.files_close.recv::<p::FilesRetirementGrant>().await?,
                 sequence,
             )?;
-            let retired: RetiredPeer<'owner, 'scope> =
-                files_grant.take().map_err(|_| Error::Binding)?;
+            let retired: RetiredPeer<'scope> = files_grant.take().map_err(|_| Error::Binding)?;
             for permission in [retired.peer.as_ref(), files.as_ref()]
                 .into_iter()
                 .flatten()
@@ -323,8 +314,7 @@ pub(crate) async fn retire<'owner, 'scope>(
             let permission = retired.peer.or(files).ok_or(Error::Binding)?;
             files_result
                 .put(Closing {
-                    ordinary: retired.keys.ordinary,
-                    keys: retired.keys.keys,
+                    ordinary: retired.ordinary,
                     permission,
                 })
                 .map_err(|_| Error::Binding)?;

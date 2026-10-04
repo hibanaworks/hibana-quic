@@ -2,6 +2,7 @@
 //! bounded stream IO, ordinary retirement, closing and draining.
 
 mod acknowledgments;
+mod early;
 mod io;
 mod keys;
 pub mod protocol;
@@ -27,7 +28,7 @@ use core::{
 use hibana::{Endpoint, EndpointError};
 
 pub const MAX_REQUEST_BYTES: usize = 1024;
-pub const MAX_REQUESTS: usize = 16;
+pub const MAX_REQUESTS: usize = 64;
 
 /// Reads a response through caller-owned bounded storage. Zero means EOF.
 pub trait BodyReader {
@@ -58,7 +59,13 @@ pub struct Buffers<'a, const RX: usize, const CHUNK: usize> {
     pub references: &'a mut [streams::PacketReference],
     pub crypto: CryptoBuffer<'a>,
 }
+pub struct EarlyServer<'a, const RX: usize> {
+    pub packets: super::early_wire::PendingPackets<'a>,
+    pub slots: &'a mut [crate::early_data::QuarantineSlot<RX>],
+    pub policy: crate::early_data::ServerPolicy,
+}
 pub struct Setup<'a, const RX: usize, const CHUNK: usize> {
+    pub early: Option<EarlyServer<'a, RX>>,
     pub config: Config<'a>,
     pub local_limits: streams::Limits,
     pub handshake_crypto: [CryptoBuffer<'a>; 2],
@@ -88,6 +95,9 @@ impl Default for Outcomes {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Report {
+    pub early_accepted_packets: usize,
+    pub early_stream_bytes: u64,
+    pub early_finished_streams: usize,
     pub confirmed: bool,
     pub submitted_streams: usize,
     pub completed_streams: usize,
@@ -116,9 +126,9 @@ pub struct Roles<'a> {
     pub files_event: Endpoint<'a, { protocol::FILES_EVENT }>,
     pub files_close: Endpoint<'a, { protocol::FILES_CLOSE }>,
     pub close_join: Endpoint<'a, { protocol::CLOSE_JOIN }>,
-    pub source_collector: Endpoint<'a, {protocol::SOURCE_COLLECTOR}>,
-    pub input_collector: Endpoint<'a, {protocol::INPUT_COLLECTOR}>,
-    pub delivery_collector: Endpoint<'a, {protocol::DELIVERY_COLLECTOR}>,
+    pub source_collector: Endpoint<'a, { protocol::SOURCE_COLLECTOR }>,
+    pub input_collector: Endpoint<'a, { protocol::INPUT_COLLECTOR }>,
+    pub delivery_collector: Endpoint<'a, { protocol::DELIVERY_COLLECTOR }>,
 }
 
 #[derive(Debug)]
@@ -134,7 +144,9 @@ pub enum Error {
     Capacity,
     Application,
     Incomplete,
-    KeyControl,
+    KeyControlBinding,
+    KeyControlRetired,
+    Early(crate::early_data::owner::Failure),
     UnexpectedLabel(u8),
 }
 impl From<super::Error> for Error {
@@ -177,7 +189,10 @@ impl From<keys::Error> for Error {
         match value {
             keys::Error::Crypto(error) => Self::Crypto(error),
             keys::Error::Endpoint(error) => Self::Endpoint(error),
-            _ => Self::KeyControl,
+            keys::Error::Slot(error) => Self::Connection(super::Error::Slot(error)),
+            keys::Error::Binding => Self::KeyControlBinding,
+            keys::Error::Retired => Self::KeyControlRetired,
+            keys::Error::UnexpectedLabel(label) => Self::UnexpectedLabel(label),
         }
     }
 }
@@ -290,5 +305,11 @@ pub struct OrdinaryRetired<'scope> {
 impl<'scope> OrdinaryRetired<'scope> {
     pub(crate) fn scope(&self) -> &'scope crypto::directional::ApplicationKeyScope {
         self.scope
+    }
+}
+
+impl From<crate::early_data::owner::Failure> for Error {
+    fn from(value: crate::early_data::owner::Failure) -> Self {
+        Self::Early(value)
     }
 }

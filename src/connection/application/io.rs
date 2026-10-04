@@ -21,7 +21,9 @@ use crate::{
 };
 
 pub(crate) const REQUEST_BYTES: usize = MAX_REQUEST_BYTES;
-pub(crate) const REQUEST_CAPACITY: usize = MAX_REQUESTS;
+// Independent bounded work queue. The source consumes it concurrently, so
+// forty admitted streams do not require forty inline copies of complete GETs.
+pub(crate) const REQUEST_CAPACITY: usize = 8;
 
 pub(crate) struct Chunk<const CHUNK: usize> {
     pub bytes: [u8; CHUNK],
@@ -667,7 +669,9 @@ async fn deliver<const RX: usize, const CHUNK: usize>(
     stream_id: u64,
 ) -> Result<bool, Error> {
     let stream = ready_handle(app, stream_id)?;
-    let mut bytes = [0; CHUNK];
+    // Receive delivery uses its actual receive window, not the unrelated
+    // outbound chunk size. One datagram must not require several sink rounds.
+    let mut bytes = [0; RX];
     let read = app
         .try_borrow_mut()
         .map_err(|_| Error::Binding)?
@@ -766,7 +770,9 @@ async fn receive_request<'book, const RX: usize, const CHUNK: usize>(
     stream_id: u64,
 ) -> Result<bool, Error> {
     let stream = ready_handle(app, stream_id)?;
-    let mut bytes = [0; CHUNK];
+    // Receive delivery uses its actual receive window, not the unrelated
+    // outbound chunk size. One datagram must not require several sink rounds.
+    let mut bytes = [0; RX];
     let read = app
         .try_borrow_mut()
         .map_err(|_| Error::Binding)?

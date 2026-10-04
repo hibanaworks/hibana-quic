@@ -126,6 +126,7 @@ pub fn seal<'book, const N: usize>(
     let result = (|| -> Result<usize, Error> {
         if !core::ptr::eq(keys.scope(), reservation.scope())
             || reservation.packet().space != PacketNumberSpace::ApplicationData
+            || reservation.kind() != crate::accounting::PacketKind::OneRtt
             || keys.generation() != reservation.key_generation()
             || plaintext.is_empty()
             || !reservation.matches_plaintext(plaintext)?

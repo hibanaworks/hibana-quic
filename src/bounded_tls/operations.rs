@@ -79,7 +79,7 @@ impl BoundedTls<'_, '_> {
             self.tx_len = n;
             self.tx_initial_end = n;
             self.retry_suite = Some(hrr.suite);
-            return Ok(true);
+            Ok(true)
         } else {
             let hello = if self.resumption.is_some() {
                 wire::parse_server_hello_psk(message)?
@@ -103,7 +103,7 @@ impl BoundedTls<'_, '_> {
             }
             self.transcript.append(message)?;
             self.install_handshake(hello.group, hello.key_share, hello.suite)?;
-            return Ok(false);
+            Ok(false)
         }
     }
     pub(super) fn client_extensions(&mut self, message: &[u8]) -> Result<(), Failure> {

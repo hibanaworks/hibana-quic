@@ -4,7 +4,7 @@
 use super::files::{self, Download, SafeRoot};
 use hibana_quic::connection::application::{BodyReader, ClientRequests, ServerHandler, StreamSink};
 use std::{cell::{Cell, RefCell}, collections::{BTreeMap, BTreeSet}, fs::File, io::{Read, Write}, path::Path, rc::Rc};
-pub const MAX_REQUESTS: usize = 16;
+pub const MAX_REQUESTS: usize = hibana_quic::connection::application::MAX_REQUESTS;
 #[derive(Clone, Default)]
 pub struct Diagnostics(Rc<RefCell<Option<String>>>);
 impl Diagnostics {
@@ -22,7 +22,7 @@ pub struct Observations {
 pub struct FileServer { root: SafeRoot, admitted: BTreeSet<u64>, max_requests: usize, pub observations: Rc<Observations>, pub diagnostics: Diagnostics }
 impl FileServer {
     pub fn new(root: &Path, max_requests: usize) -> Result<Self, String> {
-        if max_requests == 0 || max_requests > MAX_REQUESTS { return Err("max requests must be 1..=16".into()); }
+        if max_requests == 0 || max_requests > MAX_REQUESTS { return Err("max requests must be 1..=64".into()); }
         Ok(Self { root: SafeRoot::open(root, false)?, admitted: BTreeSet::new(), max_requests, observations: Rc::default(), diagnostics: Diagnostics::default() })
     }
 }
@@ -62,7 +62,7 @@ pub struct Downloads(Rc<RefCell<ClientFiles>>);
 pub struct Client { pub requests: Requests, pub downloads: Downloads, pub observations: Rc<Observations>, pub diagnostics: Diagnostics, pub count: usize }
 impl Client {
     pub fn new(root: &Path, requests: Vec<Request>) -> Result<Self, String> {
-        if requests.is_empty() || requests.len() > MAX_REQUESTS { return Err("client requires 1..=16 requests".into()); }
+        if requests.is_empty() || requests.len() > MAX_REQUESTS { return Err("client requires 1..=64 requests".into()); }
         for (index, request) in requests.iter().enumerate() { if requests[..index].iter().any(|previous| request.same_destination(previous)) { return Err("duplicate decoded download destination".into()); } }
         let count = requests.len(); let observations = Rc::default(); let diagnostics = Diagnostics::default();
         let files = Rc::new(RefCell::new(ClientFiles { root: SafeRoot::open(root, true)?, requests, next: 0, pending: None, streams: BTreeMap::new(), used_streams: BTreeSet::new(), observations: Rc::clone(&observations), diagnostics: diagnostics.clone() }));

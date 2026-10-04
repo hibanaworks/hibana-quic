@@ -1002,6 +1002,7 @@ fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
     let mut client_refs = [PacketReference::EMPTY; 64];
     let mut server_refs = [PacketReference::EMPTY; 64];
     let client_setup = application::Setup {
+        early: None,
         config: Config {
             side: Side::Client,
             local_connection_id: CLIENT_ID,
@@ -1021,6 +1022,7 @@ fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
         },
     };
     let server_setup = application::Setup {
+        early: None,
         config: Config {
             side: Side::Server,
             local_connection_id: SERVER_ID,
@@ -1070,46 +1072,51 @@ fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
     let mut server_report = None;
     // Pin the connection futures in caller-owned host storage too. The
     // executor polls a pointer, rather than moving both peers onto its stack.
-    let client = Box::pin(async {
-        client_report = Some(
-            application::client::<DATAGRAM, PARAMS, RECEIVE_WINDOW, CHUNK>(
-                &mut client_roles,
-                &mut client_transcript,
-                client_setup,
-                &mut client_rx,
-                &mut client_tx,
-                &clock,
-                &mut client_issuer,
-                client_stop,
-                &mut client_book,
-                &client_outcomes,
-                &mut requests,
-                &mut sink,
-            )
-            .await?,
-        );
-        Ok::<(), application::Error>(())
-    });
-    let server = Box::pin(async {
-        server_report = Some(
-            application::server::<DATAGRAM, PARAMS, RECEIVE_WINDOW, CHUNK>(
-                &mut server_roles,
-                &mut server_transcript,
-                server_setup,
-                &mut server_rx,
-                &mut server_tx,
-                &clock,
-                &mut server_issuer,
-                server_stop,
-                &mut server_book,
-                &server_outcomes,
-                &mut handler,
-            )
-            .await?,
-        );
-        Ok::<(), application::Error>(())
-    });
-    execute(&clock, hibana_quic::runtime::join2(client, server)).unwrap();
+    let client = Box::pin(
+        application::client::<DATAGRAM, PARAMS, RECEIVE_WINDOW, CHUNK>(
+            &mut client_roles,
+            &mut client_transcript,
+            client_setup,
+            &mut client_rx,
+            &mut client_tx,
+            &clock,
+            &mut client_issuer,
+            client_stop,
+            &mut client_book,
+            &client_outcomes,
+            &mut requests,
+            &mut sink,
+        ),
+    );
+    let server = Box::pin(
+        application::server::<DATAGRAM, PARAMS, RECEIVE_WINDOW, CHUNK>(
+            &mut server_roles,
+            &mut server_transcript,
+            server_setup,
+            &mut server_rx,
+            &mut server_tx,
+            &clock,
+            &mut server_issuer,
+            server_stop,
+            &mut server_book,
+            &server_outcomes,
+            &mut handler,
+        ),
+    );
+    execute(
+        &clock,
+        hibana_quic::runtime::join2(
+            async {
+                client_report = Some(client.await?);
+                Ok::<(), application::Error>(())
+            },
+            async {
+                server_report = Some(server.await?);
+                Ok::<(), application::Error>(())
+            },
+        ),
+    )
+    .unwrap();
     let client = client_report.unwrap();
     let server = server_report.unwrap();
     assert_eq!(client_transcript.state(), State::Connected);

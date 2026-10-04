@@ -6,6 +6,7 @@
 pub mod application;
 pub mod application_stream;
 pub mod application_wire;
+pub mod early_wire;
 mod initial;
 mod locals;
 pub mod parameters;
@@ -296,6 +297,7 @@ pub struct Storage<'scope, 'book, const N: usize, const P: usize> {
     finished: Inbox<Finished<'scope, P>>,
     datagram: Inbox<wire::Datagram<'book, N>>,
     failure: Cell<Option<crate::tls::Error>>,
+    early_packets: RefCell<Option<&'book mut dyn early_wire::RetainPackets>>,
 }
 impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P> {
     pub fn new(peer: &[u8]) -> Result<Self, Error> {
@@ -312,7 +314,16 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
             finished: Inbox::new(),
             datagram: Inbox::new(),
             failure: Cell::new(None),
+            early_packets: RefCell::new(None),
         })
+    }
+    pub fn with_early_packets(
+        peer: &[u8],
+        packets: &'book mut early_wire::PendingPackets<'_>,
+    ) -> Result<Self, Error> {
+        let storage = Self::new(peer)?;
+        *storage.early_packets.borrow_mut() = Some(packets);
+        Ok(storage)
     }
     fn claim(&self) -> Result<(), Error> {
         if self.claimed.replace(true) {
@@ -448,7 +459,7 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
             storage,
             &initial,
             &initial_exchange,
-            publish_initial.as_deref_mut(),
+            publish_initial,
             issuer,
             adapter_outcome,
             &mut publication

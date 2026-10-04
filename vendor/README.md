@@ -1,10 +1,11 @@
 # Selected upstream snapshot
 
-`hibana/` is the exact tracked source of `development/rolled-route-ownership`
-at `9fbb84cdc932cbd0a81ee995a8689393f322763e`, without local patches. Fresh consumer verification is pending.
-The runtime source matches the previously vendored adea684 snapshot; upstream
-proof links and publication regression hygiene have advanced. Historical
-validation below applies to the recorded earlier commit, not this import.
+`hibana/` is the exact tracked source of `development/route-metadata-performance`
+at `4ba7510cfacff984dd02202fccf288823f3589ee`, without local patches.
+It includes explicit-join validation, removal of manual source ownership tables,
+and validated immutable resolver/dispatch lookup optimizations. Public APIs and
+protocol order are unchanged. Consumer correctness and performance are measured
+separately; this pin is not a claim of Neqo performance parity.
 
 # Audited local dependency snapshots
 

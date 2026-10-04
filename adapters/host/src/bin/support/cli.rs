@@ -1,7 +1,7 @@
 use super::host_files::{MAX_REQUESTS, Request};
 use hibana_quic::bounded_tls::CipherPolicy;
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
-pub const USAGE: &str = "Direct Hibana QUIC v1 / hq-interop\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--cipher auto|aes128|chacha20]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--cipher auto|aes128|chacha20]\n\nOne admitted connection, at most 16 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
+pub const USAGE: &str = "Direct Hibana QUIC v1 / hq-interop\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume]\n\nOne connection, or two ticket-resuming connections with --session resume; at most 64 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
 #[derive(Debug)]
 pub struct ClientFiles {
     pub requests: Vec<Request>,
@@ -20,6 +20,7 @@ pub enum Options {
         ca: PathBuf,
         timeout: Duration,
         cipher: CipherPolicy,
+        resumption: bool,
         files: Option<ClientFiles>,
     },
     Server {
@@ -28,6 +29,8 @@ pub enum Options {
         key: PathBuf,
         timeout: Duration,
         cipher: CipherPolicy,
+        resumption: bool,
+        early: bool,
         files: Option<ServerFiles>,
     },
 }
@@ -57,7 +60,7 @@ pub fn options(args: &[String]) -> Result<Options> {
     for pair in &mut pairs {
         if pair[0] == "--request" {
             if targets.len() >= MAX_REQUESTS {
-                return Err("at most 16 requests are supported".into());
+                return Err("at most 64 requests are supported".into());
             }
             targets.push(pair[1].as_str());
         } else if !pair[0].starts_with("--")
@@ -85,6 +88,12 @@ pub fn options(args: &[String]) -> Result<Options> {
         "aes128" => CipherPolicy::Aes128Only,
         "chacha20" => CipherPolicy::ChaCha20Only,
         _ => return Err("--cipher must be auto, aes128 or chacha20".into()),
+    };
+    let resumption = match flags.remove("--session").unwrap_or("single") {
+        "single" => false,
+        "resume" if application => true,
+        "resume" => return Err("resumption requires file mode".into()),
+        _ => return Err("--session must be single or resume".into()),
     };
     let result = match role.as_str() {
         "client" => {
@@ -117,12 +126,16 @@ pub fn options(args: &[String]) -> Result<Options> {
                     downloads: downloads.into(),
                 })
             };
+            if resumption && files.as_ref().is_none_or(|files| files.requests.len() < 2) {
+                return Err("resumption requires at least two requests".into());
+            }
             Options::Client {
                 connect,
                 server_name,
                 ca,
                 timeout,
                 cipher,
+                resumption,
                 files,
             }
         }
@@ -141,7 +154,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 .map(|value| value.parse::<usize>().map_err(|_| "invalid max requests"))
                 .transpose()?;
             if max_requests.is_some_and(|n| n == 0 || n > MAX_REQUESTS) {
-                return Err("max requests must be 1..=16".into());
+                return Err("max requests must be 1..=64".into());
             }
             let files = match www {
                 Some(www) => Some(ServerFiles {
@@ -151,12 +164,23 @@ pub fn options(args: &[String]) -> Result<Options> {
                 None if max_requests.is_none() => None,
                 None => return Err("--max-requests requires --www".into()),
             };
+            let early = match flags.remove("--early").unwrap_or("reject") {
+                "reject" => false,
+                "buffered" if resumption => true,
+                _ => {
+                    return Err(
+                        "--early buffered requires server file mode and --session resume".into(),
+                    );
+                }
+            };
             Options::Server {
+                early,
                 listen,
                 cert,
                 key,
                 timeout,
                 cipher,
+                resumption,
                 files,
             }
         }
@@ -236,5 +260,27 @@ mod tests {
             .unwrap()
             .application_requested()
         );
+    }
+    #[test]
+    fn official_early_workload_fits_the_explicit_backed_request_bound() {
+        let mut values = args(
+            "client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem --downloads output",
+        );
+        for i in 0..40 {
+            values.push("--request".into());
+            values.push(format!("/{}{:03}", "x".repeat(247), i));
+        }
+        let Options::Client {
+            files: Some(files), ..
+        } = options(&values).unwrap()
+        else {
+            panic!("files");
+        };
+        assert_eq!(files.requests.len(), 40);
+        for i in 40..=MAX_REQUESTS {
+            values.push("--request".into());
+            values.push(format!("/file{i}"));
+        }
+        assert!(options(&values).is_err());
     }
 }

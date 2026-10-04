@@ -19,7 +19,7 @@ use crate::{
 };
 
 const CONTROL_CAPACITY: usize = super::recovery::LEDGER_CAPACITY;
-pub const MAX_LIVE_STREAMS: usize = 16;
+pub const MAX_LIVE_STREAMS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -917,6 +917,10 @@ impl Credit {
             pending: false,
         }
     }
+    fn should_update(self, maximum: u64, window: u64) -> bool {
+        maximum > self.current
+            && (maximum == streams::MAX_OFFSET || maximum - self.current >= (window / 2).max(1))
+    }
     fn update(&mut self, maximum: u64) {
         if maximum > self.current {
             self.current = maximum;
@@ -1096,12 +1100,19 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
     }
     fn replenish_credit(&mut self, stream: StreamHandle) -> Result<(), Error> {
         let data = self.table.receive_data_capacity();
-        self.table.grant_max_data(data)?;
-        self.data_credit.update(data);
+        if self
+            .data_credit
+            .should_update(data, self.table.receive_window_capacity())
+        {
+            self.table.grant_max_data(data)?;
+            self.data_credit.update(data);
+        }
         if self.table.receive_final_size(stream)?.is_none() {
             let maximum = self.table.stream_receive_capacity(stream)?;
-            self.table.grant_max_stream_data(stream, maximum)?;
-            self.state_mut(stream)?.credit.update(maximum);
+            if self.state(stream)?.credit.should_update(maximum, RX as u64) {
+                self.table.grant_max_stream_data(stream, maximum)?;
+                self.state_mut(stream)?.credit.update(maximum);
+            }
         }
         Ok(())
     }
@@ -1220,10 +1231,10 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
     }
     fn retry_control(&mut self, contents: Controls) {
         self.data_credit.retry(contents.max_data);
-        if let Some((stream, maximum)) = contents.max_stream_data {
-            if let Ok(state) = self.state_mut(stream) {
-                state.credit.retry(Some(maximum));
-            }
+        if let Some((stream, maximum)) = contents.max_stream_data
+            && let Ok(state) = self.state_mut(stream)
+        {
+            state.credit.retry(Some(maximum));
         }
     }
 
@@ -1968,5 +1979,65 @@ mod tests {
             Err(Error::Streams(streams::Error::StreamState))
         ));
         allocation.finish();
+    }
+    #[test]
+    fn small_reads_batch_credit_at_half_the_backed_window() {
+        let scope = ApplicationKeyScope::new(77);
+        let mut slots = [StreamSlot::<8>::EMPTY];
+        let mut chunks = [SendChunk::<8>::EMPTY];
+        let mut references = [PacketReference::EMPTY; 4];
+        let mut core = StreamNumbers::new(
+            &scope,
+            Role::Server,
+            local(Role::Client),
+            local(Role::Server),
+            &mut slots,
+            &mut chunks,
+            &mut references,
+        )
+        .unwrap();
+        let Facets {
+            mut app,
+            mut rx,
+            mut tx,
+            ..
+        } = core.split();
+        rx.apply(&Frame::Stream {
+            id: 0,
+            offset: 0,
+            fin: false,
+            data: b"abcd",
+        })
+        .unwrap();
+        let stream = app.readable_stream().unwrap().unwrap();
+        for byte in b"abc" {
+            let mut one = [0; 1];
+            assert_eq!(app.read(stream, &mut one).unwrap().len, 1);
+            assert_eq!(one[0], *byte);
+            assert!(tx.prepare::<64>(false).unwrap().is_none());
+        }
+        let mut one = [0; 1];
+        assert_eq!(app.read(stream, &mut one).unwrap().len, 1);
+        assert_eq!(one[0], b'd');
+        let update = tx.prepare::<64>(false).unwrap().unwrap();
+        let expected = [
+            Frame::MaxData { maximum: 12 },
+            Frame::MaxStreamData { id: 0, maximum: 12 },
+        ];
+        let mut bytes = [0; 64];
+        let mut len = 0;
+        for frame in expected {
+            len += packet::encode_frame(&frame, &mut bytes[len..]).unwrap();
+        }
+        assert_eq!(update.bytes(), &bytes[..len]);
+    }
+
+    #[test]
+    fn credit_batching_keeps_tiny_windows_and_final_offset_live() {
+        assert!(Credit::new(1).should_update(2, 1));
+        assert!(!Credit::new(8).should_update(11, 8));
+        assert!(Credit::new(8).should_update(12, 8));
+        assert!(!Credit::new(8).should_update(8, 8));
+        assert!(Credit::new(streams::MAX_OFFSET - 3).should_update(streams::MAX_OFFSET, 1024));
     }
 }

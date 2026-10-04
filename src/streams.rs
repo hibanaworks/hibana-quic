@@ -573,10 +573,15 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
         self.slots[i].state.send_limit = self.slots[i].state.send_limit.max(maximum);
         Ok(())
     }
+    pub(crate) fn receive_window_capacity(&self) -> u64 {
+        (RX as u64)
+            .saturating_mul(self.slots.len() as u64)
+            .min(MAX_OFFSET)
+    }
     /// Returns the largest safe MAX_DATA given cumulative released capacity.
     pub fn receive_data_capacity(&self) -> u64 {
         self.receive_released
-            .saturating_add((RX as u64).saturating_mul(self.slots.len() as u64))
+            .saturating_add(self.receive_window_capacity())
             .min(MAX_OFFSET)
     }
     pub fn grant_max_data(&mut self, maximum: u64) -> Result<(), Error> {
