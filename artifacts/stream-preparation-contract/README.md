@@ -1,10 +1,14 @@
+# Historical evidence for a removed actor implementation
+
+This actor and its obsolete test source have been removed. The original source remains in Git history at b31e4f90e64fe2d6a592aadaf9b390ae50f641c8; these observations do not qualify the current connection.
+
 # Stream preparation contract correction
 
 The frozen production Stream choreography is unchanged: SHA-256 `b268e912106d2897feb2f50b51026df88d9c54e411d99d2dde24bc56b74e5a1b` (191 sends, 95 routes, 10 rolls). No core/vendor source or production label changed.
 
 ## Historical assertion and its exact replacement
 
-The former `projected_preparation_cannot_escape_without_owner_settlement_suffix` test asserted that every raw `send::<Inspect>()` must fail after `FramePrepared/ResultTaken`. Its complete original source, hash, baseline failure log and external-core failure log are preserved in `historical/`.
+The former `projected_preparation_cannot_escape_without_owner_settlement_suffix` test asserted that every raw `send::<Inspect>()` must fail after `FramePrepared/ResultTaken`. Its source is available in that Git revision; hashes and historical failure logs are retained under `historical/`.
 
 That label-only assertion conflated two obligations:
 

@@ -258,8 +258,11 @@ impl PacketKey {
     pub(crate) fn inherit_send_usage(&mut self, previous: &Self) -> Result<(), Error> {
         self.ensure_active()?;
         previous.ensure_active()?;
-        if self.kind != KeyKind::Initial || previous.kind != KeyKind::Initial
-            || self.suite != previous.suite || self.last_sealed.is_some() || self.sealed != 0
+        if self.kind != KeyKind::Initial
+            || previous.kind != KeyKind::Initial
+            || self.suite != previous.suite
+            || self.last_sealed.is_some()
+            || self.sealed != 0
         {
             return Err(Error::KeyDerivation);
         }
@@ -513,19 +516,6 @@ pub struct ApplicationKeys {
 }
 
 impl ApplicationKeys {
-    /// Trusted migration only: move every key and accounting field into separate
-    /// owners. Legacy authorization is preserved, so this is not a public route
-    /// for creating scoped update authority from numeric snapshots.
-    pub(crate) fn into_directional<'a>(
-        self,
-        scope: &'a mut directional::ApplicationKeyScope,
-    ) -> Result<
-        (directional::ApplicationReadKeys<'a>, directional::ApplicationWriteKeys<'a>),
-        Error,
-    > {
-        directional::split(self, scope)
-    }
-
     pub fn new(local: PacketKey, remote: PacketKey) -> Result<Self, Error> {
         if local.kind != KeyKind::OneRtt
             || remote.kind != KeyKind::OneRtt
@@ -1693,7 +1683,10 @@ mod role_transfer_tests {
         replacement.inherit_send_usage(&previous).unwrap();
         assert_eq!(replacement.last_sealed_packet_number(), Some(7));
         assert_eq!(replacement.sealed_packets(), 1);
-        assert_eq!(replacement.seal(7, b"header", &mut body, 3), Err(Error::PacketNumberReuse));
+        assert_eq!(
+            replacement.seal(7, b"header", &mut body, 3),
+            Err(Error::PacketNumberReuse)
+        );
         replacement.seal(8, b"header", &mut body, 3).unwrap();
         assert_eq!(replacement.sealed_packets(), 2);
         assert_eq!(previous.last_sealed_packet_number(), Some(7));
@@ -1705,22 +1698,42 @@ mod role_transfer_tests {
         let previous = initial_keys(b"previous").unwrap().client;
         let mut used = initial_keys(b"used").unwrap().client;
         used.seal(1, b"header", &mut [0; 32], 3).unwrap();
-        assert_eq!(used.inherit_send_usage(&previous), Err(Error::KeyDerivation));
+        assert_eq!(
+            used.inherit_send_usage(&previous),
+            Err(Error::KeyDerivation)
+        );
         assert_eq!(used.last_sealed_packet_number(), Some(1));
         assert_eq!(used.sealed_packets(), 1);
         let mut inactive = initial_keys(b"inactive").unwrap().client;
         inactive.discard();
-        assert_eq!(inactive.inherit_send_usage(&previous), Err(Error::KeyDiscarded));
+        assert_eq!(
+            inactive.inherit_send_usage(&previous),
+            Err(Error::KeyDiscarded)
+        );
         let mut fresh = initial_keys(b"fresh").unwrap().client;
-        assert_eq!(fresh.inherit_send_usage(&inactive), Err(Error::KeyDiscarded));
+        assert_eq!(
+            fresh.inherit_send_usage(&inactive),
+            Err(Error::KeyDiscarded)
+        );
         assert_eq!(fresh.last_sealed_packet_number(), None);
-        let mut handshake = PacketKey::from_secret(CipherSuite::Aes128GcmSha256, KeyKind::Handshake, &[1; 32]).unwrap();
-        assert_eq!(handshake.inherit_send_usage(&previous), Err(Error::KeyDerivation));
-        assert_eq!(fresh.inherit_send_usage(&handshake), Err(Error::KeyDerivation));
+        let mut handshake =
+            PacketKey::from_secret(CipherSuite::Aes128GcmSha256, KeyKind::Handshake, &[1; 32])
+                .unwrap();
+        assert_eq!(
+            handshake.inherit_send_usage(&previous),
+            Err(Error::KeyDerivation)
+        );
+        assert_eq!(
+            fresh.inherit_send_usage(&handshake),
+            Err(Error::KeyDerivation)
+        );
         // A corrupted/mismatched suite must also fail closed before copying.
         let mut mismatched = initial_keys(b"mismatch").unwrap().client;
         mismatched.suite = CipherSuite::ChaCha20Poly1305Sha256;
-        assert_eq!(fresh.inherit_send_usage(&mismatched), Err(Error::KeyDerivation));
+        assert_eq!(
+            fresh.inherit_send_usage(&mismatched),
+            Err(Error::KeyDerivation)
+        );
         assert_eq!(fresh.last_sealed_packet_number(), None);
     }
 
@@ -1730,18 +1743,32 @@ mod role_transfer_tests {
         previous.sealed = previous.suite.confidentiality_limit();
         let mut replacement = initial_keys(b"same").unwrap().client;
         replacement.inherit_send_usage(&previous).unwrap();
-        assert_eq!(replacement.seal(1, b"header", &mut [0; 32], 3), Err(Error::ConfidentialityLimit));
+        assert_eq!(
+            replacement.seal(1, b"header", &mut [0; 32], 3),
+            Err(Error::ConfidentialityLimit)
+        );
     }
 
     #[test]
     fn moved_integrity_budget_leaves_exhausted_owner_until_exact_budget_returns() {
-        let mut owner = IntegrityBudget { failed: 3, limit: 10 };
+        let mut owner = IntegrityBudget {
+            failed: 3,
+            limit: 10,
+        };
         let mut moved = owner.take_for_role();
         assert_eq!(moved.failed, 3);
         assert_eq!(moved.limit, 10);
         assert_eq!(owner.failed, 3);
-        assert_eq!(owner.before_attempt(CipherSuite::Aes128GcmSha256), Err(Error::IntegrityLimit));
-        assert_eq!(owner.take_for_role().before_attempt(CipherSuite::Aes128GcmSha256), Err(Error::IntegrityLimit));
+        assert_eq!(
+            owner.before_attempt(CipherSuite::Aes128GcmSha256),
+            Err(Error::IntegrityLimit)
+        );
+        assert_eq!(
+            owner
+                .take_for_role()
+                .before_attempt(CipherSuite::Aes128GcmSha256),
+            Err(Error::IntegrityLimit)
+        );
         moved.before_attempt(CipherSuite::Aes128GcmSha256).unwrap();
         assert_eq!(moved.record_failure(), Error::AuthenticationFailed);
         owner = moved;
@@ -1753,8 +1780,13 @@ mod role_transfer_tests {
     #[test]
     fn cancelling_transferred_integrity_budget_cannot_restore_the_source() {
         let mut owner = IntegrityBudget::new();
-        { let _moved = owner.take_for_role(); }
-        assert_eq!(owner.before_attempt(CipherSuite::Aes128GcmSha256), Err(Error::IntegrityLimit));
+        {
+            let _moved = owner.take_for_role();
+        }
+        assert_eq!(
+            owner.before_attempt(CipherSuite::Aes128GcmSha256),
+            Err(Error::IntegrityLimit)
+        );
         let exhausted = owner.take_for_role();
         assert_eq!(exhausted.limit, 0);
     }
@@ -1845,4 +1877,14 @@ mod external_authentication_budget_tests {
         assert_eq!(owner.failed_packets(), 1);
         assert_eq!(owner.authenticate(3, || Ok::<(), u8>(())), Ok(()));
     }
+}
+
+/// Domain-separated binding to the exact authenticated plaintext.
+pub(crate) fn plaintext_digest(plaintext: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"hibana-quic:packet-plaintext:v1\0");
+    digest.update((plaintext.len() as u64).to_be_bytes());
+    digest.update(plaintext);
+    digest.finalize().into()
 }

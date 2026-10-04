@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.95"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "Bounded QUIC v1 transport under development; not yet an interoperable endpoint"
+description = "Experimental bounded QUIC v1 transport driven by Hibana choreography"
 
 [dependencies]
 hibana = { path = "vendor/hibana", default-features = false }

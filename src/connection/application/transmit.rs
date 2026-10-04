@@ -5,6 +5,7 @@
 use super::{CloseKind, Control, Error, keys, protocol as p, startup};
 use crate::{
     accounting::AccountingError,
+    connection::publication_gate,
     connection::{
         self, Clock, Config, ConnectionId, DatagramTx, Outcome, application_stream,
         application_wire::{self, SealedApplicationDatagram},
@@ -13,7 +14,6 @@ use crate::{
     crypto::directional::{ApplicationKeyScope, ApplicationWriteKeys},
     flights::FlightId,
     packet::{self, Frame},
-    roles::publication_gate,
     tls::Level,
 };
 use core::{
@@ -1017,7 +1017,6 @@ mod tests {
     use crate::{
         connection::{IoError, Side},
         crypto::{CipherSuite, IntegrityBudget, KeyKind, PacketKey},
-        roles::packet_authority::{Arena, ScopedArena},
         streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
     };
     use core::task::{Context, Waker};
@@ -1036,21 +1035,11 @@ mod tests {
         ($book:ident, $write:ident, $streams:ident, $scope:ident) => {
             let mut key_scope = ApplicationKeyScope::new(146);
             let mut installation = key_scope.claim().unwrap();
-            let mut arena_storage = Arena::<8, 32>::new(146);
-            let arena = ScopedArena::new(
-                &mut arena_storage,
-                installation.take_packet_authority().unwrap(),
-            )
-            .unwrap();
+            let recovery = installation.take_recovery().unwrap();
             let (_read, mut $write) = installation.install(key(1), key(2)).unwrap();
             let $scope = $write.scope();
-            let mut $book = recovery::Recovery::<PACKET>::new(
-                arena.claim_recovery().unwrap(),
-                Side::Client,
-                333_000,
-                1200,
-            )
-            .unwrap();
+            let mut $book =
+                recovery::Recovery::<PACKET>::new(recovery, Side::Client, 333_000, 1200).unwrap();
             let mut slots = [StreamSlot::<CHUNK>::EMPTY];
             let mut chunks = [SendChunk::<CHUNK>::EMPTY];
             // Exactly one reference makes any leaked Reserved entry observable.

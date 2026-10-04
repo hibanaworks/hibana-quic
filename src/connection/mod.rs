@@ -25,7 +25,6 @@ use crate::{
         directional::{ApplicationKeyScope, ApplicationReadKeys, ApplicationWriteKeys},
     },
     handshake::CryptoBuffer,
-    roles::publication_gate,
     tls::Level,
 };
 use core::{
@@ -492,3 +491,5 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
         transmitted.ok_or(Error::Binding)?,
     ))
 }
+
+pub mod publication_gate;

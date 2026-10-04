@@ -16,6 +16,7 @@ use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
     bounded_tls::{BoundedTls, ClientConfig, ServerConfig, State, key_source::ReceivePacketKey},
     carrier::CarrierStorage,
+    connection::publication_gate::PublicationGate,
     connection::{
         self, Clock, Config, DatagramRx, DatagramTx, IoError, Side,
         application::{self, BodyReader, ClientRequests, ServerHandler, StreamSink},
@@ -30,10 +31,6 @@ use hibana_quic::{
     packet::{
         self, EncryptionLevel, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits,
         encode_varint,
-    },
-    roles::{
-        packet_authority::{Arena, ScopedArena},
-        publication_gate::PublicationGate,
     },
     streams::{Limits, PacketReference, SendChunk, StreamSlot},
     tls::Provider,
@@ -886,38 +883,18 @@ fn connection_case(count: usize, loss: Loss) {
     let mut server_scope = ApplicationKeyScope::new(2);
     let mut client_install = client_scope.claim().unwrap();
     let mut server_install = server_scope.claim().unwrap();
-    let mut client_arena_storage = Arena::<32, 128>::new(1);
-    let mut server_arena_storage = Arena::<32, 128>::new(2);
-    let client_arena = ScopedArena::new(
-        &mut client_arena_storage,
-        client_install.take_packet_authority().unwrap(),
-    )
-    .unwrap();
-    let server_arena = ScopedArena::new(
-        &mut server_arena_storage,
-        server_install.take_packet_authority().unwrap(),
-    )
-    .unwrap();
+    let client_recovery = client_install.take_recovery().unwrap();
+    let server_recovery = server_install.take_recovery().unwrap();
     let mut client_gate = PublicationGate::new(client_install.take_publication_gate().unwrap());
     let mut server_gate = PublicationGate::new(server_install.take_publication_gate().unwrap());
     let mut client_transcript =
         Transcript::new(client_tls.into_key_source(client_install).unwrap());
     let mut server_transcript =
         Transcript::new(server_tls.into_key_source(server_install).unwrap());
-    let mut client_book = Recovery::<DATAGRAM>::new(
-        client_arena.claim_recovery().unwrap(),
-        Side::Client,
-        10_000,
-        DATAGRAM as u64,
-    )
-    .unwrap();
-    let mut server_book = Recovery::<DATAGRAM>::new(
-        server_arena.claim_recovery().unwrap(),
-        Side::Server,
-        10_000,
-        DATAGRAM as u64,
-    )
-    .unwrap();
+    let mut client_book =
+        Recovery::<DATAGRAM>::new(client_recovery, Side::Client, 10_000, DATAGRAM as u64).unwrap();
+    let mut server_book =
+        Recovery::<DATAGRAM>::new(server_recovery, Side::Server, 10_000, DATAGRAM as u64).unwrap();
     let (mut client_issuer, client_stop) = client_gate.split().unwrap();
     let (mut server_issuer, server_stop) = server_gate.split().unwrap();
     let programs = application::protocol::programs();

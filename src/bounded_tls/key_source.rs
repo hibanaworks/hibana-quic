@@ -403,7 +403,7 @@ impl<'scope> AuthenticatedLevelRead<'scope> {
     }
     pub fn authenticates_plaintext(&self, plaintext: &[u8]) -> bool {
         self.len == plaintext.len()
-            && self.plaintext_digest == crate::roles::sealed_packet::plaintext_digest(plaintext)
+            && self.plaintext_digest == crate::crypto::plaintext_digest(plaintext)
     }
 }
 
@@ -463,7 +463,7 @@ impl<'scope> ReceivePacketKey<'scope> {
             kind,
             packet_number,
             len,
-            plaintext_digest: crate::roles::sealed_packet::plaintext_digest(&buffer[..len]),
+            plaintext_digest: crate::crypto::plaintext_digest(&buffer[..len]),
         })
     }
     pub fn header_mask(&self, sample: &[u8; 16]) -> Result<[u8; 5], crypto::Error> {
@@ -537,5 +537,15 @@ impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
             }
         }
         super::locals::client_owner(endpoint, &Access(source), message).await
+    }
+}
+
+#[cfg(test)]
+impl KeySource<'_, '_, '_> {
+    pub(crate) fn test_handshake(client: &mut Self, server: &mut Self) {
+        crate::bounded_tls::async_test_fixture::handshake(
+            &mut client.provider,
+            &mut server.provider,
+        );
     }
 }

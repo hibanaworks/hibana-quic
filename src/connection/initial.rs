@@ -188,22 +188,15 @@ pub(super) async fn retire<'scope, const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        accounting::PacketNumberSpace,
-        roles::packet_authority::{Arena, ScopedArena},
-    };
+    use crate::accounting::PacketNumberSpace;
     use core::{pin::Pin, task::Context};
 
     macro_rules! setup {
         ($book:ident, $scope:ident, $installation:ident, $arena:ident, $keys:ident) => {
             let mut $scope = ApplicationKeyScope::new(200);
             let mut $installation = $scope.claim().unwrap();
-            let mut storage = Arena::<8, 32>::new(200);
-            let $arena =
-                ScopedArena::new(&mut storage, $installation.take_packet_authority().unwrap())
-                    .unwrap();
             let mut $book = recovery::Recovery::<1536>::new(
-                $arena.claim_recovery().unwrap(),
+                $installation.take_recovery().unwrap(),
                 Side::Client,
                 333_000,
                 1200,

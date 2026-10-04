@@ -1,0 +1,7 @@
+spent: UNSAT; transition nonvacuous
+identity: UNSAT; transition nonvacuous
+no_reissue: UNSAT; transition nonvacuous
+reset-after-constructor-failure mutation: SAT [second_emission = True,
+ emitted = True,
+ claimed = False,
+ after_claimed = False]

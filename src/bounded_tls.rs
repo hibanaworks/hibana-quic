@@ -1574,3 +1574,7 @@ impl Provider for BoundedTls<'_, '_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/async_tls_fixture.rs"]
+pub(crate) mod async_test_fixture;

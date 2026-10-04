@@ -1,0 +1,30 @@
+{
+  "core_unit_tests": 476,
+  "core_integration_tests": 55,
+  "compile_fail_contracts": 27,
+  "host_tests": 99,
+  "async_tls_reference_tests": 29,
+  "python_tests": 45,
+  "failed": 0,
+  "ignored": 0,
+  "thumbv6m_core": "PASS",
+  "hibana_vendor_revision": "9fbb84cdc932cbd0a81ee995a8689393f322763e",
+  "native_neqo_directions": [
+    "baseline",
+    "client",
+    "server"
+  ],
+  "native_transfer_bytes": [
+    2097152,
+    3145728,
+    5242880
+  ],
+  "native_transfer_hashes": "matched",
+  "scope_limits": [
+    "official runner qualification of this cleanup pending",
+    "no whole-stack cryptographic proof",
+    "no Pico hardware qualification",
+    "no full-lifecycle allocation qualification",
+    "Clippy cleanup incomplete"
+  ]
+}

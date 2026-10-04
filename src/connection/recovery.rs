@@ -11,6 +11,7 @@ use crate::{
         PathReservation, SendReservation, SentLedger,
     },
     bounded_tls::key_source::{AuthenticatedLevelRead, FinishedAuthenticated},
+    crypto::directional::RecoveryInstallation,
     crypto::{
         KeyKind,
         directional::{AckEligible, ApplicationKeyScope},
@@ -21,7 +22,6 @@ use crate::{
         self as kernel, LossCandidate, LossDecision, NewReno, RecoveryTimer, RttEstimator,
         RttSample, SpaceTimer, TimeoutAction, TimerContext, TimerDeadline,
     },
-    roles::packet_authority::RecoveryBinding,
     tls::Level,
 };
 use core::cell::RefCell;
@@ -149,12 +149,11 @@ impl PlaintextBinding {
     fn new(bytes: &[u8]) -> Self {
         Self {
             len: bytes.len(),
-            digest: crate::roles::sealed_packet::plaintext_digest(bytes),
+            digest: crate::crypto::plaintext_digest(bytes),
         }
     }
     fn matches(&self, bytes: &[u8]) -> bool {
-        self.len == bytes.len()
-            && self.digest == crate::roles::sealed_packet::plaintext_digest(bytes)
+        self.len == bytes.len() && self.digest == crate::crypto::plaintext_digest(bytes)
     }
 }
 #[derive(Clone, Copy)]
@@ -503,15 +502,15 @@ fn ack_ranges(ranges: packet::AckRanges<'_>) -> Result<([AckRange; ACK_CAPACITY]
 }
 
 impl<'scope, const B: usize> Recovery<'scope, B> {
-    /// Consume the arena's unique recovery claim; numeric generations cannot
+    /// Consume the key installation's unique recovery claim; numeric generations cannot
     /// manufacture a second recovery owner for this installed key scope.
-    pub fn new<const P: usize, const E: usize>(
-        binding: RecoveryBinding<'scope, 'scope, P, E>,
+    pub fn new(
+        binding: RecoveryInstallation<'scope>,
         side: Side,
         initial_rtt_us: u64,
         max_datagram_size: u64,
     ) -> Result<Self, Error> {
-        let scope = binding.into_arena().scope();
+        let scope = binding.into_scope();
         let generation = scope.connection_generation();
         let mut path = PathBudget::new(0, generation);
         if side == Side::Client {
@@ -1943,12 +1942,9 @@ mod tls_fixture;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        crypto::{
-            self, CipherSuite, IntegrityBudget, PacketKey,
-            directional::{ApplicationReadKeys, AuthenticatedRead, ValidatedKeyAck},
-        },
-        roles::packet_authority::{Arena, ScopedArena, ScopedReceiveEvidence},
+    use crate::crypto::{
+        self, CipherSuite, IntegrityBudget, PacketKey,
+        directional::{ApplicationReadKeys, AuthenticatedRead, ValidatedKeyAck},
     };
     use actor_test_allocator::NoAlloc;
 
@@ -1956,14 +1952,8 @@ mod tests {
         ($book:ident, $scope:ident, $installation:ident, $arena:ident, $side:expr, $generation:expr) => {
             let mut $scope = ApplicationKeyScope::new($generation);
             let mut $installation = $scope.claim().unwrap();
-            let mut arena_storage = Arena::<8, 32>::new($generation);
-            let $arena = ScopedArena::new(
-                &mut arena_storage,
-                $installation.take_packet_authority().unwrap(),
-            )
-            .unwrap();
             let mut $book =
-                Recovery::<2048>::new($arena.claim_recovery().unwrap(), $side, 333_000, 1200)
+                Recovery::<2048>::new($installation.take_recovery().unwrap(), $side, 333_000, 1200)
                     .unwrap();
         };
     }
@@ -2435,21 +2425,18 @@ mod tests {
             ));
         }
         assert!(book.split().is_err());
-        assert!(arena.claim_recovery().is_err());
+        assert!(installation.take_recovery().is_err());
     }
 
     #[test]
-    fn failed_recovery_construction_consumes_the_one_shot_arena_claim() {
+    fn failed_recovery_construction_consumes_the_one_shot_scope_claim() {
         let mut scope = ApplicationKeyScope::new(82);
         let mut installation = scope.claim().unwrap();
-        let mut storage = Arena::<8, 32>::new(82);
-        let arena =
-            ScopedArena::new(&mut storage, installation.take_packet_authority().unwrap()).unwrap();
         assert!(matches!(
-            Recovery::<2048>::new(arena.claim_recovery().unwrap(), Side::Client, 0, 1200),
+            Recovery::<2048>::new(installation.take_recovery().unwrap(), Side::Client, 0, 1200),
             Err(Error::Recovery(kernel::RecoveryError::InvalidConfiguration))
         ));
-        assert!(arena.claim_recovery().is_err());
+        assert!(installation.take_recovery().is_err());
     }
 
     #[test]
@@ -2575,18 +2562,16 @@ mod tests {
     }
 
     #[test]
-    fn owned_initial_receipt_arena_bridge_rejects_wrong_plaintext_and_foreign_scope() {
+    fn direct_received_packet_rejects_wrong_plaintext_and_foreign_scope() {
         book!(book, scope, installation, arena, Side::Client, 78);
         let foreign = ApplicationKeyScope::new(78);
         let mut peer = key(KeyKind::Initial, 7);
         let receipt = initial_receipt(book.scope(), &mut peer, 0, &[1]);
-        assert!(matches!(
-            ScopedReceiveEvidence::from_owned_level(receipt, 0, &[0]),
-            Err(crate::roles::packet_authority::Error::InvalidFrame)
-        ));
+        let (_, mut rx, _, _, mut retirement) = book.split().unwrap();
+        assert!(rx.apply_packet(receipt, &[0], 0).is_err());
         let receipt = initial_receipt(&foreign, &mut peer, 1, &[1]);
-        let evidence = ScopedReceiveEvidence::from_owned_level(receipt, 1, &[1]).unwrap();
-        assert!(arena.admit(evidence, &[1]).is_err());
+        assert!(rx.apply_packet(receipt, &[1], 1).is_err());
+        retirement.disarm();
     }
 
     #[test]
@@ -2758,16 +2743,6 @@ mod tests {
         retirement.disarm();
     }
 
-    fn drain(
-        source: &mut crate::bounded_tls::key_source::KeySource<'_, '_, '_>,
-        target: &mut crate::bounded_tls::key_source::KeySource<'_, '_, '_>,
-    ) {
-        let mut bytes = [0; 2048];
-        while let Some(output) = source.transmit(&mut bytes).unwrap() {
-            target.receive(output.level, &bytes[..output.len]).unwrap();
-        }
-    }
-
     #[test]
     fn actual_validated_finished_and_handshake_done_gate_confirmation_and_old_space_retirement() {
         use super::tls_fixture as fixture;
@@ -2827,10 +2802,7 @@ mod tests {
         .unwrap()
         .into_key_source(server_install)
         .unwrap();
-        for _ in 0..4 {
-            drain(&mut client, &mut server);
-            drain(&mut server, &mut client);
-        }
+        crate::bounded_tls::key_source::KeySource::test_handshake(&mut client, &mut server);
         assert!(!client.is_handshaking() && !server.is_handshaking());
         let (_, mut client_handshake) = client.take_handshake_keys().unwrap().install();
         let (server_handshake, _) = server.take_handshake_keys().unwrap().install();

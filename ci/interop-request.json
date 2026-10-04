@@ -1,11 +1,11 @@
 {
-  "request": "rolled-route TLS choreography pilot",
-  "requested_at": "2026-10-04T03:18:00Z",
+  "request": "Requalify direct recovery installation after removing obsolete actors",
+  "requested_at": "2026-10-04T04:01:30Z",
   "scope": [
     "unchanged Neqo baseline",
     "handshake",
     "transfer"
   ],
   "approval": "User approved disposable GitHub CI Docker allow-direct-routing=true",
-  "local_evidence": "artifacts/rolled-route-runtime-20261004/native-neqo-release.json"
+  "local_evidence": "artifacts/rolled-route-runtime-20261004/clean-native-neqo.json"
 }

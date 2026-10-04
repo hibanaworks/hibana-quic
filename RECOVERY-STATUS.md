@@ -1,3 +1,7 @@
+# Historical recovery log
+
+This is historical evidence, not current status. See [the active implementation](docs/ACTIVE-IMPLEMENTATION.md) for current results and remaining work.
+
 # Recovery status
 
 This is source preservation after execution storage was replaced around 2026-10-03 06:18 UTC. Reconstructed source is unverified and incomplete. No current successful build or interoperability claim is made.

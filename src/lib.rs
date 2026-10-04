@@ -57,9 +57,5 @@ pub mod runtime;
 
 pub mod mailbox;
 
-pub mod roles;
 
 pub mod connection;
-
-#[cfg(test)]
-mod test_evidence;

@@ -1,0 +1,141 @@
+{
+  "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
+  "registered_quic_cases": 22,
+  "directions": 2,
+  "pilot_commit": "9e03afe89efad7a098e6ec17987d4b13b70318e3",
+  "current_cleanup_commit_qualification": "pending",
+  "cases": [
+    {
+      "case": "handshake",
+      "abbreviation": "H",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot"
+    },
+    {
+      "case": "transfer",
+      "abbreviation": "DC",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot"
+    },
+    {
+      "case": "longrtt",
+      "abbreviation": "LR",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "chacha20",
+      "abbreviation": "C20",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "multiplexing",
+      "abbreviation": "M",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "retry",
+      "abbreviation": "S",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "resumption",
+      "abbreviation": "R",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "zerortt",
+      "abbreviation": "Z",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "http3",
+      "abbreviation": "3",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "blackhole",
+      "abbreviation": "B",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "keyupdate",
+      "abbreviation": "U",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "ecn",
+      "abbreviation": "E",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "amplificationlimit",
+      "abbreviation": "A",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "handshakeloss",
+      "abbreviation": "L1",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "transferloss",
+      "abbreviation": "L2",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "handshakecorruption",
+      "abbreviation": "C1",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "transfercorruption",
+      "abbreviation": "C2",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "ipv6",
+      "abbreviation": "6",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "v2",
+      "abbreviation": "V2",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "rebind-port",
+      "abbreviation": "BP",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "rebind-addr",
+      "abbreviation": "BA",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "connectionmigration",
+      "abbreviation": "CM",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    }
+  ]
+}

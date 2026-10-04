@@ -13,7 +13,7 @@ use crate::{
         tls::Transcript,
     },
     mailbox::Mailbox,
-    roles::publication_gate::{Issuer, Stop},
+    connection::publication_gate::{Issuer, Stop},
     streams,
 };
 use core::{cell::RefCell, pin::pin};

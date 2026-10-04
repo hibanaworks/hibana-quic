@@ -10,8 +10,7 @@ use actor_test_allocator::NoAlloc;
 mod fixture;
 use fixture::{Buffers, CLIENT_PARAMS, SERVER_PARAMS, TestRandom};
 
-#[path = "../../tests/support/async_tls_fixture.rs"]
-mod async_fixture;
+use crate::bounded_tls::async_test_fixture as async_fixture;
 fn handshake(source: &mut KeySource<'_, '_, '_>, target: &mut KeySource<'_, '_, '_>) {
     async_fixture::handshake(&mut source.provider, &mut target.provider);
     assert!(!source.is_handshaking() && !target.is_handshaking());

@@ -1,0 +1,36 @@
+name: Direct choreography runtime checks
+on:
+  push:
+    branches: [development/rolled-route-runtime]
+    paths: ['src/**', 'tests/**', 'reference-tls/**', 'adapters/host/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/direct-runtime.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: direct-runtime-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --target thumbv6m-none-eabi
+      - name: Verify source and Hibana snapshot
+        run: |
+          python3 ci/audit_source.py --check
+          python3 vendor/check_hibana.py
+      - name: Core, integration and compile-fail contracts
+        run: cargo +1.95.0 test --locked
+      - name: Embedded no_std core
+        run: cargo +1.95.0 check --locked --lib --target thumbv6m-none-eabi
+      - name: Actual async TLS and independent reference peers
+        run: cargo +1.95.0 test --locked --manifest-path reference-tls/Cargo.toml --test bounded_tls --test rsa_tls --test resumption --test early_tls
+      - name: Host runtime and endpoint
+        run: cargo +1.95.0 test --locked --manifest-path adapters/host/Cargo.toml

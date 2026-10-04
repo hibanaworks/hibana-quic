@@ -15,7 +15,7 @@ mod transmit;
 pub use run::{client, server};
 
 use super::{Config, Outcome, application_stream, parameters, recovery};
-use crate::{crypto, handshake::CryptoBuffer, packet, roles::publication_gate, streams};
+use crate::{crypto, handshake::CryptoBuffer, packet, connection::publication_gate, streams};
 use core::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},
