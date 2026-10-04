@@ -1312,3 +1312,180 @@ fn strict_chacha_cookie_retry_preserves_singleton_offer_and_no_overlap_fails() {
     ));
     assert!(!server.has_keys(Level::Handshake));
 }
+
+// Fresh real-crypto coverage for the new direct transcript roles. No old
+// receive/phase dispatcher runs on the side under test. The opposite side is
+// the existing TLS peer, so this does not claim both sides or HQ are migrated.
+#[test]
+fn direct_transcript_roles_validate_full_tls_without_allocating() {
+    use core::cell::RefCell;
+    use hibana::runtime::{SessionKitStorage, ids::SessionId};
+    use hibana_quic::{
+        bounded_tls::{locals, protocol},
+        carrier::CarrierStorage,
+        runtime,
+    };
+    struct Peer<'a, 'cfg, 'buf, 'peer> {
+        local: &'a RefCell<BoundedTls<'cfg, 'buf>>,
+        remote: BoundedTls<'cfg, 'peer>,
+        pending: [u8; 8192],
+        used: usize,
+        end: usize,
+        level: Level,
+        stall: bool,
+    }
+    impl locals::MessageInput for Peer<'_, '_, '_, '_> {
+        async fn read_message(
+            &mut self,
+            level: Level,
+            out: &mut [u8],
+        ) -> Result<usize, locals::Error> {
+            if self.stall {
+                out[..4].copy_from_slice(&[1, 0, 0, 0]);
+                return core::future::pending().await;
+            }
+            if self.used == self.end {
+                let mut flight = [0; 8192];
+                for _ in 0..32 {
+                    let produced = self.local.borrow_mut().transmit(&mut flight).unwrap();
+                    let Some(produced) = produced else { break };
+                    self.remote
+                        .receive(produced.level, &flight[..produced.len])
+                        .unwrap();
+                }
+                let produced = self
+                    .remote
+                    .transmit(&mut self.pending)
+                    .unwrap()
+                    .expect("peer flight");
+                self.used = 0;
+                self.end = produced.len;
+                self.level = produced.level;
+            }
+            assert_eq!(level, self.level);
+            let b = &self.pending[self.used..self.end];
+            assert!(b.len() >= 4);
+            let n = 4 + ((b[1] as usize) << 16) + ((b[2] as usize) << 8) + b[3] as usize;
+            assert!(n <= b.len() && n <= out.len());
+            out[..n].copy_from_slice(&b[..n]);
+            self.used += n;
+            Ok(n)
+        }
+    }
+    for (client, cancel) in [(true, false), (false, false), (true, true), (false, true)] {
+        let identity = identity();
+        let anchors = [trust_anchor_from_der(&identity.root).unwrap()];
+        let chain = [identity.leaf.as_ref()];
+        let mut cb = Buffers::new();
+        let mut sb = Buffers::new();
+        let c = BoundedTls::client(
+            ClientConfig {
+                server_name: "localhost",
+                trust_anchors: &anchors,
+                now: now(),
+                certificate_limits: Limits::default(),
+                transport_parameters: CLIENT_PARAMS,
+            },
+            cb.storage(),
+            &mut OsRng,
+        )
+        .unwrap();
+        let s = BoundedTls::server(
+            ServerConfig {
+                certificate_chain: &chain,
+                signing_key: &identity.signing,
+                transport_parameters: SERVER_PARAMS,
+            },
+            sb.storage(),
+            &mut OsRng,
+        )
+        .unwrap();
+        let (local, remote) = if client { (c, s) } else { (s, c) };
+        let source = RefCell::new(local);
+        let mut peer = Peer {
+            local: &source,
+            remote,
+            pending: [0; 8192],
+            used: 0,
+            end: 0,
+            level: Level::Initial,
+            stall: cancel,
+        };
+        let mut message = [0; 8192];
+        let slot = locals::MessageSlot::new(&mut message);
+        let carrier = CarrierStorage::<1, 16, 48>::new();
+        let mut slab = vec![0; 65536];
+        let mut storage = SessionKitStorage::uninit();
+        let kit = storage.init();
+        let sid = SessionId::new(if client { 4500 } else { 4501 });
+        let rv = kit
+            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+            .unwrap();
+        let programs = if client {
+            protocol::client_programs()
+        } else {
+            protocol::server_programs()
+        };
+        let mut input = rv.enter(sid, &programs.input).unwrap();
+        let mut verify = rv.enter(sid, &programs.verify).unwrap();
+        let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
+        if cancel {
+            use core::{
+                future::Future,
+                pin::pin,
+                task::{Context, Waker},
+            };
+            measured(|| {
+                let mut future = pin!(async {
+                    if client {
+                        runtime::join2(
+                            locals::client_owner(&mut verify, &source, &slot),
+                            locals::client_input(&mut input, &slot, &mut peer),
+                        )
+                        .await
+                    } else {
+                        runtime::join2(
+                            locals::server_owner(&mut verify, &source, &slot),
+                            locals::server_input(&mut input, &slot, &mut peer),
+                        )
+                        .await
+                    }
+                });
+                let mut cx = Context::from_waker(Waker::noop());
+                for _ in 0..8 {
+                    assert!(future.as_mut().poll(&mut cx).is_pending());
+                }
+            });
+            assert_eq!(source.borrow().state(), State::Failed);
+            drop(slot);
+            assert!(message.iter().all(|b| *b == 0));
+            continue;
+        }
+        measured(|| {
+            reactor
+                .block_on(async {
+                    if client {
+                        runtime::join2(
+                            locals::client_owner(&mut verify, &source, &slot),
+                            locals::client_input(&mut input, &slot, &mut peer),
+                        )
+                        .await
+                    } else {
+                        runtime::join2(
+                            locals::server_owner(&mut verify, &source, &slot),
+                            locals::server_input(&mut input, &slot, &mut peer),
+                        )
+                        .await
+                    }
+                })
+                .unwrap()
+                .unwrap()
+        });
+        assert_eq!(source.borrow().state(), State::Connected);
+        // Deliver the generated client Finished to the reference side.
+        if client {
+            drain(&mut *source.borrow_mut(), &mut peer.remote, 4096).unwrap();
+        }
+        assert_eq!(peer.remote.state(), State::Connected);
+    }
+}

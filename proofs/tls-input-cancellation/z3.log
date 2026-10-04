@@ -1,0 +1,6 @@
+old_partial_input_retained: sat [committed = False, loan = True, slot = False, dirty = True]
+erasure: unsat; transition preconditions sat
+unpublished: unsat; transition preconditions sat
+ownership_restored: unsat; transition preconditions sat
+exclusive_owner: unsat; transition preconditions sat
+take_preserves_partition: unsat; transition preconditions sat

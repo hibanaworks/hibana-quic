@@ -32,6 +32,8 @@ use zeroize::Zeroize;
 
 pub mod key_source;
 mod operations;
+pub mod protocol;
+pub mod locals;
 
 pub use crate::tls_wire::CipherPolicy;
 pub use p256::ecdsa::SigningKey;

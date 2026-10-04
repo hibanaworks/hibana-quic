@@ -1,0 +1,137 @@
+//! Message-order choreography for the TLS transcript owner.
+//!
+//! INPUT supplies one reassembled TLS message at the requested encryption level.
+//! VERIFY owns parsing, transcript hashing and cryptographic checks. A message
+//! slot is reusable only after Applied. A retry can occur at most once; resumed
+//! handshakes omit Certificate/CertificateVerify only after authenticated PSK
+//! selection. These programs are an integration step, not yet the host path.
+use hibana::{
+    g,
+    runtime::program::{RoleProgram, project},
+};
+
+pub const INPUT: u8 = 40;
+pub const VERIFY: u8 = 41;
+pub type NeedHello = g::Msg<180, u64>;
+pub type Hello = g::Msg<181, u64>;
+pub type Applied = g::Msg<182, u64>;
+pub type Retry = g::Msg<183, u64>;
+pub type HelloReady = g::Msg<184, u64>;
+pub type NeedRetryHello = g::Msg<185, u64>;
+pub type RetryHello = g::Msg<186, u64>;
+pub type NeedExtensions = g::Msg<187, u64>;
+pub type Extensions = g::Msg<188, u64>;
+pub type Resumed = g::Msg<189, u64>;
+pub type Full = g::Msg<190, u64>;
+pub type NeedCertificate = g::Msg<191, u64>;
+pub type Certificate = g::Msg<192, u64>;
+pub type NeedCertificateVerify = g::Msg<193, u64>;
+pub type CertificateVerify = g::Msg<194, u64>;
+pub type NeedFinished = g::Msg<195, u64>;
+pub type Finished = g::Msg<196, u64>;
+pub type Complete = g::Msg<197, u64>;
+
+pub type Receive<N, D> = g::Seq<
+    g::Send<VERIFY, INPUT, N>,
+    g::Seq<g::Send<INPUT, VERIFY, D>, g::Send<VERIFY, INPUT, Applied>>,
+>;
+pub type HelloFlow = g::Seq<
+    Receive<NeedHello, Hello>,
+    g::Route<
+        g::Seq<g::Send<VERIFY, INPUT, Retry>, Receive<NeedRetryHello, RetryHello>>,
+        g::Send<VERIFY, INPUT, HelloReady>,
+    >,
+>;
+pub type CertificateFlow = g::Seq<
+    Receive<NeedCertificate, Certificate>,
+    Receive<NeedCertificateVerify, CertificateVerify>,
+>;
+pub type ClientFlow = g::Seq<
+    HelloFlow,
+    g::Seq<
+        Receive<NeedExtensions, Extensions>,
+        g::Seq<
+            g::Route<
+                g::Send<VERIFY, INPUT, Resumed>,
+                g::Seq<g::Send<VERIFY, INPUT, Full>, CertificateFlow>,
+            >,
+            g::Seq<Receive<NeedFinished, Finished>, g::Send<VERIFY, INPUT, Complete>>,
+        >,
+    >,
+>;
+pub type ServerFlow =
+    g::Seq<HelloFlow, g::Seq<Receive<NeedFinished, Finished>, g::Send<VERIFY, INPUT, Complete>>>;
+
+fn receive<N: g::Message<Payload = u64>, D: g::Message<Payload = u64>>() -> g::Program<Receive<N, D>>
+{
+    g::seq(
+        g::send::<VERIFY, INPUT, N>(),
+        g::seq(
+            g::send::<INPUT, VERIFY, D>(),
+            g::send::<VERIFY, INPUT, Applied>(),
+        ),
+    )
+}
+fn hello() -> g::Program<HelloFlow> {
+    g::seq(
+        receive::<NeedHello, Hello>(),
+        g::route(
+            g::seq(
+                g::send::<VERIFY, INPUT, Retry>(),
+                receive::<NeedRetryHello, RetryHello>(),
+            ),
+            g::send::<VERIFY, INPUT, HelloReady>(),
+        ),
+    )
+}
+pub fn client() -> g::Program<ClientFlow> {
+    g::seq(
+        hello(),
+        g::seq(
+            receive::<NeedExtensions, Extensions>(),
+            g::seq(
+                g::route(
+                    g::send::<VERIFY, INPUT, Resumed>(),
+                    g::seq(
+                        g::send::<VERIFY, INPUT, Full>(),
+                        g::seq(
+                            receive::<NeedCertificate, Certificate>(),
+                            receive::<NeedCertificateVerify, CertificateVerify>(),
+                        ),
+                    ),
+                ),
+                g::seq(
+                    receive::<NeedFinished, Finished>(),
+                    g::send::<VERIFY, INPUT, Complete>(),
+                ),
+            ),
+        ),
+    )
+}
+pub fn server() -> g::Program<ServerFlow> {
+    g::seq(
+        hello(),
+        g::seq(
+            receive::<NeedFinished, Finished>(),
+            g::send::<VERIFY, INPUT, Complete>(),
+        ),
+    )
+}
+pub struct Programs {
+    pub input: RoleProgram<INPUT>,
+    pub verify: RoleProgram<VERIFY>,
+}
+pub fn client_programs() -> Programs {
+    let global = client();
+    Programs {
+        input: project(&global),
+        verify: project(&global),
+    }
+}
+pub fn server_programs() -> Programs {
+    let global = server();
+    Programs {
+        input: project(&global),
+        verify: project(&global),
+    }
+}
