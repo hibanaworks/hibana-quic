@@ -1,6 +1,6 @@
 //! Caller-owned connection-ID and stateless-reset ledgers for nonzero QUIC CIDs.
 //!
-//! This is a state kernel, not an authenticated packet processor or a migration
+//! This is a numeric identity/history kernel, not an authenticated packet processor or a migration
 //! implementation. Call methods named `authenticated` only after authenticating
 //! the containing packet and validating its encryption level; call methods named
 //! `verified` only after authenticating and validating the transport parameters.
@@ -500,20 +500,47 @@ struct RemoteUse {
     sent: bool,
 }
 
-#[derive(Clone, Copy)]
 struct PeerEntry<const ADDRESSES: usize> {
     sequence: u64,
     cid: Cid,
     token: Option<ResetToken>,
     retired: bool,
-    retirement_acked: bool,
+    retirement: Option<Retirement>,
     local: Option<SocketAddr>,
     remotes: [Option<RemoteUse>; ADDRESSES],
 }
 
+/// Unique RETIRE_CONNECTION_ID frame ownership. Numerical handles are not a
+/// replacement for this value, and it is deliberately neither Copy nor Clone.
+/// ```compile_fail
+/// use hibana_quic::connection_id::Retirement;
+/// fn duplicate(value: Retirement) { let first = value; let second = value; }
+/// ```
+#[derive(Debug)]
+pub struct Retirement {
+    handle: PeerCidHandle,
+    sequence: u64,
+    cid: Cid,
+}
+impl Retirement {
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+    pub fn connection_generation(&self) -> u64 {
+        self.handle.connection_generation()
+    }
+    pub fn frame(&self, packet_dcid: Cid) -> Result<crate::packet::Frame<'_>, CidError> {
+        if self.cid == packet_dcid {
+            return Err(CidError::CurrentDestinationCid);
+        }
+        Ok(crate::packet::Frame::RetireConnectionId {
+            sequence: self.sequence,
+        })
+    }
+}
+
 /// Caller-owned peer history. `ADDRESSES` bounds remote rebinding history per
 /// CID, including both authorized and actually used remote addresses.
-#[derive(Clone, Copy)]
 pub struct PeerCidSlot<const ADDRESSES: usize> {
     generation: u64,
     entry: Option<PeerEntry<ADDRESSES>>,
@@ -579,7 +606,7 @@ impl<'a, const ADDRESSES: usize> PeerCidTable<'a, ADDRESSES> {
             cid: initial_cid,
             token: None,
             retired: false,
-            retirement_acked: false,
+            retirement: None,
             local: None,
             remotes: [None; ADDRESSES],
         });
@@ -589,33 +616,6 @@ impl<'a, const ADDRESSES: usize> PeerCidTable<'a, ADDRESSES> {
             slots,
             active_limit,
             retire_prior_to: 0,
-        })
-    }
-
-    /// Private admission simulation in separate caller storage. Handles from
-    /// this copy must never authorize a real send or reset-token decision.
-    /// Replays retained early controls under the remembered (possibly smaller)
-    /// active CID limit without mutating the live table.
-    pub(crate) fn admission_copy<'b>(
-        &self,
-        slots: &'b mut [PeerCidSlot<ADDRESSES>],
-        active_limit: u64,
-    ) -> Result<PeerCidTable<'b, ADDRESSES>, CidError> {
-        validate_limit(active_limit)?;
-        if slots.len() != self.slots.len() {
-            return Err(CidError::InvalidCapacity);
-        }
-        let limit = self.active_limit.min(active_limit);
-        if self.active().count() as u64 > limit {
-            return Err(CidError::ActiveLimit);
-        }
-        slots.copy_from_slice(self.slots);
-        Ok(PeerCidTable {
-            table: self.table,
-            connection_generation: self.connection_generation,
-            slots,
-            active_limit: limit,
-            retire_prior_to: self.retire_prior_to,
         })
     }
 
@@ -721,9 +721,22 @@ impl<'a, const ADDRESSES: usize> PeerCidTable<'a, ADDRESSES> {
         };
 
         // There are no fallible operations below this line.
-        for entry in self.slots.iter_mut().filter_map(|slot| slot.entry.as_mut()) {
-            if entry.sequence < floor {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let Some(entry) = slot.entry.as_mut() else {
+                continue;
+            };
+            if entry.sequence < floor && !entry.retired {
                 entry.retired = true;
+                entry.retirement = Some(Retirement {
+                    handle: PeerCidHandle(Handle {
+                        table: self.table,
+                        connection_generation: self.connection_generation,
+                        slot: index,
+                        generation: slot.generation,
+                    }),
+                    sequence: entry.sequence,
+                    cid: entry.cid,
+                });
             }
         }
         self.retire_prior_to = floor;
@@ -736,7 +749,11 @@ impl<'a, const ADDRESSES: usize> PeerCidTable<'a, ADDRESSES> {
                 cid,
                 token: Some(token),
                 retired: sequence < floor,
-                retirement_acked: false,
+                retirement: (sequence < floor).then(|| Retirement {
+                    handle: self.handle(index),
+                    sequence,
+                    cid,
+                }),
                 local: None,
                 remotes: [None; ADDRESSES],
             });
@@ -896,34 +913,45 @@ impl<'a, const ADDRESSES: usize> PeerCidTable<'a, ADDRESSES> {
         Ok(())
     }
 
-    /// Immediately stop use and queue a reliable RETIRE frame. All copies of
-    /// the handle cease to authorize sends or reset detection. Idempotent.
+    /// Numerical retirement stops routing immediately. The unique frame resource
+    /// enters the projected retirement continuation; no ACK boolean lives here.
     pub fn retire(&mut self, handle: PeerCidHandle) -> Result<bool, CidError> {
-        let changed = !self.entry(handle)?.retired;
-        self.slots[handle.0.slot]
+        let entry = self.entry(handle)?;
+        if entry.retired {
+            return Ok(false);
+        }
+        let resource = Retirement {
+            handle,
+            sequence: entry.sequence,
+            cid: entry.cid,
+        };
+        let entry = self.slots[handle.0.slot]
             .entry
             .as_mut()
-            .ok_or(CidError::StaleHandle)?
-            .retired = true;
-        Ok(changed)
+            .ok_or(CidError::StaleHandle)?;
+        entry.retired = true;
+        entry.retirement = Some(resource);
+        Ok(true)
     }
 
-    /// Includes retirements awaiting acknowledgment, whether or not sent yet.
-    /// Retransmit using the caller's recovery layer until the frame is ACKed.
-    pub fn pending_retirements(&self) -> impl Iterator<Item = PeerCidHandle> + '_ {
+    /// Frames still owned by the table, not an acknowledgment status query.
+    pub fn queued_retirements(&self) -> impl Iterator<Item = PeerCidHandle> + '_ {
         self.slots.iter().enumerate().filter_map(|(index, slot)| {
-            let entry = slot.entry.as_ref()?;
-            (entry.retired && !entry.retirement_acked).then(|| self.handle(index))
+            slot.entry
+                .as_ref()?
+                .retirement
+                .as_ref()
+                .map(|_| self.handle(index))
         })
     }
 
-    /// Obtain a pending retirement's sequence for a packet with this actual
-    /// destination CID. RETIRE must never retire its own packet's DCID.
-    pub fn retirement_sequence(
-        &self,
+    /// Transfer the frame exactly once. Its new owner retains it across loss
+    /// until actual recovery settles it; dropping it cannot reopen this CID.
+    pub fn take_retirement(
+        &mut self,
         handle: PeerCidHandle,
         packet_dcid: Cid,
-    ) -> Result<u64, CidError> {
+    ) -> Result<Option<Retirement>, CidError> {
         let entry = self.entry(handle)?;
         if !entry.retired {
             return Err(CidError::NotRetired);
@@ -931,23 +959,12 @@ impl<'a, const ADDRESSES: usize> PeerCidTable<'a, ADDRESSES> {
         if entry.cid == packet_dcid {
             return Err(CidError::CurrentDestinationCid);
         }
-        Ok(entry.sequence)
-    }
-
-    /// Called only when an authenticated ACK acknowledges a packet that really
-    /// carried this RETIRE frame. Retains the tombstone and uniqueness history.
-    pub fn acknowledge_retirement(&mut self, handle: PeerCidHandle) -> Result<bool, CidError> {
-        let entry = self.entry(handle)?;
-        if !entry.retired {
-            return Err(CidError::NotRetired);
-        }
-        let changed = !entry.retirement_acked;
-        self.slots[handle.0.slot]
+        Ok(self.slots[handle.0.slot]
             .entry
             .as_mut()
             .ok_or(CidError::StaleHandle)?
-            .retirement_acked = true;
-        Ok(changed)
+            .retirement
+            .take())
     }
 
     /// Check the *whole original UDP datagram*, including when the first packet
@@ -1049,42 +1066,6 @@ mod tests {
             table.check_retirement(1, cid(1).as_bytes()),
             Err(CidError::CurrentDestinationCid)
         );
-    }
-
-    #[test]
-    fn early_admission_copy_enforces_remembered_cumulative_credit_without_effects() {
-        let mut slots = [PeerCidSlot::<2>::EMPTY; 8];
-        let mut table = PeerCidTable::new(1, 7, &mut slots, 4, cid(0)).unwrap();
-        let mut scratch = [PeerCidSlot::<2>::EMPTY; 8];
-        {
-            let mut admission = table.admission_copy(&mut scratch, 2).unwrap();
-            admission
-                .accept_new_authenticated(1, 0, cid(1), token(1))
-                .unwrap();
-            assert_eq!(
-                admission.accept_new_authenticated(2, 0, cid(2), token(2)),
-                Err(CidError::ActiveLimit)
-            );
-            admission
-                .accept_new_authenticated(2, 1, cid(2), token(2))
-                .unwrap();
-            assert_eq!(admission.active().count(), 2);
-            assert_eq!(
-                admission.accept_new_authenticated(1, 1, cid(3), token(1)),
-                Err(CidError::ConflictingSequence)
-            );
-        }
-        assert_eq!(table.active().count(), 1);
-        table
-            .accept_new_authenticated(1, 0, cid(1), token(1))
-            .unwrap();
-        table
-            .accept_new_authenticated(2, 0, cid(2), token(2))
-            .unwrap();
-        assert!(matches!(
-            table.admission_copy(&mut scratch, 2),
-            Err(CidError::ActiveLimit)
-        ));
     }
 
     #[test]
@@ -1270,7 +1251,7 @@ mod tests {
         other.issue_initial(cid(0), None).unwrap();
         assert_eq!(other.get(old_local), Err(CidError::StaleHandle));
 
-        let mut peer_slots = [PeerCidSlot::<2>::EMPTY; 2];
+        let mut peer_slots = [const { PeerCidSlot::<2>::EMPTY }; 2];
         let old_peer = PeerCidTable::new(1, 9, &mut peer_slots, 2, cid(0))
             .unwrap()
             .initial()
@@ -1280,17 +1261,17 @@ mod tests {
         assert_eq!(peer.get(old_peer), Err(CidError::StaleHandle));
         assert_eq!(peer.retire(old_peer), Err(CidError::StaleHandle));
         assert_eq!(
-            peer.acknowledge_retirement(old_peer),
+            peer.take_retirement(old_peer, cid(1)).map(|_| ()),
             Err(CidError::StaleHandle)
         );
         assert_eq!(
             peer.record_sent(old_peer, addr(1, 1), addr(2, 2)),
             Err(CidError::StaleHandle)
         );
-        let mut other_slots = [PeerCidSlot::<2>::EMPTY; 2];
+        let mut other_slots = [const { PeerCidSlot::<2>::EMPTY }; 2];
         let other = PeerCidTable::new(2, 9, &mut other_slots, 2, cid(0)).unwrap();
         assert_eq!(other.get(old_peer), Err(CidError::StaleHandle));
-        let mut generation_slots = [PeerCidSlot::<2>::EMPTY; 2];
+        let mut generation_slots = [const { PeerCidSlot::<2>::EMPTY }; 2];
         let other = PeerCidTable::new(1, 10, &mut generation_slots, 2, cid(0)).unwrap();
         assert_eq!(other.get(old_peer), Err(CidError::StaleHandle));
     }
@@ -1309,7 +1290,7 @@ mod tests {
             LocalCidTable::new(1, 1, &mut local_slots, 1),
             Err(CidError::InvalidActiveLimit)
         ));
-        let mut peer_slots = [PeerCidSlot::<2>::EMPTY; 2];
+        let mut peer_slots = [const { PeerCidSlot::<2>::EMPTY }; 2];
         peer_slots[0].generation = 12;
         peer_slots[1].generation = u64::MAX;
         assert!(matches!(
@@ -1317,7 +1298,7 @@ mod tests {
             Err(CidError::GenerationExhausted)
         ));
         assert_eq!(peer_slots[0].generation, 12);
-        let mut empty_addresses = [PeerCidSlot::<0>::EMPTY; 2];
+        let mut empty_addresses = [const { PeerCidSlot::<0>::EMPTY }; 2];
         assert!(matches!(
             PeerCidTable::new(1, 1, &mut empty_addresses, 2, cid(0)),
             Err(CidError::InvalidCapacity)
@@ -1326,7 +1307,7 @@ mod tests {
 
     #[test]
     fn peer_reordered_new_frames_floor_and_duplicate_invariants() {
-        let mut slots = [PeerCidSlot::<2>::EMPTY; 8];
+        let mut slots = [const { PeerCidSlot::<2>::EMPTY }; 8];
         let mut table = PeerCidTable::new(1, 0, &mut slots, 3, cid(0)).unwrap();
         let zero = table.initial().unwrap().handle;
         let three = table
@@ -1375,12 +1356,12 @@ mod tests {
         assert!(raised.duplicate);
         assert_eq!(table.get(two.handle), Err(CidError::Retired));
         assert_eq!(table.active().count(), 1);
-        assert_eq!(table.pending_retirements().count(), 3);
+        assert_eq!(table.queued_retirements().count(), 3);
     }
 
     #[test]
     fn peer_limit_is_checked_after_retirement_and_failures_are_atomic() {
-        let mut slots = [PeerCidSlot::<1>::EMPTY; 4];
+        let mut slots = [const { PeerCidSlot::<1>::EMPTY }; 4];
         let mut table = PeerCidTable::new(1, 0, &mut slots, 2, cid(0)).unwrap();
         table
             .accept_new_authenticated(1, 0, cid(1), token(1))
@@ -1395,7 +1376,7 @@ mod tests {
             .accept_new_authenticated(2, 1, cid(2), token(2))
             .unwrap();
         assert_eq!(table.active().count(), 2);
-        assert_eq!(table.pending_retirements().count(), 1);
+        assert_eq!(table.queued_retirements().count(), 1);
         table
             .accept_new_authenticated(3, 3, cid(3), token(3))
             .unwrap();
@@ -1419,8 +1400,8 @@ mod tests {
     }
 
     #[test]
-    fn arbitrary_retirement_gaps_and_acked_duplicates_never_reopen() {
-        let mut slots = [PeerCidSlot::<1>::EMPTY; 5];
+    fn transferred_retirement_and_duplicate_frames_never_reopen() {
+        let mut slots = [const { PeerCidSlot::<1>::EMPTY }; 5];
         let mut table = PeerCidTable::new(1, 0, &mut slots, 5, cid(0)).unwrap();
         let zero = table.initial().unwrap().handle;
         let two = table
@@ -1431,29 +1412,37 @@ mod tests {
             .accept_new_authenticated(4, 0, cid(4), token(4))
             .unwrap()
             .handle;
-        assert_eq!(table.acknowledge_retirement(two), Err(CidError::NotRetired));
         assert_eq!(
-            table.retirement_sequence(two, cid(4)),
+            table.take_retirement(two, cid(4)).map(|_| ()),
             Err(CidError::NotRetired)
         );
         assert_eq!(table.retire(two), Ok(true));
         assert_eq!(table.retire(two), Ok(false));
         assert_eq!(
-            table.retirement_sequence(two, cid(2)),
+            table.take_retirement(two, cid(2)).map(|_| ()),
             Err(CidError::CurrentDestinationCid)
         );
-        assert_eq!(table.retirement_sequence(two, cid(4)), Ok(2));
-        assert_eq!(table.pending_retirements().count(), 1);
-        assert_eq!(table.acknowledge_retirement(two), Ok(true));
-        assert_eq!(table.acknowledge_retirement(two), Ok(false));
-        assert_eq!(table.pending_retirements().count(), 0);
+        assert_eq!(table.queued_retirements().count(), 1);
+        let retirement = table.take_retirement(two, cid(4)).unwrap().unwrap();
+        assert_eq!(retirement.sequence(), 2);
+        assert!(matches!(
+            retirement.frame(cid(4)),
+            Ok(crate::packet::Frame::RetireConnectionId { sequence: 2 })
+        ));
+        assert!(matches!(
+            retirement.frame(cid(2)),
+            Err(CidError::CurrentDestinationCid)
+        ));
+        assert!(table.take_retirement(two, cid(4)).unwrap().is_none());
+        drop(retirement);
+        assert_eq!(table.queued_retirements().count(), 0);
         assert!(
             table
                 .accept_new_authenticated(2, 0, cid(2), token(2))
                 .unwrap()
                 .retired
         );
-        assert_eq!(table.pending_retirements().count(), 0);
+        assert_eq!(table.queued_retirements().count(), 0);
         let one = table
             .accept_new_authenticated(1, 0, cid(1), token(1))
             .unwrap();
@@ -1469,7 +1458,7 @@ mod tests {
 
     #[test]
     fn reset_requires_authenticated_token_used_cid_and_exact_remote() {
-        let mut slots = [PeerCidSlot::<2>::EMPTY; 3];
+        let mut slots = [const { PeerCidSlot::<2>::EMPTY }; 3];
         let mut table = PeerCidTable::new(1, 0, &mut slots, 3, cid(0)).unwrap();
         let local = addr(1, 4000);
         let remote = addr(2, 443);
@@ -1522,7 +1511,7 @@ mod tests {
 
     #[test]
     fn authenticated_rebinding_requires_same_local_and_an_actual_send() {
-        let mut slots = [PeerCidSlot::<2>::EMPTY; 3];
+        let mut slots = [const { PeerCidSlot::<2>::EMPTY }; 3];
         let mut table = PeerCidTable::new(1, 0, &mut slots, 3, cid(0)).unwrap();
         let initial = table.initial().unwrap().handle;
         table.install_initial_token_verified(token(0)).unwrap();
@@ -1581,7 +1570,7 @@ mod tests {
 
     #[test]
     fn verified_transport_tokens_conflict_and_duplicate_rules() {
-        let mut slots = [PeerCidSlot::<1>::EMPTY; 4];
+        let mut slots = [const { PeerCidSlot::<1>::EMPTY }; 4];
         let mut table = PeerCidTable::new(1, 0, &mut slots, 3, cid(0)).unwrap();
         let one = table.accept_preferred_verified(cid(1), token(1)).unwrap();
         assert_eq!(table.get(one.handle).unwrap().sequence, 1);
@@ -1624,7 +1613,7 @@ mod tests {
 
     #[test]
     fn authenticated_new_can_supply_initial_token_but_never_reopen_initial() {
-        let mut slots = [PeerCidSlot::<1>::EMPTY; 2];
+        let mut slots = [const { PeerCidSlot::<1>::EMPTY }; 2];
         let mut table = PeerCidTable::new(1, 0, &mut slots, 2, cid(0)).unwrap();
         let initial = table.initial().unwrap().handle;
         let local = addr(1, 4000);

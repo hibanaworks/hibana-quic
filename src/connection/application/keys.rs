@@ -12,7 +12,8 @@ use crate::{
     crypto::{
         self, PacketKey,
         directional::{
-            ApplicationKeyScope, ApplicationWriteKeys, PeerUpdateAuthenticated,
+            ApplicationKeyScope, ApplicationReadKeys, ApplicationWriteKeys, LocalUpdateReady,
+            LocalUpdateRejected, LocalWriteEpochInstalled, PeerUpdateAuthenticated,
             ScopedHandshakeConfirmation, ValidatedKeyAck, WriteEpochInstalled,
         },
     },
@@ -50,7 +51,6 @@ struct Owned<'scope> {
     initial: Option<PacketKey>,
     handshake: Option<TransmitPacketKey<'scope>>,
     application: Option<ApplicationWriteKeys<'scope>>,
-    retired: bool,
 }
 
 /// TX sealing and key-control may share this owner. Each operation is entirely
@@ -77,7 +77,6 @@ impl<'scope> KeyOwner<'scope> {
                 initial: continuation.initial,
                 handshake: Some(continuation.handshake),
                 application: Some(continuation.application),
-                retired: false,
             }),
         })
     }
@@ -101,7 +100,7 @@ impl<'scope> KeyOwner<'scope> {
         Ok([
             owned.initial.is_some(),
             owned.handshake.is_some(),
-            owned.application.is_some() && !owned.retired,
+            owned.application.is_some(),
         ])
     }
 
@@ -117,7 +116,7 @@ impl<'scope> KeyOwner<'scope> {
         let Ok(mut owned) = self.owned.try_borrow_mut() else {
             return Err((connection::Error::Binding, reservation));
         };
-        if owned.retired || !core::ptr::eq(self.scope, reservation.scope()) {
+        if !core::ptr::eq(self.scope, reservation.scope()) {
             return Err((connection::Error::Binding, reservation));
         }
         match level {
@@ -142,9 +141,6 @@ impl<'scope> KeyOwner<'scope> {
         let Ok(mut owned) = self.owned.try_borrow_mut() else {
             return Err((connection::Error::Binding, reservation));
         };
-        if owned.retired {
-            return Err((connection::Error::Binding, reservation));
-        }
         let Some(keys) = owned.application.as_mut() else {
             return Err((connection::Error::Binding, reservation));
         };
@@ -156,19 +152,39 @@ impl<'scope> KeyOwner<'scope> {
         request: PeerUpdate<'scope>,
     ) -> Result<WriteEpochInstalled<'scope>, Error> {
         let mut owned = self.owned.try_borrow_mut().map_err(|_| Error::Binding)?;
-        if owned.retired {
-            return Err(Error::Retired);
-        }
         let keys = owned.application.as_mut().ok_or(Error::Retired)?;
         keys.maintain(request.now, request.pto)?;
         Ok(keys.install_peer_update(request.authenticated)?)
     }
 
+    fn local_update(
+        &self,
+        request: LocalUpdateRequest<'scope>,
+    ) -> Result<LocalWriteEpochInstalled<'scope>, LocalUpdateRejected<'scope>> {
+        let LocalUpdateRequest { ready, now, pto } = request;
+        let mut owned = match self.owned.try_borrow_mut() {
+            Ok(owned) => owned,
+            Err(_) => {
+                return Err(LocalUpdateRejected {
+                    error: crypto::Error::KeyUpdateNotAllowed,
+                    ready,
+                });
+            }
+        };
+        let Some(keys) = owned.application.as_mut() else {
+            return Err(LocalUpdateRejected {
+                error: crypto::Error::KeyDiscarded,
+                ready,
+            });
+        };
+        if let Err(error) = keys.maintain(now, pto) {
+            return Err(LocalUpdateRejected { error, ready });
+        }
+        keys.initiate(ready, now, pto)
+    }
+
     fn acknowledge(&self, request: KeyAck<'scope>) -> Result<(), Error> {
         let mut owned = self.owned.try_borrow_mut().map_err(|_| Error::Binding)?;
-        if owned.retired {
-            return Err(Error::Retired);
-        }
         owned
             .application
             .as_mut()
@@ -179,9 +195,6 @@ impl<'scope> KeyOwner<'scope> {
 
     fn confirm(&self, confirmation: ScopedHandshakeConfirmation<'scope>) -> Result<(), Error> {
         let mut owned = self.owned.try_borrow_mut().map_err(|_| Error::Binding)?;
-        if owned.retired {
-            return Err(Error::Retired);
-        }
         owned
             .application
             .as_mut()
@@ -196,13 +209,15 @@ impl<'scope> KeyOwner<'scope> {
 
     fn retire(&self) -> Result<KeysQuiesced<'_, 'scope>, Error> {
         let mut owned = self.owned.try_borrow_mut().map_err(|_| Error::Binding)?;
-        if owned.retired || owned.application.is_none() {
-            return Err(Error::Retired);
-        }
-        owned.retired = true;
+        // The projected retirement edge transfers the actual final write key.
+        // No parallel boolean keeps a second authority to ordinary sealing.
+        let application = owned.application.take().ok_or(Error::Retired)?;
+        owned.initial = None;
+        owned.handshake = None;
         Ok(KeysQuiesced {
             owner: self,
             scope: self.scope,
+            application,
         })
     }
 
@@ -216,11 +231,7 @@ impl<'scope> KeyOwner<'scope> {
         if !core::ptr::eq(self, quiesced.owner) || !core::ptr::eq(self.scope, quiesced.scope) {
             return Err(Error::Binding);
         }
-        let mut owned = self.owned.try_borrow_mut().map_err(|_| Error::Binding)?;
-        if !owned.retired {
-            return Err(Error::Binding);
-        }
-        owned.application.take().ok_or(Error::Retired)
+        Ok(quiesced.application)
     }
 }
 
@@ -228,10 +239,16 @@ impl<'scope> KeyOwner<'scope> {
 pub(crate) struct KeysQuiesced<'owner, 'scope> {
     owner: &'owner KeyOwner<'scope>,
     scope: &'scope ApplicationKeyScope,
+    application: ApplicationWriteKeys<'scope>,
 }
 
 struct PeerUpdate<'scope> {
     authenticated: PeerUpdateAuthenticated<'scope>,
+    now: u64,
+    pto: u64,
+}
+struct LocalUpdateRequest<'scope> {
+    ready: LocalUpdateReady<'scope>,
     now: u64,
     pto: u64,
 }
@@ -247,6 +264,8 @@ pub(crate) struct Exchange<'owner, 'scope> {
     owner: &'owner KeyOwner<'scope>,
     peer_update: Inbox<PeerUpdate<'scope>>,
     write_installed: Inbox<Result<WriteEpochInstalled<'scope>, Error>>,
+    local_update: Inbox<LocalUpdateRequest<'scope>>,
+    local_result: Inbox<Result<LocalWriteEpochInstalled<'scope>, LocalUpdateRejected<'scope>>>,
     key_ack: Inbox<KeyAck<'scope>>,
     key_ack_applied: Inbox<Result<(), Error>>,
     confirmation: Inbox<ScopedHandshakeConfirmation<'scope>>,
@@ -260,6 +279,8 @@ impl<'owner, 'scope> Exchange<'owner, 'scope> {
             owner,
             peer_update: Inbox::new(),
             write_installed: Inbox::new(),
+            local_update: Inbox::new(),
+            local_result: Inbox::new(),
             key_ack: Inbox::new(),
             key_ack_applied: Inbox::new(),
             confirmation: Inbox::new(),
@@ -275,7 +296,6 @@ impl<'owner, 'scope> Exchange<'owner, 'scope> {
 pub(crate) struct RxControl<'lane, 'owner, 'scope> {
     exchange: &'lane Exchange<'owner, 'scope>,
     sequence: u64,
-    retired: bool,
 }
 
 impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
@@ -283,15 +303,6 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
         Self {
             exchange,
             sequence: 0,
-            retired: false,
-        }
-    }
-
-    fn active(&self) -> Result<u64, Error> {
-        if self.retired {
-            Err(Error::Retired)
-        } else {
-            Ok(self.sequence)
         }
     }
 
@@ -307,7 +318,7 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
         now: u64,
         pto: u64,
     ) -> Result<WriteEpochInstalled<'scope>, Error> {
-        let sequence = self.active()?;
+        let sequence = self.sequence;
         self.exchange.peer_update.put(PeerUpdate {
             authenticated,
             now,
@@ -332,6 +343,52 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
         result
     }
 
+    /// The parked object owns the actual receive key until the projected
+    /// write-owner response returns it. No local-update phase flag is stored.
+    pub(crate) async fn local_update(
+        &mut self,
+        endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
+        read: &mut ApplicationReadKeys<'scope>,
+        now: u64,
+        pto: u64,
+    ) -> Result<(), Error> {
+        let sequence = self.sequence;
+        read.maintain(now, pto)?;
+        let ready = read.prepare_local_update()?;
+        self.exchange
+            .local_update
+            .put(LocalUpdateRequest { ready, now, pto })?;
+        endpoint.send::<p::LocalUpdate>(&sequence).await?;
+        let offered = endpoint.offer().await?;
+        let accepted = match offered.label() {
+            206 => {
+                check(offered.recv::<p::LocalInstalled>().await?, sequence)?;
+                true
+            }
+            207 => {
+                check(offered.recv::<p::LocalRejected>().await?, sequence)?;
+                false
+            }
+            label => return Err(Error::UnexpectedLabel(label)),
+        };
+        let result = self.exchange.local_result.take()?;
+        if result.is_ok() != accepted {
+            return Err(Error::Binding);
+        }
+        let result = match result {
+            Ok(installed) => read
+                .accept_local_write_epoch(installed)
+                .map_err(Error::Crypto),
+            Err(rejected) => {
+                read.cancel_local_update(rejected.ready)?;
+                Err(Error::Crypto(rejected.error))
+            }
+        };
+        endpoint.send::<p::LocalSettled>(&sequence).await?;
+        self.advance()?;
+        result
+    }
+
     pub(crate) async fn acknowledge(
         &mut self,
         endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
@@ -339,7 +396,7 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
         now: u64,
         pto: u64,
     ) -> Result<(), Error> {
-        let sequence = self.active()?;
+        let sequence = self.sequence;
         self.exchange.key_ack.put(KeyAck {
             validated,
             now,
@@ -369,7 +426,7 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
         endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
         confirmation: ScopedHandshakeConfirmation<'scope>,
     ) -> Result<(), Error> {
-        let sequence = self.active()?;
+        let sequence = self.sequence;
         self.exchange.confirmation.put(confirmation)?;
         endpoint.send::<p::Confirmed>(&sequence).await?;
         let response = endpoint.offer().await?;
@@ -391,14 +448,13 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
     }
 
     pub(crate) async fn retire(
-        &mut self,
+        self,
         endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
     ) -> Result<KeysQuiesced<'owner, 'scope>, Error> {
-        let sequence = self.active()?;
+        let sequence = self.sequence;
         endpoint.send::<p::KeysRetire>(&sequence).await?;
         check(endpoint.recv::<p::KeysRetired>().await?, sequence)?;
         let quiesced = self.exchange.quiesced.take()?;
-        self.retired = true;
         Ok(quiesced)
     }
 }
@@ -451,6 +507,18 @@ pub(crate) async fn run<'owner, 'scope>(
                     endpoint.send::<p::ConfirmationFailed>(&sequence).await?;
                 }
             }
+            205 => {
+                check(request.recv::<p::LocalUpdate>().await?, sequence)?;
+                let result = owner.local_update(exchange.local_update.take()?);
+                let accepted = result.is_ok();
+                exchange.local_result.put(result)?;
+                if accepted {
+                    endpoint.send::<p::LocalInstalled>(&sequence).await?;
+                } else {
+                    endpoint.send::<p::LocalRejected>(&sequence).await?;
+                }
+                check(endpoint.recv::<p::LocalSettled>().await?, sequence)?;
+            }
             20 => {
                 check(request.recv::<p::KeysRetire>().await?, sequence)?;
                 exchange.quiesced.put(owner.retire()?)?;
@@ -477,5 +545,113 @@ fn check_result<T>(result: &Result<T, Error>, accepted: bool) -> Result<(), Erro
         Ok(())
     } else {
         Err(Error::Binding)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{carrier::CarrierStorage, runtime::TaskSet};
+    use core::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+    use hibana::runtime::{
+        SessionKitStorage,
+        ids::SessionId,
+        program::{RoleProgram, project},
+    };
+
+    fn run_local_update(authorized_fixture: bool) {
+        // Raw cryptographic fixture only: deliberately no handshake/ACK grant.
+        // The actual projected owner must reject update and return the parked key.
+        let mut scope = ApplicationKeyScope::new(1200);
+        let (mut read, mut write) = scope
+            .install(
+                PacketKey::from_secret(
+                    crypto::CipherSuite::Aes128GcmSha256,
+                    crypto::KeyKind::OneRtt,
+                    &[1; 32],
+                )
+                .unwrap(),
+                PacketKey::from_secret(
+                    crypto::CipherSuite::Aes128GcmSha256,
+                    crypto::KeyKind::OneRtt,
+                    &[2; 32],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        if authorized_fixture {
+            crate::crypto::directional::synthetic_confirmed_ack_for_role_test(&mut write);
+        }
+        let scope = read.scope();
+        let owner = KeyOwner {
+            scope,
+            owned: RefCell::new(Owned {
+                initial: None,
+                handshake: None,
+                application: Some(write),
+            }),
+        };
+        let exchange = Exchange::new(&owner);
+        let mut control = RxControl::new(&exchange);
+        let global = p::key_choreography();
+        let rxp: RoleProgram<{ p::RX_KEYS }> = project(&global);
+        let txp: RoleProgram<{ p::TX_KEYS }> = project(&global);
+        let carrier = CarrierStorage::<1, 16, 16>::new();
+        let mut slab = [0; 65536];
+        let mut storage = SessionKitStorage::uninit();
+        let sid = SessionId::new(1200);
+        let rv = storage
+            .init()
+            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+            .unwrap();
+        let mut rx = rv.enter(sid, &rxp).unwrap();
+        let mut tx = rv.enter(sid, &txp).unwrap();
+        let expected = read.header_mask(&[0; 16]).unwrap();
+        let measured = actor_test_allocator::NoAlloc::start();
+        {
+            let mut receiving = pin!(async {
+                let result = control.local_update(&mut rx, &mut read, 0, 10).await;
+                if authorized_fixture {
+                    result.unwrap();
+                    assert_eq!(owner.generation().unwrap(), 1);
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(Error::Crypto(crypto::Error::KeyUpdateNotAllowed))
+                    ));
+                    assert_eq!(owner.generation().unwrap(), 0);
+                }
+                assert_eq!(read.header_mask(&[0; 16]).unwrap(), expected);
+                let closing = control.retire(&mut rx).await?;
+                assert!(matches!(owner.generation(), Err(Error::Retired)));
+                let _actual_closing_key = owner.take_closing(closing)?;
+                Ok::<_, Error>(())
+            });
+            let mut writing = pin!(run(&mut tx, &owner, &exchange));
+            let mut all = pin!(TaskSet::new([receiving.as_mut(), writing.as_mut()]));
+            let mut outcome = None;
+            for _ in 0..200 {
+                if let Poll::Ready(result) =
+                    all.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+                {
+                    outcome = Some(result);
+                    break;
+                }
+            }
+            outcome.expect("projected retirement must settle").unwrap();
+        }
+        measured.finish();
+    }
+    #[test]
+    fn projected_local_rejection_returns_actual_read_key_then_retires_write_owner() {
+        run_local_update(false);
+    }
+    #[test]
+    fn projected_local_installation_transfers_real_keys_with_synthetic_ack_fixture() {
+        run_local_update(true);
     }
 }

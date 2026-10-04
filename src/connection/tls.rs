@@ -123,7 +123,6 @@ pub struct Transcript<'scope, 'cfg, 'buf> {
     source: KeySource<'scope, 'cfg, 'buf>,
     received: [u64; 3],
     sent: [u64; 3],
-    retired: bool,
 }
 impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
     pub fn new(source: KeySource<'scope, 'cfg, 'buf>) -> Self {
@@ -131,11 +130,10 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
             source,
             received: [0; 3],
             sent: [0; 3],
-            retired: false,
         }
     }
     fn ensure_live(&self) -> Result<(), Error> {
-        if self.retired || self.source.state() == State::Failed {
+        if self.source.state() == State::Failed {
             Err(Error::Handshake)
         } else {
             Ok(())
@@ -276,8 +274,7 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
     pub fn discard_pending_keys(&mut self, level: Level) {
         self.source.discard_pending_keys(level);
     }
-    pub fn retire(&mut self) {
-        self.retired = true;
+    pub fn retire(mut self) {
         for level in [Level::Initial, Level::Handshake, Level::OneRtt] {
             self.source.discard_pending_keys(level);
         }

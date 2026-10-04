@@ -26,6 +26,7 @@ jobs:
       - name: Verify source and Hibana snapshot
         run: |
           python3 ci/audit_source.py --check
+          python3 ci/audit_control.py
           python3 vendor/check_hibana.py
       - name: Core, integration and compile-fail contracts
         run: cargo +1.95.0 test --locked

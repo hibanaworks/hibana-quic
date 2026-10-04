@@ -116,3 +116,71 @@ transfers pass in both directions with exact payload hashes. Evidence is in
 artifacts/rolled-route-runtime-20261004/stream-reclaim. Native results are not
 new official runner cells. The total request bound remains16; MAX_STREAMS
 credit replenishment and encrypted peer-STOP remain unqualified.
+
+## Projected early-data ownership
+
+The independent early-data Phase and six per-slot lifecycle flags are removed.
+Four direct projected roles govern input completion, actual TLS Finished receipt
+consumption, control/data delivery, rejection and cancellation. Bounded byte and
+final-size arithmetic remains in a private kernel. Actual scoped AEAD receipts
+bind input; labels alone confer no release authority. Both supported cipher
+suites pass the real TLS resumption and projected release component test with
+zero allocations in its measured path. This does not qualify endpoint 0-RTT.
+See early-data-integration.md for the precise boundary. CID retirement and
+key-update lower-control migration remain open; this is not full migration.
+
+The early-owner checkpoint passes locally: 420 unit +70 integration +27
+compile-fail =517; reference TLS29; host100; Python47 plus impairment4;
+thumbv6m compile. These are local component/regression results, not new interop
+cells. The prior owned-reclamation commit ff3c3d0 passed official regression
+run37197056168: unchanged Neqo baseline and seven cases in both candidate
+directions, still14/44. Its runtime workflow37197056163 also passed.
+
+
+## Lower key-control removal (local checkpoint)
+
+The combined ApplicationKeys implementation and provider Legacy branch have
+been deleted, including their duplicate lifecycle tests. Directional tests now
+compare actual ciphertext to raw packet primitives instead of an old controller.
+Actual confirmation and current-epoch ACK receipts replace write-side flags.
+The read-side Pending enum is deleted: the actual receive key moves inside the
+transition receipt and returns through installed/rejected ownership. Key-role
+retirement transfers the real closing write key and consumes RX control.
+Transcript retirement consumes the transcript; the duplicate close-phase flag
+is removed from the already-projected finite close continuation.
+
+LocalUpdate/Installed/Rejected/Settled is part of the existing key-role global.
+Both branches execute on actual endpoints with zero allocations; the positive
+fixture explicitly synthesizes ACK/confirmation authority, so it is not network
+qualification. CID retirement no longer stores an ACK flag: its table transfers
+a unique owned frame once. The CID projected retransmission/ACK integration and
+live local-key-update trigger remain open. See control-migration-audit.md. No
+full-migration completion or additional official interop cell is claimed.
+
+This local checkpoint passes 414 unit +70 integration +26 compile-fail =510,
+reference TLS29, host100, thumbv6m compile, Python47 and impairment4. The lower
+count than the prior checkpoint reflects deletion of seven duplicate combined-key
+lifecycle tests, the obsolete copied-CID-admission test and two old-API doctests,
+plus new owned-CID and projected-key tests. Default Clippy completes with warnings;
+strict root Clippy is not clean. No new official runner was requested for this
+intermediate checkpoint: final replacement qualification takes priority.
+
+
+## Existing-control migration checkpoint
+
+Unused Paths/PathEcn/ClientRetry controllers are deleted. The remaining ECN and
+Retry routines validate actual counters and packet integrity without storing a
+protocol phase. TLS key-schedule Stage is derived from owned secret material;
+Finished verification creates an actual one-shot receipt in the projected TLS
+owner. KeySource moves that receipt, the actual integrity budget and the actual
+early key rather than tracking duplicate taken flags. Recovery retains the actual
+OrdinaryRetired proof and terminal accounting instead of close_only/terminal flags.
+
+Final local checks:385 unit +70 integration +26 compile-fail =481, reference TLS29,
+host100, thumbv6m compile, Python47 and impairment4. Reduced test count reflects
+removed unconnected controllers; it is not new feature qualification. Known-old-
+controller source guard passes. The existing implemented control paths are direct
+Hibana contracts/locals; remaining numeric/resource tombstones are documented in
+control-migration-audit.md. Dynamic CID, local-update trigger, migration/ECN/Retry
+endpoint features and host0-RTT remain unqualified work, not hidden old fallbacks.
+The new exact replacement tree still requires official regression qualification.

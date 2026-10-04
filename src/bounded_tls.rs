@@ -12,7 +12,7 @@
 //! of complete mandatory TLS algorithms or QUIC release conformance.
 
 use crate::{
-    crypto::{self, ApplicationKeys, CipherSuite, IntegrityBudget, KeyKind, PacketKey},
+    crypto::{self, CipherSuite, IntegrityBudget, KeyKind, PacketKey},
     early_data::{
         self as early, EarlyFreshness, EarlyStatus, QuarantineSlot, RememberedLimits, ReplayClaim,
         ServerPolicy,
@@ -227,38 +227,12 @@ struct DirectionalKeys {
     remote: PacketKey,
 }
 
-// Mutually exclusive representations: the handoff path never constructs or
-// retains the legacy combined application-key machine.
-enum ApplicationMaterial {
-    Empty,
-    Legacy(ApplicationKeys),
-    Handoff(DirectionalKeys),
-}
-impl ApplicationMaterial {
-    fn as_ref(&self) -> Option<&ApplicationKeys> {
-        match self {
-            Self::Legacy(keys) => Some(keys),
-            _ => None,
-        }
-    }
-    fn as_mut(&mut self) -> Option<&mut ApplicationKeys> {
-        match self {
-            Self::Legacy(keys) => Some(keys),
-            _ => None,
-        }
-    }
-    fn is_some(&self) -> bool {
-        !matches!(self, Self::Empty)
-    }
-    fn take_handoff(&mut self) -> Option<DirectionalKeys> {
-        if !matches!(self, Self::Handoff(_)) {
-            return None;
-        }
-        match core::mem::replace(self, Self::Empty) {
-            Self::Handoff(keys) => Some(keys),
-            _ => unreachable!(),
-        }
-    }
+// Actual successful Finished verification, owned until the scoped handoff.
+struct VerifiedHandshake {
+    side: Side,
+    peer_parameters_digest: [u8; 32],
+    early_status: EarlyStatus,
+    early_generation: Option<u64>,
 }
 
 /// A single-owner TLS provider. No self-references into owned receive storage;
@@ -295,7 +269,7 @@ pub struct BoundedTls<'cfg, 'buf> {
     suite: Option<CipherSuite>,
     cipher_policy: CipherPolicy,
     handshake: Option<DirectionalKeys>,
-    application: ApplicationMaterial,
+    application: Option<DirectionalKeys>,
     key_handoff: bool,
     handshake_created: bool,
     application_created: bool,
@@ -316,6 +290,7 @@ pub struct BoundedTls<'cfg, 'buf> {
     early_server: Option<ServerEarlyData>,
     early_key: Option<PacketKey>,
     early_claim: Option<ReplayClaim>,
+    verified_handshake: Option<VerifiedHandshake>,
 }
 
 impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
@@ -749,7 +724,7 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             suite: None,
             cipher_policy: CipherPolicy::Default,
             handshake: None,
-            application: ApplicationMaterial::Empty,
+            application: None,
             key_handoff: false,
             handshake_created: false,
             application_created: false,
@@ -770,7 +745,20 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             early_server: None,
             early_key: None,
             early_claim: None,
+            verified_handshake: None,
         })
+    }
+
+    fn record_verified_finished(&mut self) {
+        self.state = State::Connected;
+        self.verified_handshake = Some(VerifiedHandshake {
+            side: self.side(),
+            peer_parameters_digest: key_source::peer_parameters_digest(
+                &self.parameters[..self.parameters_len],
+            ),
+            early_status: self.early_status,
+            early_generation: self.early_generation,
+        });
     }
 
     pub(crate) fn pristine(&self) -> bool {
@@ -841,7 +829,8 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
         self.resumption_master = None;
         self.offer_age = None;
         self.handshake = None;
-        self.application = ApplicationMaterial::Empty;
+        self.application = None;
+        self.verified_handshake = None;
         self.tx_len = 0;
         self.tx_sent = 0;
         error
@@ -942,11 +931,7 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
         }
         self.schedule.derive_master(&self.transcript)?;
         let keys = self.packet_keys(KeyKind::OneRtt)?;
-        self.application = if self.key_handoff {
-            ApplicationMaterial::Handoff(keys)
-        } else {
-            ApplicationMaterial::Legacy(ApplicationKeys::new(keys.local, keys.remote)?)
-        };
+        self.application = Some(keys);
         self.application_created = true;
         if self.side() == Side::Client {
             self.early_key = None;
@@ -1237,11 +1222,6 @@ impl Provider for BoundedTls<'_, '_> {
     fn negotiated_group(&self) -> Option<u16> {
         self.negotiated_group
     }
-    fn key_phase(&self) -> bool {
-        self.application
-            .as_ref()
-            .is_some_and(ApplicationKeys::phase)
-    }
     fn integrity_budget(&mut self) -> Option<&mut crate::crypto::IntegrityBudget> {
         if self.key_handoff {
             None
@@ -1249,115 +1229,21 @@ impl Provider for BoundedTls<'_, '_> {
             Some(&mut self.integrity)
         }
     }
-    fn receive_key_generation(&self) -> u64 {
-        self.application
-            .as_ref()
-            .map_or(0, ApplicationKeys::receive_generation)
-    }
-    fn key_generation(&self) -> u64 {
-        self.application
-            .as_ref()
-            .map_or(0, ApplicationKeys::generation)
-    }
+    // The provider never owns a second combined key-update controller.
     fn confirm_handshake(&mut self) -> Result<(), tls::Error> {
-        if self.key_handoff {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        if self.state != State::Connected {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        self.application
-            .as_mut()
-            .ok_or(tls::Error::KeysUnavailable)?
-            .confirm_handshake()
-            .map_err(map_crypto)
+        Err(tls::Error::Unsupported)
     }
-    fn maintain_keys(&mut self, now: u64, pto: u64) -> Result<(), tls::Error> {
-        if self.key_handoff {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        if self.state == State::Failed {
-            return Err(tls::Error::Handshake);
-        }
-        if self.application_discarded {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        // The transport services timers throughout the handshake, even before
-        // it can use application keys. No update preparation is needed yet.
-        if self.state != State::Connected {
-            return Ok(());
-        }
-        self.application
-            .as_mut()
-            .ok_or(tls::Error::KeysUnavailable)?
-            .maintain(now, pto)
-            .map_err(map_crypto)
-    }
-    fn initiate_key_update(&mut self, now: u64, pto: u64) -> Result<(), tls::Error> {
-        if self.key_handoff {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        if self.state != State::Connected {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        self.application
-            .as_mut()
-            .ok_or(tls::Error::KeysUnavailable)?
-            .initiate(now, pto)
-            .map_err(map_crypto)
+    fn maintain_keys(&mut self, _now: u64, _pto: u64) -> Result<(), tls::Error> {
+        Err(tls::Error::Unsupported)
     }
     fn acknowledge_one_rtt(
         &mut self,
-        sent_pn: u64,
-        received_generation: u64,
-        now: u64,
-        pto: u64,
+        _pn: u64,
+        _generation: u64,
+        _now: u64,
+        _pto: u64,
     ) -> Result<(), tls::Error> {
-        if self.key_handoff {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        if self.state != State::Connected {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        let result = self
-            .application
-            .as_mut()
-            .ok_or(tls::Error::KeysUnavailable)?
-            .acknowledge(sent_pn, received_generation, now, pto);
-        match result {
-            Err(crypto::Error::KeyUpdateError) => {
-                Err(self.fail(Failure::Crypto(crypto::Error::KeyUpdateError)))
-            }
-            other => other.map_err(map_crypto),
-        }
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn open_one_rtt(
-        &mut self,
-        pn: u64,
-        phase: bool,
-        header: &[u8],
-        buffer: &mut [u8],
-        now: u64,
-        pto: u64,
-    ) -> Result<crypto::Opened, tls::Error> {
-        if self.key_handoff {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        if self.state != State::Connected {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        let result = self
-            .application
-            .as_mut()
-            .ok_or(tls::Error::KeysUnavailable)?
-            .open(pn, phase, header, buffer, &mut self.integrity, now, pto);
-        match result {
-            Err(error @ (crypto::Error::IntegrityLimit | crypto::Error::KeyUpdateError)) => {
-                Err(self.fail(Failure::Crypto(error)))
-            }
-            other => other.map_err(map_crypto),
-        }
+        Err(tls::Error::Unsupported)
     }
     fn receive(&mut self, level: Level, mut bytes: &[u8]) -> Result<(), tls::Error> {
         // Only authenticated post-handshake ticket framing remains synchronous.
@@ -1445,7 +1331,7 @@ impl Provider for BoundedTls<'_, '_> {
                 self.handshake_discarded = true
             }
             Level::OneRtt => {
-                self.application = ApplicationMaterial::Empty;
+                self.application = None;
                 self.early_key = None;
                 self.early_claim = None;
                 self.resumption_master = None;
@@ -1480,6 +1366,9 @@ impl Provider for BoundedTls<'_, '_> {
         if level == Level::OneRtt && self.state != State::Connected {
             return Err(tls::Error::KeysUnavailable);
         }
+        if level == Level::OneRtt && header.first().is_none_or(|byte| byte & 4 != 0) {
+            return Err(tls::Error::InvalidInput);
+        }
         match level {
             Level::Initial => Err(tls::Error::KeysUnavailable),
             Level::Handshake => self
@@ -1493,6 +1382,7 @@ impl Provider for BoundedTls<'_, '_> {
                 .application
                 .as_mut()
                 .ok_or(tls::Error::KeysUnavailable)?
+                .local
                 .seal(pn, header, buffer, plaintext_len)
                 .map_err(map_crypto),
         }
@@ -1513,8 +1403,6 @@ impl Provider for BoundedTls<'_, '_> {
         if level == Level::OneRtt && self.state != State::Connected {
             return Err(tls::Error::KeysUnavailable);
         }
-        // Compatibility entry point is generation-zero only. The phase-aware
-        // transport must use open_one_rtt once it supports key updates.
         let result = match level {
             Level::Initial => return Err(tls::Error::KeysUnavailable),
             Level::Handshake => self
@@ -1528,11 +1416,10 @@ impl Provider for BoundedTls<'_, '_> {
                     .application
                     .as_mut()
                     .ok_or(tls::Error::KeysUnavailable)?;
-                if keys.generation() != 0 || keys.receive_generation() != 0 {
+                if header.first().is_none_or(|byte| byte & 4 != 0) {
                     return Err(tls::Error::InvalidInput);
                 }
-                keys.open(pn, false, header, buffer, &mut self.integrity, 0, 1)
-                    .map(|o| o.len)
+                keys.remote.open(pn, header, buffer, &mut self.integrity)
             }
         };
         match result {
@@ -1565,12 +1452,18 @@ impl Provider for BoundedTls<'_, '_> {
                 }
                 .map_err(map_crypto)
             }
-            Level::OneRtt => self
-                .application
-                .as_ref()
-                .ok_or(tls::Error::KeysUnavailable)?
-                .header_mask(local, sample)
-                .map_err(map_crypto),
+            Level::OneRtt => {
+                let keys = self
+                    .application
+                    .as_ref()
+                    .ok_or(tls::Error::KeysUnavailable)?;
+                if local {
+                    keys.local.header_mask(sample)
+                } else {
+                    keys.remote.header_mask(sample)
+                }
+                .map_err(map_crypto)
+            }
         }
     }
 }

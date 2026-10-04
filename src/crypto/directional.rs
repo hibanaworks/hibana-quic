@@ -3,7 +3,7 @@
 //! eligibility until the matching write epoch is installed. Lost transition
 //! receipts leave RX blocked until the connection is discarded.
 
-use super::{ApplicationKeys, Error, HP_SAMPLE_LEN, IntegrityBudget, KeyKind, Opened, PacketKey};
+use super::{Error, HP_SAMPLE_LEN, IntegrityBudget, KeyKind, Opened, PacketKey};
 use zeroize::Zeroize;
 
 #[cfg(test)]
@@ -54,18 +54,6 @@ impl ApplicationKeyScope {
 /// use hibana_quic::crypto::directional::ApplicationKeyInstallation;
 /// fn duplicate(grant: ApplicationKeyInstallation<'_>) { let first = grant; let second = grant; }
 /// ```
-/// ```compile_fail
-/// use hibana_quic::crypto::{ApplicationKeys, directional::ApplicationKeyInstallation};
-/// fn legacy(grant: ApplicationKeyInstallation<'_>, keys: ApplicationKeys) {
-///     let _ = grant.install_existing(keys);
-/// }
-/// ```
-/// ```compile_fail
-/// use hibana_quic::crypto::{ApplicationKeys, directional::ApplicationKeyScope};
-/// fn legacy(keys: ApplicationKeys, scope: &mut ApplicationKeyScope) {
-///     let _ = keys.into_directional(scope);
-/// }
-/// ```
 #[must_use = "dropping installation permanently closes this scope to new keys"]
 #[derive(Debug)]
 pub struct ApplicationKeyInstallation<'a> {
@@ -108,7 +96,7 @@ impl<'a> ApplicationKeyInstallation<'a> {
         Ok((
             ApplicationReadKeys {
                 scope: self.scope,
-                current: remote,
+                current: Some(remote),
                 next: Some(remote_next),
                 previous: None,
                 generation: 0,
@@ -117,7 +105,6 @@ impl<'a> ApplicationKeyInstallation<'a> {
                 current_max: None,
                 previous_max: None,
                 previous_deadline: None,
-                pending: None,
                 last_now: 0,
                 active: true,
             },
@@ -128,9 +115,8 @@ impl<'a> ApplicationKeyInstallation<'a> {
                 generation: 0,
                 receive_generation: 0,
                 first_sent: None,
-                handshake_confirmed: false,
-                current_acked: false,
-                update_after: None,
+                confirmation: None,
+                update_evidence: None,
                 last_now: 0,
                 active: true,
             },
@@ -199,9 +185,7 @@ impl<'a> ScopedHandshakeConfirmation<'a> {
 pub struct ValidatedKeyAck<'a> {
     scope: &'a ApplicationKeyScope,
     sent_packet_number: u64,
-    // The actual connection path always supplies Some(actual accepted epoch).
-    // None is legacy cleanup debt only, never a production connection fallback.
-    sent_key_generation: Option<u64>,
+    sent_key_generation: u64,
     received_key_generation: u64,
 }
 impl<'a> ValidatedKeyAck<'a> {
@@ -219,10 +203,16 @@ impl<'a> ValidatedKeyAck<'a> {
         Ok(Self {
             scope: grant.scope(),
             sent_packet_number: grant.sent_packet_number(),
-            sent_key_generation: Some(grant.sent_key_generation()),
+            sent_key_generation: grant.sent_key_generation(),
             received_key_generation: grant.received_key_generation(),
         })
     }
+}
+
+/// Actual accepted ACK ownership and its numeric anti-reordering deadline.
+struct UpdateEvidence<'a> {
+    acknowledged: ValidatedKeyAck<'a>,
+    not_before: u64,
 }
 
 /// RX owns current, prepared next and retained previous read keys exclusively.
@@ -234,7 +224,7 @@ impl<'a> ValidatedKeyAck<'a> {
 /// ```
 pub struct ApplicationReadKeys<'a> {
     scope: &'a ApplicationKeyScope,
-    current: PacketKey,
+    current: Option<PacketKey>,
     next: Option<PacketKey>,
     previous: Option<PacketKey>,
     generation: u64,
@@ -243,7 +233,6 @@ pub struct ApplicationReadKeys<'a> {
     current_max: Option<u64>,
     previous_max: Option<u64>,
     previous_deadline: Option<u64>,
-    pending: Option<Pending>,
     last_now: u64,
     active: bool,
 }
@@ -261,16 +250,10 @@ pub struct ApplicationWriteKeys<'a> {
     generation: u64,
     receive_generation: u64,
     first_sent: Option<u64>,
-    handshake_confirmed: bool,
-    current_acked: bool,
-    update_after: Option<u64>,
+    confirmation: Option<ScopedHandshakeConfirmation<'a>>,
+    update_evidence: Option<UpdateEvidence<'a>>,
     last_now: u64,
     active: bool,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Pending {
-    Peer { packet_number: u64, opened: Opened },
-    Local { receive_generation: u64 },
 }
 #[derive(Debug)]
 pub enum AuthenticatedRead<'a> {
@@ -326,14 +309,29 @@ impl<'a> AckEligible<'a> {
 /// fn duplicate(receipt: PeerUpdateAuthenticated<'_>) { let first = receipt; let second = receipt; }
 /// ```
 #[must_use = "dropping this transition leaves RX blocked"]
-#[derive(Debug)]
 pub struct PeerUpdateAuthenticated<'a> {
+    receive_key: PacketKey,
     scope: &'a ApplicationKeyScope,
     packet_number: u64,
     opened: Opened,
     previous_generation: u64,
     observed_at: u64,
     plaintext_digest: [u8; 32],
+}
+impl core::fmt::Debug for PeerUpdateAuthenticated<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PeerUpdateAuthenticated")
+            .field("packet_number", &self.packet_number)
+            .field("opened", &self.opened)
+            .finish_non_exhaustive()
+    }
+}
+impl core::fmt::Debug for LocalUpdateReady<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LocalUpdateReady")
+            .field("receive_generation", &self.receive_generation)
+            .finish_non_exhaustive()
+    }
 }
 impl PeerUpdateAuthenticated<'_> {
     pub const fn opened(&self) -> Opened {
@@ -364,8 +362,8 @@ impl WriteEpochInstalled<'_> {
 /// fn duplicate(receipt: LocalUpdateReady<'_>) { let first = receipt; let second = receipt; }
 /// ```
 #[must_use = "TX must consume this readiness or RX must explicitly cancel it"]
-#[derive(Debug)]
 pub struct LocalUpdateReady<'a> {
+    receive_key: PacketKey,
     scope: &'a ApplicationKeyScope,
     receive_generation: u64,
     prepared_at: u64,
@@ -417,7 +415,7 @@ impl<'a> ApplicationReadKeys<'a> {
         if !self.active {
             return Err(Error::KeyDiscarded);
         }
-        if self.pending.is_some() {
+        if self.current.is_none() {
             return Err(Error::KeyUpdateNotAllowed);
         }
         Ok(())
@@ -426,7 +424,12 @@ impl<'a> ApplicationReadKeys<'a> {
         time(self.active, &mut self.last_now, now, pto)?;
         self.expire(now);
         if self.next.is_none() {
-            self.next = Some(self.current.derive_next()?);
+            self.next = Some(
+                self.current
+                    .as_ref()
+                    .ok_or(Error::KeyUpdateNotAllowed)?
+                    .derive_next()?,
+            );
         }
         Ok(())
     }
@@ -443,7 +446,10 @@ impl<'a> ApplicationReadKeys<'a> {
         if !self.active {
             return Err(Error::KeyDiscarded);
         }
-        self.current.header_mask(sample)
+        self.current
+            .as_ref()
+            .ok_or(Error::KeyUpdateNotAllowed)?
+            .header_mask(sample)
     }
     /// Exactly one AEAD attempt, no fallback or HKDF. Outstanding transitions
     /// block before AEAD so no later packet bypasses the write-installation gate.
@@ -472,9 +478,10 @@ impl<'a> ApplicationReadKeys<'a> {
         } else if next {
             self.next.as_ref()
         } else {
-            Some(&self.current)
+            self.current.as_ref()
         };
-        let selected = candidate.unwrap_or(&self.current);
+        let selected =
+            candidate.unwrap_or(self.current.as_ref().ok_or(Error::KeyUpdateNotAllowed)?);
         let result = selected.open(pn, header, buffer, budget);
         if candidate.is_none() {
             buffer.zeroize();
@@ -499,7 +506,7 @@ impl<'a> ApplicationReadKeys<'a> {
                 return Err(Error::KeyUpdateError);
             }
             let promoted = self.next.take().ok_or(Error::KeyUpdateNotAllowed)?;
-            self.previous = Some(core::mem::replace(&mut self.current, promoted));
+            self.previous = self.current.take();
             self.previous_max = self.current_max;
             self.current_min = Some(pn);
             self.current_max = Some(pn);
@@ -511,11 +518,8 @@ impl<'a> ApplicationReadKeys<'a> {
                 generation,
                 key_updated: true,
             };
-            self.pending = Some(Pending::Peer {
-                packet_number: pn,
-                opened,
-            });
             Ok(AuthenticatedRead::PeerUpdate(PeerUpdateAuthenticated {
+                receive_key: promoted,
                 scope: self.scope,
                 packet_number: pn,
                 opened,
@@ -558,16 +562,14 @@ impl<'a> ApplicationReadKeys<'a> {
         }
         let receipt = installed.authenticated;
         if !core::ptr::eq(self.scope, receipt.scope)
-            || self.pending
-                != Some(Pending::Peer {
-                    packet_number: receipt.packet_number,
-                    opened: receipt.opened,
-                })
+            || self.current.is_some()
+            || receipt.opened.generation != self.generation
+            || self.current_min != Some(receipt.packet_number)
         {
             return Err(Error::KeyUpdateError);
         }
         self.installed_write_generation = receipt.opened.generation;
-        self.pending = None;
+        self.current = Some(receipt.receive_key);
         Ok(AckEligible {
             scope: self.scope,
             packet_number: receipt.packet_number,
@@ -575,15 +577,13 @@ impl<'a> ApplicationReadKeys<'a> {
             plaintext_digest: receipt.plaintext_digest,
         })
     }
-    pub fn prepare_local_update(&mut self) -> Result<LocalUpdateReady<'a>, Error> {
+    pub(crate) fn prepare_local_update(&mut self) -> Result<LocalUpdateReady<'a>, Error> {
         self.ensure_ready()?;
         if self.next.is_none() || self.generation != self.installed_write_generation {
             return Err(Error::KeyUpdateNotAllowed);
         }
-        self.pending = Some(Pending::Local {
-            receive_generation: self.generation,
-        });
         Ok(LocalUpdateReady {
+            receive_key: self.current.take().ok_or(Error::KeyUpdateNotAllowed)?,
             scope: self.scope,
             receive_generation: self.generation,
             prepared_at: self.last_now,
@@ -594,16 +594,14 @@ impl<'a> ApplicationReadKeys<'a> {
             return Err(Error::KeyDiscarded);
         }
         if !core::ptr::eq(self.scope, ready.scope)
-            || self.pending
-                != Some(Pending::Local {
-                    receive_generation: ready.receive_generation,
-                })
+            || self.current.is_some()
+            || ready.receive_generation != self.generation
         {
             return Err(Error::KeyUpdateError);
         }
         Ok(())
     }
-    pub fn accept_local_write_epoch(
+    pub(crate) fn accept_local_write_epoch(
         &mut self,
         installed: LocalWriteEpochInstalled<'a>,
     ) -> Result<(), Error> {
@@ -613,20 +611,19 @@ impl<'a> ApplicationReadKeys<'a> {
         }
         self.installed_write_generation = installed.write_generation;
         self.last_now = self.last_now.max(installed.installed_at);
-        self.pending = None;
+        self.current = Some(installed.ready.receive_key);
         Ok(())
     }
-    pub fn cancel_local_update(&mut self, ready: LocalUpdateReady<'a>) -> Result<(), Error> {
+    pub(crate) fn cancel_local_update(&mut self, ready: LocalUpdateReady<'a>) -> Result<(), Error> {
         self.check_local(&ready)?;
-        self.pending = None;
+        self.current = Some(ready.receive_key);
         Ok(())
     }
     pub fn discard(&mut self) {
-        self.current.discard();
+        self.current = None;
         self.next = None;
         self.previous = None;
         self.previous_deadline = None;
-        self.pending = None;
         self.active = false;
     }
 }
@@ -666,7 +663,7 @@ impl<'a> ApplicationWriteKeys<'a> {
         if !core::ptr::eq(self.scope, confirmation.scope) {
             return Err(Error::KeyUpdateNotAllowed);
         }
-        self.handshake_confirmed = true;
+        self.confirmation = Some(confirmation);
         Ok(())
     }
     /// Consume actual scope-bound sent-ledger ACK evidence.
@@ -685,36 +682,14 @@ impl<'a> ApplicationWriteKeys<'a> {
         if !core::ptr::eq(self.scope, grant.scope) {
             return Err(Error::InvalidAcknowledgment);
         }
-        self.acknowledge_epoch(
-            grant.sent_packet_number,
-            grant.sent_key_generation,
-            grant.received_key_generation,
-            now,
-            pto,
-        )
-    }
-    fn acknowledge_validated(
-        &mut self,
-        pn: u64,
-        received_generation: u64,
-        now: u64,
-        pto: u64,
-    ) -> Result<(), Error> {
-        self.acknowledge_epoch(pn, None, received_generation, now, pto)
-    }
-    fn acknowledge_epoch(
-        &mut self,
-        pn: u64,
-        sent_generation: Option<u64>,
-        received_generation: u64,
-        now: u64,
-        pto: u64,
-    ) -> Result<(), Error> {
+        let pn = grant.sent_packet_number;
+        let sent_generation = grant.sent_key_generation;
+        let received_generation = grant.received_key_generation;
         let deadline = time(self.active, &mut self.last_now, now, pto)?;
         if pn > super::MAX_PACKET_NUMBER || received_generation > self.receive_generation {
             return Err(Error::InvalidAcknowledgment);
         }
-        if let Some(sent_generation) = sent_generation {
+        {
             if sent_generation > self.generation {
                 return Err(Error::InvalidAcknowledgment);
             }
@@ -740,7 +715,6 @@ impl<'a> ApplicationWriteKeys<'a> {
                 return Err(Error::InvalidAcknowledgment);
             }
         }
-        // Epoch-less legacy evidence cannot use the older-epoch exception.
         if self.current.last_sealed.is_none_or(|last| pn > last) {
             return Err(Error::InvalidAcknowledgment);
         }
@@ -749,12 +723,33 @@ impl<'a> ApplicationWriteKeys<'a> {
                 self.discard();
                 return Err(Error::KeyUpdateError);
             }
-            if !self.current_acked {
-                self.current_acked = true;
-                self.update_after = Some(if self.generation == 0 { now } else { deadline });
+            if self.update_evidence.is_none() {
+                self.update_evidence = Some(UpdateEvidence {
+                    acknowledged: grant,
+                    not_before: if self.generation == 0 { now } else { deadline },
+                });
             }
         }
         Ok(())
+    }
+    #[cfg(test)]
+    fn acknowledge_validated(
+        &mut self,
+        pn: u64,
+        received: u64,
+        now: u64,
+        pto: u64,
+    ) -> Result<(), Error> {
+        self.acknowledge(
+            ValidatedKeyAck {
+                scope: self.scope,
+                sent_packet_number: pn,
+                sent_key_generation: self.generation,
+                received_key_generation: received,
+            },
+            now,
+            pto,
+        )
     }
     pub fn maintain(&mut self, now: u64, pto: u64) -> Result<(), Error> {
         time(self.active, &mut self.last_now, now, pto)?;
@@ -763,7 +758,7 @@ impl<'a> ApplicationWriteKeys<'a> {
         }
         Ok(())
     }
-    pub fn initiate(
+    pub(crate) fn initiate(
         &mut self,
         ready: LocalUpdateReady<'a>,
         now: u64,
@@ -779,9 +774,11 @@ impl<'a> ApplicationWriteKeys<'a> {
             }
             if ready.receive_generation != self.receive_generation
                 || self.generation != self.receive_generation
-                || !self.handshake_confirmed
-                || !self.current_acked
-                || self.update_after.is_none_or(|deadline| now < deadline)
+                || self.confirmation.is_none()
+                || self.update_evidence.as_ref().is_none_or(|evidence| {
+                    evidence.acknowledged.sent_key_generation != self.generation
+                        || now < evidence.not_before
+                })
                 || self.next.is_none()
             {
                 return Err(Error::KeyUpdateNotAllowed);
@@ -832,8 +829,7 @@ impl<'a> ApplicationWriteKeys<'a> {
         self.current = next;
         self.generation = generation;
         self.first_sent = None;
-        self.current_acked = false;
-        self.update_after = None;
+        self.update_evidence = None;
         Ok(())
     }
     pub fn seal(
@@ -868,4 +864,23 @@ impl<'a> ApplicationWriteKeys<'a> {
         self.next = None;
         self.active = false;
     }
+}
+
+#[cfg(test)]
+pub(crate) fn synthetic_confirmed_ack_for_role_test(keys: &mut ApplicationWriteKeys<'_>) {
+    // Isolated role test fixture, never production or peer/interop evidence.
+    keys.seal(0, &[0x40], &mut [0; 16], 0).unwrap();
+    keys.confirm_handshake(ScopedHandshakeConfirmation { scope: keys.scope })
+        .unwrap();
+    keys.acknowledge(
+        ValidatedKeyAck {
+            scope: keys.scope,
+            sent_packet_number: 0,
+            sent_key_generation: 0,
+            received_key_generation: 0,
+        },
+        0,
+        10,
+    )
+    .unwrap();
 }

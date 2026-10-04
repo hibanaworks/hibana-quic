@@ -32,7 +32,7 @@ use aes_gcm::{
     aead::{AeadInPlace, KeyInit},
 };
 use rand_core::{CryptoRng, RngCore};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 /// Fixed opaque token size, independent of CID and address lengths.
 pub const TOKEN_LEN: usize = 115;
@@ -52,7 +52,6 @@ pub enum Error {
     InvalidPacket,
     EmptyToken,
     Capacity,
-    RetryNotAllowed,
     ConnectionMismatch,
     InvalidLifetime,
     InvalidTime,
@@ -384,8 +383,6 @@ impl<const N: usize> RetryTokens<N> {
 /// still opaque; only the server can authenticate it. This value borrows input.
 #[derive(Clone, Copy, Debug)]
 pub struct CheckedRetry<'a> {
-    original: ConnectionId,
-    client: ConnectionId,
     source: &'a [u8],
     token: &'a [u8],
 }
@@ -395,26 +392,6 @@ impl<'a> CheckedRetry<'a> {
     }
     pub const fn token(&self) -> &'a [u8] {
         self.token
-    }
-}
-
-/// Affine outcome of the client's actual checked, one-Retry commit.
-/// It does not authenticate a peer identity; Retry integrity and local policy
-/// authorize only this connection's bootstrap destination change.
-pub struct CommittedRetry {
-    source: ConnectionId,
-    original: ConnectionId,
-    client: ConnectionId,
-}
-impl CommittedRetry {
-    pub fn source_id(&self) -> &[u8] {
-        self.source.bytes()
-    }
-    pub fn original_destination_id(&self) -> &[u8] {
-        self.original.bytes()
-    }
-    pub fn client_source_id(&self) -> &[u8] {
-        self.client.bytes()
     }
 }
 
@@ -468,117 +445,44 @@ pub fn encode_retry(
     Ok(len)
 }
 
-/// One client's fixed-capacity Retry state. Preserve for the whole connection
-/// attempt. An authenticated, successfully processed server Initial permanently
-/// closes Retry acceptance; do not call that hook on merely parsed packets.
-pub struct ClientRetry<const TOKEN: usize> {
-    original: ConnectionId,
-    client: ConnectionId,
-    retry: Option<ConnectionId>,
-    token: [u8; TOKEN],
-    token_len: usize,
-    initial_processed: bool,
-}
-impl<const N: usize> ClientRetry<N> {
-    pub fn new(original_destination: &[u8], client_source: &[u8]) -> Result<Self, Error> {
-        Ok(Self {
-            original: ConnectionId::new(original_destination)?,
-            client: ConnectionId::new(client_source)?,
-            retry: None,
-            token: [0; N],
-            token_len: 0,
-            initial_processed: false,
-        })
+/// Pure packet validation. This does not authorize accepting a Retry, changing
+/// the destination, reissuing keys or resetting packet numbers. A projected
+/// connection continuation must own that one-shot decision and actual resources.
+pub fn validate_retry<'a>(
+    original_destination: &[u8],
+    client_source: &[u8],
+    datagram: &'a [u8],
+    token_capacity: usize,
+    scratch: &mut [u8],
+) -> Result<CheckedRetry<'a>, Error> {
+    let original = ConnectionId::new(original_destination)?;
+    let client = ConnectionId::new(client_source)?;
+    let mut packets =
+        PacketIter::new(datagram, usize::from(client.len), 1).map_err(|_| Error::InvalidPacket)?;
+    let parsed = packets
+        .next()
+        .ok_or(Error::InvalidPacket)?
+        .map_err(|_| Error::InvalidPacket)?;
+    let Header::Retry {
+        destination_id,
+        source_id,
+        token,
+        ..
+    } = parsed.header
+    else {
+        return Err(Error::InvalidPacket);
+    };
+    if destination_id != client.bytes() || source_id == original.bytes() {
+        return Err(Error::ConnectionMismatch);
     }
-    pub fn original_destination_id(&self) -> &[u8] {
-        self.original.bytes()
+    if token.len() > token_capacity {
+        return Err(Error::Capacity);
     }
-    pub fn retry_source_id(&self) -> Option<&[u8]> {
-        self.retry.as_ref().map(ConnectionId::bytes)
-    }
-    pub fn token(&self) -> &[u8] {
-        &self.token[..self.token_len]
-    }
-    pub const fn may_accept(&self) -> bool {
-        self.retry.is_none() && !self.initial_processed
-    }
-    pub fn on_server_initial_processed(&mut self) {
-        self.initial_processed = true;
-    }
-    /// Read-only validation permits endpoint preflight: derive replacement Initial
-    /// keys and check adapter/retransmission capacity before `commit`. No PN or TLS
-    /// state is touched. Every rejection leaves this client state unchanged.
-    pub fn validate<'a>(
-        &self,
-        datagram: &'a [u8],
-        scratch: &mut [u8],
-    ) -> Result<CheckedRetry<'a>, Error> {
-        if !self.may_accept() {
-            return Err(Error::RetryNotAllowed);
-        }
-        let mut packets = PacketIter::new(datagram, usize::from(self.client.len), 1)
-            .map_err(|_| Error::InvalidPacket)?;
-        let parsed = packets
-            .next()
-            .ok_or(Error::InvalidPacket)?
-            .map_err(|_| Error::InvalidPacket)?;
-        let Header::Retry {
-            destination_id,
-            source_id,
-            token,
-            ..
-        } = parsed.header
-        else {
-            return Err(Error::InvalidPacket);
-        };
-        if destination_id != self.client.bytes() || source_id == self.original.bytes() {
-            return Err(Error::ConnectionMismatch);
-        }
-        if token.len() > N {
-            return Err(Error::Capacity);
-        }
-        crypto::verify_retry(self.original.bytes(), datagram, scratch)?;
-        Ok(CheckedRetry {
-            original: self.original,
-            client: self.client,
-            source: source_id,
-            token,
-        })
-    }
-    pub(crate) fn commit_with_receipt(
-        &mut self,
-        checked: CheckedRetry<'_>,
-    ) -> Result<CommittedRetry, Error> {
-        self.commit(checked)?;
-        Ok(CommittedRetry {
-            source: self.retry.ok_or(Error::RetryNotAllowed)?,
-            original: self.original,
-            client: self.client,
-        })
-    }
-    /// Commit a checked packet after the endpoint's reset can no longer fail.
-    /// Rechecks identity/capacity/one-Retry policy, including stale checked values.
-    pub fn commit(&mut self, checked: CheckedRetry<'_>) -> Result<(), Error> {
-        if !self.may_accept() {
-            return Err(Error::RetryNotAllowed);
-        }
-        if checked.original != self.original || checked.client != self.client {
-            return Err(Error::ConnectionMismatch);
-        }
-        if checked.token.len() > N {
-            return Err(Error::Capacity);
-        }
-        let source = ConnectionId::new(checked.source)?;
-        self.token[..checked.token.len()].copy_from_slice(checked.token);
-        self.token_len = checked.token.len();
-        self.retry = Some(source);
-        Ok(())
-    }
-}
-impl<const N: usize> Drop for ClientRetry<N> {
-    fn drop(&mut self) {
-        self.token.zeroize();
-    }
+    crypto::verify_retry(original.bytes(), datagram, scratch)?;
+    Ok(CheckedRetry {
+        source: source_id,
+        token,
+    })
 }
 
 #[cfg(test)]
@@ -664,79 +568,48 @@ mod tests {
         "ff000000010008f067a5502a4262b5746f6b656e04a265ba2eff4d829058fb3f0f2496ba";
 
     #[test]
-    fn rfc9001_a4_retry_encode_validate_commit() {
+    fn rfc9001_a4_retry_encode_and_pure_validate() {
         let odcid = hex::<8>("8394c8f03e515708");
-        let retry_id = hex::<8>("f067a5502a4262b5");
-        let expected = hex::<36>(RFC_PACKET);
+        let retry = hex::<8>("f067a5502a4262b5");
         let mut out = [0; 36];
         assert_eq!(
-            encode_retry(&odcid, &[], &retry_id, b"token", 15, &mut out, &mut [0; 64]),
+            encode_retry(&odcid, &[], &retry, b"token", 15, &mut out, &mut [0; 64]),
             Ok(36)
         );
-        assert_eq!(out, expected);
-        let mut state = ClientRetry::<5>::new(&odcid, &[]).unwrap();
-        let checked = state.validate(&out, &mut [0; 64]).unwrap();
-        assert!(state.may_accept());
-        assert_eq!(checked.source_id(), retry_id);
+        assert_eq!(out, hex::<36>(RFC_PACKET));
+        let checked = validate_retry(&odcid, &[], &out, 5, &mut [0; 64]).unwrap();
+        assert_eq!(checked.source_id(), retry);
         assert_eq!(checked.token(), b"token");
-        state.commit(checked).unwrap();
-        assert_eq!(state.retry_source_id(), Some(retry_id.as_slice()));
-        assert_eq!(state.original_destination_id(), odcid);
-        assert_eq!(state.token(), b"token");
-        assert_eq!(state.commit(checked), Err(Error::RetryNotAllowed));
-        assert!(matches!(
-            state.validate(&out, &mut [0; 64]),
-            Err(Error::RetryNotAllowed)
-        ));
     }
     #[test]
-    fn corrupt_every_retry_byte_and_truncate_without_consuming_state() {
+    fn corrupt_every_retry_byte_and_truncate_is_rejected() {
         let packet = hex::<36>(RFC_PACKET);
         let odcid = hex::<8>("8394c8f03e515708");
-        let state = ClientRetry::<64>::new(&odcid, &[]).unwrap();
         for i in 0..packet.len() {
             let mut bad = packet;
             bad[i] ^= 1;
-            assert!(state.validate(&bad, &mut [0; 100]).is_err(), "byte {i}");
-            assert!(state.may_accept());
+            assert!(validate_retry(&odcid, &[], &bad, 64, &mut [0; 100]).is_err());
         }
-        for end in 0..packet.len() {
-            assert!(state.validate(&packet[..end], &mut [0; 100]).is_err());
+        for n in 0..packet.len() {
+            assert!(validate_retry(&odcid, &[], &packet[..n], 64, &mut [0; 100]).is_err());
         }
-        assert!(state.validate(&packet, &mut [0; 100]).is_ok());
+        assert!(validate_retry(&odcid, &[], &packet, 64, &mut [0; 100]).is_ok());
     }
     #[test]
-    fn initial_processed_and_stale_checked_retry_cannot_mutate_client() {
-        let packet = hex::<36>(RFC_PACKET);
-        let mut state = ClientRetry::<64>::new(&hex::<8>("8394c8f03e515708"), &[]).unwrap();
-        let checked = state.validate(&packet, &mut [0; 100]).unwrap();
-        state.on_server_initial_processed();
-        assert_eq!(state.commit(checked), Err(Error::RetryNotAllowed));
-        assert!(state.retry_source_id().is_none());
-        assert!(state.token().is_empty());
-    }
-    #[test]
-    fn retry_cid_identity_and_capacity_are_checked_before_commit() {
+    fn retry_cid_identity_and_capacity_are_checked_without_mutation() {
         let packet = hex::<36>(RFC_PACKET);
         let odcid = hex::<8>("8394c8f03e515708");
-        let state = ClientRetry::<5>::new(&odcid, &[]).unwrap();
-        let checked = state.validate(&packet, &mut [0; 100]).unwrap();
-        let mut other = ClientRetry::<64>::new(b"other", &[]).unwrap();
-        assert_eq!(other.commit(checked), Err(Error::ConnectionMismatch));
-        let mut tiny = ClientRetry::<4>::new(&odcid, &[]).unwrap();
-        assert_eq!(tiny.commit(checked), Err(Error::Capacity));
         assert!(matches!(
-            tiny.validate(&packet, &mut [0; 100]),
+            validate_retry(&odcid, &[], &packet, 4, &mut [0; 100]),
             Err(Error::Capacity)
         ));
-        assert!(tiny.may_accept());
-        assert!(ClientRetry::<5>::new(&[0; 21], &[]).is_err());
-        assert!(ClientRetry::<5>::new(&odcid, &[0; 21]).is_err());
-        let wrong_client = ClientRetry::<64>::new(&odcid, b"client").unwrap();
+        assert!(validate_retry(&[0; 21], &[], &packet, 64, &mut [0; 100]).is_err());
+        assert!(validate_retry(&odcid, &[0; 21], &packet, 64, &mut [0; 100]).is_err());
         assert!(matches!(
-            wrong_client.validate(&packet, &mut [0; 100]),
+            validate_retry(&odcid, b"client", &packet, 64, &mut [0; 100]),
             Err(Error::ConnectionMismatch)
         ));
+        assert!(validate_retry(&odcid, &[], &packet, 5, &mut [0; 100]).is_ok());
     }
     #[test]
     fn builder_preflights_buffers_and_token_semantics() {
@@ -800,10 +673,8 @@ mod tests {
             &mut [0; 160],
         )
         .unwrap();
-        let state = ClientRetry::<64>::new(b"original", b"client").unwrap();
         assert_eq!(
-            state
-                .validate(&out[..n], &mut [0; 160])
+            validate_retry(b"original", b"client", &out[..n], 64, &mut [0; 160])
                 .unwrap()
                 .source_id(),
             &[]
@@ -823,12 +694,7 @@ mod tests {
                 &mut [0; 160],
             )
             .unwrap();
-            assert!(
-                ClientRetry::<64>::new(b"original", b"client")
-                    .unwrap()
-                    .validate(&out[..n], &mut [0; 160])
-                    .is_ok()
-            );
+            assert!(validate_retry(b"original", b"client", &out[..n], 64, &mut [0; 160]).is_ok());
         }
     }
     #[test]

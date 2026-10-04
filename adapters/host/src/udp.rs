@@ -167,7 +167,7 @@ impl UdpMetadataSocket {
 
     /// Set ECN in this sendmsg's ancillary data, with DSCP zero. The transport
     /// chooses ECT(0)/Not-ECT and commits accounting only after full acceptance.
-    /// CE is exposed for explicit local metadata tests, never chosen by PathEcn.
+    /// CE is exposed for explicit local metadata tests, never selected for sending by the current endpoint.
     pub fn send_to(
         &self,
         bytes: &[u8],

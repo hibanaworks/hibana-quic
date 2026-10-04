@@ -47,9 +47,7 @@ pub struct KeySource<'scope, 'cfg, 'buf> {
     provider: BoundedTls<'cfg, 'buf>,
     scope: &'scope ApplicationKeyScope,
     application: Option<ApplicationKeyInstallation<'scope>>,
-    integrity_taken: bool,
-    early_taken: bool,
-    finished_taken: bool,
+    integrity: Option<IntegrityBudget>,
 }
 
 impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
@@ -72,13 +70,12 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             return Err(Failure::State);
         }
         self.key_handoff = true;
+        let integrity = self.integrity.take_for_role();
         Ok(KeySource {
             provider: self,
             scope: installation.scope(),
             application: Some(installation),
-            integrity_taken: false,
-            early_taken: false,
-            finished_taken: false,
+            integrity: Some(integrity),
         })
     }
 }
@@ -120,10 +117,10 @@ impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
     }
     pub fn observations(&self) -> tls::Observations {
         let mut observations = self.provider.observations();
-        // The fail-closed sentinel is not the live RX budget after transfer.
-        if self.integrity_taken {
-            observations.failed_authentications = None;
-        }
+        // Report only the actual budget still owned here, never the provider's
+        // fail-closed sentinel or an invented post-transfer count.
+        observations.failed_authentications =
+            self.integrity.as_ref().map(IntegrityBudget::failed_packets);
         observations
     }
     pub fn write_failure_diagnostic(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
@@ -150,6 +147,26 @@ impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
     pub fn take_early_replay_claim(&mut self) -> Option<ReplayClaim> {
         self.provider.take_early_replay_claim()
     }
+    /// Bind the actual burned replay claim and remembered limits to this source.
+    pub fn take_early_admission(
+        &mut self,
+    ) -> Result<crate::early_data::owner::Admission<'scope>, tls::Error> {
+        if self.provider.side() != Side::Server {
+            return Err(tls::Error::InvalidInput);
+        }
+        let limits = self
+            .provider
+            .remembered_early_limits()
+            .ok_or(tls::Error::KeysUnavailable)?;
+        let claim = self
+            .provider
+            .take_early_replay_claim()
+            .ok_or(tls::Error::KeysUnavailable)?;
+        Ok(crate::early_data::owner::Admission::new(
+            self.scope, limits, claim,
+        ))
+    }
+
     /// Emit the actual authenticated Finished transition exactly once. Client
     /// completion is not QUIC handshake confirmation; HANDSHAKE_DONE remains
     /// an independently authenticated receive transition.
@@ -157,21 +174,18 @@ impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
         if self.provider.state == State::Failed {
             return Err(tls::Error::Handshake);
         }
-        if self.finished_taken || self.provider.state != State::Connected {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        let parameters = self
+        let verified = self
             .provider
-            .peer_transport_parameters()
+            .verified_handshake
+            .take()
             .ok_or(tls::Error::KeysUnavailable)?;
         let receipt = FinishedAuthenticated {
             scope: self.scope,
-            side: self.provider.side(),
-            peer_parameters_digest: peer_parameters_digest(parameters),
-            early_status: self.provider.early_status,
-            early_generation: self.provider.early_generation,
+            side: verified.side,
+            peer_parameters_digest: verified.peer_parameters_digest,
+            early_status: verified.early_status,
+            early_generation: verified.early_generation,
         };
-        self.finished_taken = true;
         Ok(receipt)
     }
     /// Move the entire lifetime failed-authentication budget to RX, including
@@ -181,11 +195,7 @@ impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
         if self.provider.state == State::Failed {
             return Err(tls::Error::Handshake);
         }
-        if self.integrity_taken {
-            return Err(tls::Error::KeysUnavailable);
-        }
-        self.integrity_taken = true;
-        Ok(self.provider.integrity.take_for_role())
+        self.integrity.take().ok_or(tls::Error::KeysUnavailable)
     }
     /// Move both actual Handshake PacketKeys once. An unavailable early poll
     /// does not consume a future installation; dropping returned material does.
@@ -212,7 +222,7 @@ impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
         let keys = self
             .provider
             .application
-            .take_handoff()
+            .take()
             .ok_or(tls::Error::KeysUnavailable)?;
         let installation = self.application.take().ok_or(tls::Error::KeysUnavailable)?;
         Ok(ApplicationKeyMaterial { installation, keys })
@@ -223,15 +233,11 @@ impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
         if self.provider.state == State::Failed {
             return Err(tls::Error::Handshake);
         }
-        if self.early_taken {
-            return Err(tls::Error::KeysUnavailable);
-        }
         let key = self
             .provider
             .early_key
             .take()
             .ok_or(tls::Error::KeysUnavailable)?;
-        self.early_taken = true;
         Ok(match self.provider.side() {
             Side::Client => EarlyKeyMaterial::Transmit(TransmitPacketKey {
                 scope: self.scope,
@@ -287,7 +293,7 @@ impl<'scope> FinishedAuthenticated<'scope> {
         self.early_generation
     }
 }
-fn peer_parameters_digest(parameters: &[u8]) -> [u8; 32] {
+pub(super) fn peer_parameters_digest(parameters: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
     digest.update(b"hibana-quic:verified-peer-parameters:v1\0");
@@ -466,6 +472,26 @@ impl<'scope> ReceivePacketKey<'scope> {
             plaintext_digest: crate::crypto::plaintext_digest(&buffer[..len]),
         })
     }
+
+    /// Actual 0-RTT authentication evidence, still without delivery authority.
+    pub fn open_early_authenticated(
+        &self,
+        packet_number: u64,
+        header: &[u8],
+        buffer: &mut [u8],
+        budget: &mut IntegrityBudget,
+    ) -> Result<AuthenticatedEarlyRead<'scope>, crypto::Error> {
+        if self.key.kind() != KeyKind::ZeroRtt {
+            return Err(crypto::Error::KeyDerivation);
+        }
+        let len = self.key.open(packet_number, header, buffer, budget)?;
+        Ok(AuthenticatedEarlyRead {
+            scope: self.scope,
+            packet_number,
+            len,
+            plaintext_digest: crate::crypto::plaintext_digest(&buffer[..len]),
+        })
+    }
     pub fn header_mask(&self, sample: &[u8; 16]) -> Result<[u8; 5], crypto::Error> {
         self.key.header_mask(sample)
     }
@@ -547,5 +573,41 @@ impl KeySource<'_, '_, '_> {
             &mut client.provider,
             &mut server.provider,
         );
+    }
+}
+
+// Unit-only receipt fixture for the isolated early-owner choreography. Real TLS
+// production receipts still come exclusively from KeySource::take_finished.
+#[cfg(test)]
+pub(crate) fn synthetic_early_finished_for_owner_test(
+    scope: &ApplicationKeyScope,
+    generation: u64,
+) -> FinishedAuthenticated<'_> {
+    FinishedAuthenticated {
+        scope,
+        side: Side::Server,
+        peer_parameters_digest: [0; 32],
+        early_status: EarlyStatus::Accepted,
+        early_generation: Some(generation),
+    }
+}
+
+/// Affine evidence of actual 0-RTT AEAD, bound to scope, packet and plaintext.
+#[derive(Debug)]
+pub struct AuthenticatedEarlyRead<'scope> {
+    scope: &'scope ApplicationKeyScope,
+    packet_number: u64,
+    len: usize,
+    plaintext_digest: [u8; 32],
+}
+impl<'scope> AuthenticatedEarlyRead<'scope> {
+    pub fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.scope
+    }
+    pub fn packet_number(&self) -> u64 {
+        self.packet_number
+    }
+    pub fn authenticates_plaintext(&self, bytes: &[u8]) -> bool {
+        self.len == bytes.len() && self.plaintext_digest == crate::crypto::plaintext_digest(bytes)
     }
 }

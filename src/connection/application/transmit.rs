@@ -78,7 +78,6 @@ pub(crate) struct State<
     pending: RefCell<Option<Pending<'book, 'streams, N>>>,
     owners: RefCell<Owners<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>>,
     delivery: crate::connection::tls::Inbox<application_stream::Delivered<'streams>>,
-    closing: Cell<bool>,
     drain_deadline: Cell<Option<u64>>,
     completed: Cell<bool>,
 }
@@ -105,7 +104,6 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
             pending: RefCell::new(None),
             owners: RefCell::new(Owners { book, streams }),
             delivery: crate::connection::tls::Inbox::new(),
-            closing: Cell::new(false),
             drain_deadline: Cell::new(None),
             completed: Cell::new(false),
         }
@@ -914,7 +912,6 @@ pub(crate) async fn close<
     if !core::ptr::eq(owner.scope(), retired.scope())
         || !core::ptr::eq(owner.scope(), permission.scope())
         || !control.stopping()
-        || state.closing.get()
         || state.pending.borrow().is_some()
     {
         return Err(Error::Binding);
@@ -927,7 +924,6 @@ pub(crate) async fn close<
         .ok_or(Error::Capacity)?;
     book.discard_for_close(retired)?;
     let mut keys = owner.take_closing(quiesced)?;
-    state.closing.set(true);
     state.drain_deadline.set(Some(deadline));
     let mut sequence = 0u64;
     let mut close_accepted = matches!(kind, CloseKind::Peer { .. });
@@ -1066,10 +1062,7 @@ pub(crate) async fn publish_close<
                     state.settle(packet, None)?;
                     return Err(Error::Binding);
                 };
-                if !state.closing.get()
-                    || packet.stream.is_some()
-                    || packet.acknowledgment.is_some()
-                {
+                if packet.stream.is_some() || packet.acknowledgment.is_some() {
                     state.settle(packet, None)?;
                     return Err(Error::Binding);
                 }
@@ -1118,9 +1111,6 @@ pub(crate) async fn publish_close<
             }
             38 => {
                 check(offered.recv::<p::Drain>().await?, sequence)?;
-                if !state.closing.get() {
-                    return Err(Error::Binding);
-                }
                 let deadline = state.drain_deadline.get().ok_or(Error::Binding)?;
                 clock.wait_until(deadline).await;
                 endpoint.send::<p::Drained>(&sequence).await?;

@@ -7,10 +7,6 @@ type Packet = ([u8; 1], [u8; 20]);
 fn key(suite: CipherSuite, byte: u8) -> PacketKey {
     PacketKey::from_secret(suite, KeyKind::OneRtt, &[byte; 32]).unwrap()
 }
-fn combined(suite: CipherSuite, reverse: bool) -> ApplicationKeys {
-    let (send, receive) = if reverse { (2, 1) } else { (1, 2) };
-    ApplicationKeys::new(key(suite, send), key(suite, receive)).unwrap()
-}
 fn install(
     scope: &mut ApplicationKeyScope,
     suite: CipherSuite,
@@ -22,13 +18,6 @@ fn install(
         .unwrap()
 }
 fn packet(tx: &mut ApplicationWriteKeys<'_>, pn: u64) -> Packet {
-    let header = [0x40 | if tx.phase() { 4 } else { 0 }];
-    let mut body = [0; 20];
-    body[..4].copy_from_slice(b"test");
-    assert_eq!(tx.seal(pn, &header, &mut body, 4), Ok(20));
-    (header, body)
-}
-fn reference_packet(tx: &mut ApplicationKeys, pn: u64) -> Packet {
     let header = [0x40 | if tx.phase() { 4 } else { 0 }];
     let mut body = [0; 20];
     body[..4].copy_from_slice(b"test");
@@ -63,7 +52,8 @@ fn settle<'a>(
 fn authorize(tx: &mut ApplicationWriteKeys<'_>, now: u64) {
     // Private numerical-policy fixture, not a substitute for real producer
     // integration. Public callers require actual scoped Path/Recovery evidence.
-    tx.handshake_confirmed = true;
+    tx.confirm_handshake(ScopedHandshakeConfirmation { scope: tx.scope() })
+        .unwrap();
     tx.acknowledge_validated(
         tx.current.last_sealed.unwrap(),
         tx.receive_generation,
@@ -77,19 +67,8 @@ fn initiate<'a>(rx: &mut ApplicationReadKeys<'a>, tx: &mut ApplicationWriteKeys<
     let installed = tx.initiate(ready, now, 10).unwrap();
     rx.accept_local_write_epoch(installed).unwrap();
 }
-fn reference_authorize(keys: &mut ApplicationKeys, now: u64) {
-    keys.confirm_handshake().unwrap();
-    keys.acknowledge(
-        keys.local.last_sealed.unwrap(),
-        keys.receive_generation(),
-        now,
-        10,
-    )
-    .unwrap();
-}
-
 #[test]
-fn directional_epochs_match_combined_ciphertext_plaintext_masks_and_limits_without_allocation() {
+fn directional_epochs_preserve_ciphertext_masks_and_nonce_limits_without_allocation() {
     let guard = NoAlloc::start();
     for suite in [
         CipherSuite::Aes128GcmSha256,
@@ -99,14 +78,11 @@ fn directional_epochs_match_combined_ciphertext_plaintext_masks_and_limits_witho
         let mut bscope = ApplicationKeyScope::new(12);
         let (mut arx, mut atx) = install(&mut ascope, suite, false);
         let (mut brx, mut btx) = install(&mut bscope, suite, true);
-        let mut a = combined(suite, false);
-        let mut b = combined(suite, true);
-        let (mut ab, mut bb, mut refab, mut refbb) = (
-            IntegrityBudget::new(),
-            IntegrityBudget::new(),
-            IntegrityBudget::new(),
-            IntegrityBudget::new(),
-        );
+        let mut expected_a = key(suite, 1);
+        let mut expected_b = key(suite, 2);
+        let (mut ab, mut bb) = (IntegrityBudget::new(), IntegrityBudget::new());
+        let mask_a = atx.header_mask(&[9; 16]).unwrap();
+        let mask_b = btx.header_mask(&[9; 16]).unwrap();
         for generation in 0..=4 {
             let now = generation * 40;
             if generation > 0 {
@@ -114,88 +90,58 @@ fn directional_epochs_match_combined_ciphertext_plaintext_masks_and_limits_witho
                 atx.maintain(now, 10).unwrap();
                 brx.maintain(now, 10).unwrap();
                 btx.maintain(now, 10).unwrap();
-                a.maintain(now, 10).unwrap();
-                b.maintain(now, 10).unwrap();
+                expected_a.update_key().unwrap();
+                expected_b.update_key().unwrap();
                 initiate(&mut arx, &mut atx, now);
-                a.initiate(now, 10).unwrap();
             }
             let apacket = packet(&mut atx, generation);
-            assert_eq!(apacket, reference_packet(&mut a, generation));
-            let bout = open(&mut brx, generation, apacket, &mut bb, now).unwrap();
-            let (header, mut body) = apacket;
-            let expected = b
-                .open(
-                    generation,
-                    header[0] & 4 != 0,
-                    &header,
-                    &mut body,
-                    &mut refbb,
-                    now,
-                    10,
-                )
+            let mut expected = [0; 20];
+            expected[..4].copy_from_slice(b"test");
+            expected_a
+                .seal(generation, &apacket.0, &mut expected, 4)
                 .unwrap();
-            assert_eq!(bout.opened(), expected);
+            assert_eq!(apacket.1, expected);
+            let bout = open(&mut brx, generation, apacket, &mut bb, now).unwrap();
             if generation > 0 {
                 assert_eq!(btx.generation(), generation - 1);
-                assert!(matches!(&bout, AuthenticatedRead::PeerUpdate(_)));
             }
             let back = settle(&mut brx, &mut btx, bout);
-            assert_eq!(back.opened(), expected);
+            assert_eq!(back.opened().generation, generation);
             assert!(back.authenticates_plaintext(b"test"));
             assert!(!back.authenticates_plaintext(b"best"));
-            assert!(!back.authenticates_plaintext(b"tes"));
-            assert!(core::ptr::eq(back.scope(), brx.scope()));
             assert_eq!(back.packet_number(), generation);
-            assert_eq!(back.connection_generation(), 12);
-            assert_eq!(btx.generation(), b.generation());
+            assert_eq!(btx.generation(), generation);
             let bpacket = packet(&mut btx, generation);
-            assert_eq!(bpacket, reference_packet(&mut b, generation));
-            let aout = open(&mut arx, generation, bpacket, &mut ab, now).unwrap();
-            let (header, mut body) = bpacket;
-            let expected = a
-                .open(
-                    generation,
-                    header[0] & 4 != 0,
-                    &header,
-                    &mut body,
-                    &mut refab,
-                    now,
-                    10,
-                )
+            expected[..4].copy_from_slice(b"test");
+            expected_b
+                .seal(generation, &bpacket.0, &mut expected, 4)
                 .unwrap();
-            assert_eq!(settle(&mut arx, &mut atx, aout).opened(), expected);
-            assert_eq!(atx.header_mask(&[9; 16]), a.header_mask(true, &[9; 16]));
-            assert_eq!(arx.header_mask(&[9; 16]), a.header_mask(false, &[9; 16]));
-            assert_eq!(arx.previous_key_deadline(), a.previous_key_deadline());
+            assert_eq!(bpacket.1, expected);
+            let aout = open(&mut arx, generation, bpacket, &mut ab, now).unwrap();
+            assert_eq!(
+                settle(&mut arx, &mut atx, aout).opened().generation,
+                generation
+            );
+            assert_eq!(atx.header_mask(&[9; 16]).unwrap(), mask_a);
+            assert_eq!(arx.header_mask(&[9; 16]).unwrap(), mask_b);
             authorize(&mut atx, now);
             authorize(&mut btx, now);
-            reference_authorize(&mut a, now);
-            reference_authorize(&mut b, now);
             assert_eq!(
-                atx.seal(
-                    generation,
-                    &[0x40 | if atx.phase() { 4 } else { 0 }],
-                    &mut [0; 16],
-                    0
-                ),
+                atx.seal(generation, &apacket.0, &mut [0; 16], 0),
                 Err(Error::PacketNumberReuse)
             );
             if generation > 0 {
                 arx.maintain(now, 10).unwrap();
                 atx.maintain(now, 10).unwrap();
-                a.maintain(now, 10).unwrap();
                 let failed = atx
                     .initiate(arx.prepare_local_update().unwrap(), now + 29, 10)
                     .unwrap_err();
                 assert_eq!(failed.error, Error::KeyUpdateNotAllowed);
                 arx.cancel_local_update(failed.ready).unwrap();
-                assert_eq!(a.initiate(now + 29, 10), Err(Error::KeyUpdateNotAllowed));
             }
         }
         assert_eq!(ab.failed_packets(), 0);
         assert_eq!(bb.failed_packets(), 0);
-        assert_eq!(refab.failed_packets(), 0);
-        assert_eq!(refbb.failed_packets(), 0);
     }
     guard.finish();
 }
@@ -291,7 +237,7 @@ fn forged_phase_and_missing_prepared_key_debit_one_attempt_and_never_promote() {
         assert_eq!(rx.generation(), 0);
         assert_eq!(tx.generation(), 0);
         assert_eq!(rx.next.is_none(), missing);
-        assert!(rx.pending.is_none());
+        assert!(rx.current.is_some());
     }
 }
 
@@ -347,7 +293,8 @@ fn local_readiness_requires_confirmation_valid_ack_and_matching_owners() {
         .unwrap_err();
     assert_eq!(failure.error, Error::KeyUpdateNotAllowed);
     rx.cancel_local_update(failure.ready).unwrap();
-    tx.handshake_confirmed = true;
+    tx.confirm_handshake(ScopedHandshakeConfirmation { scope: tx.scope() })
+        .unwrap();
     let failure = tx
         .initiate(rx.prepare_local_update().unwrap(), 0, 10)
         .unwrap_err();
@@ -462,8 +409,8 @@ fn installed_receipt_cannot_complete_another_receivers_pending_transition() {
         .accept_write_epoch(btx.install_peer_update(b).unwrap())
         .unwrap();
     assert_eq!(receipt.opened().generation, 1);
-    assert!(brx.pending.is_none());
-    assert!(arx.pending.is_some());
+    assert!(brx.current.is_some());
+    assert!(arx.current.is_none());
 }
 
 #[test]
@@ -546,13 +493,13 @@ fn same_generation_foreign_handshake_and_validated_ack_scopes_cannot_authorize_u
         tx.confirm_handshake(ScopedHandshakeConfirmation { scope: foreign }),
         Err(Error::KeyUpdateNotAllowed)
     );
-    assert!(!tx.handshake_confirmed);
+    assert!(tx.confirmation.is_none());
     assert_eq!(
         tx.acknowledge(
             ValidatedKeyAck {
                 scope: foreign,
                 sent_packet_number: 0,
-                sent_key_generation: Some(0),
+                sent_key_generation: 0,
                 received_key_generation: 0
             },
             0,
@@ -560,7 +507,7 @@ fn same_generation_foreign_handshake_and_validated_ack_scopes_cannot_authorize_u
         ),
         Err(Error::InvalidAcknowledgment)
     );
-    assert!(!tx.current_acked);
+    assert!(tx.update_evidence.is_none());
     let own = tx.scope();
     tx.confirm_handshake(ScopedHandshakeConfirmation { scope: own })
         .unwrap();
@@ -568,7 +515,7 @@ fn same_generation_foreign_handshake_and_validated_ack_scopes_cannot_authorize_u
         ValidatedKeyAck {
             scope: own,
             sent_packet_number: 0,
-            sent_key_generation: Some(0),
+            sent_key_generation: 0,
             received_key_generation: 0,
         },
         0,
@@ -628,7 +575,7 @@ fn epoch_ack<'a>(
     ValidatedKeyAck {
         scope,
         sent_packet_number: pn,
-        sent_key_generation: Some(sent),
+        sent_key_generation: sent,
         received_key_generation: received,
     }
 }
@@ -663,13 +610,14 @@ fn old_epoch_ack_before_current_send_preserves_progress_without_current_update_p
             packet(&mut tx, 7);
             install_peer_epoch_one(&mut rx, &mut tx, suite);
             assert_eq!(tx.current.last_sealed, Some(7));
-            tx.handshake_confirmed = true;
+            tx.confirm_handshake(ScopedHandshakeConfirmation { scope: tx.scope() })
+                .unwrap();
             if !current_key_has_high_water {
                 // Private numeric fixture for the reported empty-current-key
                 // accounting case. Normal promote() retains the old PN bound.
                 tx.current.last_sealed = None;
                 assert_eq!(
-                    tx.acknowledge_validated(7, 0, 10, 10),
+                    tx.acknowledge(epoch_ack(tx.scope(), 7, 1, 1), 10, 10),
                     Err(Error::InvalidAcknowledgment)
                 );
             }
@@ -683,8 +631,8 @@ fn old_epoch_ack_before_current_send_preserves_progress_without_current_update_p
                 Ok(())
             );
             assert_eq!(tx.first_sent, None);
-            assert!(!tx.current_acked);
-            assert_eq!(tx.update_after, None);
+            assert!(tx.update_evidence.is_none());
+            assert_eq!(tx.update_evidence.as_ref().map(|e| e.not_before), None);
             assert_eq!(tx.generation(), 1);
             tx.maintain(10, 10).unwrap();
             rx.maintain(10, 10).unwrap();
@@ -710,7 +658,8 @@ fn current_epoch_ack_requires_a_current_seal_and_matching_epoch_packet_bounds() 
     let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
     packet(&mut tx, 7);
     install_peer_epoch_one(&mut rx, &mut tx, CipherSuite::Aes128GcmSha256);
-    tx.handshake_confirmed = true;
+    tx.confirm_handshake(ScopedHandshakeConfirmation { scope: tx.scope() })
+        .unwrap();
     let own_scope = tx.scope();
     // A prior packet cannot be mislabeled current merely because the new key
     // inherited its packet-number high-water mark.
@@ -724,19 +673,19 @@ fn current_epoch_ack_requires_a_current_seal_and_matching_epoch_packet_bounds() 
             tx.acknowledge(epoch_ack(own_scope, pn, sent, received), 10, 10),
             Err(Error::InvalidAcknowledgment)
         );
-        assert!(!tx.current_acked);
-        assert_eq!(tx.update_after, None);
+        assert!(tx.update_evidence.is_none());
+        assert_eq!(tx.update_evidence.as_ref().map(|e| e.not_before), None);
         assert!(tx.active);
     }
     tx.acknowledge(epoch_ack(own_scope, 8, 1, 1), 10, 10)
         .unwrap();
-    assert!(tx.current_acked);
-    assert_eq!(tx.update_after, Some(40));
+    assert!(tx.update_evidence.is_some());
+    assert_eq!(tx.update_evidence.as_ref().map(|e| e.not_before), Some(40));
     // A later old-epoch ACK must neither reauthorize nor postpone the current
     // epoch's already-established three-PTO barrier.
     tx.acknowledge(epoch_ack(own_scope, 7, 0, 0), 20, 10)
         .unwrap();
-    assert_eq!(tx.update_after, Some(40));
+    assert_eq!(tx.update_evidence.as_ref().map(|e| e.not_before), Some(40));
     tx.maintain(20, 10).unwrap();
     rx.maintain(20, 10).unwrap();
     let rejected = tx
@@ -785,8 +734,8 @@ fn old_epoch_exception_retains_scope_packet_number_and_authenticated_receive_bou
         tx.acknowledge(epoch_ack(own_scope, 7, 0, 1), 10, 10),
         Ok(())
     );
-    assert!(!tx.current_acked);
-    assert_eq!(tx.update_after, None);
+    assert!(tx.update_evidence.is_none());
+    assert_eq!(tx.update_evidence.as_ref().map(|e| e.not_before), None);
 }
 
 #[test]

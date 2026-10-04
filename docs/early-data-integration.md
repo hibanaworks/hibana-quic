@@ -1,16 +1,28 @@
 # Early-data qualification boundary
 
-The current direct connection does not implement an end-to-end 0-RTT stream
-workflow. The standalone legacy early-send journal and deferred control store,
-including their private state machines and stream-import entry points, have been
-deleted. They were not connected to the current endpoint.
+The early-byte lifetime is now expressed by `early_data::protocol`: projected
+INPUT, OWNER, TLS and APPLICATION roles. Direct async locals retain bounded
+bytes, consume an actual scoped TLS Finished receipt, and transfer ranges and
+deferred controls with consumer acknowledgments. Reject and cancel discard the
+owned bytes without refunding the replay claim. The independent `Phase` and
+per-slot control flags are deleted; the remaining private `HeldBytes` is a
+numeric byte/final-size ledger, not a public lifecycle API.
 
-The bounded TLS provider still has tested early-data cryptographic negotiation,
-ticket handling and rejection behavior. The asynchronous reference suites test
-those TLS boundaries. This is not evidence that the current host sends, receives,
-quarantines, or replays 0-RTT application streams correctly.
+Admission consumes the server's actual replay claim. Input consumes a receipt
+from a successful 0-RTT AEAD open and binds scope, packet number and plaintext.
+A copied Verified wire label cannot release data without the actual owned
+Finished receipt. The receipt is returned to the TLS continuation after checking
+its connection scope, server side, accepted early-data status and generation.
 
-A future implementation must express acceptance/rejection, Finished-gated release,
-and replay ownership in Hibana global choreography and its direct async locals.
-Do not restore the deleted journal/phase dispatcher as a compatibility path.
+Actual TLS resumption tests for AES-128-GCM and ChaCha20-Poly1305 pass with
+zero allocations in the measured encrypted-input/projected-release path. Their
+handshake component fixture transports TLS CRYPTO messages directly; it is not
+an encrypted QUIC handshake or a whole-connection allocation measurement.
+Focused projected tests cover rejection, cancellation, absent Finished,
+premature publication, data release and deferred-control acknowledgment.
+
+The host's end-to-end 0-RTT stream workflow is still not connected or qualified.
+The deleted early-send journal and phase dispatcher must not return as a
+compatibility path. Further packet routing, recovery, rejection replay and
+application integration must use Hibana contracts and actual owned resources.
 The official `zerortt` cells remain unrun; see [qualification](../interop/qualification.json).

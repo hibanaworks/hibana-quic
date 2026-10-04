@@ -108,6 +108,20 @@ pub type DeliveryReclaimsClosed = g::Msg<201, u64>;
 pub type ReclaimStream = g::Msg<202, u64>;
 pub type StreamReclaimed = g::Msg<203, u64>;
 pub type ReclaimSettled = g::Msg<204, u64>;
+pub type LocalUpdate = g::Msg<205, u64>;
+pub type LocalInstalled = g::Msg<206, u64>;
+pub type LocalRejected = g::Msg<207, u64>;
+pub type LocalSettled = g::Msg<208, u64>;
+pub type LocalUpdateFlow = g::Seq<
+    g::Send<RX_KEYS, TX_KEYS, LocalUpdate>,
+    g::Seq<
+        g::Route<
+            g::Send<TX_KEYS, RX_KEYS, LocalInstalled>,
+            g::Send<TX_KEYS, RX_KEYS, LocalRejected>,
+        >,
+        g::Send<RX_KEYS, TX_KEYS, LocalSettled>,
+    >,
+>;
 pub type ProductionTransfer = g::Seq<
     g::Send<INGRESS, SOURCE_COLLECTOR, ProductionReclaim>,
     g::Send<SOURCE_COLLECTOR, INGRESS, ProductionStored>,
@@ -212,7 +226,7 @@ pub type KeyFlow = g::Seq<
                             g::Send<TX_KEYS, RX_KEYS, ConfirmationFailed>,
                         >,
                     >,
-                    g::Send<RX_KEYS, TX_KEYS, KeysRetire>,
+                    g::Route<LocalUpdateFlow, g::Send<RX_KEYS, TX_KEYS, KeysRetire>>,
                 >,
             >,
         >,
@@ -614,10 +628,7 @@ pub fn publication_choreography() -> g::Program<PublicationFlow> {
     g::par(base, receipt)
 }
 
-pub fn choreography() -> g::Program<Flow> {
-    let source = source_choreography();
-    let receive = receive_choreography();
-
+pub fn key_choreography() -> g::Program<KeyFlow> {
     let peer_update = g::seq(
         g::send::<RX_KEYS, TX_KEYS, PeerUpdate>(),
         g::route(
@@ -643,11 +654,33 @@ pub fn choreography() -> g::Program<Flow> {
         peer_update,
         g::route(
             key_ack,
-            g::route(confirmation, g::send::<RX_KEYS, TX_KEYS, KeysRetire>()),
+            g::route(
+                confirmation,
+                g::route(
+                    g::seq(
+                        g::send::<RX_KEYS, TX_KEYS, LocalUpdate>(),
+                        g::seq(
+                            g::route(
+                                g::send::<TX_KEYS, RX_KEYS, LocalInstalled>(),
+                                g::send::<TX_KEYS, RX_KEYS, LocalRejected>(),
+                            ),
+                            g::send::<RX_KEYS, TX_KEYS, LocalSettled>(),
+                        ),
+                    ),
+                    g::send::<RX_KEYS, TX_KEYS, KeysRetire>(),
+                ),
+            ),
         ),
     )
     .roll();
-    let keys = g::seq(key_work, g::send::<TX_KEYS, RX_KEYS, KeysRetired>());
+    g::seq(key_work, g::send::<TX_KEYS, RX_KEYS, KeysRetired>())
+}
+
+pub fn choreography() -> g::Program<Flow> {
+    let source = source_choreography();
+    let receive = receive_choreography();
+
+    let keys = key_choreography();
 
     let timer = g::route(
         g::seq(

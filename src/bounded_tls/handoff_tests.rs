@@ -1,7 +1,7 @@
 // Owned-key authority checks driven by actual asynchronous transcript roles.
 use super::*;
 use crate::{
-    bounded_tls::{ApplicationMaterial, CipherPolicy, ClientConfig, ServerConfig},
+    bounded_tls::{CipherPolicy, ClientConfig, ServerConfig},
     crypto::directional::AuthenticatedRead,
     tls_certificate::{CertificateDer, Limits, trust_anchor_from_der},
 };
@@ -33,21 +33,15 @@ fn legacy_denied(provider: &mut BoundedTls<'_, '_>) {
         );
     }
     assert!(provider.integrity_budget().is_none());
-    assert_eq!(
-        provider.confirm_handshake(),
-        Err(tls::Error::KeysUnavailable)
-    );
-    assert_eq!(
-        provider.maintain_keys(0, 10),
-        Err(tls::Error::KeysUnavailable)
-    );
+    assert_eq!(provider.confirm_handshake(), Err(tls::Error::Unsupported));
+    assert_eq!(provider.maintain_keys(0, 10), Err(tls::Error::Unsupported));
     assert_eq!(
         provider.initiate_key_update(0, 10),
-        Err(tls::Error::KeysUnavailable)
+        Err(tls::Error::Unsupported)
     );
     assert_eq!(
         provider.acknowledge_one_rtt(1, 0, 0, 10),
-        Err(tls::Error::KeysUnavailable)
+        Err(tls::Error::Unsupported)
     );
     assert_eq!(
         provider.open_one_rtt(1, false, b"h", &mut buffer, 0, 10),
@@ -139,10 +133,7 @@ fn actual_owned_tls_keys_and_finished_are_affine_scoped_and_allocation_free() {
             let smaterial = server.take_application_keys().unwrap();
             assert!(core::ptr::eq(smaterial.scope(), server.scope()));
             let (mut srx, mut stx) = smaterial.install().unwrap();
-            assert!(matches!(
-                server.provider.application,
-                ApplicationMaterial::Empty
-            ));
+            assert!(matches!(server.provider.application, None));
             assert!(server.take_handshake_keys().is_err());
             assert!(server.take_application_keys().is_err());
             assert!(server.provider.install_application().is_err());

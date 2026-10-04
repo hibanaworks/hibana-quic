@@ -234,8 +234,7 @@ fn is_hrr(message: &[u8]) -> bool {
 /// terminally discards every retained secret. The caller still MUST verify the
 /// certificate chain/signature and enforce handshake semantics before advancing.
 pub struct KeySchedule {
-    stage: Stage,
-    secret: Secret32,
+    secret: Option<Secret32>,
     with_psk: bool,
     client_handshake: Option<Secret32>,
     server_handshake: Option<Secret32>,
@@ -255,8 +254,7 @@ impl KeySchedule {
         }
         let secret = extract(&[0; HASH_LEN], psk.unwrap_or(&[0; HASH_LEN]));
         Ok(Self {
-            stage: Stage::Early,
-            secret,
+            secret: Some(secret),
             with_psk: psk.is_some(),
             client_handshake: None,
             server_handshake: None,
@@ -267,13 +265,25 @@ impl KeySchedule {
             server_finished_bytes: 0,
         })
     }
+    /// Read-only description of actual retained key material, not a stored
+    /// protocol controller. TLS ordering belongs to the projected owners.
     pub fn stage(&self) -> Stage {
-        self.stage
+        if self.resumption.is_some() {
+            Stage::Resumption
+        } else if self.secret.is_none() {
+            Stage::Discarded
+        } else if self.client_application.is_some() {
+            Stage::Master
+        } else if self.client_handshake.is_some() {
+            Stage::Handshake
+        } else {
+            Stage::Early
+        }
     }
     fn require(&self, stage: Stage) -> Result<(), Error> {
-        if self.stage == Stage::Discarded {
+        if self.stage() == Stage::Discarded {
             Err(Error::Discarded)
-        } else if self.stage != stage {
+        } else if self.stage() != stage {
             Err(Error::WrongStage)
         } else {
             Ok(())
@@ -281,14 +291,13 @@ impl KeySchedule {
     }
 
     pub fn discard(&mut self) {
-        self.secret.0.zeroize();
+        self.secret = None;
         self.client_handshake = None;
         self.server_handshake = None;
         self.client_application = None;
         self.server_application = None;
         self.exporter = None;
         self.resumption = None;
-        self.stage = Stage::Discarded;
     }
 
     /// Generate the PSK binder over the correctly truncated transcript hash.
@@ -307,7 +316,11 @@ impl KeySchedule {
             PskKind::External => b"ext binder",
             PskKind::Resumption => b"res binder",
         };
-        let binder_key = derive_secret(&self.secret, label, &empty_hash())?;
+        let binder_key = derive_secret(
+            self.secret.as_ref().ok_or(Error::Discarded)?,
+            label,
+            &empty_hash(),
+        )?;
         finished(&binder_key, transcript_hash)
     }
 
@@ -319,7 +332,11 @@ impl KeySchedule {
         if client_hello.messages != 1 || client_hello.last_kind != Some(1) {
             return Err(Error::WrongStage);
         }
-        derive_secret(&self.secret, b"c e traffic", &client_hello.hash())
+        derive_secret(
+            self.secret.as_ref().ok_or(Error::Discarded)?,
+            b"c e traffic",
+            &client_hello.hash(),
+        )
     }
 
     /// Install validated fresh (EC)DHE output and derive both handshake secrets.
@@ -342,20 +359,23 @@ impl KeySchedule {
         {
             return Err(Error::WrongStage);
         }
-        let derived = derive_secret(&self.secret, b"derived", &empty_hash())?;
+        let derived = derive_secret(
+            self.secret.as_ref().ok_or(Error::Discarded)?,
+            b"derived",
+            &empty_hash(),
+        )?;
         let handshake = extract(derived.as_bytes(), shared_secret);
         let hash = through_server_hello.hash();
         let client = derive_secret(&handshake, b"c hs traffic", &hash)?;
         let server = derive_secret(&handshake, b"s hs traffic", &hash)?;
-        self.secret = handshake;
+        self.secret = Some(handshake);
         self.client_handshake = Some(client);
         self.server_handshake = Some(server);
-        self.stage = Stage::Handshake;
         Ok(())
     }
 
     pub fn handshake_traffic(&self, side: Side) -> Result<&Secret32, Error> {
-        if self.stage == Stage::Discarded {
+        if self.stage() == Stage::Discarded {
             return Err(Error::Discarded);
         }
         match side {
@@ -402,23 +422,26 @@ impl KeySchedule {
         if through_server_finished.last_kind != Some(20) {
             return Err(Error::WrongStage);
         }
-        let derived = derive_secret(&self.secret, b"derived", &empty_hash())?;
+        let derived = derive_secret(
+            self.secret.as_ref().ok_or(Error::Discarded)?,
+            b"derived",
+            &empty_hash(),
+        )?;
         let master = extract(derived.as_bytes(), &[0; HASH_LEN]);
         let hash = through_server_finished.hash();
         let client = derive_secret(&master, b"c ap traffic", &hash)?;
         let server = derive_secret(&master, b"s ap traffic", &hash)?;
         let exporter = derive_secret(&master, b"exp master", &hash)?;
-        self.secret = master;
+        self.secret = Some(master);
         self.client_application = Some(client);
         self.server_application = Some(server);
         self.exporter = Some(exporter);
         self.server_finished_bytes = through_server_finished.bytes;
-        self.stage = Stage::Master;
         Ok(())
     }
 
     pub fn application_traffic(&self, side: Side) -> Result<&Secret32, Error> {
-        if self.stage == Stage::Discarded {
+        if self.stage() == Stage::Discarded {
             return Err(Error::Discarded);
         }
         match side {
@@ -437,13 +460,15 @@ impl KeySchedule {
         {
             return Err(Error::WrongStage);
         }
-        let resumption =
-            derive_secret(&self.secret, b"res master", &through_client_finished.hash())?;
+        let resumption = derive_secret(
+            self.secret.as_ref().ok_or(Error::Discarded)?,
+            b"res master",
+            &through_client_finished.hash(),
+        )?;
         self.resumption = Some(resumption);
-        self.secret.0.zeroize();
+        self.secret = None;
         self.client_handshake = None;
         self.server_handshake = None;
-        self.stage = Stage::Resumption;
         Ok(())
     }
 
@@ -470,7 +495,7 @@ impl KeySchedule {
     /// RFC 8446 §7.5 exporter into caller-owned output. Call only after the
     /// surrounding TLS machine has authenticated the peer/handshake.
     pub fn export(&self, label: &[u8], context: &[u8], output: &mut [u8]) -> Result<(), Error> {
-        if self.stage == Stage::Discarded {
+        if self.stage() == Stage::Discarded {
             return Err(Error::Discarded);
         }
         let exporter = self.exporter.as_ref().ok_or(Error::WrongStage)?;
@@ -742,7 +767,7 @@ mod tests {
     fn rfc8448_section3_full_schedule_transcript_finished_and_ticket() {
         let mut schedule = KeySchedule::new(None).unwrap();
         assert_eq!(
-            schedule.secret.as_bytes(),
+            schedule.secret.as_ref().unwrap().as_bytes(),
             &hex::<32>("33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a")
         );
         let mut transcript = through_server_hello();
@@ -757,7 +782,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            schedule.secret.as_bytes(),
+            schedule.secret.as_ref().unwrap().as_bytes(),
             &hex::<32>("1dc826e93606aa6fdc0aadc12f741b01046aa6b99f691ed221a9f0ca043fbeac")
         );
         assert_eq!(
@@ -785,7 +810,7 @@ mod tests {
         );
         schedule.derive_master(&transcript).unwrap();
         assert_eq!(
-            schedule.secret.as_bytes(),
+            schedule.secret.as_ref().unwrap().as_bytes(),
             &hex::<32>("18df06843d13a08bf2a449844c5f8a478001bc4d4c627984d5a41da8d0402919")
         );
         assert_eq!(
@@ -830,7 +855,7 @@ mod tests {
             &hex::<32>("4ecd0eb6ec3b4d87f5d6028f922ca4c5851a277fd41311c9e62d2c9492e1c4f3")
         );
         assert!(schedule.handshake_traffic(Side::Client).is_err());
-        assert_eq!(schedule.secret.as_bytes(), &[0; 32]);
+        assert!(schedule.secret.is_none());
     }
 
     #[test]
@@ -863,7 +888,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            schedule.secret.as_bytes(),
+            schedule.secret.as_ref().unwrap().as_bytes(),
             &hex::<32>("ce022e5e6e81e50736d773f2d3adfce8220d049bf510f0dbfac927ef4243b148")
         );
         assert_eq!(
@@ -881,7 +906,7 @@ mod tests {
         let psk = hex::<32>("4ecd0eb6ec3b4d87f5d6028f922ca4c5851a277fd41311c9e62d2c9492e1c4f3");
         let schedule = KeySchedule::new(Some(&psk)).unwrap();
         assert_eq!(
-            schedule.secret.as_bytes(),
+            schedule.secret.as_ref().unwrap().as_bytes(),
             &hex::<32>("9b2188e9b2fc6d64d71dc329900e20bb41915000f678aa839cbb797cb7d8332c")
         );
         let mut transcript = Transcript::new();
@@ -925,7 +950,7 @@ mod tests {
                 Err(Error::FinishedAuthentication)
             );
             assert_eq!(schedule.stage(), Stage::Discarded);
-            assert_eq!(schedule.secret.as_bytes(), &[0; 32]);
+            assert!(schedule.secret.is_none());
             assert!(schedule.client_handshake.is_none());
             assert_eq!(schedule.derive_master(&transcript), Err(Error::Discarded));
         }
@@ -1075,7 +1100,7 @@ mod tests {
         assert!(schedule.client_application.is_none());
         assert!(schedule.server_application.is_none());
         assert!(schedule.exporter.is_none());
-        assert_eq!(schedule.secret.as_bytes(), &[0; HASH_LEN]);
+        assert!(schedule.secret.is_none());
         assert!(matches!(
             schedule.take_resumption_master(),
             Err(Error::Discarded)

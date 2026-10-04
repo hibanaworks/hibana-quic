@@ -10,6 +10,11 @@
 use crate::parameters::{Parameters, Peer};
 use zeroize::Zeroize;
 
+pub mod owner;
+#[cfg(test)]
+mod owner_tests;
+pub mod protocol;
+
 const MAX: u64 = (1 << 62) - 1;
 const MAX_STREAMS: u64 = 1 << 60;
 pub const REMEMBERED_BYTES: usize = 73;
@@ -335,24 +340,9 @@ pub struct ReplayClaim {
     generation: u64,
     serial: u64,
 }
-/// Numeric identity for private owner-to-owner handoffs. Copying this value
-/// cannot create a replay claim or undo its committed ledger entry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ReplayBinding {
-    issuer: [u8; 16],
-    generation: u64,
-    serial: u64,
-}
 impl ReplayClaim {
     pub fn generation(&self) -> u64 {
         self.generation
-    }
-    pub(crate) fn owner_binding(&self) -> ReplayBinding {
-        ReplayBinding {
-            issuer: self.issuer,
-            generation: self.generation,
-            serial: self.serial,
-        }
     }
 }
 impl<'a, const N: usize> ReplayLedger<'a, N> {
@@ -501,12 +491,9 @@ pub struct QuarantineSlot<const BYTES: usize> {
     id: Option<u64>,
     highest: u64,
     final_size: Option<u64>,
-    fin_pending: bool,
-    marker_pending: bool,
-    opened_in_table: bool,
-    released_highest: u64,
-    fin_released: bool,
-    reset: bool,
+    delivered_end: Option<u64>,
+    delivered_final_size: Option<u64>,
+    reset_final_size: Option<u64>,
     bytes: [u8; BYTES],
     present: [u8; BYTES],
 }
@@ -515,12 +502,9 @@ impl<const BYTES: usize> QuarantineSlot<BYTES> {
         id: None,
         highest: 0,
         final_size: None,
-        fin_pending: false,
-        marker_pending: false,
-        opened_in_table: false,
-        released_highest: 0,
-        fin_released: false,
-        reset: false,
+        delivered_end: None,
+        delivered_final_size: None,
+        reset_final_size: None,
         bytes: [0; BYTES],
         present: [0; BYTES],
     };
@@ -530,24 +514,15 @@ impl<const BYTES: usize> QuarantineSlot<BYTES> {
         self.id = None;
         self.highest = 0;
         self.final_size = None;
-        self.fin_pending = false;
-        self.marker_pending = false;
-        self.opened_in_table = false;
-        self.released_highest = 0;
-        self.fin_released = false;
-        self.reset = false;
+        self.delivered_end = None;
+        self.delivered_final_size = None;
+        self.reset_final_size = None;
     }
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Phase {
-    Holding,
-    Finished,
-    Rejected,
 }
 /// A checked descriptor for one contiguous buffered range. It can be completed
 /// only once and only in this connection/claim/revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ReleaseTicket {
+pub(crate) struct ReleaseTicket {
     issuer: [u8; 16],
     generation: u64,
     claim: u64,
@@ -557,22 +532,14 @@ pub struct ReleaseTicket {
     len: usize,
     fin: bool,
 }
-impl ReleaseTicket {
-    pub const fn generation(self) -> u64 {
-        self.generation
-    }
-    pub const fn revision(self) -> u64 {
-        self.revision
-    }
-}
-pub struct ReleaseView<'a> {
+pub(crate) struct ReleaseView<'a> {
     pub ticket: ReleaseTicket,
     pub stream_id: u64,
     pub offset: u64,
     pub bytes: &'a [u8],
     pub fin: bool,
 }
-pub struct Quarantine<'a, const BYTES: usize> {
+pub(crate) struct HeldBytes<'a, const BYTES: usize> {
     slots: &'a mut [QuarantineSlot<BYTES>],
     limits: RememberedLimits,
     issuer: [u8; 16],
@@ -580,12 +547,11 @@ pub struct Quarantine<'a, const BYTES: usize> {
     claim: u64,
     revision: u64,
     charged: u64,
-    phase: Phase,
 }
-impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
+impl<'a, const BYTES: usize> HeldBytes<'a, BYTES> {
     /// All remembered receive credits are backed before TLS advertises early
     /// acceptance. Consume the already-committed replay claim into this owner.
-    pub fn new(
+    pub(crate) fn new(
         policy: ServerPolicy,
         limits: RememberedLimits,
         claim: ReplayClaim,
@@ -603,15 +569,10 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
             claim: claim.serial,
             revision: 0,
             charged: 0,
-            phase: Phase::Holding,
         })
     }
-    /// The claim was consumed by `new`; this only observes its still-live
-    /// generation and cannot mint a claim or revive a rejected quarantine.
-    pub(crate) fn accepts_authenticated_generation(&self, generation: u64) -> bool {
-        generation == self.generation && self.phase != Phase::Rejected
-    }
-    pub fn charged(&self) -> u64 {
+    #[cfg(test)]
+    pub(crate) fn charged(&self) -> u64 {
         self.charged
     }
     /// Read-only whole-packet admission check. At most 128 decoded frames are
@@ -622,16 +583,13 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
     ///
     /// Hold all other owners unchanged between this check and the sequential
     /// STREAM/RESET_STREAM commits. Also reserve deferred control capacity before any commit.
-    pub fn preflight_authenticated_packet(
+    pub(crate) fn preflight_authenticated_packet(
         &self,
         generation: u64,
         payload: &[u8],
     ) -> Result<(), Error> {
         if generation != self.generation {
             return Err(Error::StaleGeneration);
-        }
-        if self.phase == Phase::Rejected {
-            return Err(Error::State);
         }
         // Validate even a malformed tail before considering any admission.
         for frame in early_packet_frames(payload)? {
@@ -718,8 +676,9 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
                 let overlap_start = offset.max(other_offset);
                 let overlap_end = end.min(other_end);
                 for byte_offset in overlap_start..overlap_end {
-                    let released = slot
-                        .is_some_and(|slot| slot.reset || slot.present[byte_offset as usize] == 2);
+                    let released = slot.is_some_and(|slot| {
+                        slot.reset_final_size.is_some() || slot.present[byte_offset as usize] == 2
+                    });
                     if !released
                         && data[(byte_offset - offset) as usize]
                             != other_data[(byte_offset - other_offset) as usize]
@@ -745,7 +704,7 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
     }
     /// Supply only authenticated and whole-packet-validated client STREAM data.
     /// Authentication failure must never call this. Every local error is atomic.
-    pub fn buffer_authenticated_stream(
+    pub(crate) fn buffer_authenticated_stream(
         &mut self,
         generation: u64,
         stream_id: u64,
@@ -755,9 +714,6 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
     ) -> Result<(), Error> {
         if generation != self.generation {
             return Err(Error::StaleGeneration);
-        }
-        if self.phase == Phase::Rejected {
-            return Err(Error::State);
         }
         if stream_id > MAX || stream_id & 1 != 0 {
             return Err(Error::StreamId);
@@ -798,7 +754,7 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
         {
             return Err(Error::FinalSize);
         }
-        if slot.reset {
+        if slot.reset_final_size.is_some() {
             return Ok(());
         }
         let start = usize::try_from(offset).map_err(|_| Error::FlowControl)?;
@@ -825,12 +781,8 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
                 slot.present[start + i] = 1;
             }
         }
-        if bytes.is_empty() && (!slot.opened_in_table || end > slot.released_highest) {
-            slot.marker_pending = true;
-        }
         if fin {
             slot.final_size = Some(end);
-            slot.fin_pending = !slot.fin_released;
         }
         self.charged = charged;
         Ok(())
@@ -840,7 +792,7 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
     /// STREAM, while all withheld bytes are wiped. The deferred control store
     /// separately retains its actual error code for the post-Finished table
     /// transition. Later valid STREAM frames cannot revive discarded data.
-    pub fn buffer_authenticated_reset(
+    pub(crate) fn buffer_authenticated_reset(
         &mut self,
         generation: u64,
         stream_id: u64,
@@ -852,27 +804,22 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
             .iter_mut()
             .find(|slot| slot.id == Some(stream_id))
             .ok_or(Error::State)?;
-        slot.reset = true;
+        slot.reset_final_size = Some(final_size);
         slot.bytes.zeroize();
         slot.present.fill(2);
-        slot.fin_pending = false;
-        slot.marker_pending = false;
         Ok(())
     }
     /// Reserve remembered stream identity/credit for a deferred control before
     /// admission. Non-stream controls have no quarantine accounting effect.
     /// MAX_STREAM_DATA grants our sending credit; its numeric maximum does not
     /// consume this receive ledger. The authenticated referenced stream does.
-    pub fn buffer_authenticated_control(
+    pub(crate) fn buffer_authenticated_control(
         &mut self,
         generation: u64,
         frame: crate::packet::Frame<'_>,
     ) -> Result<(), Error> {
         if generation != self.generation {
             return Err(Error::StaleGeneration);
-        }
-        if self.phase == Phase::Rejected {
-            return Err(Error::State);
         }
         if matches!(frame, crate::packet::Frame::Stream { .. }) {
             return Ok(());
@@ -891,37 +838,15 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
         }
         Ok(())
     }
-    /// Only the real TLS owner may report its verified client Finished here.
-    /// Integration must execute the distinct typed Finished/early-release gate.
-    pub fn finish_after_verified_handshake(&mut self, generation: u64) -> Result<(), Error> {
-        if generation != self.generation {
-            return Err(Error::StaleGeneration);
-        }
-        if self.phase != Phase::Holding {
-            return Err(Error::State);
-        }
-        self.phase = Phase::Finished;
-        Ok(())
-    }
-    pub fn reject(&mut self, generation: u64) -> Result<(), Error> {
-        if generation != self.generation {
-            return Err(Error::StaleGeneration);
-        }
-        if self.phase != Phase::Holding {
-            return Err(Error::State);
-        }
-        for slot in self.slots.iter_mut() {
-            slot.clear();
-        }
-        self.phase = Phase::Rejected;
-        Ok(())
-    }
-    pub fn next_release(&self) -> Result<Option<ReleaseView<'_>>, Error> {
-        if self.phase != Phase::Finished {
-            return Err(Error::State);
-        }
+    pub(crate) fn next_release(&self) -> Result<Option<ReleaseView<'_>>, Error> {
         for (index, slot) in self.slots.iter().enumerate() {
             let Some(id) = slot.id else { continue };
+            if slot.reset_final_size.is_some() {
+                continue;
+            }
+            let final_size_unreleased =
+                slot.final_size.is_some() && slot.delivered_final_size != slot.final_size;
+            let marker_unreleased = slot.delivered_end.is_none_or(|end| slot.highest > end);
             let range = if let Some(start) = slot.present.iter().position(|p| *p == 1) {
                 let len = slot.present[start..]
                     .iter()
@@ -930,10 +855,10 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
                 Some((
                     start,
                     len,
-                    slot.fin_pending && slot.final_size == Some((start + len) as u64),
+                    final_size_unreleased && slot.final_size == Some((start + len) as u64),
                 ))
-            } else if slot.fin_pending || slot.marker_pending {
-                Some((slot.highest as usize, 0, slot.fin_pending))
+            } else if final_size_unreleased || marker_unreleased {
+                Some((slot.highest as usize, 0, final_size_unreleased))
             } else {
                 None
             };
@@ -960,7 +885,7 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
     }
     /// Complete only after the ordinary authenticated stream table accepts the
     /// range. Backpressure leaves bytes owned here. No ACK/loss event is implied.
-    pub fn complete_release(&mut self, ticket: ReleaseTicket) -> Result<(), Error> {
+    pub(crate) fn complete_release(&mut self, ticket: ReleaseTicket) -> Result<(), Error> {
         let expected = self.next_release()?.ok_or(Error::StaleRelease)?.ticket;
         if expected != ticket {
             return Err(Error::StaleRelease);
@@ -969,22 +894,19 @@ impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
         let slot = &mut self.slots[ticket.slot];
         slot.bytes[ticket.offset..ticket.offset + ticket.len].zeroize();
         slot.present[ticket.offset..ticket.offset + ticket.len].fill(2);
-        slot.opened_in_table = true;
-        slot.released_highest = slot
-            .released_highest
-            .max((ticket.offset + ticket.len) as u64);
+        slot.delivered_end = Some(
+            slot.delivered_end
+                .unwrap_or(0)
+                .max((ticket.offset + ticket.len) as u64),
+        );
         if ticket.fin {
-            slot.fin_pending = false;
-            slot.fin_released = true;
-        }
-        if (ticket.offset + ticket.len) as u64 >= slot.highest {
-            slot.marker_pending = false;
+            slot.delivered_final_size = Some((ticket.offset + ticket.len) as u64);
         }
         self.revision = revision;
         Ok(())
     }
 }
-impl<const BYTES: usize> Drop for Quarantine<'_, BYTES> {
+impl<const BYTES: usize> Drop for HeldBytes<'_, BYTES> {
     fn drop(&mut self) {
         for slot in self.slots.iter_mut() {
             slot.clear();
@@ -1174,10 +1096,10 @@ mod tests {
         assert!(!ledger.storage.entries.iter().any(|e| e.occupied));
     }
     #[test]
-    fn authenticated_bytes_are_quarantined_until_finished_then_release_once() {
+    fn held_byte_kernel_releases_actual_ranges_once() {
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let mut q = HeldBytes::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
         q.buffer_authenticated_stream(7, 0, 3, b"def", true)
             .unwrap();
         q.buffer_authenticated_stream(7, 0, 0, b"abc", false)
@@ -1185,12 +1107,7 @@ mod tests {
         q.buffer_authenticated_stream(7, 0, 0, b"abc", false)
             .unwrap();
         assert_eq!(q.charged(), 6);
-        assert!(matches!(q.next_release(), Err(Error::State)));
-        assert_eq!(
-            q.finish_after_verified_handshake(8),
-            Err(Error::StaleGeneration)
-        );
-        q.finish_after_verified_handshake(7).unwrap();
+
         let view = q.next_release().unwrap().unwrap();
         assert_eq!(
             (view.stream_id, view.offset, view.bytes, view.fin),
@@ -1206,13 +1123,13 @@ mod tests {
         );
     }
     #[test]
-    fn late_early_ranges_after_finished_preserve_history_and_do_not_release_twice() {
+    fn late_ranges_preserve_delivered_byte_history() {
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 1), &mut slots).unwrap();
+        let mut q = HeldBytes::new(POLICY, limits(), claim(&mut replay, 1), &mut slots).unwrap();
         q.buffer_authenticated_stream(1, 0, 0, b"abc", false)
             .unwrap();
-        q.finish_after_verified_handshake(1).unwrap();
+
         let first = q.next_release().unwrap().unwrap().ticket;
         q.complete_release(first).unwrap();
         q.buffer_authenticated_stream(1, 0, 0, b"abc", false)
@@ -1245,12 +1162,12 @@ mod tests {
     fn sparse_ranges_and_empty_offset_markers_survive_handoff() {
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 1), &mut slots).unwrap();
+        let mut q = HeldBytes::new(POLICY, limits(), claim(&mut replay, 1), &mut slots).unwrap();
         q.buffer_authenticated_stream(1, 0, 2, b"cd", false)
             .unwrap();
         q.buffer_authenticated_stream(1, 0, 7, b"", false).unwrap();
         q.buffer_authenticated_stream(1, 2, 0, b"", true).unwrap();
-        q.finish_after_verified_handshake(1).unwrap();
+
         let view = q.next_release().unwrap().unwrap();
         assert_eq!((view.offset, view.bytes, view.fin), (2, &b"cd"[..], false));
         let a = view.ticket;
@@ -1272,7 +1189,7 @@ mod tests {
     fn failed_overlap_final_size_and_flow_updates_leave_state_unchanged() {
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 1), &mut slots).unwrap();
+        let mut q = HeldBytes::new(POLICY, limits(), claim(&mut replay, 1), &mut slots).unwrap();
         q.buffer_authenticated_stream(1, 0, 0, b"abc", false)
             .unwrap();
         for (id, offset, bytes, fin, error) in [
@@ -1288,21 +1205,18 @@ mod tests {
             );
             assert_eq!(q.charged(), 3);
         }
-        q.finish_after_verified_handshake(1).unwrap();
+
         assert_eq!(q.next_release().unwrap().unwrap().bytes, b"abc");
     }
     #[test]
-    fn rejection_and_drop_wipe_bytes_without_refunding_replay() {
+    fn dropping_held_bytes_wipes_without_refunding_replay() {
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
         {
             let mut q =
-                Quarantine::new(POLICY, limits(), claim(&mut replay, 1), &mut slots).unwrap();
+                HeldBytes::new(POLICY, limits(), claim(&mut replay, 1), &mut slots).unwrap();
             q.buffer_authenticated_stream(1, 0, 0, b"secret", true)
                 .unwrap();
-            q.reject(1).unwrap();
-            assert!(matches!(q.next_release(), Err(Error::State)));
-            assert_eq!(q.finish_after_verified_handshake(1), Err(Error::State));
         }
         assert!(
             slots
@@ -1326,12 +1240,11 @@ mod tests {
             .unwrap();
         let mut a_slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
         let mut b_slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let mut a = Quarantine::new(POLICY, limits(), a_claim, &mut a_slots).unwrap();
-        let mut b = Quarantine::new(POLICY, limits(), b_claim, &mut b_slots).unwrap();
+        let mut a = HeldBytes::new(POLICY, limits(), a_claim, &mut a_slots).unwrap();
+        let mut b = HeldBytes::new(POLICY, limits(), b_claim, &mut b_slots).unwrap();
         a.buffer_authenticated_stream(7, 0, 0, b"a", true).unwrap();
         b.buffer_authenticated_stream(7, 0, 0, b"b", true).unwrap();
-        a.finish_after_verified_handshake(7).unwrap();
-        b.finish_after_verified_handshake(7).unwrap();
+
         assert_eq!(
             b.complete_release(a.next_release().unwrap().unwrap().ticket),
             Err(Error::StaleRelease)
@@ -1348,12 +1261,11 @@ mod tests {
             .unwrap()
             .claim_after_authentication([1; 16], [3; 12], 1000, 10, 2)
             .unwrap();
-        let mut a = Quarantine::new(POLICY, limits(), a_claim, &mut a_slots).unwrap();
-        let mut b = Quarantine::new(POLICY, limits(), b_claim, &mut b_slots).unwrap();
+        let mut a = HeldBytes::new(POLICY, limits(), a_claim, &mut a_slots).unwrap();
+        let mut b = HeldBytes::new(POLICY, limits(), b_claim, &mut b_slots).unwrap();
         a.buffer_authenticated_stream(1, 0, 0, b"a", true).unwrap();
         b.buffer_authenticated_stream(2, 0, 0, b"b", true).unwrap();
-        a.finish_after_verified_handshake(1).unwrap();
-        b.finish_after_verified_handshake(2).unwrap();
+
         let ticket = a.next_release().unwrap().unwrap().ticket;
         assert_eq!(b.complete_release(ticket), Err(Error::StaleRelease));
         assert_eq!(
@@ -1366,7 +1278,7 @@ mod tests {
         use crate::packet::{self, Frame};
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let mut q = HeldBytes::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
         let cases = [
             (
                 [
@@ -1475,7 +1387,7 @@ mod tests {
         )
         .unwrap();
         q.preflight_authenticated_packet(7, &bytes[..n]).unwrap();
-        q.finish_after_verified_handshake(7).unwrap();
+
         let release = q.next_release().unwrap().unwrap().ticket;
         q.complete_release(release).unwrap();
         let n = packet::encode_frame(
@@ -1495,7 +1407,7 @@ mod tests {
     fn packet_preflight_bounds_frames_and_preserves_protocol_error_classification() {
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let q = HeldBytes::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
         assert_eq!(
             q.preflight_authenticated_packet(7, &[1; 129]),
             Err(Error::Capacity)
@@ -1530,7 +1442,7 @@ mod tests {
         use crate::packet::{self, Frame};
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let mut q = HeldBytes::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
         let frames = [
             Frame::Stream {
                 id: 0,
@@ -1630,7 +1542,7 @@ mod tests {
             let mut replay = ReplayStorage::<1>::new();
             let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
             let mut q =
-                Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+                HeldBytes::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
             let result = q.preflight_authenticated_packet(7, &payload[..n]);
             assert_eq!(q.charged(), 0);
             assert!(q.slots.iter().all(|slot| slot.id.is_none()));
@@ -1658,7 +1570,7 @@ mod tests {
         use crate::packet::{self, Frame};
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let mut q = HeldBytes::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
         let mut payload = [0; 64];
         for frame in [
             Frame::ResetStream {
@@ -1704,7 +1616,7 @@ mod tests {
         );
         q.buffer_authenticated_reset(7, 2, 8).unwrap();
         assert_eq!(q.charged(), 16);
-        q.finish_after_verified_handshake(7).unwrap();
+
         assert!(q.next_release().unwrap().is_none());
     }
     #[test]
@@ -1739,13 +1651,9 @@ mod tests {
                             }
                             let mut replay = ReplayStorage::<1>::new();
                             let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-                            let mut q = Quarantine::new(
-                                POLICY,
-                                limits(),
-                                claim(&mut replay, 7),
-                                &mut slots,
-                            )
-                            .unwrap();
+                            let mut q =
+                                HeldBytes::new(POLICY, limits(), claim(&mut replay, 7), &mut slots)
+                                    .unwrap();
                             let result = q.preflight_authenticated_packet(7, &payload[..n]);
                             assert_eq!(q.charged(), 0);
                             if result.is_ok() {
@@ -1767,7 +1675,7 @@ mod tests {
                                     }
                                 }
                                 assert_eq!(q.charged(), final_size);
-                                q.finish_after_verified_handshake(7).unwrap();
+
                                 assert!(q.next_release().unwrap().is_none());
                             }
                         }
@@ -1782,7 +1690,7 @@ mod tests {
         use crate::packet::{self, Frame};
         let mut replay = ReplayStorage::<1>::new();
         let mut slots = [QuarantineSlot::<8>::EMPTY, QuarantineSlot::EMPTY];
-        let mut q = Quarantine::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
+        let mut q = HeldBytes::new(POLICY, limits(), claim(&mut replay, 7), &mut slots).unwrap();
         let mut payload = [0; 64];
         for id in [1, 2, 3, 4, 6] {
             for frame in [
@@ -1820,8 +1728,8 @@ mod tests {
         // consume receive bytes; a MAX_STREAM_DATA maximum grants send credit.
         assert_eq!(q.charged(), 0);
         assert_eq!(q.slots.iter().filter(|slot| slot.id.is_some()).count(), 2);
-        assert!(q.next_release().is_err());
-        q.finish_after_verified_handshake(7).unwrap();
+        // Release ordering belongs to the projected owner, not this byte kernel.
+
         for id in [0, 2] {
             let view = q.next_release().unwrap().unwrap();
             assert_eq!(view.stream_id, id);

@@ -3,7 +3,7 @@
   "registered_quic_cases": 22,
   "directions": 2,
   "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
-  "current_cleanup_commit_qualification": "choreographed stop application: seven registered cases passed both directions in run37183144899; 14/44 candidate cells; baseline excluded",
+  "current_cleanup_commit_qualification": "owned parallel stream reclamation ff3c3d0f71e27d7db2b69e085b46cfada9adbbad: seven registered cases passed both directions in run37197056168; 14/44 candidate cells; baseline excluded",
   "cases": [
     {
       "case": "handshake",

@@ -1,4 +1,6 @@
-//! Bounded ECN observation and single-path validation (RFC 9000 §13.4/A.4).
+//! Bounded ECN observations and pure counter validation (RFC 9000 §13.4/A.4).
+//! The unconnected PathEcn phase controller has been deleted; marking policy
+//! and probe lifetimes must be implemented as Hibana contracts.
 //!
 //! This module does not authenticate packets or own sent history. The caller
 //! supplies only processed, authenticated, nonduplicate receives and exact
@@ -7,11 +9,11 @@
 //! Adapter rejection is not a send. CE feedback must be validated before the
 //! caller invokes its RFC 9002 congestion-event handler.
 //!
-//! One instance belongs to one immutable path identity for a connection. There
-//! is deliberately no migration/reset API: transferring cumulative per-space
-//! counts and ACK baselines between paths needs separate connection-level work.
+//! Receive counts are observations only. Future projected path owners must keep
+//! cumulative counters, first-ACK facts and peer baselines bound to the actual
+//! path; this arithmetic module cannot authorize migration or marking.
 
-use crate::accounting::{MAX_PACKET_NUMBER, PacketNumber, PacketNumberSpace};
+use crate::accounting::{MAX_PACKET_NUMBER, PacketNumberSpace};
 use crate::packet::EcnCounts;
 
 const ZERO: EcnCounts = EcnCounts {
@@ -19,7 +21,6 @@ const ZERO: EcnCounts = EcnCounts {
     ect1: 0,
     ce: 0,
 };
-const PROBE_PACKETS: u64 = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -59,23 +60,9 @@ pub struct Metadata {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Snapshot {
-    pub enabled: bool,
-    pub state: State,
-    pub failure: Option<Failure>,
-    pub sent: [MarkedPackets; 3],
-    pub received: [Option<EcnCounts>; 3],
-    pub validated_ce: u64,
-    pub congestion_events: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
-    WrongPath,
+    Validation(Failure),
     CounterLimit,
-    InvalidPacketNumber,
-    RepeatedSend,
-    InvalidSentCodepoint,
     InconsistentLedger,
 }
 
@@ -93,33 +80,12 @@ impl MarkedPackets {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum State {
-    Testing,
-    Unknown,
-    Capable,
-    Failed,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Failure {
     MissingCounts,
     DecreasedCounts,
     Bleached,
     Remarked,
     ExcessCounts,
-    AllProbesLost,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Feedback {
-    /// A reordered/repeated largest ACK cannot cause validation failure.
-    Reordered,
-    /// No usable ECN confirmation, or a previously failed path.
-    Unvalidated,
-    Validated {
-        ce_increase: u64,
-    },
-    Failed(Failure),
 }
 
 /// Connection-level receive counts. A missing observation never becomes a
@@ -173,237 +139,66 @@ impl Default for RxCounts {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Space {
-    sent: MarkedPackets,
-    acknowledged: MarkedPackets,
-    feedback: EcnCounts,
-    largest_ack: Option<u64>,
-    last_sent: Option<u64>,
-}
-impl Space {
-    const EMPTY: Self = Self {
-        sent: MarkedPackets { ect0: 0, ect1: 0 },
-        acknowledged: MarkedPackets { ect0: 0, ect1: 0 },
-        feedback: ZERO,
-        largest_ack: None,
-        last_sent: None,
-    };
+/// Pure arithmetic result. This grants no ECN marking or path capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FeedbackDelta {
+    pub ce_increase: u64,
+    pub newly_validated: u64,
 }
 
-pub struct PathEcn {
-    identity: PathIdentity,
-    state: State,
-    failure: Option<Failure>,
-    spaces: [Space; 3],
-    marked_sent: u64,
-    marked_acked: u64,
-    marked_lost: u64,
-    probe_deadline: Option<u64>,
-}
-impl PathEcn {
-    /// Begin testing the initial path of a new connection with zero baselines.
-    pub const fn new(identity: PathIdentity) -> Self {
-        Self {
-            identity,
-            state: State::Testing,
-            failure: None,
-            spaces: [Space::EMPTY; 3],
-            marked_sent: 0,
-            marked_acked: 0,
-            marked_lost: 0,
-            probe_deadline: None,
-        }
+/// Validate counter arithmetic after actual recovery supplies first-ACK counts.
+/// No probing, failed/capable phase or retransmission policy is stored here.
+/// The projected owner must handle ordering, path identity and marking decisions.
+pub fn validate_feedback(
+    sent: MarkedPackets,
+    previous: EcnCounts,
+    newly: MarkedPackets,
+    peer: Option<EcnCounts>,
+) -> Result<Option<FeedbackDelta>, Error> {
+    if sent.ect0 > MAX_PACKET_NUMBER
+        || sent.ect1 > MAX_PACKET_NUMBER
+        || newly.ect0 > sent.ect0
+        || newly.ect1 > sent.ect1
+    {
+        return Err(Error::InconsistentLedger);
     }
-    pub const fn identity(&self) -> PathIdentity {
-        self.identity
-    }
-    pub const fn state(&self) -> State {
-        self.state
-    }
-    pub const fn failure(&self) -> Option<Failure> {
-        self.failure
-    }
-    pub fn sent(&self, space: PacketNumberSpace) -> MarkedPackets {
-        self.spaces[space as usize].sent
-    }
-    fn check_path(&self, path: PathIdentity) -> Result<(), Error> {
-        if path != self.identity {
-            return Err(Error::WrongPath);
-        }
-        Ok(())
-    }
-    fn fail(&mut self, why: Failure) -> Feedback {
-        self.state = State::Failed;
-        self.failure = Some(why);
-        Feedback::Failed(why)
-    }
-    /// Stop probing after ten accepted marked packets or three initial PTOs.
-    /// Unknown stops marking but can become Capable on later valid feedback.
-    pub fn marking(&mut self, path: PathIdentity, now: u64) -> Result<Codepoint, Error> {
-        self.check_path(path)?;
-        if self.state == State::Testing
-            && (self.marked_sent >= PROBE_PACKETS
-                || self.probe_deadline.is_some_and(|deadline| now >= deadline))
-        {
-            self.state = State::Unknown;
-        }
-        Ok(if matches!(self.state, State::Testing | State::Capable) {
-            Codepoint::Ect0
+    let newly_total = newly.total()?;
+    let Some(peer) = peer else {
+        return if newly_total == 0 {
+            Ok(None)
         } else {
-            Codepoint::NotEct
-        })
+            Err(Error::Validation(Failure::MissingCounts))
+        };
+    };
+    if peer.ect0 > sent.ect0 || peer.ect1 > sent.ect1 {
+        return Err(Error::Validation(Failure::Remarked));
     }
-    /// Call exactly once after adapter acceptance, in increasing PN order per
-    /// space. The original marking survives loss; retries use fresh PNs.
-    pub fn accepted(
-        &mut self,
-        path: PathIdentity,
-        packet: PacketNumber,
-        codepoint: Codepoint,
-        now: u64,
-        pto: u64,
-    ) -> Result<(), Error> {
-        self.check_path(path)?;
-        if packet.value > MAX_PACKET_NUMBER {
-            return Err(Error::InvalidPacketNumber);
-        }
-        if codepoint == Codepoint::Ce {
-            return Err(Error::InvalidSentCodepoint);
-        }
-        let i = packet.space as usize;
-        let mut next = self.spaces[i];
-        if next.last_sent.is_some_and(|pn| packet.value <= pn) {
-            return Err(Error::RepeatedSend);
-        }
-        let marked = codepoint != Codepoint::NotEct;
-        let count = match codepoint {
-            Codepoint::Ect0 => Some(&mut next.sent.ect0),
-            Codepoint::Ect1 => Some(&mut next.sent.ect1),
-            _ => None,
-        };
-        if let Some(count) = count {
-            *count = add_count(*count, 1)?;
-        }
-        let sent = self
-            .marked_sent
-            .checked_add(u64::from(marked))
-            .ok_or(Error::CounterLimit)?;
-        let deadline = if marked && self.probe_deadline.is_none() {
-            Some(
-                now.checked_add(pto.checked_mul(3).ok_or(Error::CounterLimit)?)
-                    .ok_or(Error::CounterLimit)?,
-            )
-        } else {
-            self.probe_deadline
-        };
-        next.last_sent = Some(packet.value);
-        self.spaces[i] = next;
-        self.marked_sent = sent;
-        self.probe_deadline = deadline;
-        Ok(())
+    let peer_total = peer
+        .ect0
+        .checked_add(peer.ect1)
+        .and_then(|v| v.checked_add(peer.ce));
+    if peer.ce > MAX_PACKET_NUMBER || peer_total.is_none_or(|v| v > sent.ect0 + sent.ect1) {
+        return Err(Error::Validation(Failure::ExcessCounts));
     }
-    /// The ledger must first validate all ACK ranges, reject ACKs of unsent PNs,
-    /// and compute exact first-ACK marking counts before reclaiming history.
-    pub fn acknowledged(
-        &mut self,
-        path: PathIdentity,
-        space: PacketNumberSpace,
-        largest: u64,
-        newly: MarkedPackets,
-        peer: Option<EcnCounts>,
-    ) -> Result<Feedback, Error> {
-        self.check_path(path)?;
-        if largest > MAX_PACKET_NUMBER {
-            return Err(Error::InvalidPacketNumber);
-        }
-        let i = space as usize;
-        let mut next = self.spaces[i];
-        let ack0 = add_count(next.acknowledged.ect0, newly.ect0)?;
-        let ack1 = add_count(next.acknowledged.ect1, newly.ect1)?;
-        if ack0 > next.sent.ect0 || ack1 > next.sent.ect1 {
-            return Err(Error::InconsistentLedger);
-        }
-        let newly_total = newly.total()?;
-        let total_acked = self
-            .marked_acked
-            .checked_add(newly_total)
-            .ok_or(Error::CounterLimit)?;
-        next.acknowledged = MarkedPackets {
-            ect0: ack0,
-            ect1: ack1,
-        };
-        self.marked_acked = total_acked;
-        self.spaces[i].acknowledged = next.acknowledged;
-        if next.largest_ack.is_some_and(|pn| largest <= pn) {
-            return Ok(Feedback::Reordered);
-        }
-        self.spaces[i].largest_ack = Some(largest);
-        if self.state == State::Failed {
-            return Ok(Feedback::Unvalidated);
-        }
-        let Some(peer) = peer else {
-            return Ok(if newly_total > 0 {
-                self.fail(Failure::MissingCounts)
-            } else {
-                Feedback::Unvalidated
-            });
-        };
-        if peer.ect0 > next.sent.ect0 || peer.ect1 > next.sent.ect1 {
-            return Ok(self.fail(Failure::Remarked));
-        }
-        let peer_total = peer
-            .ect0
-            .checked_add(peer.ect1)
-            .and_then(|sum| sum.checked_add(peer.ce));
-        if peer.ce > MAX_PACKET_NUMBER
-            || peer_total.is_none_or(|sum| sum > next.sent.ect0 + next.sent.ect1)
-        {
-            return Ok(self.fail(Failure::ExcessCounts));
-        }
-        let Some(d0) = peer.ect0.checked_sub(next.feedback.ect0) else {
-            return Ok(self.fail(Failure::DecreasedCounts));
-        };
-        let Some(d1) = peer.ect1.checked_sub(next.feedback.ect1) else {
-            return Ok(self.fail(Failure::DecreasedCounts));
-        };
-        let Some(dc) = peer.ce.checked_sub(next.feedback.ce) else {
-            return Ok(self.fail(Failure::DecreasedCounts));
-        };
-        if d0 + dc < newly.ect0 || d1 + dc < newly.ect1 || d0 + d1 + dc < newly_total {
-            return Ok(self.fail(Failure::Bleached));
-        }
-        self.spaces[i].feedback = peer;
-        if newly_total > 0 {
-            self.state = State::Capable;
-        }
-        Ok(if self.state == State::Capable {
-            Feedback::Validated { ce_increase: dc }
-        } else {
-            Feedback::Unvalidated
-        })
+    let d0 = peer
+        .ect0
+        .checked_sub(previous.ect0)
+        .ok_or(Error::Validation(Failure::DecreasedCounts))?;
+    let d1 = peer
+        .ect1
+        .checked_sub(previous.ect1)
+        .ok_or(Error::Validation(Failure::DecreasedCounts))?;
+    let dc = peer
+        .ce
+        .checked_sub(previous.ce)
+        .ok_or(Error::Validation(Failure::DecreasedCounts))?;
+    if d0 + dc < newly.ect0 || d1 + dc < newly.ect1 || d0 + d1 + dc < newly_total {
+        return Err(Error::Validation(Failure::Bleached));
     }
-    /// Exact count of newly declared-lost marked packets from the ledger.
-    /// Loss alone does not remove accepted sent totals or resurrect failed ECN.
-    pub fn lost(&mut self, path: PathIdentity, newly_marked: u64) -> Result<Feedback, Error> {
-        self.check_path(path)?;
-        let lost = self
-            .marked_lost
-            .checked_add(newly_marked)
-            .ok_or(Error::CounterLimit)?;
-        if lost > self.marked_sent {
-            return Err(Error::InconsistentLedger);
-        }
-        self.marked_lost = lost;
-        if matches!(self.state, State::Testing | State::Unknown)
-            && self.marked_sent > 0
-            && lost == self.marked_sent
-            && self.marked_acked == 0
-        {
-            return Ok(self.fail(Failure::AllProbesLost));
-        }
-        Ok(Feedback::Unvalidated)
-    }
+    Ok(Some(FeedbackDelta {
+        ce_increase: dc,
+        newly_validated: newly_total,
+    }))
 }
 
 fn add_count(value: u64, amount: u64) -> Result<u64, Error> {
@@ -416,29 +211,10 @@ fn add_count(value: u64, amount: u64) -> Result<u64, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const PATH: PathIdentity = PathIdentity {
-        connection_generation: 7,
-        slot: 0,
-        path_generation: 1,
-    };
     const APP: PacketNumberSpace = PacketNumberSpace::ApplicationData;
-    fn pn(value: u64) -> PacketNumber {
-        PacketNumber { space: APP, value }
-    }
-    fn one() -> MarkedPackets {
-        MarkedPackets { ect0: 1, ect1: 0 }
-    }
     fn counts(ect0: u64, ect1: u64, ce: u64) -> Option<EcnCounts> {
         Some(EcnCounts { ect0, ect1, ce })
     }
-    fn sent(n: u64) -> PathEcn {
-        let mut p = PathEcn::new(PATH);
-        for i in 0..n {
-            p.accepted(PATH, pn(i), Codepoint::Ect0, i, 100).unwrap();
-        }
-        p
-    }
-
     #[test]
     fn tos_masks_only_ecn_bits() {
         for i in 0..=255 {
@@ -478,202 +254,80 @@ mod tests {
         assert_eq!(rx.counts[2].ce, MAX_PACKET_NUMBER);
     }
     #[test]
-    fn ten_packets_or_three_ptos_end_testing_without_claiming_capability() {
-        let mut p = sent(10);
-        assert_eq!(p.marking(PATH, 10), Ok(Codepoint::NotEct));
-        assert_eq!(p.state(), State::Unknown);
+    fn counter_validation_preserves_bleaching_remarking_and_ce_checks() {
+        let sent = MarkedPackets { ect0: 2, ect1: 1 };
+        let newly = MarkedPackets { ect0: 1, ect1: 1 };
         assert_eq!(
-            p.acknowledged(
-                PATH,
-                APP,
-                9,
-                MarkedPackets { ect0: 10, ect1: 0 },
-                counts(10, 0, 0)
+            validate_feedback(sent, ZERO, newly, None),
+            Err(Error::Validation(Failure::MissingCounts))
+        );
+        assert_eq!(
+            validate_feedback(
+                sent,
+                ZERO,
+                newly,
+                Some(EcnCounts {
+                    ect0: 0,
+                    ect1: 0,
+                    ce: 1
+                })
             ),
-            Ok(Feedback::Validated { ce_increase: 0 })
-        );
-        assert_eq!(p.marking(PATH, 500), Ok(Codepoint::Ect0));
-        let mut p = sent(1);
-        assert_eq!(p.marking(PATH, 299), Ok(Codepoint::Ect0));
-        assert_eq!(p.marking(PATH, 300), Ok(Codepoint::NotEct));
-    }
-    #[test]
-    fn missing_or_bleached_feedback_disables_path() {
-        for (peer, why) in [
-            (None, Failure::MissingCounts),
-            (counts(0, 0, 0), Failure::Bleached),
-        ] {
-            let mut p = sent(1);
-            assert_eq!(
-                p.acknowledged(PATH, APP, 0, one(), peer),
-                Ok(Feedback::Failed(why))
-            );
-            assert_eq!(p.marking(PATH, 1), Ok(Codepoint::NotEct));
-        }
-    }
-    #[test]
-    fn impossible_remarking_and_ce_counts_disable_path() {
-        for (peer, why) in [
-            (counts(0, 1, 0), Failure::Remarked),
-            (counts(2, 0, 0), Failure::Remarked),
-            (counts(0, 0, 2), Failure::ExcessCounts),
-            (counts(1, 0, u64::MAX), Failure::ExcessCounts),
-        ] {
-            let mut p = sent(1);
-            assert_eq!(
-                p.acknowledged(PATH, APP, 0, one(), peer),
-                Ok(Feedback::Failed(why))
-            );
-        }
-    }
-    #[test]
-    fn reordered_acks_never_fail_validation_or_reuse_ce_delta() {
-        let mut p = sent(3);
-        assert_eq!(
-            p.acknowledged(PATH, APP, 2, one(), counts(1, 0, 1)),
-            Ok(Feedback::Validated { ce_increase: 1 })
+            Err(Error::Validation(Failure::Bleached))
         );
         assert_eq!(
-            p.acknowledged(PATH, APP, 1, one(), None),
-            Ok(Feedback::Reordered)
-        );
-        assert_eq!(
-            p.acknowledged(PATH, APP, 2, MarkedPackets::default(), counts(0, 1, 999)),
-            Ok(Feedback::Reordered)
-        );
-        assert_eq!(p.state(), State::Capable);
-    }
-    #[test]
-    fn ack_loss_allows_counter_increase_larger_than_new_ack_count() {
-        let mut p = sent(5);
-        assert_eq!(
-            p.acknowledged(PATH, APP, 4, one(), counts(3, 0, 2)),
-            Ok(Feedback::Validated { ce_increase: 2 })
-        );
-    }
-    #[test]
-    fn advancing_ack_counters_cannot_decrease() {
-        let mut p = sent(3);
-        p.acknowledged(PATH, APP, 0, one(), counts(1, 0, 1))
-            .unwrap();
-        assert_eq!(
-            p.acknowledged(PATH, APP, 2, one(), counts(2, 0, 0)),
-            Ok(Feedback::Failed(Failure::DecreasedCounts))
-        );
-    }
-    #[test]
-    fn ce_is_not_double_counted_for_mixed_ect_codepoints() {
-        let mut p = sent(1);
-        p.accepted(PATH, pn(1), Codepoint::Ect1, 1, 100).unwrap();
-        assert_eq!(
-            p.acknowledged(
-                PATH,
-                APP,
-                1,
-                MarkedPackets { ect0: 1, ect1: 1 },
-                counts(0, 0, 1)
+            validate_feedback(
+                sent,
+                ZERO,
+                newly,
+                Some(EcnCounts {
+                    ect0: 3,
+                    ect1: 0,
+                    ce: 0
+                })
             ),
-            Ok(Feedback::Failed(Failure::Bleached))
-        );
-    }
-    #[test]
-    fn real_ce_delta_is_reported_once_and_later_validation_can_fail() {
-        let mut p = sent(3);
-        assert_eq!(
-            p.acknowledged(PATH, APP, 0, one(), counts(0, 0, 1)),
-            Ok(Feedback::Validated { ce_increase: 1 })
+            Err(Error::Validation(Failure::Remarked))
         );
         assert_eq!(
-            p.acknowledged(PATH, APP, 1, one(), counts(1, 0, 1)),
-            Ok(Feedback::Validated { ce_increase: 0 })
-        );
-        assert_eq!(
-            p.acknowledged(PATH, APP, 2, one(), None),
-            Ok(Feedback::Failed(Failure::MissingCounts))
-        );
-        assert_eq!(p.marking(PATH, 3), Ok(Codepoint::NotEct));
-    }
-    #[test]
-    fn all_probe_loss_disables_marking_and_late_ack_does_not_reenable() {
-        let mut p = sent(2);
-        assert_eq!(p.lost(PATH, 1), Ok(Feedback::Unvalidated));
-        assert_eq!(
-            p.lost(PATH, 1),
-            Ok(Feedback::Failed(Failure::AllProbesLost))
-        );
-        assert_eq!(
-            p.acknowledged(PATH, APP, 1, one(), counts(1, 0, 0)),
-            Ok(Feedback::Unvalidated)
-        );
-        assert_eq!(p.state(), State::Failed);
-    }
-    #[test]
-    fn no_marked_ack_cannot_create_capability() {
-        let mut p = sent(1);
-        assert_eq!(
-            p.acknowledged(PATH, APP, 0, MarkedPackets::default(), counts(0, 0, 0)),
-            Ok(Feedback::Unvalidated)
-        );
-        assert_eq!(p.state(), State::Testing);
-    }
-    #[test]
-    fn spaces_do_not_share_counters_or_ack_highwaters() {
-        let mut p = sent(1);
-        let hs = PacketNumber {
-            space: PacketNumberSpace::Handshake,
-            value: 0,
-        };
-        p.accepted(PATH, hs, Codepoint::Ect0, 1, 100).unwrap();
-        p.acknowledged(PATH, APP, 0, one(), counts(1, 0, 0))
-            .unwrap();
-        assert_eq!(
-            p.acknowledged(PATH, hs.space, 0, one(), counts(1, 0, 0)),
-            Ok(Feedback::Validated { ce_increase: 0 })
-        );
-    }
-    #[test]
-    fn stale_path_send_reuse_and_bad_ledger_are_rejected_without_credit() {
-        let mut p = sent(1);
-        let stale = PathIdentity {
-            path_generation: 2,
-            ..PATH
-        };
-        assert_eq!(
-            p.accepted(stale, pn(1), Codepoint::Ect0, 1, 100),
-            Err(Error::WrongPath)
-        );
-        assert_eq!(p.marking(stale, 1), Err(Error::WrongPath));
-        assert_eq!(p.lost(stale, 1), Err(Error::WrongPath));
-        assert_eq!(
-            p.accepted(PATH, pn(0), Codepoint::Ect0, 1, 100),
-            Err(Error::RepeatedSend)
-        );
-        assert_eq!(
-            p.accepted(PATH, pn(1), Codepoint::Ce, 1, 100),
-            Err(Error::InvalidSentCodepoint)
-        );
-        assert_eq!(p.lost(PATH, 2), Err(Error::InconsistentLedger));
-        assert_eq!(
-            p.acknowledged(
-                PATH,
-                APP,
-                0,
-                MarkedPackets { ect0: 2, ect1: 0 },
-                counts(1, 0, 0)
+            validate_feedback(
+                sent,
+                ZERO,
+                newly,
+                Some(EcnCounts {
+                    ect0: 0,
+                    ect1: 0,
+                    ce: 4
+                })
             ),
-            Err(Error::InconsistentLedger)
+            Err(Error::Validation(Failure::ExcessCounts))
         );
-        assert_eq!(p.sent(APP), one());
-        assert_eq!(p.state(), State::Testing);
-    }
-    #[test]
-    fn timer_overflow_does_not_publish_send_counts() {
-        let mut p = PathEcn::new(PATH);
         assert_eq!(
-            p.accepted(PATH, pn(0), Codepoint::Ect0, u64::MAX, 1),
-            Err(Error::CounterLimit)
+            validate_feedback(
+                sent,
+                ZERO,
+                newly,
+                Some(EcnCounts {
+                    ect0: 0,
+                    ect1: 0,
+                    ce: 2
+                })
+            ),
+            Ok(Some(FeedbackDelta {
+                ce_increase: 2,
+                newly_validated: 2
+            }))
         );
-        assert_eq!(p.sent(APP), MarkedPackets::default());
-        assert_eq!(p.accepted(PATH, pn(0), Codepoint::Ect0, 0, 1), Ok(()));
+        assert_eq!(
+            validate_feedback(
+                sent,
+                EcnCounts {
+                    ect0: 1,
+                    ect1: 0,
+                    ce: 0
+                },
+                MarkedPackets::default(),
+                Some(ZERO)
+            ),
+            Err(Error::Validation(Failure::DecreasedCounts))
+        );
     }
 }

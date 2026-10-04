@@ -78,7 +78,7 @@ struct Identity {
 pub struct Recovery<'scope, const B: usize> {
     identity: Identity,
     scope: &'scope ApplicationKeyScope,
-    numbers: RefCell<Numbers<B>>,
+    numbers: RefCell<Numbers<'scope, B>>,
 }
 pub struct Tx<'book, 'scope, const B: usize> {
     book: &'book Recovery<'scope, B>,
@@ -415,7 +415,7 @@ struct Epoch {
     packet: PacketNumber,
     generation: u64,
 }
-struct Numbers<const B: usize> {
+struct Numbers<'scope, const B: usize> {
     side: Side,
     generation: u64,
     max_datagram_size: u64,
@@ -450,8 +450,7 @@ struct Numbers<const B: usize> {
     handshake_done: Option<FlightId>,
     initial_event_minted: bool,
     initial_event: Option<InitialRetirementEvent>,
-    terminal: bool,
-    close_only: bool,
+    closing: Option<super::application::OrdinaryRetired<'scope>>,
     retired_next: Option<[Option<u64>; 3]>,
     retired_path: Option<(u64, u64, bool)>,
 }
@@ -611,8 +610,7 @@ impl<'scope, const B: usize> Recovery<'scope, B> {
                 handshake_done: None,
                 initial_event_minted: false,
                 initial_event: None,
-                terminal: false,
-                close_only: false,
+                closing: None,
                 retired_next: None,
                 retired_path: None,
             }),
@@ -681,9 +679,9 @@ impl<const B: usize> Drop for RetirementGuard<'_, '_, B> {
     }
 }
 
-impl<const B: usize> Numbers<B> {
+impl<const B: usize> Numbers<'_, B> {
     fn active(&self) -> Result<(), Error> {
-        if self.terminal {
+        if self.retired_next.is_some() {
             Err(AccountingError::Retired.into())
         } else {
             Ok(())
@@ -691,7 +689,7 @@ impl<const B: usize> Numbers<B> {
     }
     fn ordinary(&self) -> Result<(), Error> {
         self.active()?;
-        if self.close_only {
+        if self.closing.is_some() {
             Err(AccountingError::Retired.into())
         } else {
             Ok(())
@@ -732,7 +730,7 @@ impl<const B: usize> Numbers<B> {
             received_bytes: received,
             accepted_bytes: accepted,
             reserved_bytes: self.path.reserved_bytes(),
-            available_bytes: if self.terminal {
+            available_bytes: if self.retired_next.is_some() {
                 0
             } else {
                 self.path.available_bytes()
@@ -805,7 +803,7 @@ impl<const B: usize> Numbers<B> {
         Ok(removed)
     }
     fn retire_all(&mut self) {
-        if self.terminal {
+        if self.retired_next.is_some() {
             return;
         }
         self.retired_next = Some(SPACES.map(|space| self.ledger.next_packet_number(space)));
@@ -830,7 +828,6 @@ impl<const B: usize> Numbers<B> {
         self.probe_space = None;
         self.probe_credits = 0;
         self.initial_event = None;
-        self.terminal = true;
         self.revision = self.revision.saturating_add(1);
     }
     fn detect_loss(&mut self, space: PacketNumberSpace, now: u64) -> Result<(), Error> {
@@ -1203,8 +1200,9 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
             false,
         )
     }
-    /// Only after the actual ordinary-role retirement join; admission becomes
-    /// permanently close-only, and the packet-number allocator is retained.
+    /// Consume and retain the actual ordinary-role retirement join. The stored
+    /// affine graph receipt closes ordinary admission without a separate phase
+    /// flag; packet-number accounting is retained for the finite close flight.
     pub(super) fn discard_for_close(
         &mut self,
         retired: super::application::OrdinaryRetired<'scope>,
@@ -1217,7 +1215,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         if n.pending.iter().any(|count| *count != 0) {
             return Err(AccountingError::OutstandingPackets.into());
         }
-        if n.close_only {
+        if n.closing.is_some() {
             return Ok(());
         }
         n.discard_space(0)?;
@@ -1235,7 +1233,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         n.timer = RecoveryTimer::new();
         n.probe_credits = 0;
         n.probe_space = None;
-        n.close_only = true;
+        n.closing = Some(retired);
         n.changed()?;
         Ok(())
     }
@@ -1285,7 +1283,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     }
     pub fn next_retransmit(&self) -> Option<(FlightId, bool)> {
         let n = self.book.numbers.borrow();
-        if n.terminal || n.close_only {
+        if n.retired_next.is_some() || n.closing.is_some() {
             return None;
         }
         if n.probe_credits != 0 {
@@ -1297,7 +1295,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     }
     pub fn pending_probe(&self) -> Option<Level> {
         let n = self.book.numbers.borrow();
-        if n.terminal || n.close_only || n.probe_credits == 0 {
+        if n.retired_next.is_some() || n.closing.is_some() || n.probe_credits == 0 {
             None
         } else {
             n.probe_space.map(|space| LEVELS[space as usize])
@@ -1305,7 +1303,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     }
     pub fn pending_probe_minimum(&self) -> Option<u16> {
         let n = self.book.numbers.borrow();
-        if n.terminal || n.close_only || n.probe_credits == 0 {
+        if n.retired_next.is_some() || n.closing.is_some() || n.probe_credits == 0 {
             None
         } else {
             Some(n.probe_minimum)
@@ -1313,7 +1311,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     }
     pub fn pending_ack(&self) -> Option<AckSnapshot<'book>> {
         let n = self.book.numbers.borrow();
-        if n.terminal || n.close_only {
+        if n.retired_next.is_some() || n.closing.is_some() {
             return None;
         }
         n.ack_pending
@@ -1390,7 +1388,7 @@ fn reserve<'book, const B: usize>(
 ) -> Result<Reservation<'book>, Error> {
     let mut n = book.numbers.borrow_mut();
     n.active()?;
-    if n.close_only != closing || n.retired_space[index] {
+    if n.closing.is_some() != closing || n.retired_space[index] {
         return Err(AccountingError::Retired.into());
     }
     if bytes == 0 || bytes > n.max_datagram_size {
@@ -1692,7 +1690,7 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
 }
 
 fn process_packet<'scope, const B: usize>(
-    n: &mut Numbers<B>,
+    n: &mut Numbers<'_, B>,
     scope: &'scope ApplicationKeyScope,
     index: usize,
     packet_number: u64,
@@ -1805,7 +1803,7 @@ fn process_packet<'scope, const B: usize>(
 }
 #[allow(clippy::too_many_arguments)]
 fn apply_ack<'scope, const B: usize>(
-    n: &mut Numbers<B>,
+    n: &mut Numbers<'_, B>,
     scope: &'scope ApplicationKeyScope,
     space: PacketNumberSpace,
     ranges: &[AckRange],

@@ -3,7 +3,7 @@
 //! The numerical operations never dispatch on a handwritten TLS phase. The
 //! owner's async continuation and the projected endpoints determine order.
 //! The QUIC connection and its transcript tests embed these roles directly.
-use super::{BoundedTls, Failure, Mode, State, protocol as p};
+use super::{BoundedTls, Failure, Mode, protocol as p};
 use crate::tls::Level;
 use core::{
     cell::{Cell, RefCell},
@@ -221,15 +221,12 @@ pub async fn client_owner(
     endpoint.send::<p::NeedFinished>(&id).await?;
     check(endpoint.recv::<p::Finished>().await?, id)?;
     slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_finished(m)))?;
-    owner.tls.with_crypto(|tls| tls.state = State::Connected);
+    owner.tls.with_crypto(|tls| tls.record_verified_finished());
     owner.tls.applied()?;
     slot.clear();
     endpoint.send::<p::Applied>(&id).await?;
     id += 1;
     endpoint.send::<p::Complete>(&id).await?;
-    // Compatibility status only, set after the complete projected exchange.
-    // No handshake operation dispatches on this field in the async role.
-    owner.tls.with_crypto(|tls| tls.state = State::Connected);
     owner.complete = true;
     Ok(())
 }
@@ -272,13 +269,12 @@ pub async fn server_owner(
     endpoint.send::<p::NeedFinished>(&id).await?;
     check(endpoint.recv::<p::Finished>().await?, id)?;
     slot.apply(|m| owner.tls.with_crypto(|tls| tls.server_finished(m)))?;
-    owner.tls.with_crypto(|tls| tls.state = State::Connected);
+    owner.tls.with_crypto(|tls| tls.record_verified_finished());
     owner.tls.applied()?;
     slot.clear();
     endpoint.send::<p::Applied>(&id).await?;
     id += 1;
     endpoint.send::<p::Complete>(&id).await?;
-    owner.tls.with_crypto(|tls| tls.state = State::Connected);
     owner.complete = true;
     Ok(())
 }
@@ -359,4 +355,29 @@ pub async fn server_input(
     check(endpoint.recv::<p::Applied>().await?, id)?;
     id += 1;
     check(endpoint.recv::<p::Complete>().await?, id)
+}
+
+// The adapter stays private: callers cannot borrow the combined TLS provider
+// back out of a KeySource. The existing projected owner performs every step.
+struct SourceAccess<'a, 'scope, 'cfg, 'buf>(
+    &'a RefCell<&'a mut super::key_source::KeySource<'scope, 'cfg, 'buf>>,
+);
+impl CryptoAccess for SourceAccess<'_, '_, '_, '_> {
+    fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
+        f(self.0.borrow_mut().material())
+    }
+}
+pub async fn client_source_owner<'a>(
+    endpoint: &mut Endpoint<'_, { p::VERIFY }>,
+    source: &'a RefCell<&'a mut super::key_source::KeySource<'_, '_, '_>>,
+    slot: &MessageSlot<'_>,
+) -> Result<(), Error> {
+    client_owner(endpoint, &SourceAccess(source), slot).await
+}
+pub async fn server_source_owner<'a>(
+    endpoint: &mut Endpoint<'_, { p::VERIFY }>,
+    source: &'a RefCell<&'a mut super::key_source::KeySource<'_, '_, '_>>,
+    slot: &MessageSlot<'_>,
+) -> Result<(), Error> {
+    server_owner(endpoint, &SourceAccess(source), slot).await
 }

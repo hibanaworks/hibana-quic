@@ -11,9 +11,7 @@ use hibana_quic::{
     bounded_tls::{
         CipherPolicy, ClientEarlyData, ClientResumption, ServerEarlyData, ServerResumption,
     },
-    early_data::{
-        EarlyFreshness, EarlyStatus, Quarantine, QuarantineSlot, ReplayStorage, ServerPolicy,
-    },
+    early_data::{EarlyFreshness, EarlyStatus, QuarantineSlot, ReplayStorage, ServerPolicy},
     tls_ticket::{
         self as ticket, Binding, ClientCache, ClientOffer, ClientSlot, ReplayPolicy, TicketKey,
         VerificationContext,
@@ -216,7 +214,7 @@ fn offer(
     offer
 }
 #[test]
-fn real_early_packet_keys_and_finished_quarantine_allocate_zero_both_suites() {
+fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suites() {
     for (cipher, suite) in [
         (CipherPolicy::Aes128Only, 0x1301),
         (CipherPolicy::ChaCha20Only, 0x1303),
@@ -284,101 +282,83 @@ fn real_early_packet_keys_and_finished_quarantine_allocate_zero_both_suites() {
                 cipher,
             )
             .unwrap();
+
+            let mut client_scope = hibana_quic::crypto::directional::ApplicationKeyScope::new(2300);
+            let mut server_scope = hibana_quic::crypto::directional::ApplicationKeyScope::new(2301);
+            let mut client = client
+                .into_key_source(client_scope.claim().unwrap())
+                .unwrap();
+            let mut server = server
+                .into_key_source(server_scope.claim().unwrap())
+                .unwrap();
             let request = b"GET /early\r\n";
-            let mut first = [0; 64];
             let mut late = [0; 64];
             let mut late_n = 0;
-            let mut quarantine = None;
-            let mut held_input = Some(&mut held[..]);
+            let mut plain_n = 0;
             let mut observed = false;
-            async_fixture::handshake_observe(
+            async_fixture::handshake_key_sources_observe(
                 &mut client,
                 &mut server,
-                127,
-                true,
                 |client, server| {
                     if observed || server.early_status() != EarlyStatus::AcceptedPendingFinished {
                         return;
                     }
                     observed = true;
-                    assert_eq!(server.early_status(), EarlyStatus::AcceptedPendingFinished);
-                    assert_eq!(server.early_generation(), Some(2));
-                    assert!(server.has_early_keys() && client.has_early_keys());
-                    let remembered = server.remembered_early_limits().unwrap();
-                    let claim = server.take_early_replay_claim().unwrap();
-                    assert!(server.take_early_replay_claim().is_none());
-                    let mut pending_quarantine = Quarantine::new(
-                        EARLY_POLICY,
-                        remembered,
-                        claim,
-                        held_input.take().unwrap(),
+                    let hibana_quic::bounded_tls::key_source::EarlyKeyMaterial::Transmit(mut tx) =
+                        client.take_early_key().unwrap()
+                    else {
+                        panic!("client early key must transmit")
+                    };
+                    plain_n = hibana_quic::packet::encode_frame(
+                        &hibana_quic::packet::Frame::Stream {
+                            id: 0,
+                            offset: 0,
+                            fin: true,
+                            data: request,
+                        },
+                        &mut late,
                     )
                     .unwrap();
-                    first[..request.len()].copy_from_slice(request);
-                    let n = client
-                        .seal_early(0, b"header", &mut first, request.len())
-                        .unwrap();
-                    late = first; // protect the delayed retransmission with a fresh PN
-                    late[..request.len()].copy_from_slice(request);
-                    late_n = client
-                        .seal_early(1, b"header", &mut late, request.len())
-                        .unwrap();
-                    assert_eq!(
-                        client.early_header_mask(true, &[0; 16]).unwrap(),
-                        server.early_header_mask(false, &[0; 16]).unwrap()
-                    );
-                    assert_eq!(
-                        server.seal_early(0, b"header", &mut first, 0),
-                        Err(tls::Error::InvalidInput)
-                    );
-                    assert_eq!(
-                        client.open_early(0, b"header", &mut first[..n]),
-                        Err(tls::Error::InvalidInput)
-                    );
-                    let mut bad = first;
-                    bad[n - 1] ^= 1;
-                    assert_eq!(
-                        server.open_early(0, b"header", &mut bad[..n]),
-                        Err(tls::Error::Authentication)
-                    );
-                    assert!(bad[..n].iter().all(|b| *b == 0));
-                    assert!(server.has_early_keys());
-                    let plain = server.open_early(0, b"header", &mut first[..n]).unwrap();
-                    pending_quarantine
-                        .buffer_authenticated_stream(2, 0, 0, &first[..plain], true)
-                        .unwrap();
-                    assert!(pending_quarantine.next_release().is_err());
-                    quarantine = Some(pending_quarantine);
+                    late_n = tx.seal(1, b"header", &mut late, plain_n).unwrap();
+                    // The actual early transmitter is retired after its finite input.
+                    tx.discard();
                 },
             );
             assert!(observed);
-            let mut quarantine = quarantine.unwrap();
             assert!(client.is_resumed() && server.is_resumed());
             assert_eq!(client.early_status(), EarlyStatus::Accepted);
             assert_eq!(server.early_status(), EarlyStatus::Accepted);
-            assert!(!client.has_early_keys());
-            assert_eq!(
-                client.seal_early(2, b"header", &mut first, 0),
-                Err(tls::Error::KeysUnavailable)
+            let admission = server.take_early_admission().unwrap();
+            assert!(server.take_early_replay_claim().is_none());
+            let finished = server.take_finished().unwrap();
+            let mut budget = server.take_integrity_budget().unwrap();
+            let hibana_quic::bounded_tls::key_source::EarlyKeyMaterial::Receive(mut key) =
+                server.take_early_key().unwrap()
+            else {
+                panic!("server early key must receive")
+            };
+            let mut bad = late;
+            bad[late_n - 1] ^= 1;
+            assert!(
+                key.open_early_authenticated(1, b"header", &mut bad[..late_n], &mut budget)
+                    .is_err()
             );
-            quarantine.finish_after_verified_handshake(2).unwrap();
-            let view = quarantine.next_release().unwrap().unwrap();
-            assert_eq!(view.bytes, request);
-            let release = view.ticket;
-            quarantine.complete_release(release).unwrap();
-            let plain = server
-                .open_early(1, b"header", &mut late[..late_n])
+            assert!(bad[..late_n].iter().all(|b| *b == 0));
+            let authenticated = key
+                .open_early_authenticated(1, b"header", &mut late[..late_n], &mut budget)
                 .unwrap();
-            quarantine
-                .buffer_authenticated_stream(2, 0, 0, &late[..plain], true)
+            let input =
+                hibana_quic::early_data::owner::AuthenticatedInput::<64>::from_authentication(
+                    authenticated,
+                    2,
+                    &late[..plain_n],
+                )
                 .unwrap();
-            assert!(quarantine.next_release().unwrap().is_none());
-            assert_eq!(quarantine.charged(), request.len() as u64);
-            server.discard_early_keys();
-            assert!(!server.has_early_keys());
-            assert_eq!(
-                server.open_early(1, b"header", &mut late[..late_n]),
-                Err(tls::Error::KeysUnavailable)
+            projected_early_release(admission, finished, input, &mut held, request);
+            key.discard();
+            assert!(
+                key.open_early_authenticated(1, b"header", &mut late[..late_n], &mut budget)
+                    .is_err()
             );
         });
     }
@@ -631,4 +611,102 @@ fn broad_one_rtt_tolerance_cannot_silently_authorize_stale_early_data() {
         assert_eq!(server.early_status(), client.early_status());
         assert_eq!(server.take_early_replay_claim().is_some(), accept);
     }
+}
+
+fn projected_early_release<'scope>(
+    admission: hibana_quic::early_data::owner::Admission<'scope>,
+    finished: hibana_quic::bounded_tls::key_source::FinishedAuthenticated<'scope>,
+    input: hibana_quic::early_data::owner::AuthenticatedInput<'scope, 64>,
+    slots: &mut [QuarantineSlot<1024>],
+    expected: &[u8],
+) {
+    use core::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+    use hibana::runtime::{
+        SessionKitStorage,
+        ids::SessionId,
+        program::{RoleProgram, project},
+    };
+    use hibana_quic::{
+        carrier::CarrierStorage,
+        early_data::{owner, protocol as p},
+        runtime::TaskSet,
+    };
+    let global = p::choreography();
+    let ip: RoleProgram<{ p::INPUT }> = project(&global);
+    let op: RoleProgram<{ p::OWNER }> = project(&global);
+    let tp: RoleProgram<{ p::TLS }> = project(&global);
+    let ap: RoleProgram<{ p::APPLICATION }> = project(&global);
+    let carrier = CarrierStorage::<1, 16, 16>::new();
+    let mut slab = [0; 65536];
+    let mut kit = SessionKitStorage::uninit();
+    let sid = SessionId::new(2300);
+    let rv = kit
+        .init()
+        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+        .unwrap();
+    let mut source = rv.enter(sid, &ip).unwrap();
+    let mut owner_ep = rv.enter(sid, &op).unwrap();
+    let mut tls = rv.enter(sid, &tp).unwrap();
+    let mut app = rv.enter(sid, &ap).unwrap();
+    let exchange = owner::Exchange::<64>::new();
+    let generation = admission.generation();
+    {
+        let mut input_task = pin!(async {
+            exchange.store_input(input)?;
+            source.send::<p::Packet>(&1).await?;
+            assert_eq!(source.offer().await?.recv::<p::PacketStored>().await?, 1);
+            source.send::<p::InputEnd>(&generation).await?;
+            assert_eq!(source.recv::<p::InputEnded>().await?, generation);
+            source.send::<p::InputRetired>(&generation).await?;
+            Ok::<_, owner::Failure>(())
+        });
+        let mut owner_task = pin!(owner::run(
+            &mut owner_ep,
+            admission,
+            EARLY_POLICY,
+            slots,
+            &exchange
+        ));
+        let mut tls_task = pin!(async {
+            assert_eq!(tls.recv::<p::InputRetired>().await?, generation);
+            exchange.store_finished(finished)?;
+            tls.send::<p::Verified>(&generation).await?;
+            assert_eq!(tls.recv::<p::VerifiedTaken>().await?, generation);
+            assert_eq!(tls.recv::<p::Retired>().await?, generation);
+            Ok::<_, owner::Failure>(())
+        });
+        let mut app_task = pin!(async {
+            assert_eq!(app.offer().await?.recv::<p::Range>().await?, 0);
+            let range = exchange.take_range()?;
+            assert_eq!(range.bytes(), expected);
+            assert_eq!((range.id, range.offset, range.fin), (0, 0, true));
+            drop(range);
+            app.send::<p::RangeApplied>(&0).await?;
+            assert_eq!(app.offer().await?.recv::<p::Released>().await?, generation);
+            app.send::<p::ReleaseSeen>(&generation).await?;
+            Ok::<_, owner::Failure>(())
+        });
+        let mut all = pin!(TaskSet::new([
+            input_task.as_mut(),
+            owner_task.as_mut(),
+            tls_task.as_mut(),
+            app_task.as_mut()
+        ]));
+        let mut result = None;
+        for _ in 0..200 {
+            if let Poll::Ready(value) = all.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+                result = Some(value);
+                break;
+            }
+        }
+        result
+            .expect("projected early transfer must settle")
+            .unwrap();
+    }
+    let returned = exchange.take_finished().unwrap();
+    assert_eq!(returned.early_generation(), Some(generation));
 }

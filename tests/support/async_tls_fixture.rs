@@ -301,3 +301,137 @@ pub fn drain_authenticated_tickets(
     }
     tickets
 }
+
+/// Actual projected transcript processing through pristine KeySource ownership.
+/// This component fixture transports CRYPTO plaintext, not QUIC packets.
+pub fn handshake_key_sources_observe(
+    client: &mut hibana_quic::bounded_tls::key_source::KeySource<'_, '_, '_>,
+    server: &mut hibana_quic::bounded_tls::key_source::KeySource<'_, '_, '_>,
+    mut observe: impl FnMut(
+        &mut hibana_quic::bounded_tls::key_source::KeySource<'_, '_, '_>,
+        &mut hibana_quic::bounded_tls::key_source::KeySource<'_, '_, '_>,
+    ),
+) {
+    use hibana_quic::bounded_tls::key_source::KeySource;
+    struct SourceInput<'a, 'scope, 'cfg, 'buf> {
+        remote: &'a RefCell<&'a mut KeySource<'scope, 'cfg, 'buf>>,
+        bytes: [u8; 8208],
+        pos: usize,
+        end: usize,
+        level: Level,
+    }
+    impl locals::MessageInput for SourceInput<'_, '_, '_, '_> {
+        async fn read_message(
+            &mut self,
+            level: Level,
+            out: &mut [u8],
+        ) -> Result<usize, locals::Error> {
+            let mut copied = 0;
+            let mut required = 4;
+            while copied < required {
+                if self.pos == self.end {
+                    let output =
+                        poll_fn(
+                            |_| match self.remote.borrow_mut().transmit(&mut self.bytes) {
+                                Ok(Some(p)) => Poll::Ready(Ok(p)),
+                                Ok(None) => Poll::Pending,
+                                Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                            },
+                        )
+                        .await?;
+                    self.pos = 0;
+                    self.end = output.len;
+                    self.level = output.level;
+                }
+                if self.level != level {
+                    return Err(locals::Error::Binding);
+                }
+                let n = (required - copied).min(self.end - self.pos);
+                out[copied..copied + n].copy_from_slice(&self.bytes[self.pos..self.pos + n]);
+                copied += n;
+                self.pos += n;
+                if copied == 4 {
+                    required =
+                        4 + ((out[1] as usize) << 16) + ((out[2] as usize) << 8) + out[3] as usize;
+                    if required > out.len() {
+                        return Err(locals::Error::Capacity);
+                    }
+                }
+            }
+            Ok(required)
+        }
+    }
+    let c = RefCell::new(client);
+    let s = RefCell::new(server);
+    let mut ci = SourceInput {
+        remote: &s,
+        bytes: [0; 8208],
+        pos: 0,
+        end: 0,
+        level: Level::Initial,
+    };
+    let mut si = SourceInput {
+        remote: &c,
+        bytes: [0; 8208],
+        pos: 0,
+        end: 0,
+        level: Level::Initial,
+    };
+    let mut cb = [0; 8192];
+    let mut sb = [0; 8192];
+    let cs = locals::MessageSlot::new(&mut cb);
+    let ss = locals::MessageSlot::new(&mut sb);
+    let cc = CarrierStorage::<1, 16, 4>::new();
+    let sc = CarrierStorage::<1, 16, 4>::new();
+    let mut cm = [0; 65536];
+    let mut sm = [0; 65536];
+    let mut ck = SessionKitStorage::uninit();
+    let mut sk = SessionKitStorage::uninit();
+    let cid = SessionId::new(5300);
+    let sid = SessionId::new(5301);
+    let cr = ck
+        .init()
+        .rendezvous(&mut cm, cc.bind(cid).unwrap())
+        .unwrap();
+    let sr = sk
+        .init()
+        .rendezvous(&mut sm, sc.bind(sid).unwrap())
+        .unwrap();
+    let cp = protocol::client_programs();
+    let sp = protocol::server_programs();
+    let mut cv = cr.enter(cid, &cp.verify).unwrap();
+    let mut cw = cr.enter(cid, &cp.input).unwrap();
+    let mut sv = sr.enter(sid, &sp.verify).unwrap();
+    let mut sw = sr.enter(sid, &sp.input).unwrap();
+    {
+        let mut co = pin!(locals::client_source_owner(&mut cv, &c, &cs));
+        let mut so = pin!(locals::server_source_owner(&mut sv, &s, &ss));
+        let mut cin = pin!(locals::client_input(&mut cw, &cs, &mut ci));
+        let mut sin = pin!(locals::server_input(&mut sw, &ss, &mut si));
+        let mut tasks = pin!(TaskSet::new([
+            co.as_mut(),
+            so.as_mut(),
+            cin.as_mut(),
+            sin.as_mut()
+        ]));
+        let mut complete = false;
+        for _ in 0..128 {
+            let result = tasks.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+            observe(&mut c.borrow_mut(), &mut s.borrow_mut());
+            if let Poll::Ready(value) = result {
+                value.unwrap();
+                complete = true;
+                break;
+            }
+        }
+        assert!(complete, "owned projected TLS must complete");
+    }
+    assert_eq!(
+        c.borrow().state(),
+        hibana_quic::bounded_tls::State::Connected
+    );
+    assert_eq!(
+        s.borrow().state(),
+        hibana_quic::bounded_tls::State::Connected
+    );
+}
