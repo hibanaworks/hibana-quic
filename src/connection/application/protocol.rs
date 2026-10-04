@@ -1,6 +1,5 @@
 //! The connected global: actual affine startup, concurrent ordinary roles,
 //! complete ordinary retirement, then closing or draining.
-//! Source implementation is awaiting fresh compiler/global validation.
 use crate::connection::protocol::{RX as PREFIX_RX, TLS_RX as PREFIX_TLS_RX, TX as PREFIX_TX};
 use hibana::{
     g,
@@ -67,8 +66,7 @@ pub type Drain = g::Msg<38, u64>;
 pub type Drained = g::Msg<39, u64>;
 pub type Retire = g::Msg<40, u64>;
 pub type Retired = g::Msg<41, u64>;
-// These declarations reconstruct the planned terminal lane dependencies. They
-// had not yet been incorporated into a validated combined graph before loss.
+// Parallel terminal observations join before connection retirement.
 pub type Quiesce = g::Msg<42, u64>;
 pub type Quiesced = g::Msg<43, u64>;
 pub type PeerClose = g::Msg<44, u64>;
@@ -80,22 +78,39 @@ pub type ApplicationFailed = g::Msg<49, u64>;
 pub type CompletionCancelled = g::Msg<50, u64>;
 pub type CompletionSeen = g::Msg<51, u64>;
 
-pub type SourceFlow = g::Seq<
-    g::Roll<
+// Stream production has a finite terminal outside the rolled data fragment.
+// FIN is a choreography message, never a boolean hidden in a data slot.
+pub type SourceOpen = g::Msg<168, u64>;
+pub type SourceFin = g::Msg<169, u64>;
+pub type SourceAbandon = g::Msg<170, u64>;
+pub type SourceEnded = g::Msg<171, u64>;
+pub type SourceEndRejected = g::Msg<172, u64>;
+pub type SourceDataFinished = g::Msg<173, u64>;
+pub type SourceChunk = g::Seq<
+    g::Send<SOURCE, INGRESS, SourceData>,
+    g::Seq<
         g::Route<
-            g::Seq<
-                g::Send<SOURCE, INGRESS, SourceData>,
-                g::Seq<
-                    g::Route<
-                        g::Send<INGRESS, SOURCE, SourceAccepted>,
-                        g::Send<INGRESS, SOURCE, SourceRejected>,
-                    >,
-                    g::Send<SOURCE, INGRESS, SourceTaken>,
-                >,
+            g::Send<INGRESS, SOURCE, SourceAccepted>,
+            g::Send<INGRESS, SOURCE, SourceRejected>,
+        >,
+        g::Send<SOURCE, INGRESS, SourceTaken>,
+    >,
+>;
+pub type StreamProduction = g::Seq<
+    g::Send<SOURCE, INGRESS, SourceOpen>,
+    g::Seq<
+        g::Roll<g::Route<SourceChunk, g::Send<SOURCE, INGRESS, SourceDataFinished>>>,
+        g::Seq<
+            g::Route<g::Send<SOURCE, INGRESS, SourceFin>, g::Send<SOURCE, INGRESS, SourceAbandon>>,
+            g::Route<
+                g::Send<INGRESS, SOURCE, SourceEnded>,
+                g::Send<INGRESS, SOURCE, SourceEndRejected>,
             >,
-            g::Send<SOURCE, INGRESS, SourceDone>,
         >,
     >,
+>;
+pub type SourceFlow = g::Seq<
+    g::Roll<g::Route<StreamProduction, g::Send<SOURCE, INGRESS, SourceDone>>>,
     g::Send<INGRESS, SOURCE, SourceRetired>,
 >;
 pub type ReceiveFlow = g::Seq<
@@ -301,7 +316,7 @@ fn startup() -> g::Program<Startup> {
     )
 }
 
-pub fn choreography() -> g::Program<Flow> {
+pub fn source_choreography() -> g::Program<SourceFlow> {
     let chunks = g::route(
         g::seq(
             g::send::<SOURCE, INGRESS, SourceData>(),
@@ -313,11 +328,33 @@ pub fn choreography() -> g::Program<Flow> {
                 g::send::<SOURCE, INGRESS, SourceTaken>(),
             ),
         ),
-        g::send::<SOURCE, INGRESS, SourceDone>(),
+        g::send::<SOURCE, INGRESS, SourceDataFinished>(),
     )
     .roll();
-    let source = g::seq(chunks, g::send::<INGRESS, SOURCE, SourceRetired>());
+    let stream = g::seq(
+        g::send::<SOURCE, INGRESS, SourceOpen>(),
+        g::seq(
+            chunks,
+            g::seq(
+                g::route(
+                    g::send::<SOURCE, INGRESS, SourceFin>(),
+                    g::send::<SOURCE, INGRESS, SourceAbandon>(),
+                ),
+                g::route(
+                    g::send::<INGRESS, SOURCE, SourceEnded>(),
+                    g::send::<INGRESS, SOURCE, SourceEndRejected>(),
+                ),
+            ),
+        ),
+    );
+    g::seq(
+        g::route(stream, g::send::<SOURCE, INGRESS, SourceDone>()).roll(),
+        g::send::<INGRESS, SOURCE, SourceRetired>(),
+    )
+}
 
+pub fn choreography() -> g::Program<Flow> {
+    let source = source_choreography();
     let deliveries = g::route(
         g::seq(
             g::send::<RECEIVE, SINK, ReceivedData>(),

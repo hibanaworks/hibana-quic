@@ -46,12 +46,17 @@ const DATAGRAM: usize = 1536;
 const PARAMS: usize = 512;
 const RECEIVE_WINDOW: usize = 4096;
 const CHUNK: usize = 256;
-const STREAMS: usize = 3;
+const STREAMS: usize = 4;
 const ORIGINAL: &[u8] = b"original";
 const CLIENT_ID: &[u8] = b"client01";
 const SERVER_ID: &[u8] = b"server01";
-const REQUESTS: [&[u8]; STREAMS] = [b"GET /alpha\r\n", b"GET /beta\r\n", b"GET /gamma\r\n"];
-const BODY_SIZES: [usize; STREAMS] = [1537, 2051, 3073];
+const REQUESTS: [&[u8]; STREAMS] = [
+    b"GET /alpha\r\n",
+    b"GET /beta\r\n",
+    b"GET /gamma\r\n",
+    b"GET /empty\r\n",
+];
+const BODY_SIZES: [usize; STREAMS] = [1537, 2051, 3073, 0];
 
 fn limits(side: Side) -> Limits {
     Limits {
@@ -794,7 +799,7 @@ fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
     )
     .unwrap();
     let mut facets = numbers.split();
-    for id in [0, 4, 8] {
+    for id in (0..STREAMS as u64).map(|index| index * 4) {
         assert_eq!(facets.app.open_local().unwrap().id(), id);
     }
     assert!(matches!(
@@ -808,6 +813,11 @@ fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
 #[test]
 fn three_distinct_stream_requests_deliver_each_body_and_fin_once() {
     run_connection(3, Loss::None);
+}
+
+#[test]
+fn empty_response_uses_explicit_fin_after_three_nonempty_streams() {
+    run_connection(4, Loss::None);
 }
 
 #[test]

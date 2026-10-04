@@ -1,12 +1,12 @@
 {
-  "request": "Qualify ACK history fix and network impairment cases",
-  "requested_at": "2026-10-04T04:29:00Z",
+  "request": "Requalify explicit stream-production terminal migration",
+  "requested_at": "2026-10-04T05:21:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"
   ],
   "approval": "User approved disposable GitHub CI Docker allow-direct-routing=true",
-  "local_evidence": "artifacts/rolled-route-runtime-20261004/native-loss-fixed.json",
+  "local_evidence": "artifacts/rolled-route-runtime-20261004/source-migration-native.json",
   "cases": [
     "handshake",
     "transfer",

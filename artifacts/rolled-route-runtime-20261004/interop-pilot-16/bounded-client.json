@@ -1,0 +1,654 @@
+{
+  "phase": "bounded-client",
+  "client": "hibana-quic",
+  "server": "neqo",
+  "status": "PASSED",
+  "exit_code": 0,
+  "quic_version": "0x1",
+  "results": [
+    {
+      "name": "handshake",
+      "result": "succeeded",
+      "abbr": "H"
+    },
+    {
+      "name": "ipv6",
+      "result": "succeeded",
+      "abbr": "6"
+    },
+    {
+      "name": "longrtt",
+      "result": "succeeded",
+      "abbr": "LR"
+    },
+    {
+      "name": "transfer",
+      "result": "succeeded",
+      "abbr": "DC"
+    },
+    {
+      "name": "transfercorruption",
+      "result": "succeeded",
+      "abbr": "C2"
+    },
+    {
+      "name": "transferloss",
+      "result": "succeeded",
+      "abbr": "L2"
+    }
+  ],
+  "original_json_sha256": "4de29f1defa54fc3af0f8c5d78f1fb49abb9942f2e5d0e11db98051909bab109",
+  "non_null_case_results": 6,
+  "unexecuted_case_results": 0,
+  "passed": true,
+  "cleanup_exit_code": 0,
+  "console_file": {
+    "state": "too-large",
+    "bytes": 73624690
+  },
+  "duration_seconds": 135.866,
+  "case_diagnostics": {
+    "handshake": {
+      "runner_output": {
+        "state": "present",
+        "bytes": 39615,
+        "sha256": "956933896bc58115c0366d375be4ab20beeadd977b263f75a1f4453a89c36a22",
+        "parse_state": "parsed",
+        "line_count": 502,
+        "error_classes": [
+          "certificate"
+        ],
+        "runner_classes": [
+          "container-exit-abort",
+          "file-check-passed"
+        ],
+        "console_error_classes": [],
+        "container_exit_codes": {
+          "client": [
+            0
+          ],
+          "server": [
+            137
+          ],
+          "sim": [
+            143
+          ]
+        },
+        "case_timeout_count": 0,
+        "case_timeout_seconds": []
+      },
+      "client_log": {
+        "state": "present",
+        "bytes": 630,
+        "sha256": "b02bd3c99dfff542d55f237bbe68ed6e07bb5f517b8f87b469c1fd608cf120cd",
+        "parse_state": "parsed",
+        "line_count": 1,
+        "error_classes": [],
+        "json_record_count": 1,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": [
+          {
+            "record_sha256": "e9871cababb7b10b1e380879390319045f1ea43cd001b23f0a7cf75a05c6ca78",
+            "state": "parsed",
+            "status": "success",
+            "role": "client",
+            "lifecycle_closed": true,
+            "files_completed": 1,
+            "datagrams_sent": 13,
+            "datagrams_received": 6,
+            "reactor_polls": 109,
+            "reactor_waits": 108,
+            "reactor_socket_events": 6,
+            "reactor_timer_events": 3,
+            "body_bytes": 1024,
+            "duration_ms": 456,
+            "unknown_fields_count": 12,
+            "unknown_fields": {
+              "withheld": true,
+              "sha256": "8bcae036a9866cbf17170a60ae3e7460a9a21aeb9481d9a8db98314e088ea911"
+            }
+          }
+        ]
+      },
+      "server_log": {
+        "state": "present",
+        "bytes": 27533,
+        "sha256": "0d8f8a438cac55c034626eb025ea9bfb054f362f3fca9547973e6cbab05ecc2d",
+        "parse_state": "parsed",
+        "line_count": 323,
+        "error_classes": [],
+        "json_record_count": 0,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": []
+      },
+      "captures": {
+        "left": {
+          "state": "present",
+          "bytes": 17132,
+          "sha256": "4bdae77d69348449f646cf5f10a07b719edea1586f8f59a479126a290597ee27"
+        },
+        "right": {
+          "state": "present",
+          "bytes": 15720,
+          "sha256": "b97ff58106220147f977d6a9e11b50a80a252f2210cb69eeaa0e3aaebf5ee48c"
+        }
+      },
+      "application_files": {
+        "server_www": {
+          "state": "missing"
+        },
+        "client_downloads": {
+          "state": "missing"
+        },
+        "client_www": {
+          "state": "missing"
+        },
+        "server_downloads": {
+          "state": "missing"
+        }
+      }
+    },
+    "ipv6": {
+      "runner_output": {
+        "state": "present",
+        "bytes": 107667,
+        "sha256": "dd2f7c88546ad419b1b4b1b4518182d6fea7b508e1f6cb18946cdf1371d973b5",
+        "parse_state": "parsed",
+        "line_count": 1186,
+        "error_classes": [
+          "certificate"
+        ],
+        "runner_classes": [
+          "container-exit-abort",
+          "file-check-passed"
+        ],
+        "console_error_classes": [],
+        "container_exit_codes": {
+          "client": [
+            0
+          ],
+          "server": [
+            137
+          ],
+          "sim": [
+            143
+          ]
+        },
+        "case_timeout_count": 0,
+        "case_timeout_seconds": []
+      },
+      "client_log": {
+        "state": "present",
+        "bytes": 643,
+        "sha256": "20503ef9169e85ae289bff95f4647b61b40969813081de23f0e3b8812b448979",
+        "parse_state": "parsed",
+        "line_count": 1,
+        "error_classes": [],
+        "json_record_count": 1,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": [
+          {
+            "record_sha256": "b11ddd28984ddb43cac242c4530ed35cf03c2948d13c62acfd00572c155982cd",
+            "state": "parsed",
+            "status": "success",
+            "role": "client",
+            "lifecycle_closed": true,
+            "files_completed": 2,
+            "datagrams_sent": 48,
+            "datagrams_received": 20,
+            "reactor_polls": 240,
+            "reactor_waits": 239,
+            "reactor_socket_events": 8,
+            "reactor_timer_events": 3,
+            "body_bytes": 15360,
+            "duration_ms": 469,
+            "unknown_fields_count": 12,
+            "unknown_fields": {
+              "withheld": true,
+              "sha256": "32e6303deed15e8d4b466a7ce94a0b2e912b15e7b90e185972389308cdc4e433"
+            }
+          }
+        ]
+      },
+      "server_log": {
+        "state": "present",
+        "bytes": 87893,
+        "sha256": "d04866dc8ef3af1c6acb1cb9f5aa68995b23543af2ac4f7272bafd8960269003",
+        "parse_state": "parsed",
+        "line_count": 1003,
+        "error_classes": [],
+        "json_record_count": 0,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": []
+      },
+      "captures": {
+        "left": {
+          "state": "present",
+          "bytes": 39792,
+          "sha256": "408f7c2e25102b4706c4001a262b797fcf35b429a2501ee7905381e3e9d68d6d"
+        },
+        "right": {
+          "state": "present",
+          "bytes": 39544,
+          "sha256": "8ec1baafa2ab177448cdf9cded6bafe133413287aa678678df8b3c3e43b8aae6"
+        }
+      },
+      "application_files": {
+        "server_www": {
+          "state": "missing"
+        },
+        "client_downloads": {
+          "state": "missing"
+        },
+        "client_www": {
+          "state": "missing"
+        },
+        "server_downloads": {
+          "state": "missing"
+        }
+      }
+    },
+    "longrtt": {
+      "runner_output": {
+        "state": "present",
+        "bytes": 55416,
+        "sha256": "fb68a0f5d2869437e1bab159e3ac07ee19e10c1209584735dcf3c04fb71eefc5",
+        "parse_state": "parsed",
+        "line_count": 685,
+        "error_classes": [
+          "certificate"
+        ],
+        "runner_classes": [
+          "container-exit-abort",
+          "file-check-passed"
+        ],
+        "console_error_classes": [],
+        "container_exit_codes": {
+          "client": [
+            0
+          ],
+          "server": [
+            137
+          ],
+          "sim": [
+            143
+          ]
+        },
+        "case_timeout_count": 0,
+        "case_timeout_seconds": []
+      },
+      "client_log": {
+        "state": "present",
+        "bytes": 633,
+        "sha256": "d81f326f4b0caff3b4752277cef3a9d3d7b02916624865659f30e6f53ca38867",
+        "parse_state": "parsed",
+        "line_count": 1,
+        "error_classes": [],
+        "json_record_count": 1,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": [
+          {
+            "record_sha256": "b73ee03a79abb99a593359cfb3988df8afdb5f8e994ae14bd89936ec03767275",
+            "state": "parsed",
+            "status": "success",
+            "role": "client",
+            "lifecycle_closed": true,
+            "files_completed": 1,
+            "datagrams_sent": 16,
+            "datagrams_received": 7,
+            "reactor_polls": 133,
+            "reactor_waits": 132,
+            "reactor_socket_events": 7,
+            "reactor_timer_events": 4,
+            "body_bytes": 1024,
+            "duration_ms": 12793,
+            "unknown_fields_count": 12,
+            "unknown_fields": {
+              "withheld": true,
+              "sha256": "f51e8c0c89736c0685809c7bbc6f93ea90abb87c617fa31380a3161b07f2dac5"
+            }
+          }
+        ]
+      },
+      "server_log": {
+        "state": "present",
+        "bytes": 41515,
+        "sha256": "f67d38e7d9185e34d34dc537746fb73e26a40f49efa1ebf995503c80b3427f08",
+        "parse_state": "parsed",
+        "line_count": 492,
+        "error_classes": [],
+        "json_record_count": 0,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": []
+      },
+      "captures": {
+        "left": {
+          "state": "present",
+          "bytes": 23180,
+          "sha256": "c9fc997c12f7c526195b61a5203c6eabb5716f12154886d079f7d0a7cadf89cf"
+        },
+        "right": {
+          "state": "present",
+          "bytes": 21136,
+          "sha256": "769879dc1f0813262f7bdcf521b28340a43714d73802d6d0dccd11a4cb17b96e"
+        }
+      },
+      "application_files": {
+        "server_www": {
+          "state": "missing"
+        },
+        "client_downloads": {
+          "state": "missing"
+        },
+        "client_www": {
+          "state": "missing"
+        },
+        "server_downloads": {
+          "state": "missing"
+        }
+      }
+    },
+    "transfer": {
+      "runner_output": {
+        "state": "too-large",
+        "bytes": 48346369
+      },
+      "client_log": {
+        "state": "present",
+        "bytes": 657,
+        "sha256": "2bd0f7935fdd4a85396e98d82da5db283ea161cd2622e46152cfbe875cca4361",
+        "parse_state": "parsed",
+        "line_count": 1,
+        "error_classes": [],
+        "json_record_count": 1,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": [
+          {
+            "record_sha256": "acaf7a182ff86de2863bb165a743c3179f585b5498e6b11f085757b9824bccd6",
+            "state": "parsed",
+            "status": "success",
+            "role": "client",
+            "lifecycle_closed": true,
+            "files_completed": 3,
+            "datagrams_sent": 19569,
+            "datagrams_received": 32291,
+            "reactor_polls": 120122,
+            "reactor_waits": 120121,
+            "reactor_socket_events": 7,
+            "reactor_timer_events": 3,
+            "body_bytes": 10485760,
+            "duration_ms": 19107,
+            "unknown_fields_count": 12,
+            "unknown_fields": {
+              "withheld": true,
+              "sha256": "8cd68ca1e4bd05bc300eaea21f09fb183db3d5b1528561a8cb06ec96ae051c20"
+            }
+          }
+        ]
+      },
+      "server_log": {
+        "state": "too-large",
+        "bytes": 43047394
+      },
+      "captures": {
+        "left": {
+          "state": "present",
+          "bytes": 16361976,
+          "sha256": "d7a69279a6ac60056b8428dcbb2198fdf60426eac386177d35ed51ede0a865dc"
+        },
+        "right": {
+          "state": "present",
+          "bytes": 16360200,
+          "sha256": "12b9738ec1007799fc351646bfa96a19c4019a3f1db73f0e9f2a041043221b36"
+        }
+      },
+      "application_files": {
+        "server_www": {
+          "state": "missing"
+        },
+        "client_downloads": {
+          "state": "missing"
+        },
+        "client_www": {
+          "state": "missing"
+        },
+        "server_downloads": {
+          "state": "missing"
+        }
+      }
+    },
+    "transfercorruption": {
+      "runner_output": {
+        "state": "too-large",
+        "bytes": 12107860
+      },
+      "client_log": {
+        "state": "present",
+        "bytes": 652,
+        "sha256": "449e9d217de18d5ee207de04d35438a1b963cde9c43eaca5a6e22190e92fb69b",
+        "parse_state": "parsed",
+        "line_count": 1,
+        "error_classes": [],
+        "json_record_count": 1,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": [
+          {
+            "record_sha256": "77e36fdbffcfcb53137d8d914f5bb929fd1042b2fcbd7d40ccd203e26c06a7cc",
+            "state": "parsed",
+            "status": "success",
+            "role": "client",
+            "lifecycle_closed": true,
+            "files_completed": 1,
+            "datagrams_sent": 4725,
+            "datagrams_received": 3447,
+            "reactor_polls": 22132,
+            "reactor_waits": 22131,
+            "reactor_socket_events": 964,
+            "reactor_timer_events": 22,
+            "body_bytes": 2097152,
+            "duration_ms": 8019,
+            "unknown_fields_count": 12,
+            "unknown_fields": {
+              "withheld": true,
+              "sha256": "87c91fdb6372660d0d7feaeafb0f19b783cc22e5a6462baba435eb6ea9395fd9"
+            }
+          }
+        ]
+      },
+      "server_log": {
+        "state": "too-large",
+        "bytes": 10292430
+      },
+      "captures": {
+        "left": {
+          "state": "present",
+          "bytes": 3137748,
+          "sha256": "7076035ee6ae4998ed924b61d1c680e4e44e6efc6d0fe9f98d7e96a5ad6c6d89"
+        },
+        "right": {
+          "state": "present",
+          "bytes": 3177520,
+          "sha256": "df182a2dc81cfca5ea9f4b251d9fed22aa13337244ce77ec169c927600963fe9"
+        }
+      },
+      "application_files": {
+        "server_www": {
+          "state": "missing"
+        },
+        "client_downloads": {
+          "state": "missing"
+        },
+        "client_www": {
+          "state": "missing"
+        },
+        "server_downloads": {
+          "state": "missing"
+        }
+      }
+    },
+    "transferloss": {
+      "runner_output": {
+        "state": "too-large",
+        "bytes": 12968177
+      },
+      "client_log": {
+        "state": "present",
+        "bytes": 652,
+        "sha256": "d32805ab360ee7803ef0a7b0e8a3eb45161761803e9ff640300ab9b3564c9202",
+        "parse_state": "parsed",
+        "line_count": 1,
+        "error_classes": [],
+        "json_record_count": 1,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": [
+          {
+            "record_sha256": "28d20642b4b5a8d1d68473e7bea9ea4cd714bb575932cac0b37601efd7036026",
+            "state": "parsed",
+            "status": "success",
+            "role": "client",
+            "lifecycle_closed": true,
+            "files_completed": 1,
+            "datagrams_sent": 4962,
+            "datagrams_received": 3687,
+            "reactor_polls": 22790,
+            "reactor_waits": 22789,
+            "reactor_socket_events": 756,
+            "reactor_timer_events": 14,
+            "body_bytes": 2097152,
+            "duration_ms": 7418,
+            "unknown_fields_count": 12,
+            "unknown_fields": {
+              "withheld": true,
+              "sha256": "7022b97dfe1168ba3a1112db2f0e8c66ff4796e1796e6bf16b68b7198e5bdf80"
+            }
+          }
+        ]
+      },
+      "server_log": {
+        "state": "too-large",
+        "bytes": 11076794
+      },
+      "captures": {
+        "left": {
+          "state": "present",
+          "bytes": 3218592,
+          "sha256": "13e16ed0b98c50e6c0f8ea54dae8ddfcabd320e0313464f3ae003c9a7fcbed05"
+        },
+        "right": {
+          "state": "present",
+          "bytes": 3233908,
+          "sha256": "f44e625bf3e40ccb18fe1224573437157424d8c905147693ab42bcedaa60c308"
+        }
+      },
+      "application_files": {
+        "server_www": {
+          "state": "missing"
+        },
+        "client_downloads": {
+          "state": "missing"
+        },
+        "client_www": {
+          "state": "missing"
+        },
+        "server_downloads": {
+          "state": "missing"
+        }
+      }
+    }
+  },
+  "captures": [
+    {
+      "state": "present",
+      "bytes": 17132,
+      "sha256": "4bdae77d69348449f646cf5f10a07b719edea1586f8f59a479126a290597ee27",
+      "case": "handshake",
+      "side": "left"
+    },
+    {
+      "state": "present",
+      "bytes": 15720,
+      "sha256": "b97ff58106220147f977d6a9e11b50a80a252f2210cb69eeaa0e3aaebf5ee48c",
+      "case": "handshake",
+      "side": "right"
+    },
+    {
+      "state": "present",
+      "bytes": 39792,
+      "sha256": "408f7c2e25102b4706c4001a262b797fcf35b429a2501ee7905381e3e9d68d6d",
+      "case": "ipv6",
+      "side": "left"
+    },
+    {
+      "state": "present",
+      "bytes": 39544,
+      "sha256": "8ec1baafa2ab177448cdf9cded6bafe133413287aa678678df8b3c3e43b8aae6",
+      "case": "ipv6",
+      "side": "right"
+    },
+    {
+      "state": "present",
+      "bytes": 23180,
+      "sha256": "c9fc997c12f7c526195b61a5203c6eabb5716f12154886d079f7d0a7cadf89cf",
+      "case": "longrtt",
+      "side": "left"
+    },
+    {
+      "state": "present",
+      "bytes": 21136,
+      "sha256": "769879dc1f0813262f7bdcf521b28340a43714d73802d6d0dccd11a4cb17b96e",
+      "case": "longrtt",
+      "side": "right"
+    },
+    {
+      "state": "present",
+      "bytes": 16361976,
+      "sha256": "d7a69279a6ac60056b8428dcbb2198fdf60426eac386177d35ed51ede0a865dc",
+      "case": "transfer",
+      "side": "left"
+    },
+    {
+      "state": "present",
+      "bytes": 16360200,
+      "sha256": "12b9738ec1007799fc351646bfa96a19c4019a3f1db73f0e9f2a041043221b36",
+      "case": "transfer",
+      "side": "right"
+    },
+    {
+      "state": "present",
+      "bytes": 3137748,
+      "sha256": "7076035ee6ae4998ed924b61d1c680e4e44e6efc6d0fe9f98d7e96a5ad6c6d89",
+      "case": "transfercorruption",
+      "side": "left"
+    },
+    {
+      "state": "present",
+      "bytes": 3177520,
+      "sha256": "df182a2dc81cfca5ea9f4b251d9fed22aa13337244ce77ec169c927600963fe9",
+      "case": "transfercorruption",
+      "side": "right"
+    },
+    {
+      "state": "present",
+      "bytes": 3218592,
+      "sha256": "13e16ed0b98c50e6c0f8ea54dae8ddfcabd320e0313464f3ae003c9a7fcbed05",
+      "case": "transferloss",
+      "side": "left"
+    },
+    {
+      "state": "present",
+      "bytes": 3233908,
+      "sha256": "f44e625bf3e40ccb18fe1224573437157424d8c905147693ab42bcedaa60c308",
+      "case": "transferloss",
+      "side": "right"
+    }
+  ]
+}

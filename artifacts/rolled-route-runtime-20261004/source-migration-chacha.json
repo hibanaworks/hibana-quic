@@ -1,0 +1,60 @@
+{
+  "scope": "native-peer-diagnostics",
+  "official_interop_pass": false,
+  "scenario": "chacha20",
+  "impairment": null,
+  "coverage_gaps": [
+    "not ns-3 topology or exact stochastic impairment",
+    "no packet-trace verdicts",
+    "forward ordinary-Neqo generated-zero payloads"
+  ],
+  "binaries": {
+    "hq": "fac3ef8b865277af271dd4f9407de95eda9c293bb71b4ae5ab2e16e47e8d3d0e",
+    "neqo-client": "b7ab072bf524c18cbf1ebf4bceddec58234625388e2d3fc2afbd566584ccf76a",
+    "neqo-server": "30e4a18bcfcbfeb8201a4fa5c065977ee046fb02d3d2f33caf15d87a99a32b6e"
+  },
+  "runs": [
+    {
+      "direction": "baseline",
+      "client_exit": 0,
+      "elapsed_seconds": 0.053,
+      "files": [
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5",
+          "received_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5"
+        }
+      ],
+      "proxy": null
+    },
+    {
+      "direction": "forward",
+      "client_exit": 0,
+      "elapsed_seconds": 5.782,
+      "files": [
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5",
+          "received_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5"
+        }
+      ],
+      "proxy": null
+    },
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "elapsed_seconds": 2.42,
+      "files": [
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7",
+          "received_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7"
+        }
+      ],
+      "proxy": null
+    }
+  ]
+}

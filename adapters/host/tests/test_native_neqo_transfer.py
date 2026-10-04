@@ -71,7 +71,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('hq', 'neqo-client', 'neqo-server', 'nss', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6'), default='clean')
+    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
     args = parser.parse_args()
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
@@ -80,7 +80,7 @@ def main():
     env['LD_LIBRARY_PATH'] = str(nss / 'lib')
     env.pop('SSLKEYLOGFILE', None)
     ipv6 = args.scenario == 'ipv6'
-    sizes = [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
+    sizes = [3 << 20] if args.scenario == 'chacha20' else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
     options = {'delay': 0.75} if args.scenario == 'longrtt' else (
         {'drop_every': 50} if args.scenario == 'loss' else (
             {'corrupt_every': 50} if args.scenario == 'corruption' else None
@@ -120,6 +120,8 @@ def main():
                 server_command = [str(hq), 'server', '--listen', server_address, '--cert', str(root / 'server.pem'), '--key', str(root / 'server.key'), '--www', str(www), '--max-requests', str(len(names)), '--timeout-seconds', '60']
             else:
                 server_command = [str(ns), '-a', 'hq-interop', '-Q', '1', '-d', str(db), '-k', 'native-peer', '--idle', '60', server_address]
+            if args.scenario == 'chacha20':
+                server_command += ['--cipher', 'chacha20'] if direction == 'reverse' else ['-c', 'TLS_CHACHA20_POLY1305_SHA256']
             log_path = root / 'server.log'
             with log_path.open('w') as log:
                 server = subprocess.Popen(server_command, env=env, stdout=log, stderr=log, text=True)
@@ -137,6 +139,8 @@ def main():
                                 command += ['--request', url]
                         else:
                             command = [str(nc), '--qns-test', 'transfer', '-Q', '1', '--ipv6-only' if ipv6 else '--ipv4-only', '--output-dir', str(destination), '--idle', '60'] + urls
+                        if args.scenario == 'chacha20':
+                            command += ['--cipher', 'chacha20'] if direction == 'forward' else ['-c', 'TLS_CHACHA20_POLY1305_SHA256']
                         started = time.monotonic()
                         try:
                             result = run(command, env)

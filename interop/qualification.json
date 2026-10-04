@@ -2,8 +2,8 @@
   "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
   "registered_quic_cases": 22,
   "directions": 2,
-  "pilot_commit": "92731a990f11f3bd293e776a1535d6f36cbfb3ff",
-  "current_cleanup_commit_qualification": "handshake and transfer passed both directions in run37176305141",
+  "pilot_commit": "b8cf48f7636eec7b81942a27175a89ba68a84333",
+  "current_cleanup_commit_qualification": "six registered cases passed both directions in run37177524554; 12/44 candidate cells; baseline excluded",
   "cases": [
     {
       "case": "handshake",
@@ -20,8 +20,8 @@
     {
       "case": "longrtt",
       "abbreviation": "LR",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot"
     },
     {
       "case": "chacha20",
@@ -92,8 +92,8 @@
     {
       "case": "transferloss",
       "abbreviation": "L2",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot"
     },
     {
       "case": "handshakecorruption",
@@ -104,14 +104,14 @@
     {
       "case": "transfercorruption",
       "abbreviation": "C2",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot"
     },
     {
       "case": "ipv6",
       "abbreviation": "6",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot"
     },
     {
       "case": "v2",
@@ -138,5 +138,5 @@
       "server_vs_neqo": "not-run"
     }
   ],
-  "network_impairment_qualification": "local diagnostics passed; official expansion pending"
+  "network_impairment_qualification": "official six-case pilot succeeded on b8cf48f; unrun cases and full repeated matrix remain unqualified"
 }

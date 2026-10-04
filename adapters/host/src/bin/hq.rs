@@ -400,6 +400,7 @@ async fn run_async(
         Options::Client {
             connect,
             server_name,
+            cipher,
             ca,
             files,
             ..
@@ -449,7 +450,7 @@ async fn run_async(
                     .duration_since(UNIX_EPOCH)
                     .map_err(|_| "system clock precedes Unix epoch")?,
             );
-            let tls = BoundedTls::client(
+            let tls = BoundedTls::client_with_policy(
                 ClientConfig {
                     server_name: &server_name,
                     trust_anchors: &anchors,
@@ -459,6 +460,7 @@ async fn run_async(
                 },
                 buffers.storage(),
                 &mut OsRng,
+                cipher,
             )
             .map_err(|e| format!("client TLS: {e:?}"))?;
             Box::pin(connected(
@@ -480,6 +482,7 @@ async fn run_async(
         Options::Server {
             listen,
             cert,
+            cipher,
             key,
             files,
             ..
@@ -514,7 +517,7 @@ async fn run_async(
                 files.as_ref().map(|_| Side::Server),
             )?;
             let mut buffers = TlsBuffers::new();
-            let tls = BoundedTls::server(
+            let tls = BoundedTls::server_with_policy(
                 ServerConfig {
                     certificate_chain: &chain,
                     signing_key: &key,
@@ -522,6 +525,7 @@ async fn run_async(
                 },
                 buffers.storage(),
                 &mut OsRng,
+                cipher,
             )
             .map_err(|e| format!("server TLS: {e:?}"))?;
             Box::pin(connected(

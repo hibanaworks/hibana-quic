@@ -34,6 +34,13 @@ class EndpointCommand(unittest.TestCase):
         args = module.command({'ROLE':'server', 'TESTCASE':'handshake'}, resolve)
         self.assertIn('/certs/priv.key', args)
         self.assertIn('/www', args)
+    def test_chacha_requires_explicit_policy_on_both_roles(self):
+        for role in ('client','server'):
+            env=self.env();env.update(ROLE=role, TESTCASE='chacha20')
+            args=module.command(env,resolve)
+            self.assertEqual(args[args.index('--cipher')+1], 'chacha20')
+        self.assertNotIn('--cipher',module.command(self.env(),resolve))
+
     def test_unsupported_is_explicit(self):
         for case in ('keyupdate', 'retry', 'zerortt', 'resumption', 'http3', 'unknown'):
             with self.assertRaises(module.Unsupported):

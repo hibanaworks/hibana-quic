@@ -1,6 +1,5 @@
 //! A single projected connection from authenticated application admission to
 //! bounded stream IO, ordinary retirement, closing and draining.
-//! Recovered foundations and new integration await fresh compiler/test checks.
 
 mod io;
 mod keys;

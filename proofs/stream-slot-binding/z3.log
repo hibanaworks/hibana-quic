@@ -1,0 +1,8 @@
+accepted slot preserves connection: UNSAT; acceptance nonvacuous
+accepted slot preserves slot: UNSAT; acceptance nonvacuous
+accepted slot preserves generation: UNSAT; acceptance nonvacuous
+accepted slot preserves stream: UNSAT; acceptance nonvacuous
+stream-ID-only comparison admits a stale generation: SAT [opened_generation = 1,
+ chunk_generation = 0,
+ chunk_stream = 0,
+ opened_stream = 0]

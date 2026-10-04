@@ -27,7 +27,6 @@ pub(crate) struct Chunk<const CHUNK: usize> {
     pub stream: StreamHandle,
     pub bytes: [u8; CHUNK],
     pub len: usize,
-    pub fin: bool,
 }
 
 pub(crate) struct OwnedRequest {
@@ -40,6 +39,7 @@ pub(crate) struct OwnedRequest {
 /// the transport continuations, never by these completion counters.
 pub(crate) struct State<const CHUNK: usize> {
     chunks: Inbox<Chunk<CHUNK>>,
+    opened: Inbox<StreamHandle>,
     submitted: Cell<usize>,
     bodies_finished: Cell<usize>,
     done: Cell<bool>,
@@ -49,6 +49,7 @@ impl<const CHUNK: usize> State<CHUNK> {
     pub(crate) const fn new() -> Self {
         Self {
             chunks: Inbox::new(),
+            opened: Inbox::new(),
             submitted: Cell::new(0),
             bodies_finished: Cell::new(0),
             done: Cell::new(false),
@@ -142,6 +143,44 @@ async fn submit<const CHUNK: usize>(
     Ok(accepted)
 }
 
+// A stream is bound once at the start of its finite production fragment.
+async fn begin_stream<const CHUNK: usize>(
+    endpoint: &mut Endpoint<'_, { p::SOURCE }>,
+    state: &State<CHUNK>,
+    stream: StreamHandle,
+) -> Result<(), Error> {
+    state.opened.put(stream).map_err(|_| Error::Binding)?;
+    endpoint.send::<p::SourceOpen>(&stream.id()).await?;
+    Ok(())
+}
+
+async fn end_stream(
+    endpoint: &mut Endpoint<'_, { p::SOURCE }>,
+    stream: StreamHandle,
+    complete: bool,
+) -> Result<bool, Error> {
+    endpoint.send::<p::SourceDataFinished>(&stream.id()).await?;
+    if complete {
+        endpoint.send::<p::SourceFin>(&stream.id()).await?;
+    } else {
+        // Connection shutdown abandons production; this is not a fabricated
+        // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
+        endpoint.send::<p::SourceAbandon>(&stream.id()).await?;
+    }
+    let reply = endpoint.offer().await?;
+    match reply.label() {
+        171 => {
+            check(reply.recv::<p::SourceEnded>().await?, stream.id())?;
+            Ok(complete)
+        }
+        172 => {
+            check(reply.recv::<p::SourceEndRejected>().await?, stream.id())?;
+            Ok(false)
+        }
+        label => Err(Error::UnexpectedLabel(label)),
+    }
+}
+
 async fn source_finished<const CHUNK: usize>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     control: &Control<'_, '_>,
@@ -218,21 +257,29 @@ async fn client_requests<const RX: usize, const CHUNK: usize>(
             .map_err(|_| Error::Application)?;
         state.submitted()?;
         control.changed()?;
-        let mut offset = 0;
-        while offset < len && !control.stopping() {
-            let count = (len - offset).min(CHUNK);
-            let mut chunk = Chunk {
-                stream,
-                bytes: [0; CHUNK],
-                len: count,
-                fin: offset + count == len,
-            };
-            chunk.bytes[..count].copy_from_slice(&request[offset..offset + count]);
-            if !submit(endpoint, state, sequence, chunk).await? {
-                return Ok(());
+        begin_stream(endpoint, state, stream).await?;
+        let result = async {
+            let mut offset = 0;
+            while offset < len && !control.stopping() {
+                let count = (len - offset).min(CHUNK);
+                let mut chunk = Chunk {
+                    stream,
+                    bytes: [0; CHUNK],
+                    len: count,
+                };
+                chunk.bytes[..count].copy_from_slice(&request[offset..offset + count]);
+                if !submit(endpoint, state, sequence, chunk).await? {
+                    return Ok(false);
+                }
+                offset += count;
+                crate::runtime::yield_now().await;
             }
-            offset += count;
-            crate::runtime::yield_now().await;
+            Ok::<_, Error>(offset == len)
+        }
+        .await;
+        let finished = end_stream(endpoint, stream, matches!(result, Ok(true))).await?;
+        if !result? || !finished {
+            return Ok(());
         }
     }
     Ok(())
@@ -307,39 +354,45 @@ async fn server_responses<const CHUNK: usize>(
         };
         state.submitted()?;
         control.changed()?;
-        while !control.stopping() {
-            let mut chunk = Chunk {
-                stream: request.stream,
-                bytes: [0; CHUNK],
-                len: 0,
-                fin: false,
-            };
-            let len = match control.until_stop(0, body.read(&mut chunk.bytes)).await {
-                Some(result) => result.map_err(|_| Error::Application)?,
-                None => return Ok(()),
-            };
-            if len > CHUNK {
-                return Err(Error::Capacity);
+        begin_stream(endpoint, state, request.stream).await?;
+        let result = async {
+            while !control.stopping() {
+                let mut chunk = Chunk {
+                    stream: request.stream,
+                    bytes: [0; CHUNK],
+                    len: 0,
+                };
+                let len = match control.until_stop(0, body.read(&mut chunk.bytes)).await {
+                    Some(result) => result.map_err(|_| Error::Application)?,
+                    None => return Ok(false),
+                };
+                if len > CHUNK {
+                    return Err(Error::Capacity);
+                }
+                if len == 0 {
+                    return Ok(true);
+                }
+                chunk.len = len;
+                if !submit(endpoint, state, sequence, chunk).await? {
+                    return Ok(false);
+                }
+                crate::runtime::yield_now().await;
             }
-            chunk.len = len;
-            chunk.fin = len == 0;
-            if !submit(endpoint, state, sequence, chunk).await? {
-                return Ok(());
-            }
-            if len == 0 {
-                // Count actual EOF only after its FIN chunk was admitted.
-                state.bodies_finished.set(
-                    state
-                        .bodies_finished
-                        .get()
-                        .checked_add(1)
-                        .ok_or(Error::Capacity)?,
-                );
-                control.changed()?;
-                break;
-            }
-            crate::runtime::yield_now().await;
+            Ok(false)
         }
+        .await;
+        let finished = end_stream(endpoint, request.stream, matches!(result, Ok(true))).await?;
+        if !result? || !finished {
+            return Ok(());
+        }
+        state.bodies_finished.set(
+            state
+                .bodies_finished
+                .get()
+                .checked_add(1)
+                .ok_or(Error::Capacity)?,
+        );
+        control.changed()?;
     }
     Ok(())
 }
@@ -354,23 +407,63 @@ pub(crate) async fn ingress<const RX: usize, const CHUNK: usize>(
     loop {
         let offered = endpoint.offer().await?;
         match offered.label() {
-            0 => {
-                check(offered.recv::<p::SourceData>().await?, sequence)?;
-                let chunk = state.chunks.take().map_err(|_| Error::Binding)?;
-                let accepted = match admit(control, app, &chunk).await {
-                    Ok(accepted) => accepted,
-                    Err(_) => {
-                        control.fail()?;
-                        false
+            168 => {
+                let stream_id = offered.recv::<p::SourceOpen>().await?;
+                let stream = state.opened.take().map_err(|_| Error::Binding)?;
+                check(stream.id(), stream_id)?;
+                loop {
+                    let offered = endpoint.offer().await?;
+                    match offered.label() {
+                        0 => {
+                            check(offered.recv::<p::SourceData>().await?, sequence)?;
+                            let chunk = state.chunks.take().map_err(|_| Error::Binding)?;
+                            if chunk.stream != stream {
+                                return Err(Error::Binding);
+                            }
+                            let accepted = match admit(control, app, &chunk, false).await {
+                                Ok(accepted) => accepted,
+                                Err(_) => {
+                                    control.fail()?;
+                                    false
+                                }
+                            };
+                            if accepted {
+                                endpoint.send::<p::SourceAccepted>(&sequence).await?;
+                            } else {
+                                endpoint.send::<p::SourceRejected>(&sequence).await?;
+                            }
+                            check(endpoint.recv::<p::SourceTaken>().await?, sequence)?;
+                            sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                        }
+                        173 => {
+                            check(offered.recv::<p::SourceDataFinished>().await?, stream_id)?;
+                            break;
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
                     }
-                };
-                if accepted {
-                    endpoint.send::<p::SourceAccepted>(&sequence).await?;
-                } else {
-                    endpoint.send::<p::SourceRejected>(&sequence).await?;
                 }
-                check(endpoint.recv::<p::SourceTaken>().await?, sequence)?;
-                sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                let offered = endpoint.offer().await?;
+                match offered.label() {
+                    169 => {
+                        check(offered.recv::<p::SourceFin>().await?, stream_id)?;
+                        let terminal = Chunk {
+                            stream,
+                            bytes: [0; CHUNK],
+                            len: 0,
+                        };
+                        if matches!(admit(control, app, &terminal, true).await, Ok(true)) {
+                            endpoint.send::<p::SourceEnded>(&stream_id).await?;
+                        } else {
+                            control.fail()?;
+                            endpoint.send::<p::SourceEndRejected>(&stream_id).await?;
+                        }
+                    }
+                    170 => {
+                        check(offered.recv::<p::SourceAbandon>().await?, stream_id)?;
+                        endpoint.send::<p::SourceEnded>(&stream_id).await?;
+                    }
+                    label => return Err(Error::UnexpectedLabel(label)),
+                }
             }
             4 => {
                 check(offered.recv::<p::SourceDone>().await?, sequence)?;
@@ -389,8 +482,9 @@ async fn admit<const RX: usize, const CHUNK: usize>(
     control: &Control<'_, '_>,
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
     chunk: &Chunk<CHUNK>,
+    fin: bool,
 ) -> Result<bool, Error> {
-    if chunk.len > CHUNK || (chunk.len == 0 && !chunk.fin) {
+    if (chunk.len == 0 && !fin) || chunk.len > CHUNK {
         return Err(Error::Binding);
     }
     let mut offset = 0;
@@ -402,7 +496,7 @@ async fn admit<const RX: usize, const CHUNK: usize>(
         let result = app
             .try_borrow_mut()
             .map_err(|_| Error::Binding)?
-            .enqueue_prefix(chunk.stream, &chunk.bytes[offset..chunk.len], chunk.fin);
+            .enqueue_prefix(chunk.stream, &chunk.bytes[offset..chunk.len], fin);
         match result {
             Ok(count) => {
                 offset = offset.checked_add(count).ok_or(Error::Capacity)?;

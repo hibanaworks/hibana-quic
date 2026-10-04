@@ -31,4 +31,28 @@ The pinned runner registers 22 QUIC cases, including HTTP/3 and QUIC v2. Both di
 
 The cleanup revision 92731a990f11f3bd293e776a1535d6f36cbfb3ff independently passed the same official pilot (run37176305141) and direct-runtime CI (run37176305247). Unique candidate qualification remains 4/44, excluding baseline cases and repeat runs.
 
-The next native 2% packet-loss transfer exposed a real fixed-range ACK-history capacity failure. The new retention cutoff keeps the 32-range bound and never readmits discarded packet numbers. Scoped Lean/Z3 models, a failing-before regression, and real authenticated sparse-packet tests accompany the fix. Native Neqo baseline and both directions now pass deterministic loss, 1.5-second round-trip delay, corruption, and IPv6 diagnostics. Their official runner results remain pending.
+The next native 2% packet-loss transfer exposed a real fixed-range ACK-history capacity failure. The new retention cutoff keeps the 32-range bound and never readmits discarded packet numbers. Scoped Lean/Z3 models, a failing-before regression, and real authenticated sparse-packet tests accompany the fix. Native Neqo baseline and both directions now pass deterministic loss, 1.5-second round-trip delay, corruption, and IPv6 diagnostics. The corresponding official runner results now pass in run37177524554 on b8cf48f7636eec7b81942a27175a89ba68a84333. The latest unique total is 12/44 candidate cells, excluding the six Neqo baseline results; the earlier 4/44 count above is historical. Evidence is in artifacts/rolled-route-runtime-20261004/interop-pilot-16/.
+
+## Stream production migration (not a full lifecycle migration)
+
+The generic source-data FIN boolean has been removed. The actual global now
+contains stream opening, an inner rolled chunk exchange and a finite FIN/abandon
+route with an explicit admitted/rejected terminal reply. Local ingress holds the
+opened stream binding and rejects a different complete handle before touching
+its bytes. Empty responses and cancellation can leave the data loop without
+fabricating a FIN. Abandon is connection-level production cancellation, not a
+RESET_STREAM acknowledgment.
+
+The current source changes pass eight encrypted connected-application cases and
+two real-endpoint production tests, including no allocation, empty streams,
+multiple chunks, rejected terminals, data-after-FIN, repeated FIN and repeated
+abandon. The complete current core run is 477 unit +59 integration +27 compile-fail
+contracts. Scoped Lean/Z3 checks describe the remaining resource-slot identity
+boundary; they do not claim it is supplied by Hibana.
+
+**Still incomplete:** the lower stream table's FIN/RESET/ACK permission fields
+and reset publication/recovery control have not yet been replaced. Same-stream
+identity reuse is not prevented by the source graph alone. Interoperability and
+architecture migration are separate completion criteria. No whole-stack migration
+claim follows from these tests. The published 12/44 runner result predates this
+source-production change and does not qualify it.

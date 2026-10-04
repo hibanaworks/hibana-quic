@@ -24,21 +24,30 @@ fixed storage and pinned tasks. The Linux host adapter supplies a real
   [host reactor](adapters/host/src/async_io.rs): actual wake, backpressure,
   fairness and cancellation behavior.
 
-Cryptographic parsing, counters and storage calculations remain numerical
-components. They do not select the protocol continuation in place of Hibana.
-Recovery and publication consume distinct affine installation capabilities tied
-to the actual key scope. The obsolete mailbox/phase actor implementation is
-removed rather than retained as a compatibility path.
+Cryptographic parsing, counters and storage calculations are numerical
+components. Recovery and publication consume distinct affine installation
+capabilities tied to the actual key scope. The obsolete mailbox/phase actor
+implementation is removed rather than retained as a compatibility path.
+
+**Architecture migration is incomplete.** Source production now spells out
+stream opening, rolled data exchange, and a finite FIN/abandon boundary in the
+global and direct local code; data slots no longer carry a hidden FIN flag.
+The lower stream table still uses FIN/RESET/ACK permission fields, and resource
+slots still require explicit stream-generation/identity checks. Those are real
+remaining control obligations, not merely arithmetic and not guarantees supplied
+by Hibana alone. Passing interop does not complete this migration.
 
 ## Status
 
 This is **not production-ready** and is not yet a fully qualified QUIC stack.
-The pinned, unmodified quic-interop-runner passed `handshake` and `transfer`
-against unmodified Neqo in both directions, with a passing Neqo/Neqo control:
-[run 37173849532](https://github.com/hibanaworks/hibana-quic/actions/runs/37173849532).
-That result applies to commit `9e03afe89efad7a098e6ec17987d4b13b70318e3` and those
-cases only. Remaining runner cases, repeat runs and embedded hardware are not
-qualified. Subsequent cleanup requires fresh qualification.
+The pinned, unmodified quic-interop-runner passed `handshake`, `transfer`,
+`longrtt`, `transferloss`, `transfercorruption` and `ipv6` against unmodified Neqo
+in both directions: **12 of 44 candidate cells**, with six separate passing
+Neqo/Neqo controls in
+[run 37177524554](https://github.com/hibanaworks/hibana-quic/actions/runs/37177524554).
+That result applies to commit `b8cf48f7636eec7b81942a27175a89ba68a84333`.
+The subsequent source-production changes require fresh runner qualification.
+The other 32 candidate cells, repeat runs and embedded hardware remain unqualified.
 
 See [active implementation and evidence](docs/ACTIVE-IMPLEMENTATION.md).
 Lean and Z3 models cover explicitly scoped obligations; they are not proofs of
