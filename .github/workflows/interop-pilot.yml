@@ -1,6 +1,9 @@
 name: QUIC interoperability pilot
 
 on:
+  push:
+    branches: [development/rolled-route-runtime]
+    paths: [ci/interop-request.json]
   workflow_dispatch:
     inputs:
       source_ref:
@@ -29,7 +32,7 @@ jobs:
       - name: Check out the selected audited source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
           persist-credentials: false
           fetch-depth: 1
       - name: Run the pinned baseline and explicit subset

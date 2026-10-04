@@ -1,0 +1,11 @@
+{
+  "request": "rolled-route TLS choreography pilot",
+  "requested_at": "2026-10-04T03:18:00Z",
+  "scope": [
+    "unchanged Neqo baseline",
+    "handshake",
+    "transfer"
+  ],
+  "approval": "User approved disposable GitHub CI Docker allow-direct-routing=true",
+  "local_evidence": "artifacts/rolled-route-runtime-20261004/native-neqo-release.json"
+}

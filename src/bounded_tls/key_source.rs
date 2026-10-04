@@ -518,3 +518,24 @@ impl<'scope> TransmitPacketKey<'scope> {
         self.key.discard();
     }
 }
+
+/// Run the directly projected TLS client owner without exposing a Provider or
+/// packet-key escape from the owned-key source. Input is the companion local
+/// role in `bounded_tls::locals`, not a synchronous handshake dispatcher.
+impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
+    pub async fn client_transcript_role(
+        endpoint: &mut hibana::Endpoint<'_, { super::protocol::VERIFY }>,
+        source: &core::cell::RefCell<Self>,
+        message: &super::locals::MessageSlot<'_>,
+    ) -> Result<(), super::locals::Error> {
+        struct Access<'a, 'scope, 'cfg, 'buf>(
+            &'a core::cell::RefCell<KeySource<'scope, 'cfg, 'buf>>,
+        );
+        impl super::locals::CryptoAccess for Access<'_, '_, '_, '_> {
+            fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
+                f(&mut self.0.borrow_mut().provider)
+            }
+        }
+        super::locals::client_owner(endpoint, &Access(source), message).await
+    }
+}

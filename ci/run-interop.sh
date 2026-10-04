@@ -19,12 +19,13 @@ Path('ci-safe-results/environment.json').write_text(json.dumps({
  'github_sha':os.environ.get('GITHUB_SHA'),'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
  'run_id':os.environ.get('GITHUB_RUN_ID'),'run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
  'runner_os':os.environ.get('RUNNER_OS'),'runner_image':os.environ.get('ImageVersion'),
- 'machine':platform.machine(),'public_repository':True,'scope':'one manual pilot; baseline plus handshake/transfer only',
+ 'machine':platform.machine(),'public_repository':True,'scope':'one explicitly requested pilot; baseline plus handshake/transfer only',
  'not_claimed':['full 40-cell matrix','three release repetitions','Pico hardware','whole-host zero allocation']},indent=2)+'\n')
 PY
 # Upstream Compose uses interface_name, which requires daemon API >= 1.49.
 # Upgrade only the existing Docker CE/CLI packages from Docker's official source.
-# No daemon settings, firewall rules, socket modes, or host groups are changed.
+# The user approved direct routing on this disposable GitHub runner only.
+# Preserve all other daemon settings, firewall rules, socket modes and groups.
 [[ $(. /etc/os-release; echo "$ID:$VERSION_CODENAME") == ubuntu:noble ]]
 [[ $(dpkg --print-architecture) == amd64 ]]
 dpkg-query -W docker-ce docker-ce-cli containerd.io
@@ -35,8 +36,8 @@ import json,os
 current=json.loads(os.environ['DOCKER_BEFORE'])['Version']
 assert tuple(map(int,current.split('.'))) <= tuple(map(int,os.environ['DOCKER_ENGINE_VERSION'].split('.'))), 'refusing an engine downgrade'
 PRECHECK
-config_hash() { if [[ -f /etc/docker/daemon.json ]]; then sudo sha256sum /etc/docker/daemon.json; else echo absent; fi; }
-CONFIG_BEFORE=$(config_hash)
+CONFIG_BEFORE=$(sudo python3 -c 'import json,pathlib; p=pathlib.Path("/etc/docker/daemon.json"); print(json.dumps(json.loads(p.read_text()) if p.exists() else {}))')
+export CONFIG_BEFORE
 SOCKET_BEFORE=$(stat -c '%g:%a' /var/run/docker.sock)
 mkdir -p .ci-work/docker-packages
 for package in docker-ce-cli docker-ce; do
@@ -47,9 +48,27 @@ done
 printf '%s  %s\n' "$DOCKER_CLI_DEB_SHA256" .ci-work/docker-packages/docker-ce-cli.deb \
   "$DOCKER_ENGINE_DEB_SHA256" .ci-work/docker-packages/docker-ce.deb | sha256sum --check --strict
 sudo dpkg --force-confold -i .ci-work/docker-packages/docker-ce-cli.deb .ci-work/docker-packages/docker-ce.deb
+# QNS routes through a simulator on a different bridge. Docker 28 otherwise
+# drops that traffic in raw PREROUTING before the simulator can observe it.
+sudo python3 - <<'ROUTING'
+import json
+from pathlib import Path
+path=Path('/etc/docker/daemon.json')
+settings=json.loads(path.read_text()) if path.exists() else {}
+settings['allow-direct-routing']=True
+path.parent.mkdir(parents=True,exist_ok=True)
+path.write_text(json.dumps(settings,indent=2)+'\n')
+ROUTING
 sudo systemctl restart docker
 for attempt in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
-[[ $(config_hash) == "$CONFIG_BEFORE" ]]
+sudo --preserve-env=CONFIG_BEFORE python3 - <<'VERIFY_ROUTING'
+import json,os
+from pathlib import Path
+actual=json.loads(Path('/etc/docker/daemon.json').read_text())
+expected=json.loads(os.environ['CONFIG_BEFORE'])
+expected['allow-direct-routing']=True
+assert actual == expected, 'unexpected daemon configuration change'
+VERIFY_ROUTING
 [[ $(stat -c '%g:%a' /var/run/docker.sock) == "$SOCKET_BEFORE" ]]
 python3 - <<'POSTCHECK'
 import json,os,subprocess
@@ -63,12 +82,12 @@ Path('ci-safe-results/docker-upgrade.json').write_text(json.dumps({
  'after_version':server['Version'],'after_api':server['ApiVersion'],
  'cli_deb_sha256':os.environ['DOCKER_CLI_DEB_SHA256'],
  'engine_deb_sha256':os.environ['DOCKER_ENGINE_DEB_SHA256'],
- 'daemon_config_unchanged':True,'socket_group_and_mode_unchanged':True},indent=2)+'\n')
+ 'daemon_config_change':'allow-direct-routing=true; user approved for disposable CI runner','socket_group_and_mode_unchanged':True},indent=2)+'\n')
 POSTCHECK
 docker version
 docker compose version
-# No host network/security configuration is changed here. Standard runner
-# container capabilities/topology come from the unchanged reference Compose file.
+# Apart from the explicitly approved direct-routing flag above, container
+# capabilities/topology come from the unchanged reference Compose file.
 git clone --quiet https://github.com/quic-interop/quic-interop-runner.git .ci-work/runner
 git -C .ci-work/runner checkout --detach "$RUNNER_REVISION"
 git clone --quiet https://github.com/mozilla/neqo.git .ci-work/neqo
