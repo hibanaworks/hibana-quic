@@ -268,7 +268,9 @@ async fn client_requests<'book, const RX: usize, const CHUNK: usize>(
                 Ok(stream) => break stream,
                 // Peer MAX_STREAMS can unblock opening; the fixed local
                 // table's Capacity cannot. Its slots are never recycled.
-                Err(application_stream::Error::Streams(streams::Error::StreamLimit)) => {
+                Err(application_stream::Error::Streams(
+                    streams::Error::StreamLimit | streams::Error::Capacity,
+                )) => {
                     control.wait(0, revision).await;
                 }
                 Err(error) => return Err(error.into()),
@@ -444,11 +446,12 @@ async fn server_responses<'book, const CHUNK: usize>(
     Ok(())
 }
 
-pub(crate) async fn ingress<const RX: usize, const CHUNK: usize>(
+pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize>(
     endpoint: &mut Endpoint<'_, { p::INGRESS }>,
     control: &Control<'_, '_>,
-    state: &State<'_, CHUNK>,
-    app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
+    state: &State<'book, CHUNK>,
+    app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
+    reclaim: &super::reclaim::Exchange<'book>,
 ) -> Result<(), Error> {
     let mut sequence = 0;
     loop {
@@ -494,7 +497,7 @@ pub(crate) async fn ingress<const RX: usize, const CHUNK: usize>(
                     }
                 }
                 let offered = endpoint.offer().await?;
-                match offered.label() {
+                let outcome = match offered.label() {
                     169 => {
                         check(offered.recv::<p::SourceFin>().await?, stream_id)?;
                         let terminal = Chunk {
@@ -502,26 +505,32 @@ pub(crate) async fn ingress<const RX: usize, const CHUNK: usize>(
                             len: 0,
                         };
                         match admit(control, app, &mut production, &terminal, true).await {
-                            Ok(Admission::Accepted) => {
-                                endpoint.send::<p::SourceEnded>(&stream_id).await?
-                            }
-                            Ok(Admission::Stopped) => {
-                                endpoint.send::<p::SourceEndStopped>(&stream_id).await?
-                            }
-                            Ok(Admission::Interrupted) => {
-                                endpoint.send::<p::SourceEndRejected>(&stream_id).await?
-                            }
+                            Ok(outcome) => outcome,
                             Err(_) => {
                                 control.fail()?;
-                                endpoint.send::<p::SourceEndRejected>(&stream_id).await?;
+                                Admission::Interrupted
                             }
                         }
                     }
                     170 => {
                         check(offered.recv::<p::SourceAbandon>().await?, stream_id)?;
-                        endpoint.send::<p::SourceEnded>(&stream_id).await?;
+                        Admission::Accepted
                     }
                     label => return Err(Error::UnexpectedLabel(label)),
+                };
+                let receipt = app
+                    .try_borrow_mut()
+                    .map_err(|_| Error::Binding)?
+                    .release_production(production)?;
+                reclaim.source.put(receipt).map_err(|_| Error::Binding)?;
+                endpoint.send::<p::ProductionReclaim>(&stream_id).await?;
+                check(endpoint.recv::<p::ProductionStored>().await?, stream_id)?;
+                match outcome {
+                    Admission::Accepted => endpoint.send::<p::SourceEnded>(&stream_id).await?,
+                    Admission::Stopped => endpoint.send::<p::SourceEndStopped>(&stream_id).await?,
+                    Admission::Interrupted => {
+                        endpoint.send::<p::SourceEndRejected>(&stream_id).await?
+                    }
                 }
             }
             4 => {
@@ -529,6 +538,8 @@ pub(crate) async fn ingress<const RX: usize, const CHUNK: usize>(
                 if !state.chunks.is_empty() {
                     control.fail()?;
                 }
+                endpoint.send::<p::ProductionReclaimsDone>(&0).await?;
+                check(endpoint.recv::<p::ProductionReclaimsClosed>().await?, 0)?;
                 endpoint.send::<p::SourceRetired>(&sequence).await?;
                 return Ok(());
             }
@@ -592,12 +603,13 @@ fn ready_handle<const RX: usize, const CHUNK: usize>(
         .ok_or(Error::Binding)
 }
 
-pub(crate) async fn client_sink<const RX: usize, const CHUNK: usize>(
+pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize>(
     endpoint: &mut Endpoint<'_, { p::SINK }>,
     control: &Control<'_, '_>,
-    state: &State<'_, CHUNK>,
-    app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
+    state: &State<'book, CHUNK>,
+    app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     sink: &mut impl StreamSink,
+    reclaim: &super::reclaim::Exchange<'book>,
 ) -> Result<(), Error> {
     loop {
         let offered = endpoint.offer().await?;
@@ -616,6 +628,20 @@ pub(crate) async fn client_sink<const RX: usize, const CHUNK: usize>(
                     }
                 };
                 if done {
+                    let receipt = if state.is_complete(stream_id) {
+                        app.try_borrow_mut()
+                            .map_err(|_| Error::Binding)?
+                            .release_input(stream_id)?
+                    } else {
+                        None
+                    };
+                    if let Some(receipt) = receipt {
+                        reclaim.input.put(receipt).map_err(|_| Error::Binding)?;
+                        endpoint.send::<p::InputReclaim>(&stream_id).await?;
+                    } else {
+                        endpoint.send::<p::NoInputReclaim>(&stream_id).await?;
+                    }
+                    check(endpoint.recv::<p::InputStored>().await?, stream_id)?;
                     endpoint.send::<p::ReceivedFin>(&stream_id).await?;
                 } else {
                     endpoint.send::<p::ReceivedMore>(&stream_id).await?;
@@ -623,6 +649,8 @@ pub(crate) async fn client_sink<const RX: usize, const CHUNK: usize>(
             }
             9 => {
                 let sequence = offered.recv::<p::ReceiveRetire>().await?;
+                endpoint.send::<p::InputReclaimsDone>(&0).await?;
+                check(endpoint.recv::<p::InputReclaimsClosed>().await?, 0)?;
                 endpoint.send::<p::ReceiveRetired>(&sequence).await?;
                 return Ok(());
             }
@@ -674,6 +702,7 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize>(
     state: &State<'book, CHUNK>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut Sender<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
+    reclaim: &super::reclaim::Exchange<'book>,
 ) -> Result<(), Error> {
     let mut pending: [Option<PendingRequest>; MAX_LIVE_STREAMS] =
         [const { None }; MAX_LIVE_STREAMS];
@@ -696,6 +725,20 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize>(
                     }
                 };
                 if done {
+                    let receipt = if state.is_complete(stream_id) {
+                        app.try_borrow_mut()
+                            .map_err(|_| Error::Binding)?
+                            .release_input(stream_id)?
+                    } else {
+                        None
+                    };
+                    if let Some(receipt) = receipt {
+                        reclaim.input.put(receipt).map_err(|_| Error::Binding)?;
+                        endpoint.send::<p::InputReclaim>(&stream_id).await?;
+                    } else {
+                        endpoint.send::<p::NoInputReclaim>(&stream_id).await?;
+                    }
+                    check(endpoint.recv::<p::InputStored>().await?, stream_id)?;
                     endpoint.send::<p::ReceivedFin>(&stream_id).await?;
                 } else {
                     endpoint.send::<p::ReceivedMore>(&stream_id).await?;
@@ -704,6 +747,8 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize>(
             9 => {
                 let sequence = offered.recv::<p::ReceiveRetire>().await?;
                 requests.close();
+                endpoint.send::<p::InputReclaimsDone>(&0).await?;
+                check(endpoint.recv::<p::InputReclaimsClosed>().await?, 0)?;
                 endpoint.send::<p::ReceiveRetired>(&sequence).await?;
                 return Ok(());
             }
@@ -938,6 +983,8 @@ mod stop_tests {
         let global = p::source_choreography();
         let source: RoleProgram<{ p::SOURCE }> = project(&global);
         let ingress_role: RoleProgram<{ p::INGRESS }> = project(&global);
+        let collector_role: RoleProgram<{ p::SOURCE_COLLECTOR }> = project(&global);
+        let reclaim = super::super::reclaim::Exchange::new();
         let carrier = CarrierStorage::<1, 16, 8>::new();
         let mut slab = [0; 65536];
         let mut storage = SessionKitStorage::uninit();
@@ -948,6 +995,7 @@ mod stop_tests {
             .unwrap();
         let mut source = rv.enter(id, &source).unwrap();
         let mut input = rv.enter(id, &ingress_role).unwrap();
+        let mut collector = rv.enter(id, &collector_role).unwrap();
         let allocations = actor_test_allocator::NoAlloc::start();
         let mut all = pin!(crate::runtime::join2(
             async {
@@ -993,7 +1041,10 @@ mod stop_tests {
                 source_finished(&mut source, &control, &state, sequence).await?;
                 Ok::<_, Error>(())
             },
-            ingress(&mut input, &control, &state, &app)
+            crate::runtime::join2(
+                ingress(&mut input, &control, &state, &app, &reclaim),
+                super::super::reclaim::source(&mut collector, &reclaim, &control)
+            )
         ));
         for _ in 0..1000 {
             if let Poll::Ready(result) = all.as_mut().poll(&mut Context::from_waker(Waker::noop()))

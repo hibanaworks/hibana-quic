@@ -74,6 +74,18 @@ fn limits(side: Side) -> Limits {
 }
 
 fn parameters(id: &[u8], original: Option<&[u8]>) -> Vec<u8> {
+    parameters_with_limits(
+        id,
+        original,
+        limits(if original.is_some() {
+            Side::Server
+        } else {
+            Side::Client
+        }),
+    )
+}
+
+fn parameters_with_limits(id: &[u8], original: Option<&[u8]>, limits: Limits) -> Vec<u8> {
     fn field(out: &mut Vec<u8>, kind: u64, value: &[u8]) {
         let mut encoded = [0; 8];
         let n = encode_varint(kind, &mut encoded).unwrap();
@@ -87,11 +99,6 @@ fn parameters(id: &[u8], original: Option<&[u8]>) -> Vec<u8> {
     if let Some(original) = original {
         field(&mut out, 0, original);
     }
-    let limits = limits(if original.is_some() {
-        Side::Server
-    } else {
-        Side::Client
-    });
     for (kind, value) in [
         (3, DATAGRAM as u64),
         (4, limits.max_data),
@@ -733,6 +740,9 @@ macro_rules! roles {
             files_event: $rv.enter($sid, &$program.files_event).unwrap(),
             files_close: $rv.enter($sid, &$program.files_close).unwrap(),
             close_join: $rv.enter($sid, &$program.close_join).unwrap(),
+            source_collector: $rv.enter($sid, &$program.source_collector).unwrap(),
+            input_collector: $rv.enter($sid, &$program.input_collector).unwrap(),
+            delivery_collector: $rv.enter($sid, &$program.delivery_collector).unwrap(),
         }
     };
 }
@@ -842,12 +852,31 @@ fn run_connection(count: usize, loss: Loss) {
 }
 
 fn connection_case(count: usize, loss: Loss) {
+    connection_case_with_slots(count, loss, STREAMS);
+}
+
+#[test]
+fn four_requests_reuse_two_actual_client_slots() {
+    connection_case_with_slots(4, Loss::None, 2);
+}
+
+#[test]
+fn slot_reuse_preserves_loss_recovery_and_late_packet_accounting() {
+    connection_case_with_slots(4, Loss::FirstServerOneRtt, 2);
+}
+
+fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
+    let client_limits = Limits {
+        max_data: (client_slots * RECEIVE_WINDOW) as u64,
+        ..limits(Side::Client)
+    };
+
     let root = CertificateDer::from(fixture::ROOT_DER);
     let leaf = CertificateDer::from(fixture::LEAF_DER);
     let signing = fixture::signing_key();
     let anchors = [trust_anchor_from_der(&root).unwrap()];
     let chain = [leaf.as_ref()];
-    let client_params = parameters(CLIENT_ID, None);
+    let client_params = parameters_with_limits(CLIENT_ID, None, client_limits);
     let server_params = parameters(SERVER_ID, Some(ORIGINAL));
     let mut observation_scope = ApplicationKeyScope::new(99);
     let mut inspector = inspection_keys(
@@ -979,13 +1008,13 @@ fn connection_case(count: usize, loss: Loss) {
             original_destination_id: ORIGINAL,
             peer_connection_id: ORIGINAL,
         },
-        local_limits: limits(Side::Client),
+        local_limits: client_limits,
         handshake_crypto: [
             CryptoBuffer::new(c0, cm0).unwrap(),
             CryptoBuffer::new(c1, cm1).unwrap(),
         ],
         application: application::Buffers {
-            streams: &mut client_streams,
+            streams: &mut client_streams[..client_slots],
             chunks: &mut client_chunks,
             references: &mut client_refs,
             crypto: CryptoBuffer::new(ca, cma).unwrap(),

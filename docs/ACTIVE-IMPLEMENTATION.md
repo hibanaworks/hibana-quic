@@ -37,8 +37,9 @@ references and loss history. Their legitimate arithmetic/resource bookkeeping
 must not become an independent protocol phase selector. Peer STOP now has explicit SourceStopped/SourceEndStopped arms that terminate
 only the current finite production and continue the next stream. Both the real
 ingress and projected endpoints are tested for STOP during data and FIN without
-connection failure. Actual encrypted peer-STOP interoperability and explicit
-stream-slot retirement/reuse remain to be integrated and qualified. Other unsupported interop features need actual global
+connection failure. Actual encrypted peer-STOP interoperability remains unqualified. Stream-slot
+retirement/reuse now consumes three independently transferred owned receipts;
+see the current checkpoint below. Other unsupported interop features need actual global
 and local implementations, not resurrected old controllers.
 
 Four obsolete automatic table-retirement tests were removed with that API; they
@@ -60,8 +61,8 @@ native deterministic-loss baseline and both candidate directions pass with match
 2 MiB payload hashes. Its actual binary hash is recorded in the local evidence.
 
 Official unmodified runner qualification remains 14/44 unique candidate cells,
-seven cases in both directions, at 27065079e0d778bf7d238dec7c92f493817548e3 in
-[run37183144899](https://github.com/hibanaworks/hibana-quic/actions/runs/37183144899).
+seven cases in both directions, at f88249d6139e5c71408ddeec7d53a5ee3c78d48c in
+[run37189910980](https://github.com/hibanaworks/hibana-quic/actions/runs/37189910980).
 Seven Neqo/Neqo controls are separate. Remaining 30 cells and the full repeated
 matrix have not been qualified. No additional interop cases are being added while
 this control migration is incomplete.
@@ -94,3 +95,24 @@ baseline and matching payload hashes. Sanitized evidence is in
 artifacts/rolled-route-runtime-20261004/explicit-stream-control. The existing
 seven official cases are requested again for regression qualification; no new
 case was added and no new official pass is claimed before its result.
+
+
+## Owned stream reclamation
+
+Production, drained input, and actual delivery each transfer a distinct non-Copy
+receipt on independent projected parallel lanes. Their bounded inventory joins
+only matching actual table/slot/generation/stream resources. Retained chunk
+arithmetic must be zero. ReclaimStream / StreamReclaimed / ReclaimSettled keeps
+numeric slot reuse outside any unresolved UDP publication. The old reset_read
+flag is removed; release-input authority is taken once. Closed-stream frames do
+not reopen old IDs and incorrect unidirectional frame classes still fail.
+
+Local checks: 415 unit +70 integration +27 compile-fail =512, host100, Python47,
+thumbv6m compile, scoped Lean/Z3 identity/drain models. Four encrypted requests
+reuse two client slots, both clean and with loss; actual endpoints reject
+reclamation before publication settlement and publication before reclaim
+settlement. Native unchanged-Neqo clean 2/3/5 MiB and deterministic-loss 2 MiB
+transfers pass in both directions with exact payload hashes. Evidence is in
+artifacts/rolled-route-runtime-20261004/stream-reclaim. Native results are not
+new official runner cells. The total request bound remains16; MAX_STREAMS
+credit replenishment and encrypted peer-STOP remain unqualified.

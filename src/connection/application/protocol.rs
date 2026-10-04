@@ -22,6 +22,9 @@ pub const FILES_EVENT: u8 = 24;
 pub const FILES_CLOSE: u8 = 25;
 /// Finite owner of the joined publication, key and terminal retirement grants.
 pub const CLOSE_JOIN: u8 = 26;
+pub const SOURCE_COLLECTOR: u8 = 27;
+pub const INPUT_COLLECTOR: u8 = 28;
+pub const DELIVERY_COLLECTOR: u8 = 29;
 pub const SUBMISSION_RESULT: u16 = 1100;
 pub const STOP_RESULT: u16 = 1101;
 
@@ -89,6 +92,53 @@ pub type SourceEndRejected = g::Msg<172, u64>;
 pub type SourceDataFinished = g::Msg<173, u64>;
 pub type SourceStopped = g::Msg<187, u64>;
 pub type SourceEndStopped = g::Msg<188, u64>;
+pub type ProductionReclaim = g::Msg<189, u64>;
+pub type ProductionStored = g::Msg<190, u64>;
+pub type ProductionReclaimsDone = g::Msg<191, u64>;
+pub type ProductionReclaimsClosed = g::Msg<192, u64>;
+pub type InputReclaim = g::Msg<193, u64>;
+pub type InputStored = g::Msg<194, u64>;
+pub type NoInputReclaim = g::Msg<195, u64>;
+pub type InputReclaimsDone = g::Msg<196, u64>;
+pub type InputReclaimsClosed = g::Msg<197, u64>;
+pub type DeliveryReclaim = g::Msg<198, u64>;
+pub type DeliveryStored = g::Msg<199, u64>;
+pub type DeliveryReclaimsDone = g::Msg<200, u64>;
+pub type DeliveryReclaimsClosed = g::Msg<201, u64>;
+pub type ReclaimStream = g::Msg<202, u64>;
+pub type StreamReclaimed = g::Msg<203, u64>;
+pub type ReclaimSettled = g::Msg<204, u64>;
+pub type ProductionTransfer = g::Seq<
+    g::Send<INGRESS, SOURCE_COLLECTOR, ProductionReclaim>,
+    g::Send<SOURCE_COLLECTOR, INGRESS, ProductionStored>,
+>;
+pub type ProductionClose = g::Seq<
+    g::Send<INGRESS, SOURCE_COLLECTOR, ProductionReclaimsDone>,
+    g::Send<SOURCE_COLLECTOR, INGRESS, ProductionReclaimsClosed>,
+>;
+pub type InputTransfer = g::Seq<
+    g::Route<
+        g::Send<SINK, INPUT_COLLECTOR, InputReclaim>,
+        g::Send<SINK, INPUT_COLLECTOR, NoInputReclaim>,
+    >,
+    g::Send<INPUT_COLLECTOR, SINK, InputStored>,
+>;
+pub type InputClose = g::Seq<
+    g::Send<SINK, INPUT_COLLECTOR, InputReclaimsDone>,
+    g::Send<INPUT_COLLECTOR, SINK, InputReclaimsClosed>,
+>;
+pub type DeliveryTransfer = g::Seq<
+    g::Send<TRANSMIT, DELIVERY_COLLECTOR, DeliveryReclaim>,
+    g::Send<DELIVERY_COLLECTOR, TRANSMIT, DeliveryStored>,
+>;
+pub type DeliveryClose = g::Seq<
+    g::Send<TRANSMIT, DELIVERY_COLLECTOR, DeliveryReclaimsDone>,
+    g::Send<DELIVERY_COLLECTOR, TRANSMIT, DeliveryReclaimsClosed>,
+>;
+pub type Reclaim = g::Seq<
+    g::Send<TRANSMIT, ADAPTER, ReclaimStream>,
+    g::Seq<g::Send<ADAPTER, TRANSMIT, StreamReclaimed>, g::Send<TRANSMIT, ADAPTER, ReclaimSettled>>,
+>;
 pub type SourceChunk = g::Seq<
     g::Send<SOURCE, INGRESS, SourceData>,
     g::Seq<
@@ -118,11 +168,11 @@ pub type StreamProduction = g::Seq<
         >,
     >,
 >;
-pub type SourceFlow = g::Seq<
+pub type SourceBase = g::Seq<
     g::Roll<g::Route<StreamProduction, g::Send<SOURCE, INGRESS, SourceDone>>>,
     g::Send<INGRESS, SOURCE, SourceRetired>,
 >;
-pub type ReceiveFlow = g::Seq<
+pub type ReceiveBase = g::Seq<
     g::Roll<
         g::Route<
             g::Seq<
@@ -134,6 +184,8 @@ pub type ReceiveFlow = g::Seq<
     >,
     g::Send<SINK, RECEIVE, ReceiveRetired>,
 >;
+pub type SourceFlow = g::Par<SourceBase, g::Roll<g::Route<ProductionTransfer, ProductionClose>>>;
+pub type ReceiveFlow = g::Par<ReceiveBase, g::Roll<g::Route<InputTransfer, InputClose>>>;
 pub type KeyFlow = g::Seq<
     g::Roll<
         g::Route<
@@ -249,7 +301,7 @@ pub type LossApply = g::Seq<
 >;
 // Applying a stop is an exclusive alternative to the complete publication
 // fragment. The actual adapter owner settles its send before offering again.
-pub type PublicationFlow = g::Seq<
+pub type PublicationBase = g::Seq<
     g::Roll<
         g::Route<
             Publish,
@@ -257,13 +309,18 @@ pub type PublicationFlow = g::Seq<
                 ResetApply,
                 g::Route<
                     AcknowledgmentApply,
-                    g::Route<LossApply, g::Send<TRANSMIT, ADAPTER, StopPublication>>,
+                    g::Route<
+                        LossApply,
+                        g::Route<Reclaim, g::Send<TRANSMIT, ADAPTER, StopPublication>>,
+                    >,
                 >,
             >,
         >,
     >,
     g::Send<ADAPTER, TRANSMIT, PublicationStopped>,
 >;
+pub type PublicationFlow =
+    g::Par<PublicationBase, g::Roll<g::Route<DeliveryTransfer, DeliveryClose>>>;
 pub type FilesOutcome = g::Msg<52, u64>;
 pub type KeyRetirement = g::Msg<53, u64>;
 pub type CloseAuthority = g::Msg<54, u64>;
@@ -384,7 +441,7 @@ fn startup() -> g::Program<Startup> {
     )
 }
 
-pub fn source_choreography() -> g::Program<SourceFlow> {
+fn source_base() -> g::Program<SourceBase> {
     let chunks = g::route(
         g::seq(
             g::send::<SOURCE, INGRESS, SourceData>(),
@@ -427,6 +484,51 @@ pub fn source_choreography() -> g::Program<SourceFlow> {
     )
 }
 
+pub fn source_choreography() -> g::Program<SourceFlow> {
+    let receipts = g::route(
+        g::seq(
+            g::send::<INGRESS, SOURCE_COLLECTOR, ProductionReclaim>(),
+            g::send::<SOURCE_COLLECTOR, INGRESS, ProductionStored>(),
+        ),
+        g::seq(
+            g::send::<INGRESS, SOURCE_COLLECTOR, ProductionReclaimsDone>(),
+            g::send::<SOURCE_COLLECTOR, INGRESS, ProductionReclaimsClosed>(),
+        ),
+    )
+    .roll();
+    g::par(source_base(), receipts)
+}
+pub fn receive_choreography() -> g::Program<ReceiveFlow> {
+    let packets = g::seq(
+        g::route(
+            g::seq(
+                g::send::<RECEIVE, SINK, ReceivedData>(),
+                g::route(
+                    g::send::<SINK, RECEIVE, ReceivedMore>(),
+                    g::send::<SINK, RECEIVE, ReceivedFin>(),
+                ),
+            ),
+            g::send::<RECEIVE, SINK, ReceiveRetire>(),
+        )
+        .roll(),
+        g::send::<SINK, RECEIVE, ReceiveRetired>(),
+    );
+    let receipts = g::route(
+        g::seq(
+            g::route(
+                g::send::<SINK, INPUT_COLLECTOR, InputReclaim>(),
+                g::send::<SINK, INPUT_COLLECTOR, NoInputReclaim>(),
+            ),
+            g::send::<INPUT_COLLECTOR, SINK, InputStored>(),
+        ),
+        g::seq(
+            g::send::<SINK, INPUT_COLLECTOR, InputReclaimsDone>(),
+            g::send::<INPUT_COLLECTOR, SINK, InputReclaimsClosed>(),
+        ),
+    )
+    .roll();
+    g::par(packets, receipts)
+}
 pub fn publication_choreography() -> g::Program<PublicationFlow> {
     let publish = g::seq(
         g::send::<TRANSMIT, ADAPTER, Datagram>(),
@@ -450,7 +552,7 @@ pub fn publication_choreography() -> g::Program<PublicationFlow> {
             g::send::<TRANSMIT, ADAPTER, StopSettled>(),
         ),
     );
-    g::seq(
+    let base = g::seq(
         g::route(
             publish,
             g::route(
@@ -481,30 +583,40 @@ pub fn publication_choreography() -> g::Program<PublicationFlow> {
                                 g::send::<TRANSMIT, ADAPTER, LossSettled>(),
                             ),
                         ),
-                        g::send::<TRANSMIT, ADAPTER, StopPublication>(),
+                        g::route(
+                            g::seq(
+                                g::send::<TRANSMIT, ADAPTER, ReclaimStream>(),
+                                g::seq(
+                                    g::send::<ADAPTER, TRANSMIT, StreamReclaimed>(),
+                                    g::send::<TRANSMIT, ADAPTER, ReclaimSettled>(),
+                                ),
+                            ),
+                            g::send::<TRANSMIT, ADAPTER, StopPublication>(),
+                        ),
                     ),
                 ),
             ),
         )
         .roll(),
         g::send::<ADAPTER, TRANSMIT, PublicationStopped>(),
+    );
+    let receipt = g::route(
+        g::seq(
+            g::send::<TRANSMIT, DELIVERY_COLLECTOR, DeliveryReclaim>(),
+            g::send::<DELIVERY_COLLECTOR, TRANSMIT, DeliveryStored>(),
+        ),
+        g::seq(
+            g::send::<TRANSMIT, DELIVERY_COLLECTOR, DeliveryReclaimsDone>(),
+            g::send::<DELIVERY_COLLECTOR, TRANSMIT, DeliveryReclaimsClosed>(),
+        ),
     )
+    .roll();
+    g::par(base, receipt)
 }
 
 pub fn choreography() -> g::Program<Flow> {
     let source = source_choreography();
-    let deliveries = g::route(
-        g::seq(
-            g::send::<RECEIVE, SINK, ReceivedData>(),
-            g::route(
-                g::send::<SINK, RECEIVE, ReceivedMore>(),
-                g::send::<SINK, RECEIVE, ReceivedFin>(),
-            ),
-        ),
-        g::send::<RECEIVE, SINK, ReceiveRetire>(),
-    )
-    .roll();
-    let receive = g::seq(deliveries, g::send::<SINK, RECEIVE, ReceiveRetired>());
+    let receive = receive_choreography();
 
     let peer_update = g::seq(
         g::send::<RX_KEYS, TX_KEYS, PeerUpdate>(),
@@ -654,6 +766,9 @@ pub struct Programs {
     pub files_event: RoleProgram<FILES_EVENT>,
     pub files_close: RoleProgram<FILES_CLOSE>,
     pub close_join: RoleProgram<CLOSE_JOIN>,
+    pub source_collector: RoleProgram<SOURCE_COLLECTOR>,
+    pub input_collector: RoleProgram<INPUT_COLLECTOR>,
+    pub delivery_collector: RoleProgram<DELIVERY_COLLECTOR>,
 }
 
 /// One projected session includes the actual TLS prefix and every subsequent
@@ -691,5 +806,8 @@ pub fn programs() -> Programs {
         files_event: project(&global),
         files_close: project(&global),
         close_join: project(&global),
+        source_collector: project(&global),
+        input_collector: project(&global),
+        delivery_collector: project(&global),
     }
 }

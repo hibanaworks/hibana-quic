@@ -257,6 +257,7 @@ pub(crate) async fn run<
     book: &mut recovery::Tx<'book, 'scope, N>,
     streams: &mut application_stream::Tx<'streams, '_, 'scope, RX, CHUNK>,
     reset: &super::reset::Exchange<'streams>,
+    reclaim: &super::reclaim::Exchange<'streams>,
     acknowledgments: &super::acknowledgments::Exchange<'scope>,
     mut handshake_done: Option<FlightId>,
     config: Config<'_>,
@@ -280,7 +281,10 @@ pub(crate) async fn run<
                         let id = offered.recv::<p::StreamDelivered>().await?;
                         let receipt = state.delivery.take().map_err(|_| Error::Binding)?;
                         check(receipt.id(), id)?;
-                        streams.record_delivery(receipt)?;
+                        let released = streams.record_delivery(receipt)?;
+                        reclaim.delivery.put(released).map_err(|_| Error::Binding)?;
+                        endpoint.send::<p::DeliveryReclaim>(&id).await?;
+                        check(endpoint.recv::<p::DeliveryStored>().await?, id)?;
                         endpoint.send::<p::StreamDeliverySeen>(&id).await?;
                     }
                     183 => {
@@ -296,6 +300,13 @@ pub(crate) async fn run<
         }
         if control.stopping() {
             break;
+        }
+        if let Some(id) =
+            reclaim.stage(|origin| streams.reclaimable(origin).map_err(Error::from))?
+        {
+            endpoint.send::<p::ReclaimStream>(&id).await?;
+            check(endpoint.recv::<p::StreamReclaimed>().await?, id)?;
+            endpoint.send::<p::ReclaimSettled>(&id).await?;
         }
         // This branch is outside the complete Datagram/Accepted-or-Rejected/
         // Settled fragment. The global forbids resetting an unresolved send.
@@ -376,7 +387,9 @@ pub(crate) async fn run<
         crate::runtime::yield_now().await;
     }
     endpoint.send::<p::StopPublication>(&sequence).await?;
-    check(endpoint.recv::<p::PublicationStopped>().await?, sequence)
+    check(endpoint.recv::<p::PublicationStopped>().await?, sequence)?;
+    endpoint.send::<p::DeliveryReclaimsDone>(&0).await?;
+    check(endpoint.recv::<p::DeliveryReclaimsClosed>().await?, 0)
 }
 
 fn cancel_prepared<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(
@@ -751,6 +764,7 @@ pub(crate) async fn publish<
     outcome: &Outcome,
     reset_outcome: &Outcome,
     reset: &super::reset::Exchange<'_>,
+    reclaim: &super::reclaim::Exchange<'streams>,
     acknowledgments: &super::acknowledgments::Exchange<'scope>,
     reset_owner: &mut application_stream::FrameEffects<'streams, '_, '_, RX, CHUNK>,
     socket: &mut impl DatagramTx,
@@ -800,6 +814,15 @@ pub(crate) async fn publish<
                 check(endpoint.recv::<p::Settled>().await?, sequence)?;
                 outcome.clear();
                 sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+            }
+            202 => {
+                let id = offered.recv::<p::ReclaimStream>().await?;
+                let joined = reclaim.applying.take().map_err(|_| Error::Binding)?;
+                check(joined.id(), id)?;
+                reset_owner.reclaim(joined)?;
+                endpoint.send::<p::StreamReclaimed>(&id).await?;
+                check(endpoint.recv::<p::ReclaimSettled>().await?, id)?;
+                control.changed()?;
             }
             184 => {
                 let packet = offered.recv::<p::ApplyLoss>().await?;

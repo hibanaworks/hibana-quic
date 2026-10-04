@@ -6,7 +6,7 @@ implementation, not features once exercised by a removed driver.
 ## Verified scope
 
 The pinned unchanged runner passed seven registered cases in both candidate
-roles at `27065079e0d778bf7d238dec7c92f493817548e3`: handshake, transfer,
+roles at `f88249d6139e5c71408ddeec7d53a5ee3c78d48c`: handshake, transfer,
 longrtt, transferloss, transfercorruption, IPv6 and ChaCha20. This is 14/44 candidate
 cells. Separate unchanged-Neqo baseline results are not included. Later source
 changes require a new runner result on their own commit.
@@ -33,8 +33,8 @@ matrix has not run.
 - The other 30 runner cells, including multiplexing, Retry, resumption, 0-RTT,
   HTTP/3, QUIC v2, key update, ECN and path migration, lack current official
   qualification. TLS-only or numerical-kernel tests do not qualify the endpoint.
-- Request production still has a fixed total request count; bounded concurrent
-  storage reuse for the runner's multiplexing workload remains unfinished.
+- Request production still has a fixed total request count; two-slot reuse for four requests is locally verified, but the runner's
+  larger multiplexing workload and ongoing credit refill remain unqualified.
 - Legacy standalone idle, close, migration, version-negotiation and early-data
   controllers have been deleted. Their old component tests do not demonstrate
   current endpoint support. The live connection's projected close/drain flow

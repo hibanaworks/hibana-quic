@@ -236,6 +236,7 @@ async fn connected<
     let publication_state = transmit::State::new(book_publication, publication);
     let terminal = termination::Exchange::new(&control, scope);
     let reset_exchange = reset::Exchange::new();
+    let reclaim_exchange = super::reclaim::Exchange::new();
     let acknowledgments = super::acknowledgments::Exchange::new();
     let mut request_slots = [const { None }; io::REQUEST_CAPACITY];
     let requests = Mailbox::<io::OwnedRequest, { io::REQUEST_CAPACITY }>::new(&mut request_slots)
@@ -278,15 +279,36 @@ async fn connected<
             }
             Ok::<(), Error>(())
         });
-        let mut ingress = pin!(io::ingress(&mut roles.ingress, &control, &state, &app));
+        let mut ingress = pin!(io::ingress(
+            &mut roles.ingress,
+            &control,
+            &state,
+            &app,
+            &reclaim_exchange
+        ));
         let mut sink = pin!(async {
             match sink_io {
                 Sink::Client(sink) => {
-                    io::client_sink(&mut roles.sink, &control, &state, &app, sink).await
+                    io::client_sink(
+                        &mut roles.sink,
+                        &control,
+                        &state,
+                        &app,
+                        sink,
+                        &reclaim_exchange,
+                    )
+                    .await
                 }
                 Sink::Server => {
-                    io::server_sink(&mut roles.sink, &control, &state, &app, &mut request_sender)
-                        .await
+                    io::server_sink(
+                        &mut roles.sink,
+                        &control,
+                        &state,
+                        &app,
+                        &mut request_sender,
+                        &reclaim_exchange,
+                    )
+                    .await
                 }
             }
         });
@@ -338,6 +360,7 @@ async fn connected<
             &mut book_tx,
             &mut tx,
             &reset_exchange,
+            &reclaim_exchange,
             &acknowledgments,
             handshake_done,
             config,
@@ -352,6 +375,7 @@ async fn connected<
             &outcomes.application_adapter,
             &outcomes.application_reset,
             &reset_exchange,
+            &reclaim_exchange,
             &acknowledgments,
             &mut reset_owner,
             send_io
@@ -371,6 +395,21 @@ async fn connected<
             );
             Ok::<(), Error>(())
         });
+        let mut source_collector = pin!(super::reclaim::source(
+            &mut roles.source_collector,
+            &reclaim_exchange,
+            &control
+        ));
+        let mut input_collector = pin!(super::reclaim::input(
+            &mut roles.input_collector,
+            &reclaim_exchange,
+            &control
+        ));
+        let mut delivery_collector = pin!(super::reclaim::delivery(
+            &mut roles.delivery_collector,
+            &reclaim_exchange,
+            &control
+        ));
         crate::runtime::TaskSet::new([
             source.as_mut(),
             ingress.as_mut(),
@@ -383,6 +422,9 @@ async fn connected<
             publishing.as_mut(),
             completion.as_mut(),
             terminal_receive.as_mut(),
+            source_collector.as_mut(),
+            input_collector.as_mut(),
+            delivery_collector.as_mut(),
         ])
         .await
     };

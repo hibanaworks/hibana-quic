@@ -74,6 +74,11 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 forbidden_rejected.set(true);
                 return Ok(());
             }
+            if illegal_at == 12 {
+                assert!(tx.send::<p::ReclaimStream>(&4).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
             if illegal_at == 9 {
                 assert!(tx.send::<p::ApplyLoss>(&0).await.is_err());
                 forbidden_rejected.set(true);
@@ -95,6 +100,11 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                     tx.send::<p::ApplyStop>(&4).await.is_err(),
                     "reset entered before Settled"
                 );
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            if illegal_at == 13 {
+                assert!(tx.send::<p::ReclaimStream>(&4).await.is_err());
                 forbidden_rejected.set(true);
                 return Ok(());
             }
@@ -139,13 +149,21 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 return Ok(());
             }
             tx.send::<p::LossSettled>(&7).await?;
+            tx.send::<p::ReclaimStream>(&4).await?;
+            assert_eq!(tx.recv::<p::StreamReclaimed>().await?, 4);
+            if illegal_at == 14 {
+                assert!(tx.send::<p::Datagram>(&2).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            tx.send::<p::ReclaimSettled>(&4).await?;
             tx.send::<p::StopPublication>(&1).await?;
             assert_eq!(tx.recv::<p::PublicationStopped>().await?, 1);
             Ok::<_, EndpointError>(())
         },
         async {
             assert_eq!(adapter.offer().await?.recv::<p::Datagram>().await?, 0);
-            if illegal_at == 1 || illegal_at == 5 || illegal_at == 9 {
+            if illegal_at == 1 || illegal_at == 5 || illegal_at == 9 || illegal_at == 12 {
                 return Ok(());
             }
             if rejected {
@@ -153,7 +171,7 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
             } else {
                 adapter.send::<p::Accepted>(&0).await?;
             }
-            if illegal_at == 2 || illegal_at == 6 || illegal_at == 10 {
+            if illegal_at == 2 || illegal_at == 6 || illegal_at == 10 || illegal_at == 13 {
                 return Ok(());
             }
             assert_eq!(adapter.recv::<p::Settled>().await?, 0);
@@ -207,6 +225,12 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 return Ok(());
             }
             assert_eq!(adapter.recv::<p::LossSettled>().await?, 7);
+            assert_eq!(adapter.offer().await?.recv::<p::ReclaimStream>().await?, 4);
+            adapter.send::<p::StreamReclaimed>(&4).await?;
+            if illegal_at == 14 {
+                return Ok(());
+            }
+            assert_eq!(adapter.recv::<p::ReclaimSettled>().await?, 4);
             assert_eq!(
                 adapter.offer().await?.recv::<p::StopPublication>().await?,
                 1
@@ -285,6 +309,15 @@ fn loss_application_cannot_bypass_publication_or_its_own_settlement() {
     for at in [9, 10, 11] {
         for rejected in [false, true] {
             run(at, rejected, false);
+        }
+    }
+}
+
+#[test]
+fn stream_reclaim_cannot_bypass_datagram_or_reclaim_settlement() {
+    for rejected in [false, true] {
+        for point in [12, 13, 14] {
+            run(point, rejected, false);
         }
     }
 }

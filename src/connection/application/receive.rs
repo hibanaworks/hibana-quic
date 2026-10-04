@@ -252,10 +252,14 @@ async fn application<'streams, 'scope, const N: usize, const RX: usize, const CH
             | Frame::DataBlocked { .. }
             | Frame::StreamDataBlocked { .. }
             | Frame::StreamsBlocked { .. } => streams.apply(&frame)?,
-            Frame::StopSending { id, error_code } => {
-                reset.observe(streams.stop_intent(id, error_code)?)?;
-                control.changed()?;
-            }
+            Frame::StopSending { id, error_code } => match streams.stop_intent(id, error_code) {
+                Ok(intent) => {
+                    reset.observe(intent)?;
+                    control.changed()?;
+                }
+                Err(application_stream::Error::Streams(streams::Error::Retired)) => {}
+                Err(error) => return Err(error.into()),
+            },
             Frame::Crypto { offset, data } => {
                 reassembly
                     .insert(offset, data)

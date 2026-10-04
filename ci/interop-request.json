@@ -1,12 +1,12 @@
 {
-  "request": "Requalify the existing seven cases after deleting FIN/RESET controllers and projecting ACK, loss and stopped-source continuations",
-  "requested_at": "2026-10-04T08:38:00Z",
+  "request": "Requalify the existing seven cases after owned parallel stream reclamation",
+  "requested_at": "2026-10-04T10:00:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"
   ],
-  "approval": "User approved disposable GitHub CI Docker allow-direct-routing=true",
-  "local_evidence": "artifacts/rolled-route-runtime-20261004/explicit-stream-control/native-clean.json",
+  "approval": "User authorized the existing interop workflow for these unchanged cases.",
+  "local_evidence": "artifacts/rolled-route-runtime-20261004/stream-reclaim/native-clean.json",
   "cases": [
     "handshake",
     "transfer",

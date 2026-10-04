@@ -122,7 +122,6 @@ struct State {
     receive_highest: u64,
     receive_final: Option<u64>,
     receive_reset: Option<u64>,
-    reset_read: bool,
     consumed: u64,
     head: usize,
     send_limit: u64,
@@ -141,7 +140,6 @@ impl State {
         receive_highest: 0,
         receive_final: None,
         receive_reset: None,
-        reset_read: false,
         consumed: 0,
         head: 0,
         send_limit: 0,
@@ -284,10 +282,10 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
     fn is_local(&self, id: u64) -> bool {
         id & 1 == self.role.bit()
     }
-    fn can_send(&self, id: u64) -> bool {
+    pub(crate) fn can_send(&self, id: u64) -> bool {
         id & 2 == 0 || self.is_local(id)
     }
-    fn can_receive(&self, id: u64) -> bool {
+    pub(crate) fn can_receive(&self, id: u64) -> bool {
         id & 2 == 0 || !self.is_local(id)
     }
     fn handle_at(&self, index: usize) -> StreamHandle {
@@ -778,13 +776,6 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
         self.receive_released += count as u64;
         Ok(())
     }
-    pub fn acknowledge_received_reset(&mut self, h: StreamHandle) -> Result<u64, Error> {
-        let i = self.validate(h)?;
-        let s = &mut self.slots[i].state;
-        let error = s.receive_reset.ok_or(Error::InvalidTransition)?;
-        s.reset_read = true;
-        Ok(error)
-    }
     pub fn request_stop(&self, h: StreamHandle, error_code: u64) -> Result<StopSending, Error> {
         self.validate(h)?;
         if !self.can_receive(h.id) {
@@ -886,6 +877,23 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
             error_code,
             final_size: s.send_emitted,
         }))
+    }
+    /// Storage bookkeeping only. The connection's three owned release receipts
+    /// supply retirement authority; this function does not infer a stream phase.
+    pub(crate) fn reclaim_storage(&mut self, h: StreamHandle) -> Result<(), Error> {
+        let i = self.validate(h)?;
+        if self.slots[i].state.pending_chunks != 0 {
+            return Err(Error::NotTerminal);
+        }
+        self.retired[(h.id & 3) as usize] = self.retired[(h.id & 3) as usize]
+            .checked_add(1)
+            .ok_or(Error::OffsetOverflow)?;
+        self.slots[i].state.live = false;
+        self.slots[i].present.fill(false);
+        Ok(())
+    }
+    pub(crate) fn retained_chunks(&self, h: StreamHandle) -> Result<usize, Error> {
+        Ok(self.slots[self.validate(h)?].state.pending_chunks)
     }
     pub fn close(&mut self) {
         self.closed = true;
@@ -1546,7 +1554,7 @@ mod tests {
         assert_eq!(table.receive_charged(), 8);
         assert_eq!(table.receive(b).unwrap().reset, Some(9));
         assert!(table.receive(b).unwrap().first.is_empty());
-        assert_eq!(table.acknowledge_received_reset(b), Ok(9));
+        assert_eq!(table.receive(b).unwrap().reset, Some(9));
         table.on_reset(b, 99, 4).unwrap();
         assert_eq!(table.receive_charged(), 8);
         table.on_stream(b, 0, b"abcd", false).unwrap(); // Discarded after reset.

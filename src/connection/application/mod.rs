@@ -6,6 +6,7 @@ mod io;
 mod keys;
 pub mod protocol;
 mod receive;
+pub(super) mod reclaim;
 mod reset;
 mod run;
 mod startup;
@@ -115,6 +116,9 @@ pub struct Roles<'a> {
     pub files_event: Endpoint<'a, { protocol::FILES_EVENT }>,
     pub files_close: Endpoint<'a, { protocol::FILES_CLOSE }>,
     pub close_join: Endpoint<'a, { protocol::CLOSE_JOIN }>,
+    pub source_collector: Endpoint<'a, {protocol::SOURCE_COLLECTOR}>,
+    pub input_collector: Endpoint<'a, {protocol::INPUT_COLLECTOR}>,
+    pub delivery_collector: Endpoint<'a, {protocol::DELIVERY_COLLECTOR}>,
 }
 
 #[derive(Debug)]

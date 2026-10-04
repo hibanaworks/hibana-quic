@@ -103,6 +103,9 @@ pub async fn files<'scope>(
         files_event: enter!(programs.files_event),
         files_close: enter!(programs.files_close),
         close_join: enter!(programs.close_join),
+        source_collector: enter!(programs.source_collector),
+        input_collector: enter!(programs.input_collector),
+        delivery_collector: enter!(programs.delivery_collector),
     };
     let mut storage = application_storage::Storage::new();
     let setup = storage.setup(config)?;

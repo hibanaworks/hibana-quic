@@ -130,6 +130,48 @@ impl Production<'_> {
     }
 }
 
+/// Copyable correlation data is not a release capability.
+#[derive(Clone, Copy)]
+pub(super) struct Origin<'book> {
+    identity: &'book Identity,
+    stream: StreamHandle,
+}
+impl Origin<'_> {
+    pub(super) fn id(self) -> u64 {
+        self.stream.id()
+    }
+    pub(super) fn slot(self) -> usize {
+        self.stream.slot()
+    }
+    pub(super) fn same(self, other: Self) -> bool {
+        core::ptr::eq(self.identity, other.identity) && self.stream == other.stream
+    }
+}
+pub(super) struct ProductionReleased<'book> {
+    origin: Origin<'book>,
+}
+pub(super) struct InputReleased<'book> {
+    origin: Origin<'book>,
+}
+pub(super) struct DeliveryReleased<'book> {
+    origin: Origin<'book>,
+}
+impl<'book> ProductionReleased<'book> {
+    pub(super) fn origin(&self) -> Origin<'book> {
+        self.origin
+    }
+}
+impl<'book> InputReleased<'book> {
+    pub(super) fn origin(&self) -> Origin<'book> {
+        self.origin
+    }
+}
+impl<'book> DeliveryReleased<'book> {
+    pub(super) fn origin(&self) -> Origin<'book> {
+        self.origin
+    }
+}
+
 pub struct Rx<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
     core: &'book StreamNumbers<'storage, 'scope, RX, CHUNK>,
 }
@@ -162,6 +204,49 @@ impl StopIntent<'_> {
     }
 }
 impl<'book, const RX: usize, const CHUNK: usize> FrameEffects<'book, '_, '_, RX, CHUNK> {
+    pub(super) fn reclaim(
+        &mut self,
+        joined: super::application::reclaim::Joined<'book>,
+    ) -> Result<(), Error> {
+        let (source, input, delivery) = joined.into_parts();
+        let origin = source.origin();
+        if !origin.same(input.origin())
+            || !origin.same(delivery.origin())
+            || !core::ptr::eq(origin.identity, &self.core.identity)
+        {
+            return Err(Error::Binding);
+        }
+        let mut n = self
+            .core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?;
+        n.state(origin.stream)?;
+        n.table.reclaim_storage(origin.stream)?;
+        // Old per-stream credit/control copies are no longer applicable; the
+        // recovery ledger retains packet accounting independently for late ACKs.
+        for reference in &mut n.controls {
+            if reference
+                .contents
+                .max_stream_data
+                .is_some_and(|(s, _)| s == origin.stream)
+            {
+                reference.contents.max_stream_data = None;
+            }
+            if reference
+                .contents
+                .reset
+                .is_some_and(|(s, _)| s == origin.stream)
+            {
+                reference.contents.reset = None;
+            }
+            if reference.contents.is_empty() {
+                reference.state = ReferenceState::Free;
+            }
+        }
+        n.streams[origin.slot()] = StreamState::EMPTY;
+        Ok(())
+    }
     pub(super) fn apply_loss(
         &mut self,
         grant: super::recovery::ApplicationLoss<'_>,
@@ -280,6 +365,49 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         })
     }
 
+    pub(super) fn release_production(
+        &mut self,
+        production: Production<'book>,
+    ) -> Result<ProductionReleased<'book>, Error> {
+        let stream = self.production_stream(&production)?;
+        self.core
+            .numbers
+            .try_borrow()
+            .map_err(|_| Error::Borrowed)?
+            .state(stream)?;
+        Ok(ProductionReleased {
+            origin: Origin {
+                identity: &self.core.identity,
+                stream,
+            },
+        })
+    }
+    pub(super) fn release_input(&mut self, id: u64) -> Result<Option<InputReleased<'book>>, Error> {
+        let mut n = self
+            .core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?;
+        let stream = match n.table.lookup(id) {
+            Ok(stream) => stream,
+            Err(streams::Error::Retired) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let read = n.table.receive(stream)?;
+        if !read.first.is_empty() || !read.second.is_empty() || (!read.fin && read.reset.is_none())
+        {
+            return Err(Error::Binding);
+        }
+        let Some(stream) = n.state_mut(stream)?.input_release.take() else {
+            return Ok(None);
+        };
+        Ok(Some(InputReleased {
+            origin: Origin {
+                identity: &self.core.identity,
+                stream,
+            },
+        }))
+    }
     fn production_stream(&self, production: &Production<'_>) -> Result<StreamHandle, Error> {
         if !core::ptr::eq(production.identity, &self.core.identity) {
             return Err(Error::Binding);
@@ -333,9 +461,6 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
             (len, view.fin && len == ready, view.reset)
         };
         n.table.consume(stream, len)?;
-        if reset.is_some() {
-            n.table.acknowledge_received_reset(stream)?;
-        }
         if len != 0 || reset.is_some() {
             n.replenish_credit(stream)?;
         }
@@ -418,6 +543,9 @@ impl<'book, const RX: usize, const CHUNK: usize> Rx<'book, '_, '_, RX, CHUNK> {
             .numbers
             .try_borrow_mut()
             .map_err(|_| Error::Borrowed)?;
+        if !n.table.can_send(id) {
+            return Err(streams::Error::StreamState.into());
+        }
         let stream = n.accept_stream(id)?;
         Ok(StopIntent {
             identity: &self.core.identity,
@@ -442,7 +570,14 @@ impl<'book, const RX: usize, const CHUNK: usize> Rx<'book, '_, '_, RX, CHUNK> {
                 fin,
                 data,
             } => {
-                let stream = n.accept_stream(id)?;
+                if !n.table.can_receive(id) {
+                    return Err(streams::Error::StreamState.into());
+                }
+                let stream = match n.accept_stream(id) {
+                    Ok(stream) => stream,
+                    Err(Error::Streams(streams::Error::Retired)) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
                 n.table.on_stream(stream, offset, data, fin)?;
             }
             Frame::ResetStream {
@@ -450,12 +585,26 @@ impl<'book, const RX: usize, const CHUNK: usize> Rx<'book, '_, '_, RX, CHUNK> {
                 error_code,
                 final_size,
             } => {
-                let stream = n.accept_stream(id)?;
+                if !n.table.can_receive(id) {
+                    return Err(streams::Error::StreamState.into());
+                }
+                let stream = match n.accept_stream(id) {
+                    Ok(stream) => stream,
+                    Err(Error::Streams(streams::Error::Retired)) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
                 n.table.on_reset(stream, error_code, final_size)?;
             }
             Frame::MaxData { maximum } => n.table.on_max_data(maximum)?,
             Frame::MaxStreamData { id, maximum } => {
-                let stream = n.accept_stream(id)?;
+                if !n.table.can_send(id) {
+                    return Err(streams::Error::StreamState.into());
+                }
+                let stream = match n.accept_stream(id) {
+                    Ok(stream) => stream,
+                    Err(Error::Streams(streams::Error::Retired)) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
                 n.table.on_max_stream_data(stream, maximum)?;
             }
             Frame::MaxStreams {
@@ -465,7 +614,13 @@ impl<'book, const RX: usize, const CHUNK: usize> Rx<'book, '_, '_, RX, CHUNK> {
                 n.table.on_max_streams(bidirectional, maximum)?;
             }
             Frame::StreamDataBlocked { id, .. } => {
-                n.accept_stream(id)?;
+                if !n.table.can_receive(id) {
+                    return Err(streams::Error::StreamState.into());
+                }
+                match n.accept_stream(id) {
+                    Ok(_) | Err(Error::Streams(streams::Error::Retired)) => {}
+                    Err(error) => return Err(error),
+                }
             }
             Frame::DataBlocked { .. } | Frame::StreamsBlocked { .. } => {}
             _ => return Err(Error::UnsupportedFrame),
@@ -518,7 +673,21 @@ impl<'book, const RX: usize, const CHUNK: usize> Tx<'book, '_, '_, RX, CHUNK> {
 
     // Recovery-driven arithmetic is also available to the transmit facet.
     // It never grants permission to authenticate or apply peer frames.
-    pub(super) fn record_delivery(&mut self, receipt: Delivered<'_>) -> Result<(), Error> {
+    pub(super) fn reclaimable(&self, origin: Origin<'_>) -> Result<bool, Error> {
+        if !core::ptr::eq(origin.identity, &self.core.identity) {
+            return Err(Error::Binding);
+        }
+        let n = self
+            .core
+            .numbers
+            .try_borrow()
+            .map_err(|_| Error::Borrowed)?;
+        Ok(n.table.retained_chunks(origin.stream)? == 0)
+    }
+    pub(super) fn record_delivery(
+        &mut self,
+        receipt: Delivered<'book>,
+    ) -> Result<DeliveryReleased<'book>, Error> {
         if !core::ptr::eq(receipt.identity, &self.core.identity) {
             return Err(Error::Binding);
         }
@@ -535,7 +704,12 @@ impl<'book, const RX: usize, const CHUNK: usize> Tx<'book, '_, '_, RX, CHUNK> {
             final_size: receipt.evidence.final_size,
             reset: receipt.evidence.reset,
         });
-        Ok(())
+        Ok(DeliveryReleased {
+            origin: Origin {
+                identity: receipt.identity,
+                stream: receipt.evidence.stream,
+            },
+        })
     }
 
     /// Only call when Recovery has explicitly stopped retaining this lost PN.
@@ -840,6 +1014,7 @@ impl Delivered<'_> {
 struct StreamState {
     handle: Option<StreamHandle>,
     production: Option<StreamHandle>,
+    input_release: Option<StreamHandle>,
     credit: Credit,
     reset: Option<streams::Reset>,
     terminal: Option<TerminalEvidence>,
@@ -849,6 +1024,7 @@ impl StreamState {
     const EMPTY: Self = Self {
         handle: None,
         production: None,
+        input_release: None,
         credit: Credit::new(0),
         reset: None,
         terminal: None,
@@ -900,6 +1076,7 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
         self.streams[stream.slot()] = StreamState {
             handle: Some(stream),
             production: Some(stream),
+            input_release: Some(stream),
             credit: Credit::new(maximum),
             ..StreamState::EMPTY
         };
@@ -1103,6 +1280,10 @@ mod tests {
         impl<T: ?Sized + Copy> NotCopy<u8> for T {}
         let _ = <Production<'static> as NotCopy<_>>::witness;
         let _ = <Delivered<'static> as NotCopy<_>>::witness;
+        let _ = <ProductionReleased<'static> as NotCopy<_>>::witness;
+        let _ = <InputReleased<'static> as NotCopy<_>>::witness;
+        let _ = <DeliveryReleased<'static> as NotCopy<_>>::witness;
+        let _ = <super::super::application::reclaim::Joined<'static> as NotCopy<_>>::witness;
         let _ = <super::super::recovery::ApplicationLoss<'static> as NotCopy<_>>::witness;
         trait NotClone<A> {
             fn witness() {}
@@ -1111,6 +1292,10 @@ mod tests {
         impl<T: ?Sized + Clone> NotClone<u8> for T {}
         let _ = <Production<'static> as NotClone<_>>::witness;
         let _ = <Delivered<'static> as NotClone<_>>::witness;
+        let _ = <ProductionReleased<'static> as NotClone<_>>::witness;
+        let _ = <InputReleased<'static> as NotClone<_>>::witness;
+        let _ = <DeliveryReleased<'static> as NotClone<_>>::witness;
+        let _ = <super::super::application::reclaim::Joined<'static> as NotClone<_>>::witness;
         let _ = <super::super::recovery::ApplicationLoss<'static> as NotClone<_>>::witness;
         let scope = ApplicationKeyScope::new(707);
         let mut slots = [StreamSlot::<8>::EMPTY];
@@ -1656,10 +1841,132 @@ mod tests {
             .acknowledge(&[packet(0)])
             .unwrap();
         let receipt = effects.take_delivery().unwrap().unwrap();
-        assert_eq!(other_tx.record_delivery(receipt), Err(Error::Binding));
+        assert!(matches!(
+            other_tx.record_delivery(receipt),
+            Err(Error::Binding)
+        ));
         assert!(!app.send_complete(stream).unwrap());
         assert!(!other_app.send_complete(stream).unwrap());
         assert!(effects.take_delivery().unwrap().is_none());
+        allocation.finish();
+    }
+    #[test]
+    fn owned_release_receipts_reuse_one_slot_and_ignore_only_closed_stream_frames() {
+        use super::super::application::reclaim::Joined;
+        let scope = ApplicationKeyScope::new(1107);
+        let mut slots = [StreamSlot::<8>::EMPTY];
+        let mut chunks = [SendChunk::<8>::EMPTY; 2];
+        let mut references = [PacketReference::EMPTY; 8];
+        let mut core = StreamNumbers::new(
+            &scope,
+            Role::Client,
+            Limits {
+                max_streams_bidi: 4,
+                ..local(Role::Server)
+            },
+            local(Role::Client),
+            &mut slots,
+            &mut chunks,
+            &mut references,
+        )
+        .unwrap();
+        let Facets {
+            mut app,
+            mut rx,
+            mut tx,
+            mut publication,
+            reset: mut effects,
+        } = core.split();
+        let allocation = actor_test_allocator::NoAlloc::start();
+        for pn in 0..3 {
+            let stream = app.open_local().unwrap();
+            assert_eq!(stream.id(), pn * 4);
+            assert_eq!(stream.slot(), 0);
+            let mut production = app.take_production(stream).unwrap();
+            assert!(matches!(
+                app.release_input(stream.id()),
+                Err(Error::Binding)
+            ));
+            app.enqueue_prefix(&mut production, b"x", true).unwrap();
+            let source = app.release_production(production).unwrap();
+            rx.apply(&Frame::Stream {
+                id: stream.id(),
+                offset: 0,
+                fin: true,
+                data: b"y",
+            })
+            .unwrap();
+            assert!(
+                matches!(app.release_input(stream.id()), Err(Error::Binding)),
+                "unread input cannot be released"
+            );
+            let mut bytes = [0; 8];
+            let read = app.read(stream, &mut bytes).unwrap();
+            assert!(read.fin);
+            assert_eq!(read.len, 1);
+            let input = app.release_input(stream.id()).unwrap().unwrap();
+            assert!(app.release_input(stream.id()).unwrap().is_none());
+            assert!(!tx.reclaimable(source.origin()).unwrap());
+            let prepared = tx.prepare::<128>(false).unwrap().unwrap();
+            let reservation = tx.reserve_transmission(&prepared, pn).unwrap();
+            publication.commit(reservation).unwrap();
+            assert!(effects.take_delivery().unwrap().is_none());
+            rx.core
+                .numbers
+                .borrow_mut()
+                .acknowledge(&[packet(pn)])
+                .unwrap();
+            let delivered = effects.take_delivery().unwrap().unwrap();
+            let delivery = tx.record_delivery(delivered).unwrap();
+            assert!(tx.reclaimable(source.origin()).unwrap());
+            let joined = Joined::new(source, input, delivery).unwrap();
+            effects.reclaim(joined).unwrap();
+            assert!(matches!(
+                app.read(stream, &mut bytes),
+                Err(Error::Streams(streams::Error::StaleHandle))
+            ));
+            assert!(app.release_input(stream.id()).unwrap().is_none());
+            rx.apply(&Frame::Stream {
+                id: stream.id(),
+                offset: 0,
+                fin: true,
+                data: b"y",
+            })
+            .unwrap();
+            rx.apply(&Frame::ResetStream {
+                id: stream.id(),
+                error_code: 1,
+                final_size: 1,
+            })
+            .unwrap();
+            rx.apply(&Frame::MaxStreamData {
+                id: stream.id(),
+                maximum: 8,
+            })
+            .unwrap();
+            assert!(matches!(
+                rx.stop_intent(stream.id(), 1),
+                Err(Error::Streams(streams::Error::Retired))
+            ));
+            rx.core
+                .numbers
+                .borrow_mut()
+                .acknowledge(&[packet(pn)])
+                .unwrap();
+        }
+        assert!(matches!(
+            rx.apply(&Frame::Stream {
+                id: 2,
+                offset: 0,
+                fin: true,
+                data: b""
+            }),
+            Err(Error::Streams(streams::Error::StreamState))
+        ));
+        assert!(matches!(
+            rx.stop_intent(3, 1),
+            Err(Error::Streams(streams::Error::StreamState))
+        ));
         allocation.finish();
     }
 }
