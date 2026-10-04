@@ -1,7 +1,7 @@
 //! The application receive continuation owns authentication and frame effects.
 //! Plaintext, affine key transitions and stream handles remain local; only the
 //! declared key, delivery and termination edges cross async role boundaries.
-use super::{Control, Error, io, keys, protocol as p, termination};
+use super::{Control, Error, io, keys, protocol as p, reset, termination};
 use crate::{
     accounting::AccountingError,
     connection::{
@@ -23,7 +23,14 @@ use hibana::Endpoint;
 use zeroize::Zeroizing;
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(
+pub(crate) async fn run<
+    'streams,
+    'owner,
+    'scope,
+    const N: usize,
+    const RX: usize,
+    const CHUNK: usize,
+>(
     receive: &mut Endpoint<'_, { p::RECEIVE }>,
     rx_keys: &mut Endpoint<'_, { p::RX_KEYS }>,
     peer_event: &mut Endpoint<'_, { p::PEER_EVENT }>,
@@ -32,7 +39,8 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
     transcript: &mut Transcript<'scope, '_, '_>,
     mut crypto: CryptoBuffer<'_>,
     book: &mut recovery::Rx<'_, 'scope, N>,
-    streams: &mut application_stream::Rx<'_, '_, 'scope, RX, CHUNK>,
+    streams: &mut application_stream::Rx<'streams, '_, 'scope, RX, CHUNK>,
+    reset: &reset::Exchange<'streams>,
     app: &RefCell<application_stream::App<'_, '_, 'scope, RX, CHUNK>>,
     state: &io::State<'_, CHUNK>,
     mut keys: keys::RxControl<'_, 'owner, 'scope>,
@@ -107,6 +115,7 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
                         &mut crypto,
                         book,
                         streams,
+                        reset,
                         control,
                         clock.now(),
                         &mut largest,
@@ -162,7 +171,7 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn application<'scope, const N: usize, const RX: usize, const CHUNK: usize>(
+async fn application<'streams, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(
     endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
     keys: &mut keys::RxControl<'_, '_, 'scope>,
     material: &mut ReceiveMaterial<'scope>,
@@ -171,7 +180,8 @@ async fn application<'scope, const N: usize, const RX: usize, const CHUNK: usize
     transcript: &mut Transcript<'scope, '_, '_>,
     reassembly: &mut CryptoBuffer<'_>,
     book: &mut recovery::Rx<'_, 'scope, N>,
-    streams: &mut application_stream::Rx<'_, '_, 'scope, RX, CHUNK>,
+    streams: &mut application_stream::Rx<'streams, '_, 'scope, RX, CHUNK>,
+    reset: &reset::Exchange<'streams>,
     control: &Control<'_, 'scope>,
     now: u64,
     largest: &mut Option<u64>,
@@ -231,13 +241,16 @@ async fn application<'scope, const N: usize, const RX: usize, const CHUNK: usize
         match frame {
             Frame::Stream { .. }
             | Frame::ResetStream { .. }
-            | Frame::StopSending { .. }
             | Frame::MaxData { .. }
             | Frame::MaxStreamData { .. }
             | Frame::MaxStreams { .. }
             | Frame::DataBlocked { .. }
             | Frame::StreamDataBlocked { .. }
             | Frame::StreamsBlocked { .. } => streams.apply(&frame)?,
+            Frame::StopSending { id, error_code } => {
+                reset.observe(streams.stop_intent(id, error_code)?)?;
+                control.changed()?;
+            }
             Frame::Crypto { offset, data } => {
                 reassembly
                     .insert(offset, data)

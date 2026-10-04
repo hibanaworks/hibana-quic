@@ -106,3 +106,42 @@ scoped Lean/Z3 models pass locally. The production tests also have compile-time
 negative Copy/Clone assertions. Native unchanged-Neqo baseline and both candidate
 directions compare exact 2/3/5 MiB contents; a separate deterministic-loss run
 compares 2 MiB contents. These remain native diagnostics, not runner verdicts.
+
+## Stop application is a publication alternative
+
+The receive callback now captures an authenticated, actual-table-bound stop
+observation. It no longer secretly applies RESET_STREAM. The old `deferred_stop`,
+`reserved_chunks` fields and `apply_stop` callback are removed. Applying a stop is
+an explicit alternative in the publication global, after a complete datagram's
+Accepted/Rejected and Settled edges. The actual adapter owner receives ApplyStop,
+consumes the owned observation, replies StopApplied/StopFailed, and awaits
+StopSettled. TX processes at most one stop per output iteration so repeated peer
+requests cannot starve ACK/retransmission work.
+
+Real projected-endpoint tests reject reset application before adapter outcome
+and before Settled, and accept it after complete publication. Numeric integration
+checks that receiving an observation and completing a send do not apply a reset
+until that explicit operation. No-allocation tests retain the first duplicate
+observation, reject a foreign table even with identical numeric handles, and
+cancel unapplied observations on connection retirement without claiming a wire
+reset. Scoped Lean/Z3 models cover payload identity/coalescing, not the ordering
+already enforced by Hibana.
+
+The three-role proposal was rejected by receive-lane causality validation. The
+implemented graph uses the actual adapter owner, with no validation bypass or
+Hibana patch. The lower reset pending/acknowledged flags and reference history
+remain unfinished migration work. Peer STOP end-to-end interoperability has not
+been qualified by these component tests.
+
+The preceding affine-production commit1369ffbd7583b3600fe25537986655d1de340db0
+passed runtime37181080973 and official runner37181080895: still12/44 unique
+candidate cells, six separate baseline results. Evidence is in interop-pilot-18.
+This result predates the stop-application change.
+
+Stop-application local validation passes: 415 unit +61 integration +27 compile-fail
+contracts, 100 host tests, 47 Python checks and thumbv6m compilation. Unchanged
+Neqo baseline and both candidate directions compare actual bytes for 2/3/5 MiB
+ordinary transfers, 2 MiB deterministic loss, and strict ChaCha20 3 MiB transfers.
+The next official pilot adds the already implemented strict ChaCha20 case to the
+six prior cases. Its two cells remain unqualified until the runner returns actual
+verdicts; no new pass is inferred from local diagnostics.

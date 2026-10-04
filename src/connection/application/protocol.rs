@@ -192,8 +192,21 @@ pub type Closing = g::Seq<
     g::Send<ADAPTER, TRANSMIT, CloseFlightSettled>,
 >;
 pub type Draining = g::Seq<g::Send<TRANSMIT, ADAPTER, Drain>, g::Send<ADAPTER, TRANSMIT, Drained>>;
+pub type ApplyStop = g::Msg<174, u64>;
+pub type StopApplied = g::Msg<175, u64>;
+pub type StopFailed = g::Msg<176, u64>;
+pub type StopSettled = g::Msg<177, u64>;
+pub type ResetApply = g::Seq<
+    g::Send<TRANSMIT, ADAPTER, ApplyStop>,
+    g::Seq<
+        g::Route<g::Send<ADAPTER, TRANSMIT, StopApplied>, g::Send<ADAPTER, TRANSMIT, StopFailed>>,
+        g::Send<TRANSMIT, ADAPTER, StopSettled>,
+    >,
+>;
+// Applying a stop is an exclusive alternative to the complete publication
+// fragment. The actual adapter owner settles its send before offering again.
 pub type PublicationFlow = g::Seq<
-    g::Roll<g::Route<Publish, g::Send<TRANSMIT, ADAPTER, StopPublication>>>,
+    g::Roll<g::Route<Publish, g::Route<ResetApply, g::Send<TRANSMIT, ADAPTER, StopPublication>>>>,
     g::Send<ADAPTER, TRANSMIT, PublicationStopped>,
 >;
 pub type FilesOutcome = g::Msg<52, u64>;
@@ -353,6 +366,38 @@ pub fn source_choreography() -> g::Program<SourceFlow> {
     )
 }
 
+pub fn publication_choreography() -> g::Program<PublicationFlow> {
+    let publish = g::seq(
+        g::send::<TRANSMIT, ADAPTER, Datagram>(),
+        g::seq(
+            g::route(
+                g::send::<ADAPTER, TRANSMIT, Accepted>(),
+                g::send::<ADAPTER, TRANSMIT, Rejected>(),
+            )
+            .resolve::<SUBMISSION_RESULT>(),
+            g::send::<TRANSMIT, ADAPTER, Settled>(),
+        ),
+    );
+    let reset = g::seq(
+        g::send::<TRANSMIT, ADAPTER, ApplyStop>(),
+        g::seq(
+            g::route(
+                g::send::<ADAPTER, TRANSMIT, StopApplied>(),
+                g::send::<ADAPTER, TRANSMIT, StopFailed>(),
+            ),
+            g::send::<TRANSMIT, ADAPTER, StopSettled>(),
+        ),
+    );
+    g::seq(
+        g::route(
+            publish,
+            g::route(reset, g::send::<TRANSMIT, ADAPTER, StopPublication>()),
+        )
+        .roll(),
+        g::send::<ADAPTER, TRANSMIT, PublicationStopped>(),
+    )
+}
+
 pub fn choreography() -> g::Program<Flow> {
     let source = source_choreography();
     let deliveries = g::route(
@@ -410,21 +455,7 @@ pub fn choreography() -> g::Program<Flow> {
         ),
     )
     .roll();
-    let publish = g::seq(
-        g::send::<TRANSMIT, ADAPTER, Datagram>(),
-        g::seq(
-            g::route(
-                g::send::<ADAPTER, TRANSMIT, Accepted>(),
-                g::send::<ADAPTER, TRANSMIT, Rejected>(),
-            )
-            .resolve::<SUBMISSION_RESULT>(),
-            g::send::<TRANSMIT, ADAPTER, Settled>(),
-        ),
-    );
-    let publication = g::seq(
-        g::route(publish, g::send::<TRANSMIT, ADAPTER, StopPublication>()).roll(),
-        g::send::<ADAPTER, TRANSMIT, PublicationStopped>(),
-    );
+    let publication = publication_choreography();
 
     let peer = g::seq(
         g::route(

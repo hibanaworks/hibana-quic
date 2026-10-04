@@ -3,7 +3,8 @@
 //! No host callback chooses connection phases or owns a replacement FSM.
 use super::{
     BodyReader, ClientRequests, Control, Error, OrdinaryRetired, Outcomes, Report, Roles,
-    ServerHandler, Setup, StreamSink, io, keys, receive, startup, termination, timer, transmit,
+    ServerHandler, Setup, StreamSink, io, keys, receive, reset, startup, termination, timer,
+    transmit,
 };
 use crate::{
     connection::publication_gate::{Issuer, Stop},
@@ -219,6 +220,7 @@ async fn connected<
         mut rx,
         mut tx,
         publication,
+        reset: mut reset_owner,
     } = stream_numbers.split();
     let app = RefCell::new(app);
     let (mut book_tx, mut book_rx, mut book_clock, book_publication, mut retirement) =
@@ -233,6 +235,7 @@ async fn connected<
     let state = io::State::<CHUNK>::new();
     let publication_state = transmit::State::new(book_publication, publication);
     let terminal = termination::Exchange::new(&control, scope);
+    let reset_exchange = reset::Exchange::new();
     let mut request_slots = [const { None }; io::REQUEST_CAPACITY];
     let requests = Mailbox::<io::OwnedRequest, { io::REQUEST_CAPACITY }>::new(&mut request_slots)
         .map_err(|_| Error::Capacity)?;
@@ -298,6 +301,7 @@ async fn connected<
                     buffers.crypto,
                     &mut book_rx,
                     &mut rx,
+                    &reset_exchange,
                     &app,
                     &state,
                     rx_control,
@@ -331,6 +335,7 @@ async fn connected<
             writer,
             &mut book_tx,
             &mut tx,
+            &reset_exchange,
             handshake_done,
             config,
             &peer_id,
@@ -342,6 +347,8 @@ async fn connected<
             &publication_state,
             issuer,
             &outcomes.application_adapter,
+            &reset_exchange,
+            &mut reset_owner,
             send_io
         ));
         let mut completion = pin!(termination::completion(

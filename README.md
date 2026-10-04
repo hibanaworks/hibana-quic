@@ -45,9 +45,9 @@ The pinned, unmodified quic-interop-runner passed `handshake`, `transfer`,
 `longrtt`, `transferloss`, `transfercorruption` and `ipv6` against unmodified Neqo
 in both directions: **12 of 44 candidate cells**, with six separate passing
 Neqo/Neqo controls in
-[run 37179772627](https://github.com/hibanaworks/hibana-quic/actions/runs/37179772627).
-That result applies to commit `c3e01d12c132bef0896b03e605bcf2183dfbc3da`.
-The subsequent affine production-lease changes require fresh runner qualification.
+[run 37181080895](https://github.com/hibanaworks/hibana-quic/actions/runs/37181080895).
+That result applies to commit `1369ffbd7583b3600fe25537986655d1de340db0`.
+The subsequent reset-application changes require fresh runner qualification.
 The other 32 candidate cells, repeat runs and embedded hardware remain unqualified.
 
 See [active implementation and evidence](docs/ACTIVE-IMPLEMENTATION.md).

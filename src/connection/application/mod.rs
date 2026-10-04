@@ -5,6 +5,7 @@ mod io;
 mod keys;
 pub mod protocol;
 mod receive;
+mod reset;
 mod run;
 mod startup;
 mod termination;

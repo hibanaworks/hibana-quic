@@ -97,6 +97,7 @@ impl<'storage, 'scope, const RX: usize, const CHUNK: usize>
             rx: Rx { core: self },
             tx: Tx { core: self },
             publication: Publication { core: self },
+            reset: ResetOwner { core: self },
         }
     }
 
@@ -110,6 +111,7 @@ pub struct Facets<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> 
     pub rx: Rx<'book, 'storage, 'scope, RX, CHUNK>,
     pub tx: Tx<'book, 'storage, 'scope, RX, CHUNK>,
     pub publication: Publication<'book, 'storage, 'scope, RX, CHUNK>,
+    pub(crate) reset: ResetOwner<'book, 'storage, 'scope, RX, CHUNK>,
 }
 
 pub struct App<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
@@ -136,6 +138,50 @@ pub struct Tx<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
 }
 pub struct Publication<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
     core: &'book StreamNumbers<'storage, 'scope, RX, CHUNK>,
+}
+
+pub(crate) struct ResetOwner<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
+    core: &'book StreamNumbers<'storage, 'scope, RX, CHUNK>,
+}
+
+/// Actual authenticated STOP_SENDING observation, not a copied phase flag.
+pub(super) struct StopIntent<'book> {
+    identity: &'book Identity,
+    stream: StreamHandle,
+    error_code: u64,
+}
+impl StopIntent<'_> {
+    pub(super) fn id(&self) -> u64 {
+        self.stream.id()
+    }
+    pub(super) fn slot(&self) -> usize {
+        self.stream.slot()
+    }
+    pub(super) fn same_stream(&self, other: &Self) -> bool {
+        core::ptr::eq(self.identity, other.identity) && self.stream == other.stream
+    }
+}
+impl<const RX: usize, const CHUNK: usize> ResetOwner<'_, '_, '_, RX, CHUNK> {
+    pub(super) fn apply(&mut self, intent: StopIntent<'_>) -> Result<(), Error> {
+        if !core::ptr::eq(intent.identity, &self.core.identity) {
+            return Err(Error::Binding);
+        }
+        let mut n = self
+            .core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?;
+        n.state(intent.stream)?;
+        let Numbers { table, queue, .. } = &mut *n;
+        if let Some(reset) = queue.reset(table, intent.stream, intent.error_code)? {
+            let state = n.state_mut(intent.stream)?;
+            if state.reset.is_none() {
+                state.reset = Some(reset);
+                state.reset_pending = true;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,9 +246,6 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
             .numbers
             .try_borrow_mut()
             .map_err(|_| Error::Borrowed)?;
-        if n.state(stream)?.deferred_stop.is_some() {
-            return Err(streams::Error::SendClosed.into());
-        }
         let credit = n.table.send_credit(stream)?;
         let len = bytes.len().min(CHUNK).min(
             usize::try_from(credit.connection_available.min(credit.stream_available))
@@ -298,7 +341,28 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
     }
 }
 
-impl<const RX: usize, const CHUNK: usize> Rx<'_, '_, '_, RX, CHUNK> {
+impl<'book, const RX: usize, const CHUNK: usize> Rx<'book, '_, '_, RX, CHUNK> {
+    pub(super) fn stop_intent(
+        &mut self,
+        id: u64,
+        error_code: u64,
+    ) -> Result<StopIntent<'book>, Error> {
+        if error_code > streams::MAX_OFFSET {
+            return Err(streams::Error::InvalidId.into());
+        }
+        let mut n = self
+            .core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?;
+        let stream = n.accept_stream(id)?;
+        Ok(StopIntent {
+            identity: &self.core.identity,
+            stream,
+            error_code,
+        })
+    }
+
     /// The caller is the authenticated connection receive continuation, after
     /// whole-packet AEAD/frame/recovery validation. An arbitrary public caller
     /// cannot feed frames directly into this producer boundary.
@@ -325,16 +389,6 @@ impl<const RX: usize, const CHUNK: usize> Rx<'_, '_, '_, RX, CHUNK> {
             } => {
                 let stream = n.accept_stream(id)?;
                 n.table.on_reset(stream, error_code, final_size)?;
-            }
-            Frame::StopSending { id, error_code } => {
-                let stream = n.accept_stream(id)?;
-                if error_code > streams::MAX_OFFSET {
-                    return Err(streams::Error::InvalidId.into());
-                }
-                // Actual publication may be awaiting the adapter. Keep its
-                // reservation valid, then reset as soon as it is settled.
-                n.state_mut(stream)?.deferred_stop.get_or_insert(error_code);
-                n.apply_stop(stream)?;
             }
             Frame::MaxData { maximum } => n.table.on_max_data(maximum)?,
             Frame::MaxStreamData { id, maximum } => {
@@ -522,16 +576,6 @@ impl<'book, const RX: usize, const CHUNK: usize> Tx<'book, '_, '_, RX, CHUNK> {
             .queue
             .next_pending()
             .or_else(|| if probe { n.queue.probe_chunk() } else { None });
-        let chunk = match chunk {
-            Some(chunk)
-                if n.state(n.queue.chunk(chunk)?.stream)?
-                    .deferred_stop
-                    .is_some() =>
-            {
-                None
-            }
-            other => other,
-        };
         let controls = n.next_controls(probe);
         if chunk.is_none() && controls.is_empty() {
             return Ok(None);
@@ -608,11 +652,8 @@ impl<'book, const RX: usize, const CHUNK: usize> Tx<'book, '_, '_, RX, CHUNK> {
         let stream = match prepared.chunk {
             Some(chunk) => {
                 let handle = n.queue.chunk(chunk)?.stream;
-                if n.state(handle)?.deferred_stop.is_some() {
-                    return Err(streams::Error::SendClosed.into());
-                }
+                n.state(handle)?;
                 let reference = n.queue.reserve_transmission(chunk, packet_number)?;
-                n.state_mut(handle)?.reserved_chunks += 1;
                 Some((handle, reference))
             }
             None => None,
@@ -663,14 +704,13 @@ impl<const RX: usize, const CHUNK: usize> Publication<'_, '_, '_, RX, CHUNK> {
                 return Err(Error::Binding);
             }
         }
-        if let Some((stream, reference)) = transmission.stream {
+        if let Some((_stream, reference)) = transmission.stream {
             let Numbers { table, queue, .. } = &mut *n;
             if published {
                 queue.commit_transmission(table, reference)?;
             } else {
                 queue.cancel_transmission(table, reference)?;
             }
-            n.state_mut(stream)?.reserved_chunks -= 1;
         }
         if let Some((slot, _)) = transmission.control {
             let contents = n.controls[slot].contents;
@@ -689,9 +729,6 @@ impl<const RX: usize, const CHUNK: usize> Publication<'_, '_, '_, RX, CHUNK> {
             } else {
                 n.controls[slot].state = ReferenceState::Free;
             }
-        }
-        if let Some((stream, _)) = transmission.stream {
-            n.apply_stop(stream)?;
         }
         n.collect_controls();
         Ok(())
@@ -791,8 +828,6 @@ struct StreamState {
     reset: Option<streams::Reset>,
     reset_pending: bool,
     reset_acked: bool,
-    deferred_stop: Option<u64>,
-    reserved_chunks: usize,
 }
 impl StreamState {
     const EMPTY: Self = Self {
@@ -802,8 +837,6 @@ impl StreamState {
         reset: None,
         reset_pending: false,
         reset_acked: false,
-        deferred_stop: None,
-        reserved_chunks: 0,
     };
 }
 struct Numbers<'storage, const RX: usize, const CHUNK: usize> {
@@ -876,22 +909,6 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
             let maximum = self.table.stream_receive_capacity(stream)?;
             self.table.grant_max_stream_data(stream, maximum)?;
             self.state_mut(stream)?.credit.update(maximum);
-        }
-        Ok(())
-    }
-    fn apply_stop(&mut self, stream: StreamHandle) -> Result<(), Error> {
-        if self.state(stream)?.reserved_chunks != 0 {
-            return Ok(());
-        }
-        if let Some(error) = self.state(stream)?.deferred_stop {
-            if let Some(reset) = self.queue.reset(&mut self.table, stream, error)? {
-                let state = self.state_mut(stream)?;
-                if state.reset.is_none() {
-                    state.reset = Some(reset);
-                    state.reset_pending = true;
-                }
-            }
-            self.state_mut(stream)?.deferred_stop = None;
         }
         Ok(())
     }
@@ -1109,6 +1126,7 @@ mod tests {
             mut rx,
             mut tx,
             mut publication,
+            reset: _,
         } = core.split();
         // The highest incoming ID materializes the two implicit lower streams.
         for id in [8, 0, 4] {
@@ -1198,6 +1216,7 @@ mod tests {
             mut rx,
             mut tx,
             mut publication,
+            reset: _,
         } = core.split();
         let stream = app.open_local().unwrap();
         let mut production = app.take_production(stream).unwrap();
@@ -1246,6 +1265,7 @@ mod tests {
             mut rx,
             mut tx,
             mut publication,
+            reset: _,
         } = core.split();
         rx.apply(&Frame::Stream {
             id: 0,
@@ -1320,6 +1340,7 @@ mod tests {
             mut rx,
             mut tx,
             mut publication,
+            mut reset,
         } = core.split();
         let stream = app.open_local().unwrap();
         let mut production = app.take_production(stream).unwrap();
@@ -1330,13 +1351,14 @@ mod tests {
         );
         let prepared = tx.prepare::<64>(false).unwrap().unwrap();
         let reservation = tx.reserve_transmission(&prepared, 0).unwrap();
-        rx.apply(&Frame::StopSending {
-            id: 0,
-            error_code: 7,
-        })
-        .unwrap();
+        let intent = rx.stop_intent(0, 7).unwrap();
         assert!(tx.prepare::<64>(false).unwrap().is_none());
         publication.commit(reservation).unwrap();
+        assert!(
+            tx.prepare::<64>(false).unwrap().is_none(),
+            "adapter completion must not secretly apply the stop observation"
+        );
+        reset.apply(intent).unwrap();
         let reset = tx.prepare::<64>(false).unwrap().unwrap();
         let mut encoded = [0; 64];
         let len = packet::encode_frame(

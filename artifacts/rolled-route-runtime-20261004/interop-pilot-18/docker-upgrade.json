@@ -1,0 +1,10 @@
+{
+  "source": "https://download.docker.com/linux/ubuntu/dists/noble/stable/binary-amd64/Packages",
+  "before_version": "28.0.4",
+  "after_version": "28.5.1",
+  "after_api": "1.51",
+  "cli_deb_sha256": "7ce6826a3d3a3ffc58b209c1681945e89a8a1ea9b2736098d1c5aad6d39fdff6",
+  "engine_deb_sha256": "b52d21093c87c6dd4c4fc6548453e71ab3dd77560a7073833c2797de28e88b83",
+  "daemon_config_change": "allow-direct-routing=true; user approved for disposable CI runner",
+  "socket_group_and_mode_unchanged": true
+}

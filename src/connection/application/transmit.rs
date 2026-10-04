@@ -257,6 +257,7 @@ pub(crate) async fn run<
     keys: &keys::KeyOwner<'scope>,
     book: &mut recovery::Tx<'book, 'scope, N>,
     streams: &mut application_stream::Tx<'streams, '_, 'scope, RX, CHUNK>,
+    reset: &super::reset::Exchange<'streams>,
     mut handshake_done: Option<FlightId>,
     config: Config<'_>,
     peer: &ConnectionId,
@@ -266,6 +267,30 @@ pub(crate) async fn run<
     let mut history_floor = book.application_history_floor();
     while !control.stopping() {
         let revision = control.revision();
+        // This branch is outside the complete Datagram/Accepted-or-Rejected/
+        // Settled fragment. The global forbids resetting an unresolved send.
+        if let Some(id) = reset.stage()? {
+            endpoint.send::<p::ApplyStop>(&id).await?;
+            let reply = endpoint.offer().await?;
+            let applied = match reply.label() {
+                175 => {
+                    check(reply.recv::<p::StopApplied>().await?, id)?;
+                    true
+                }
+                176 => {
+                    check(reply.recv::<p::StopFailed>().await?, id)?;
+                    false
+                }
+                label => return Err(Error::UnexpectedLabel(label)),
+            };
+            endpoint.send::<p::StopSettled>(&id).await?;
+            if !applied {
+                return Err(Error::Application);
+            }
+            // Bound stop work to one observation per publication iteration;
+            // repeated peer requests must not starve ACK/retransmission output.
+            crate::runtime::yield_now().await;
+        }
         while let Some(packet) = book.take_lost_application() {
             streams.lost(packet.value)?;
         }
@@ -687,6 +712,8 @@ pub(crate) async fn publish<
     state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
     issuer: &mut publication_gate::Issuer<'_, 'scope>,
     outcome: &Outcome,
+    reset: &super::reset::Exchange<'_>,
+    reset_owner: &mut application_stream::ResetOwner<'_, '_, '_, RX, CHUNK>,
     socket: &mut impl DatagramTx,
 ) -> Result<(), Error> {
     let mut sequence = 0u64;
@@ -735,11 +762,28 @@ pub(crate) async fn publish<
                 outcome.clear();
                 sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
             }
+            174 => {
+                let id = offered.recv::<p::ApplyStop>().await?;
+                let intent = reset.applying.take().map_err(|_| Error::Binding)?;
+                if intent.id() != id {
+                    return Err(Error::Binding);
+                }
+                let result = reset_owner.apply(intent);
+                if result.is_ok() {
+                    endpoint.send::<p::StopApplied>(&id).await?;
+                } else {
+                    endpoint.send::<p::StopFailed>(&id).await?;
+                }
+                check(endpoint.recv::<p::StopSettled>().await?, id)?;
+                control.changed()?;
+                result?;
+            }
             30 => {
                 check(offered.recv::<p::StopPublication>().await?, sequence)?;
                 if state.pending.borrow().is_some() {
                     return Err(Error::Binding);
                 }
+                reset.cancel_pending()?;
                 endpoint.send::<p::PublicationStopped>(&sequence).await?;
                 return Ok(());
             }

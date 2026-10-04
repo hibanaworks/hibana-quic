@@ -2,8 +2,8 @@
   "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
   "registered_quic_cases": 22,
   "directions": 2,
-  "pilot_commit": "c3e01d12c132bef0896b03e605bcf2183dfbc3da",
-  "current_cleanup_commit_qualification": "explicit source FIN choreography: six registered cases passed both directions in run37179772627; 12/44 candidate cells; baseline excluded",
+  "pilot_commit": "1369ffbd7583b3600fe25537986655d1de340db0",
+  "current_cleanup_commit_qualification": "affine production and send_final deletion: six registered cases passed both directions in run37181080895; 12/44 candidate cells; baseline excluded",
   "cases": [
     {
       "case": "handshake",
@@ -138,5 +138,5 @@
       "server_vs_neqo": "not-run"
     }
   ],
-  "network_impairment_qualification": "official six-case pilot succeeded on c3e01d1; newer affine production and remaining cases require qualification"
+  "network_impairment_qualification": "official six-case pilot succeeded on 1369ffb; newer reset-application changes require qualification"
 }
