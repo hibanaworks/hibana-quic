@@ -66,6 +66,7 @@ pub struct Outcomes {
     pub tls: Outcome,
     pub handshake_adapter: Outcome,
     pub application_adapter: Outcome,
+    pub application_reset: Outcome,
 }
 impl Outcomes {
     pub const fn new() -> Self {
@@ -73,6 +74,7 @@ impl Outcomes {
             tls: Outcome::new(),
             handshake_adapter: Outcome::new(),
             application_adapter: Outcome::new(),
+            application_reset: Outcome::new(),
         }
     }
 }

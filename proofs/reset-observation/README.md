@@ -31,3 +31,7 @@ claiming reset publication or acknowledgment.
 The lower reset publication/ACK flags and reference history remain unfinished
 migration work. This change concerns authority to apply the stop, not a claim that
 all RESET/ACK control or end-to-end peer STOP interoperability is qualified.
+
+The reset-result route has an independent resolver/outcome cell. Additional actual
+endpoint tests reject an opposite result and a missing reset verdict despite a
+present UDP result. This ensures the resolver is authoritative, not decorative.

@@ -111,9 +111,6 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
     pub(crate) fn close_completed(&self) -> bool {
         self.completed.get()
     }
-    pub(crate) fn snapshot(&self) -> recovery::Snapshot {
-        self.owners.borrow().book.snapshot()
-    }
     pub(crate) fn retire_all(&self) {
         self.owners.borrow_mut().book.retire_all();
     }
@@ -712,6 +709,7 @@ pub(crate) async fn publish<
     state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
     issuer: &mut publication_gate::Issuer<'_, 'scope>,
     outcome: &Outcome,
+    reset_outcome: &Outcome,
     reset: &super::reset::Exchange<'_>,
     reset_owner: &mut application_stream::ResetOwner<'_, '_, '_, RX, CHUNK>,
     socket: &mut impl DatagramTx,
@@ -769,12 +767,17 @@ pub(crate) async fn publish<
                     return Err(Error::Binding);
                 }
                 let result = reset_owner.apply(intent);
-                if result.is_ok() {
-                    endpoint.send::<p::StopApplied>(&id).await?;
-                } else {
-                    endpoint.send::<p::StopFailed>(&id).await?;
+                reset_outcome.set(result.is_ok())?;
+                match reset_outcome
+                    .resolver::<{ p::STOP_RESULT }>()
+                    .decide()
+                    .map_err(connection::Error::from)?
+                {
+                    DecisionArm::Left => endpoint.send::<p::StopApplied>(&id).await?,
+                    DecisionArm::Right => endpoint.send::<p::StopFailed>(&id).await?,
                 }
                 check(endpoint.recv::<p::StopSettled>().await?, id)?;
+                reset_outcome.clear();
                 control.changed()?;
                 result?;
             }

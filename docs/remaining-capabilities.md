@@ -5,9 +5,9 @@ implementation, not features once exercised by a removed driver.
 
 ## Verified scope
 
-The pinned unchanged runner passed six registered cases in both candidate
-roles at `b8cf48f7636eec7b81942a27175a89ba68a84333`: handshake, transfer,
-longrtt, transferloss, transfercorruption and IPv6. This is 12/44 candidate
+The pinned unchanged runner passed seven registered cases in both candidate
+roles at `27065079e0d778bf7d238dec7c92f493817548e3`: handshake, transfer,
+longrtt, transferloss, transfercorruption, IPv6 and ChaCha20. This is 14/44 candidate
 cells. Separate unchanged-Neqo baseline results are not included. Later source
 changes require a new runner result on their own commit.
 
@@ -30,7 +30,7 @@ matrix has not run.
 
 ## Unqualified capabilities
 
-- The other 32 runner cells, including multiplexing, Retry, resumption, 0-RTT,
+- The other 30 runner cells, including multiplexing, Retry, resumption, 0-RTT,
   HTTP/3, QUIC v2, key update, ECN and path migration, lack current official
   qualification. TLS-only or numerical-kernel tests do not qualify the endpoint.
 - Request production still has a fixed total request count; bounded concurrent

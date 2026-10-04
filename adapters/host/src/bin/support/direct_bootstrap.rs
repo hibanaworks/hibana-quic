@@ -65,6 +65,10 @@ pub async fn files<'scope>(
         &programs.adapter,
         outcomes.application_adapter.resolver::<{application::protocol::SUBMISSION_RESULT}>(),
     ).map_err(|e| format!("application adapter resolver: {e:?}"))?;
+    rendezvous.set_resolver(
+        &programs.adapter,
+        outcomes.application_reset.resolver::<{application::protocol::STOP_RESULT}>(),
+    ).map_err(|e| format!("application reset resolver: {e:?}"))?;
     macro_rules! enter {
         ($program:expr) => {
             rendezvous.enter(session, &$program)

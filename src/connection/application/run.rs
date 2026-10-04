@@ -347,6 +347,7 @@ async fn connected<
             &publication_state,
             issuer,
             &outcomes.application_adapter,
+            &outcomes.application_reset,
             &reset_exchange,
             &mut reset_owner,
             send_io

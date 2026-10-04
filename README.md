@@ -42,13 +42,13 @@ alone. Passing interop does not complete this migration.
 
 This is **not production-ready** and is not yet a fully qualified QUIC stack.
 The pinned, unmodified quic-interop-runner passed `handshake`, `transfer`,
-`longrtt`, `transferloss`, `transfercorruption` and `ipv6` against unmodified Neqo
-in both directions: **12 of 44 candidate cells**, with six separate passing
+`longrtt`, `transferloss`, `transfercorruption`, `ipv6` and `chacha20` against unmodified Neqo
+in both directions: **14 of 44 candidate cells**, with seven separate passing
 Neqo/Neqo controls in
-[run 37181080895](https://github.com/hibanaworks/hibana-quic/actions/runs/37181080895).
-That result applies to commit `1369ffbd7583b3600fe25537986655d1de340db0`.
-The subsequent reset-application changes require fresh runner qualification.
-The other 32 candidate cells, repeat runs and embedded hardware remain unqualified.
+[run 37183144899](https://github.com/hibanaworks/hibana-quic/actions/runs/37183144899).
+That result applies to commit `27065079e0d778bf7d238dec7c92f493817548e3`.
+The subsequent independent reset-resolver refinement requires fresh runner qualification.
+The other 30 candidate cells, repeat runs and embedded hardware remain unqualified.
 
 See [active implementation and evidence](docs/ACTIVE-IMPLEMENTATION.md).
 Lean and Z3 models cover explicitly scoped obligations; they are not proofs of

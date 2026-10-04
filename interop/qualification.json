@@ -2,8 +2,8 @@
   "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
   "registered_quic_cases": 22,
   "directions": 2,
-  "pilot_commit": "1369ffbd7583b3600fe25537986655d1de340db0",
-  "current_cleanup_commit_qualification": "affine production and send_final deletion: six registered cases passed both directions in run37181080895; 12/44 candidate cells; baseline excluded",
+  "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
+  "current_cleanup_commit_qualification": "choreographed stop application: seven registered cases passed both directions in run37183144899; 14/44 candidate cells; baseline excluded",
   "cases": [
     {
       "case": "handshake",
@@ -26,8 +26,8 @@
     {
       "case": "chacha20",
       "abbreviation": "C20",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot"
     },
     {
       "case": "multiplexing",
@@ -138,5 +138,5 @@
       "server_vs_neqo": "not-run"
     }
   ],
-  "network_impairment_qualification": "official six-case pilot succeeded on 1369ffb; newer reset-application changes require qualification"
+  "network_impairment_qualification": "official seven-case pilot succeeded on27065079; later independent reset-resolver refinement requires new qualification"
 }

@@ -945,6 +945,13 @@ fn connection_case(count: usize, loss: Loss) {
                     .resolver::<{ application::protocol::SUBMISSION_RESULT }>(),
             )
             .unwrap();
+            $rv.set_resolver(
+                &programs.adapter,
+                $outcomes
+                    .application_reset
+                    .resolver::<{ application::protocol::STOP_RESULT }>(),
+            )
+            .unwrap();
         }};
     }
     resolvers!(client_rv, client_outcomes);

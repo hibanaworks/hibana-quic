@@ -445,40 +445,6 @@ impl<'book, const RX: usize, const CHUNK: usize> Rx<'book, '_, '_, RX, CHUNK> {
         n.collect_controls();
         Ok(())
     }
-
-    pub(super) fn lost(&mut self, packet_number: u64) -> Result<(), Error> {
-        let mut n = self
-            .core
-            .numbers
-            .try_borrow_mut()
-            .map_err(|_| Error::Borrowed)?;
-        n.queue.on_packet_lost(packet_number);
-        for index in 0..CONTROL_CAPACITY {
-            let reference = n.controls[index];
-            if reference.packet == packet_number && reference.state == ReferenceState::Sent {
-                n.controls[index].state = ReferenceState::Lost;
-                n.retry_control(reference.contents);
-            }
-        }
-        Ok(())
-    }
-
-    /// Only call when Recovery has explicitly stopped retaining this lost PN.
-    pub(super) fn forget_lost(&mut self, packet_number: u64) -> Result<(), Error> {
-        let mut n = self
-            .core
-            .numbers
-            .try_borrow_mut()
-            .map_err(|_| Error::Borrowed)?;
-        let Numbers { table, queue, .. } = &mut *n;
-        queue.forget_lost_packet(table, packet_number)?;
-        for r in &mut n.controls {
-            if r.packet == packet_number && r.state == ReferenceState::Lost {
-                r.state = ReferenceState::Free;
-            }
-        }
-        Ok(())
-    }
 }
 
 /// An immutable copy of actual encoded frames. Its origin and chunk handle are
@@ -1233,7 +1199,7 @@ mod tests {
         let reservation = tx.reserve_transmission(&bytes, 1).unwrap();
         publication.commit(reservation).unwrap();
         assert!(tx.prepare::<64>(false).unwrap().is_none());
-        rx.lost(1).unwrap();
+        tx.lost(1).unwrap();
         let retransmission = tx.prepare::<64>(false).unwrap().unwrap();
         assert_eq!(bytes.bytes(), retransmission.bytes());
         let reservation = tx.reserve_transmission(&retransmission, 2).unwrap();
@@ -1299,7 +1265,7 @@ mod tests {
         let reservation = tx.reserve_transmission(&update, 0).unwrap();
         publication.commit(reservation).unwrap();
         assert!(tx.prepare::<64>(false).unwrap().is_none());
-        rx.lost(0).unwrap();
+        tx.lost(0).unwrap();
         let resend = tx.prepare::<64>(false).unwrap().unwrap();
         assert_eq!(update.bytes(), resend.bytes());
         let reservation = tx.reserve_transmission(&resend, 1).unwrap();

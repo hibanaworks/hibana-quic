@@ -23,6 +23,7 @@ pub const FILES_CLOSE: u8 = 25;
 /// Finite owner of the joined publication, key and terminal retirement grants.
 pub const CLOSE_JOIN: u8 = 26;
 pub const SUBMISSION_RESULT: u16 = 1100;
+pub const STOP_RESULT: u16 = 1101;
 
 pub type SourceData = g::Msg<0, u64>;
 pub type SourceAccepted = g::Msg<1, u64>;
@@ -199,7 +200,13 @@ pub type StopSettled = g::Msg<177, u64>;
 pub type ResetApply = g::Seq<
     g::Send<TRANSMIT, ADAPTER, ApplyStop>,
     g::Seq<
-        g::Route<g::Send<ADAPTER, TRANSMIT, StopApplied>, g::Send<ADAPTER, TRANSMIT, StopFailed>>,
+        g::Resolve<
+            g::Route<
+                g::Send<ADAPTER, TRANSMIT, StopApplied>,
+                g::Send<ADAPTER, TRANSMIT, StopFailed>,
+            >,
+            STOP_RESULT,
+        >,
         g::Send<TRANSMIT, ADAPTER, StopSettled>,
     >,
 >;
@@ -384,7 +391,8 @@ pub fn publication_choreography() -> g::Program<PublicationFlow> {
             g::route(
                 g::send::<ADAPTER, TRANSMIT, StopApplied>(),
                 g::send::<ADAPTER, TRANSMIT, StopFailed>(),
-            ),
+            )
+            .resolve::<STOP_RESULT>(),
             g::send::<TRANSMIT, ADAPTER, StopSettled>(),
         ),
     );

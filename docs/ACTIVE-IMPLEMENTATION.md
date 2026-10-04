@@ -145,3 +145,19 @@ ordinary transfers, 2 MiB deterministic loss, and strict ChaCha20 3 MiB transfer
 The next official pilot adds the already implemented strict ChaCha20 case to the
 six prior cases. Its two cells remain unqualified until the runner returns actual
 verdicts; no new pass is inferred from local diagnostics.
+
+## Independent reset-result resolver
+
+The stop-application result now uses its own `g::Resolve` site and actual outcome
+cell, separate from UDP publication. The adapter records the actual effect result,
+uses the matching resolver, then sends StopApplied/StopFailed and clears the result
+only after StopSettled. Tests reject a fabricated opposite result and a missing
+reset result even when a UDP result exists. All four UDP/reset result combinations
+are exercised through actual endpoints. Duplicate receive-role loss/retry entry
+points and unused phase/snapshot accessors have been deleted.
+
+The stop-application commit27065079e0d778bf7d238dec7c92f493817548e3 passed official
+runner37183144899 and runtime37183144902. ChaCha20 passed in both directions,
+raising unique candidate qualification to14/44, excluding seven baseline cases.
+The next priority is deletion/replacement of remaining reset retry and ACK control;
+no further interoperability-case expansion is planned before that migration.

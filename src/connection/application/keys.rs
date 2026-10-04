@@ -95,11 +95,6 @@ impl<'scope> KeyOwner<'scope> {
             .generation())
     }
 
-    pub(crate) fn phase(&self) -> Result<bool, Error> {
-        let owned = self.owned.try_borrow().map_err(|_| Error::Binding)?;
-        Ok(owned.application.as_ref().ok_or(Error::Retired)?.phase())
-    }
-
     /// Only short synchronous inspection; no key borrow escapes this call.
     pub(crate) fn available_levels(&self) -> Result<[bool; 3], Error> {
         let owned = self.owned.try_borrow().map_err(|_| Error::Binding)?;
