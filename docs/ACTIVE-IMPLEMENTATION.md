@@ -184,3 +184,21 @@ versions stalled handshake confirmation and skipped captured ACKs on retirement;
 these were fixed, without deleting or weakening the eight connected tests.
 Official interop remains 14/44 at the previously identified commit, not this
 unqualified source revision. No additional interop cases were added.
+
+## Removal of the lower completion controller
+
+The subsequent stream-delivery revision deletes send_fin_acked, reset_acked,
+sending_complete, reset_acknowledged and the unused phase-dependent table retire
+API. Owned terminal evidence crosses StreamDelivered / StreamDeliverySeen before
+an application can observe completion. The global rolls these actual receipt
+exchanges, then DeliveriesDone / AcknowledgmentsSettled. FIN-before-data-ACK,
+foreign actual-table identity, affine non-reissuance and premature batch ending
+are checked directly. No old controller remains behind a compatibility API.
+
+Four obsolete table lifecycle unit tests were removed, with the scope and the
+unqualified future stream-slot reuse requirement documented in
+proofs/stream-delivery/README.md. Two new receipt unit tests and one actual-global
+negative test were added. Core: 413 unit +65 integration +27 compile-fail =505;
+host:100; thumbv6m:no-default-features compile. The native unchanged-Neqo clean
+2/3/5 MiB transfers pass in both directions; this is not a fresh official runner
+qualification. Lean/Z3 models cover only the stated payload obligations.

@@ -128,9 +128,7 @@ struct State {
     send_limit: u64,
     send_end: u64,
     send_emitted: u64,
-    send_fin_acked: bool,
     send_reset: Option<u64>,
-    reset_acked: bool,
     pending_chunks: usize,
     unacked_chunks: usize,
 }
@@ -149,9 +147,7 @@ impl State {
         send_limit: 0,
         send_end: 0,
         send_emitted: 0,
-        send_fin_acked: false,
         send_reset: None,
-        reset_acked: false,
         pending_chunks: 0,
         unacked_chunks: 0,
     };
@@ -404,13 +400,8 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
         let index = self.validate(h)?;
         Ok(self.slots[index].state.receive_final)
     }
-    pub fn sending_complete(&self, h: StreamHandle) -> Result<bool, Error> {
-        let index = self.validate(h)?;
-        if !self.can_send(h.id) {
-            return Err(Error::StreamState);
-        }
-        let s = self.slots[index].state;
-        Ok(s.reset_acked || (s.send_fin_acked && s.unacked_chunks == 0))
+    pub(crate) fn unacknowledged_chunks(&self, h: StreamHandle) -> Result<usize, Error> {
+        Ok(self.slots[self.validate(h)?].state.unacked_chunks)
     }
     pub fn send_credit(&self, h: StreamHandle) -> Result<SendCredit, Error> {
         let i = self.validate(h)?;
@@ -852,16 +843,13 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
         s.send_emitted = s.send_emitted.max(end);
         Ok(())
     }
-    fn chunk_acked(&mut self, h: StreamHandle, fin: bool) -> Result<(), Error> {
+    fn chunk_acked(&mut self, h: StreamHandle) -> Result<(), Error> {
         let i = self.validate(h)?;
         self.slots[i].state.unacked_chunks = self.slots[i]
             .state
             .unacked_chunks
             .checked_sub(1)
             .ok_or(Error::InvalidTransition)?;
-        if fin {
-            self.slots[i].state.send_fin_acked = true;
-        }
         Ok(())
     }
     fn chunk_released(&mut self, h: StreamHandle) -> Result<(), Error> {
@@ -882,9 +870,6 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
             return Err(Error::InvalidId);
         }
         let s = &mut self.slots[i].state;
-        if s.reset_acked || (s.send_fin_acked && s.unacked_chunks == 0) {
-            return Ok(None);
-        }
         if let Some(error) = s.send_reset {
             return Ok(Some(Reset {
                 id: h.id,
@@ -901,48 +886,6 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
             error_code,
             final_size: s.send_emitted,
         }))
-    }
-    // Called only after the connection's projected ACK application consumed
-    // validated packet evidence and matched a published RESET frame reference.
-    pub(crate) fn reset_acknowledged(
-        &mut self,
-        h: StreamHandle,
-        reset: Reset,
-    ) -> Result<(), Error> {
-        let i = self.validate(h)?;
-        let s = &mut self.slots[i].state;
-        if reset.id != h.id
-            || s.send_reset != Some(reset.error_code)
-            || s.send_emitted != reset.final_size
-        {
-            return Err(Error::InvalidTransition);
-        }
-        s.reset_acked = true;
-        Ok(())
-    }
-    pub fn retire(&mut self, h: StreamHandle) -> Result<(), Error> {
-        let i = self.validate(h)?;
-        let s = self.slots[i].state;
-        let receive_done = !self.can_receive(h.id)
-            || if s.receive_reset.is_some() {
-                s.reset_read
-            } else {
-                s.receive_final == Some(s.consumed)
-            };
-        let send_done = !self.can_send(h.id)
-            || (s.pending_chunks == 0
-                && if s.send_reset.is_some() {
-                    s.reset_acked
-                } else {
-                    s.send_fin_acked
-                });
-        if !receive_done || !send_done {
-            return Err(Error::NotTerminal);
-        }
-        self.retired[(h.id & 3) as usize] += 1;
-        self.slots[i].state.live = false;
-        self.slots[i].present.fill(false);
-        Ok(())
     }
     pub fn close(&mut self) {
         self.closed = true;
@@ -1270,7 +1213,7 @@ impl<'a, const BYTES: usize> SendQueue<'a, BYTES> {
         table: &mut StreamTable<'_, RX>,
         packet_number: u64,
     ) -> Result<usize, Error> {
-        self.on_packets_acked(table, |pn| pn == packet_number)
+        self.on_packets_acked(table, |pn| pn == packet_number, |_, _| {})
     }
     /// Match already validated ACK ranges against the bounded reference table.
     /// The predicate must be stable for this call. This never enumerates the
@@ -1279,6 +1222,7 @@ impl<'a, const BYTES: usize> SendQueue<'a, BYTES> {
         &mut self,
         table: &mut StreamTable<'_, RX>,
         contains: impl Fn(u64) -> bool,
+        mut fin_acknowledged: impl FnMut(StreamHandle, u64),
     ) -> Result<usize, Error> {
         if self
             .references
@@ -1303,7 +1247,11 @@ impl<'a, const BYTES: usize> SendQueue<'a, BYTES> {
         {
             let c = &mut self.chunks[r.chunk].state;
             if !c.acked {
-                table.chunk_acked(c.stream.ok_or(Error::StaleChunk)?, c.fin)?;
+                let stream = c.stream.ok_or(Error::StaleChunk)?;
+                table.chunk_acked(stream)?;
+                if c.fin {
+                    fin_acknowledged(stream, c.offset + c.length as u64);
+                }
             }
             c.acked = true;
             c.pending = false;
@@ -1452,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn implicit_prefix_is_real_and_retirement_holes_are_preserved() {
+    fn implicit_prefix_allocates_real_stream_storage() {
         let mut slots = [const { StreamSlot::<8>::EMPTY }; 3];
         let mut table = StreamTable::new(
             &mut slots,
@@ -1466,47 +1414,8 @@ mod tests {
         assert_eq!(last.id(), 10);
         assert_eq!(table.live_count(), 3);
         assert_eq!(table.cumulative_opened(2), Ok(3));
-        let first = table.lookup(2).unwrap();
-        let middle = table.lookup(6).unwrap();
-        table.on_reset(middle, 7, 0).unwrap();
-        table.acknowledge_received_reset(middle).unwrap();
-        table.retire(middle).unwrap();
-        assert_eq!(table.lookup(6), Err(Error::Retired));
-        assert_eq!(table.lookup(2), Ok(first));
-        assert_eq!(table.lookup(10), Ok(last));
-        table.grant_max_streams(false, 4).unwrap();
-        let next = table.get_or_accept(14).unwrap();
-        assert_eq!(next.slot(), middle.slot());
-        assert_ne!(next.generation, middle.generation);
-        assert_eq!(table.get_or_accept(6), Err(Error::Retired));
-        assert!(matches!(table.receive(middle), Err(Error::StaleHandle)));
-        assert_eq!(table.lookup(2), Ok(first));
-    }
-
-    #[test]
-    fn one_live_slot_handles_1999_cumulative_streams() {
-        let mut slots = [StreamSlot::<8>::EMPTY];
-        let mut table = StreamTable::new(
-            &mut slots,
-            Role::Server,
-            1,
-            local_limits(0, 1),
-            limits(0, 0),
-        )
-        .unwrap();
-        for index in 0..1999u64 {
-            let h = table.get_or_accept(index * 4 + 2).unwrap();
-            table.on_stream(h, 0, b"x", true).unwrap();
-            assert_eq!(table.receive(h).unwrap().first, b"x");
-            table.consume(h, 1).unwrap();
-            table.retire(h).unwrap();
-            assert_eq!(table.live_count(), 0);
-            assert_eq!(table.get_or_accept(h.id()), Err(Error::Retired));
-            table.grant_max_data(table.receive_data_capacity()).unwrap();
-            table.grant_max_streams(false, index + 2).unwrap();
-        }
-        assert_eq!(table.cumulative_opened(2), Ok(1999));
-        assert_eq!(table.receive_charged(), 1999);
+        assert_eq!(table.lookup(2).unwrap().id(), 2);
+        assert_eq!(table.lookup(6).unwrap().id(), 6);
     }
 
     #[test]
@@ -1576,7 +1485,6 @@ mod tests {
         assert!(view.fin);
         table.consume(h, 8).unwrap();
         assert!(table.receive(h).unwrap().fin);
-        table.retire(h).unwrap();
     }
 
     #[test]
@@ -1638,14 +1546,11 @@ mod tests {
         assert_eq!(table.receive_charged(), 8);
         assert_eq!(table.receive(b).unwrap().reset, Some(9));
         assert!(table.receive(b).unwrap().first.is_empty());
-        assert_eq!(table.retire(b), Err(Error::NotTerminal));
         assert_eq!(table.acknowledge_received_reset(b), Ok(9));
         table.on_reset(b, 99, 4).unwrap();
         assert_eq!(table.receive_charged(), 8);
         table.on_stream(b, 0, b"abcd", false).unwrap(); // Discarded after reset.
-        table.retire(b).unwrap();
         table.consume(a, 4).unwrap();
-        table.retire(a).unwrap();
         assert_eq!(table.receive_data_capacity(), 24);
     }
 
@@ -1665,7 +1570,6 @@ mod tests {
         assert!(table.receive(h).unwrap().fin);
         assert_eq!(table.on_stream(h, 0, b"x", false), Err(Error::FinalSize));
         assert_eq!(table.request_stop(h, 1), Err(Error::InvalidTransition));
-        table.retire(h).unwrap();
     }
 
     #[test]
@@ -1750,21 +1654,15 @@ mod tests {
         queue.commit_transmission(&mut table, second).unwrap();
         assert_eq!(queue.on_packet_acked(&mut table, 10), Ok(1)); // Late ACK after loss.
         assert_eq!(queue.queued_chunks(), 1); // Other packet still owns a reference.
-        assert_eq!(table.retire(stream), Err(Error::NotTerminal));
         assert_eq!(queue.on_packet_acked(&mut table, 11), Ok(1));
         assert_eq!(queue.queued_chunks(), 0);
         assert_eq!(queue.on_packet_acked(&mut table, 11), Ok(0));
         assert!(matches!(queue.chunk(chunk), Err(Error::StaleChunk)));
-        table.retire(stream).unwrap();
-        assert_eq!(table.lookup(stream.id()), Err(Error::Retired));
-        let next = table.open_local(false).unwrap();
-        let reused = queue.enqueue(&mut table, next, b"next", true).unwrap();
-        assert_ne!(reused.generation, chunk.generation);
         assert_eq!(
             queue.reserve_transmission(chunk, 12),
             Err(Error::StaleChunk)
         );
-        assert_eq!(table.send_reserved(), 9); // ACK is not a flow-credit refund.
+        assert_eq!(table.send_reserved(), 5); // ACK is not a flow-credit refund.
     }
 
     #[test]
@@ -1878,22 +1776,8 @@ mod tests {
             q.enqueue(&mut table, stream, b"x", false),
             Err(Error::SendClosed)
         );
-        // Arithmetic fixture: publication/ACK authority is covered by the
-        // real connection-global tests, not duplicated by a table phase flag.
-        table
-            .reset_acknowledged(
-                stream,
-                Reset {
-                    id: stream.id(),
-                    error_code: 42,
-                    final_size: 4,
-                },
-            )
-            .unwrap();
-        assert_eq!(table.retire(stream), Err(Error::NotTerminal));
         q.on_packet_lost(1);
         q.forget_lost_packet(&mut table, 1).unwrap();
-        table.retire(stream).unwrap();
     }
 
     #[test]
@@ -1919,7 +1803,6 @@ mod tests {
         assert_eq!(q.queued_chunks(), 1);
         q.commit_transmission(&mut table, second).unwrap();
         q.on_packet_acked(&mut table, 2).unwrap();
-        table.retire(stream).unwrap();
     }
 
     #[test]
@@ -1944,7 +1827,6 @@ mod tests {
         let rb = q.reserve_transmission(b, 2).unwrap();
         q.commit_transmission(&mut table, rb).unwrap();
         q.on_packet_acked(&mut table, 2).unwrap();
-        assert_eq!(table.retire(stream), Err(Error::NotTerminal));
         assert!(q.reset(&mut table, stream, 42).unwrap().is_some());
     }
 
@@ -2029,80 +1911,8 @@ mod tests {
         assert_eq!(server.receive_charged(), TOTAL);
         assert_eq!(client.send_reserved(), TOTAL);
         assert_eq!(queue.queued_chunks(), 0);
-        client.retire(tx).unwrap();
-        server.retire(rx).unwrap();
     }
 
-    #[test]
-    fn future_stream_credit_cannot_reuse_exhausted_generations() {
-        let mut slots = [StreamSlot::<8>::EMPTY];
-        let mut table = StreamTable::new(
-            &mut slots,
-            Role::Server,
-            1,
-            local_limits(0, 1),
-            limits(0, 0),
-        )
-        .unwrap();
-        let h = table.get_or_accept(2).unwrap();
-        table.on_stream(h, 0, b"", true).unwrap();
-        table.retire(h).unwrap();
-        table.slots[h.slot].state.generation = u64::MAX;
-        assert_eq!(table.grant_max_streams(false, 2), Err(Error::Capacity));
-    }
-
-    #[test]
-    fn bidirectional_terminal_halves_are_independent() {
-        let mut slots = [StreamSlot::<8>::EMPTY];
-        let mut table = StreamTable::new(
-            &mut slots,
-            Role::Client,
-            1,
-            local_limits(0, 0),
-            limits(1, 0),
-        )
-        .unwrap();
-        let h = table.open_local(true).unwrap();
-        table.on_reset(h, 8, 0).unwrap();
-        table.acknowledge_received_reset(h).unwrap();
-        assert_eq!(table.retire(h), Err(Error::NotTerminal));
-        let mut chunks = [SendChunk::<8>::EMPTY];
-        let mut refs = [PacketReference::EMPTY];
-        let mut q = SendQueue::new(1, &mut chunks, &mut refs).unwrap();
-        let chunk = q.enqueue(&mut table, h, b"outgoing", true).unwrap();
-        let tx = q.reserve_transmission(chunk, 0).unwrap();
-        q.commit_transmission(&mut table, tx).unwrap();
-        q.on_packet_acked(&mut table, 0).unwrap();
-        table.retire(h).unwrap();
-    }
-    #[test]
-    fn stop_after_all_bytes_acked_is_ignored_even_with_old_packet_references() {
-        let mut slots = [StreamSlot::<8>::EMPTY];
-        let mut table = StreamTable::new(
-            &mut slots,
-            Role::Client,
-            1,
-            local_limits(0, 0),
-            limits(0, 1),
-        )
-        .unwrap();
-        let stream = table.open_local(false).unwrap();
-        let mut chunks = [SendChunk::<8>::EMPTY];
-        let mut refs = [PacketReference::EMPTY; 2];
-        let mut queue = SendQueue::new(1, &mut chunks, &mut refs).unwrap();
-        let chunk = queue.enqueue(&mut table, stream, b"hello", true).unwrap();
-        let first = queue.reserve_transmission(chunk, 1).unwrap();
-        assert_eq!(queue.next_pending(), None);
-        queue.commit_transmission(&mut table, first).unwrap();
-        let second = queue.reserve_transmission(chunk, 2).unwrap();
-        queue.commit_transmission(&mut table, second).unwrap();
-        queue.on_packet_acked(&mut table, 1).unwrap();
-        assert_eq!(queue.reset(&mut table, stream, 42), Ok(None));
-        assert_eq!(table.retire(stream), Err(Error::NotTerminal));
-        queue.on_packet_lost(2);
-        queue.forget_lost_packet(&mut table, 2).unwrap();
-        table.retire(stream).unwrap();
-    }
     #[test]
     fn authenticated_initial_limits_preserve_larger_already_received_credit() {
         let mut slots = [const { StreamSlot::<8>::EMPTY }; 2];
@@ -2154,7 +1964,6 @@ mod tests {
         assert_eq!(q.release_acked_references(&mut table), Ok(1));
         assert_eq!(q.queued_chunks(), 0);
         assert_eq!(q.on_packet_acked(&mut table, 2), Ok(0));
-        table.retire(stream).unwrap();
     }
 
     #[test]

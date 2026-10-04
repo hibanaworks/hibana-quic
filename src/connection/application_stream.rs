@@ -81,7 +81,7 @@ impl<'storage, 'scope, const RX: usize, const CHUNK: usize>
                 table,
                 queue,
                 role,
-                streams: [StreamState::EMPTY; MAX_LIVE_STREAMS],
+                streams: [const { StreamState::EMPTY }; MAX_LIVE_STREAMS],
                 data_credit: Credit::new(local.max_data),
                 control_cursor: 0,
                 controls: [ControlReference::EMPTY; CONTROL_CAPACITY],
@@ -161,7 +161,27 @@ impl StopIntent<'_> {
         core::ptr::eq(self.identity, other.identity) && self.stream == other.stream
     }
 }
-impl<const RX: usize, const CHUNK: usize> FrameEffects<'_, '_, '_, RX, CHUNK> {
+impl<'book, const RX: usize, const CHUNK: usize> FrameEffects<'book, '_, '_, RX, CHUNK> {
+    pub(super) fn take_delivery(&mut self) -> Result<Option<Delivered<'book>>, Error> {
+        let mut n = self
+            .core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?;
+        for index in 0..MAX_LIVE_STREAMS {
+            let Some(evidence) = n.streams[index].terminal.as_ref() else {
+                continue;
+            };
+            if n.table.unacknowledged_chunks(evidence.stream)? == 0 {
+                let evidence = n.streams[index].terminal.take().ok_or(Error::Binding)?;
+                return Ok(Some(Delivered {
+                    identity: &self.core.identity,
+                    evidence,
+                }));
+            }
+        }
+        Ok(None)
+    }
     pub(super) fn acknowledge(
         &mut self,
         grant: super::recovery::FrameAcknowledgments<'_>,
@@ -184,12 +204,18 @@ impl<const RX: usize, const CHUNK: usize> FrameEffects<'_, '_, '_, RX, CHUNK> {
             .numbers
             .try_borrow_mut()
             .map_err(|_| Error::Borrowed)?;
-        n.state(intent.stream)?;
+        let state = n.state(intent.stream)?;
+        if state.delivered.is_some()
+            || (state.terminal.is_some() && n.table.unacknowledged_chunks(intent.stream)? == 0)
+        {
+            return Ok(());
+        }
         let Numbers { table, queue, .. } = &mut *n;
         if let Some(reset) = queue.reset(table, intent.stream, intent.error_code)? {
             let state = n.state_mut(intent.stream)?;
             if state.reset.is_none() {
                 state.reset = Some(reset);
+                state.terminal = None;
             }
         }
         Ok(())
@@ -324,13 +350,21 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         Ok(self.ready_streams()?.into_iter().flatten().next())
     }
 
+    pub fn delivery(&self, stream: StreamHandle) -> Result<Option<DeliveryRecord>, Error> {
+        let n = self
+            .core
+            .numbers
+            .try_borrow()
+            .map_err(|_| Error::Borrowed)?;
+        Ok(n.state(stream)?.delivered)
+    }
     pub fn send_complete(&self, stream: StreamHandle) -> Result<bool, Error> {
         let n = self
             .core
             .numbers
             .try_borrow()
             .map_err(|_| Error::Borrowed)?;
-        Ok(n.table.sending_complete(stream)?)
+        Ok(n.state(stream)?.delivered.is_some())
     }
 
     pub fn receive_complete(&self, stream: StreamHandle) -> Result<bool, Error> {
@@ -467,6 +501,25 @@ impl<'book, const RX: usize, const CHUNK: usize> Tx<'book, '_, '_, RX, CHUNK> {
 
     // Recovery-driven arithmetic is also available to the transmit facet.
     // It never grants permission to authenticate or apply peer frames.
+    pub(super) fn record_delivery(&mut self, receipt: Delivered<'_>) -> Result<(), Error> {
+        if !core::ptr::eq(receipt.identity, &self.core.identity) {
+            return Err(Error::Binding);
+        }
+        let mut n = self
+            .core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?;
+        let state = n.state_mut(receipt.evidence.stream)?;
+        if state.delivered.is_some() {
+            return Err(Error::Binding);
+        }
+        state.delivered = Some(DeliveryRecord {
+            final_size: receipt.evidence.final_size,
+            reset: receipt.evidence.reset,
+        });
+        Ok(())
+    }
     pub(super) fn lost(&mut self, packet_number: u64) -> Result<(), Error> {
         let mut n = self
             .core
@@ -760,12 +813,36 @@ impl ControlReference {
         contents: Controls::EMPTY,
     };
 }
+/// Payload facts from a newly ACKed FIN/RESET, never a reusable phase flag.
+struct TerminalEvidence {
+    stream: StreamHandle,
+    final_size: u64,
+    reset: Option<u64>,
+}
 #[derive(Clone, Copy)]
+/// Read-only observation of a completion already received through Hibana.
+/// This value carries no permission to produce, reset, ACK, or retire a stream.
+pub struct DeliveryRecord {
+    pub final_size: u64,
+    pub reset: Option<u64>,
+}
+/// This owned receipt crosses the actual StreamDelivered edge exactly once.
+pub(super) struct Delivered<'book> {
+    identity: &'book Identity,
+    evidence: TerminalEvidence,
+}
+impl Delivered<'_> {
+    pub(super) fn id(&self) -> u64 {
+        self.evidence.stream.id()
+    }
+}
 struct StreamState {
     handle: Option<StreamHandle>,
     production: Option<StreamHandle>,
     credit: Credit,
     reset: Option<streams::Reset>,
+    terminal: Option<TerminalEvidence>,
+    delivered: Option<DeliveryRecord>,
 }
 impl StreamState {
     const EMPTY: Self = Self {
@@ -773,6 +850,8 @@ impl StreamState {
         production: None,
         credit: Credit::new(0),
         reset: None,
+        terminal: None,
+        delivered: None,
     };
 }
 struct Numbers<'storage, const RX: usize, const CHUNK: usize> {
@@ -866,8 +945,22 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
         {
             return Err(streams::Error::UnsentAcknowledgment.into());
         }
-        let Numbers { table, queue, .. } = &mut *n;
-        queue.on_packets_acked(table, contains)?;
+        let Numbers {
+            table,
+            queue,
+            streams,
+            ..
+        } = &mut *n;
+        queue.on_packets_acked(table, contains, |stream, final_size| {
+            let state = &mut streams[stream.slot()];
+            if state.reset.is_none() && state.delivered.is_none() {
+                state.terminal = Some(TerminalEvidence {
+                    stream,
+                    final_size,
+                    reset: None,
+                });
+            }
+        })?;
         queue.release_acked_references(table)?;
         for index in 0..CONTROL_CAPACITY {
             let reference = n.controls[index];
@@ -885,7 +978,7 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
             ..Controls::EMPTY
         };
         for offset in 0..MAX_LIVE_STREAMS {
-            let state = self.streams[(self.control_cursor + offset) % MAX_LIVE_STREAMS];
+            let state = &self.streams[(self.control_cursor + offset) % MAX_LIVE_STREAMS];
             let Some(stream) = state.handle else {
                 continue;
             };
@@ -923,9 +1016,14 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
             {
                 return Err(Error::Binding);
             }
-            self.table.reset_acknowledged(stream, reset)?;
             let state = self.state_mut(stream)?;
-            state.reset = None;
+            if state.reset.take().is_some() {
+                state.terminal = Some(TerminalEvidence {
+                    stream,
+                    final_size: reset.final_size,
+                    reset: Some(reset.error_code),
+                });
+            }
         }
         Ok(())
     }
@@ -990,12 +1088,14 @@ mod tests {
         impl<T: ?Sized> NotCopy<()> for T {}
         impl<T: ?Sized + Copy> NotCopy<u8> for T {}
         let _ = <Production<'static> as NotCopy<_>>::witness;
+        let _ = <Delivered<'static> as NotCopy<_>>::witness;
         trait NotClone<A> {
             fn witness() {}
         }
         impl<T: ?Sized> NotClone<()> for T {}
         impl<T: ?Sized + Clone> NotClone<u8> for T {}
         let _ = <Production<'static> as NotClone<_>>::witness;
+        let _ = <Delivered<'static> as NotClone<_>>::witness;
         let scope = ApplicationKeyScope::new(707);
         let mut slots = [StreamSlot::<8>::EMPTY];
         let mut chunks = [SendChunk::<8>::EMPTY];
@@ -1101,7 +1201,7 @@ mod tests {
             mut rx,
             mut tx,
             mut publication,
-            reset: _,
+            mut reset,
         } = core.split();
         // The highest incoming ID materializes the two implicit lower streams.
         for id in [8, 0, 4] {
@@ -1173,6 +1273,12 @@ mod tests {
             .acknowledge(&[packet(3), packet(4), packet(5)])
             .unwrap();
         for stream in handles.into_iter().flatten() {
+            assert!(!app.send_complete(stream).unwrap());
+        }
+        while let Some(receipt) = reset.take_delivery().unwrap() {
+            tx.record_delivery(receipt).unwrap();
+        }
+        for stream in handles.into_iter().flatten() {
             assert!(app.send_complete(stream).unwrap());
             assert!(app.receive_complete(stream).unwrap());
         }
@@ -1199,7 +1305,7 @@ mod tests {
             mut rx,
             mut tx,
             mut publication,
-            reset: _,
+            mut reset,
         } = core.split();
         let stream = app.open_local().unwrap();
         let mut production = app.take_production(stream).unwrap();
@@ -1226,6 +1332,9 @@ mod tests {
             .borrow_mut()
             .acknowledge(&[packet(1)])
             .unwrap();
+        while let Some(receipt) = reset.take_delivery().unwrap() {
+            tx.record_delivery(receipt).unwrap();
+        }
         assert!(app.send_complete(stream).unwrap());
         assert_eq!(app.queued_chunks().unwrap(), 0);
         assert!(tx.prepare::<64>(true).unwrap().is_none());
@@ -1252,7 +1361,7 @@ mod tests {
             mut rx,
             mut tx,
             mut publication,
-            reset: _,
+            mut reset,
         } = core.split();
         rx.apply(&Frame::Stream {
             id: 0,
@@ -1350,7 +1459,7 @@ mod tests {
             "adapter completion must not secretly apply the stop observation"
         );
         reset.apply(intent).unwrap();
-        let reset = tx.prepare::<64>(false).unwrap().unwrap();
+        let reset_frame = tx.prepare::<64>(false).unwrap().unwrap();
         let mut encoded = [0; 64];
         let len = packet::encode_frame(
             &Frame::ResetStream {
@@ -1361,8 +1470,8 @@ mod tests {
             &mut encoded,
         )
         .unwrap();
-        assert_eq!(reset.bytes(), &encoded[..len]);
-        let reservation = tx.reserve_transmission(&reset, 1).unwrap();
+        assert_eq!(reset_frame.bytes(), &encoded[..len]);
+        let reservation = tx.reserve_transmission(&reset_frame, 1).unwrap();
         publication.commit(reservation).unwrap();
         assert!(!app.send_complete(stream).unwrap());
         rx.core
@@ -1370,6 +1479,9 @@ mod tests {
             .borrow_mut()
             .acknowledge(&[packet(1)])
             .unwrap();
+        while let Some(receipt) = reset.take_delivery().unwrap() {
+            tx.record_delivery(receipt).unwrap();
+        }
         assert!(app.send_complete(stream).unwrap());
     }
 
@@ -1409,5 +1521,129 @@ mod tests {
                 })]),
             Err(Error::Binding)
         );
+    }
+    #[test]
+    fn fin_delivery_waits_for_all_bytes_then_moves_once_to_the_observer() {
+        let scope = ApplicationKeyScope::new(990);
+        let mut slots = [StreamSlot::<8>::EMPTY];
+        let mut chunks = [SendChunk::<8>::EMPTY; 2];
+        let mut references = [PacketReference::EMPTY; 4];
+        let mut core = StreamNumbers::new(
+            &scope,
+            Role::Client,
+            local(Role::Server),
+            local(Role::Client),
+            &mut slots,
+            &mut chunks,
+            &mut references,
+        )
+        .unwrap();
+        let Facets {
+            mut app,
+            mut rx,
+            mut tx,
+            mut publication,
+            reset: mut effects,
+        } = core.split();
+        let stream = app.open_local().unwrap();
+        let mut source = app.take_production(stream).unwrap();
+        let allocation = actor_test_allocator::NoAlloc::start();
+        app.enqueue_prefix(&mut source, b"abc", false).unwrap();
+        app.enqueue_prefix(&mut source, b"", true).unwrap();
+        for pn in 0..2 {
+            let prepared = tx.prepare::<64>(false).unwrap().unwrap();
+            let reservation = tx.reserve_transmission(&prepared, pn).unwrap();
+            publication.commit(reservation).unwrap();
+        }
+        rx.core
+            .numbers
+            .borrow_mut()
+            .acknowledge(&[packet(1)])
+            .unwrap();
+        assert!(effects.take_delivery().unwrap().is_none());
+        assert!(!app.send_complete(stream).unwrap());
+        rx.core
+            .numbers
+            .borrow_mut()
+            .acknowledge(&[packet(0)])
+            .unwrap();
+        let receipt = effects.take_delivery().unwrap().unwrap();
+        assert!(effects.take_delivery().unwrap().is_none());
+        assert!(
+            !app.send_complete(stream).unwrap(),
+            "taking evidence does not mean the projected consumer received it"
+        );
+        tx.record_delivery(receipt).unwrap();
+        assert!(app.send_complete(stream).unwrap());
+        effects
+            .apply(rx.stop_intent(stream.id(), 9).unwrap())
+            .unwrap();
+        assert!(
+            tx.prepare::<64>(false).unwrap().is_none(),
+            "late STOP cannot reopen a completed production"
+        );
+        assert!(effects.take_delivery().unwrap().is_none());
+        allocation.finish();
+    }
+    #[test]
+    fn delivered_receipt_cannot_cross_actual_tables() {
+        let scope = ApplicationKeyScope::new(991);
+        let mut sa = [StreamSlot::<8>::EMPTY];
+        let mut ca = [SendChunk::<8>::EMPTY];
+        let mut ra = [PacketReference::EMPTY; 2];
+        let mut sb = [StreamSlot::<8>::EMPTY];
+        let mut cb = [SendChunk::<8>::EMPTY];
+        let mut rb = [PacketReference::EMPTY; 2];
+        let mut a = StreamNumbers::new(
+            &scope,
+            Role::Client,
+            local(Role::Server),
+            local(Role::Client),
+            &mut sa,
+            &mut ca,
+            &mut ra,
+        )
+        .unwrap();
+        let mut b = StreamNumbers::new(
+            &scope,
+            Role::Client,
+            local(Role::Server),
+            local(Role::Client),
+            &mut sb,
+            &mut cb,
+            &mut rb,
+        )
+        .unwrap();
+        let Facets {
+            mut app,
+            rx,
+            mut tx,
+            mut publication,
+            reset: mut effects,
+        } = a.split();
+        let Facets {
+            app: mut other_app,
+            tx: mut other_tx,
+            ..
+        } = b.split();
+        let stream = app.open_local().unwrap();
+        assert_eq!(stream, other_app.open_local().unwrap());
+        let mut source = app.take_production(stream).unwrap();
+        let allocation = actor_test_allocator::NoAlloc::start();
+        app.enqueue_prefix(&mut source, b"", true).unwrap();
+        let prepared = tx.prepare::<64>(false).unwrap().unwrap();
+        let reservation = tx.reserve_transmission(&prepared, 0).unwrap();
+        publication.commit(reservation).unwrap();
+        rx.core
+            .numbers
+            .borrow_mut()
+            .acknowledge(&[packet(0)])
+            .unwrap();
+        let receipt = effects.take_delivery().unwrap().unwrap();
+        assert_eq!(other_tx.record_delivery(receipt), Err(Error::Binding));
+        assert!(!app.send_complete(stream).unwrap());
+        assert!(!other_app.send_complete(stream).unwrap());
+        assert!(effects.take_delivery().unwrap().is_none());
+        allocation.finish();
     }
 }

@@ -114,6 +114,12 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 forbidden_rejected.set(true);
                 return Ok(());
             }
+            assert_eq!(tx.offer().await?.recv::<p::StreamDelivered>().await?, 4);
+            if illegal_at == 8 {
+                return Ok(());
+            }
+            tx.send::<p::StreamDeliverySeen>(&4).await?;
+            assert_eq!(tx.offer().await?.recv::<p::DeliveriesDone>().await?, 1);
             tx.send::<p::AcknowledgmentsSettled>(&1).await?;
             tx.send::<p::StopPublication>(&1).await?;
             assert_eq!(tx.recv::<p::PublicationStopped>().await?, 1);
@@ -165,6 +171,17 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
             if illegal_at == 7 {
                 return Ok(());
             }
+            adapter.send::<p::StreamDelivered>(&4).await?;
+            if illegal_at == 8 {
+                assert!(
+                    adapter.send::<p::DeliveriesDone>(&1).await.is_err(),
+                    "completion batch bypassed the receiver's actual receipt edge"
+                );
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            assert_eq!(adapter.recv::<p::StreamDeliverySeen>().await?, 4);
+            adapter.send::<p::DeliveriesDone>(&1).await?;
             assert_eq!(adapter.recv::<p::AcknowledgmentsSettled>().await?, 1);
             assert_eq!(
                 adapter.offer().await?.recv::<p::StopPublication>().await?,
@@ -229,5 +246,12 @@ fn acknowledgment_effects_cannot_cross_an_unsettled_publication() {
         for rejected in [false, true] {
             run(at, rejected, false);
         }
+    }
+}
+
+#[test]
+fn delivery_batch_cannot_finish_before_the_consumer_receives_completion() {
+    for rejected in [false, true] {
+        run(8, rejected, false);
     }
 }

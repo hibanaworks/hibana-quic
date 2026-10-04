@@ -37,8 +37,8 @@ applies stream ACK effects. The evidence is affine and scope-bound, and can merg
 only with evidence from the same actual key scope. ACK capture cannot block
 handshake confirmation. Already captured ACKs drain before publication retirement.
 
-Lower FIN/reset completion flags and some loss/reference control remain unfinished
-migration work. This does not claim full stream choreography migration or
+Lower FIN/reset completion flags have now also been deleted; see ../stream-delivery.
+Some loss/reference and stream-retirement integration remains unfinished. This does not claim full stream choreography migration or
 end-to-end peer STOP interoperability qualification.
 
 The reset-result route has an independent resolver/outcome cell. Additional actual

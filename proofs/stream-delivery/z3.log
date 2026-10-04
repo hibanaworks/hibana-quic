@@ -1,0 +1,5 @@
+FIN alone is insufficient: UNSAT, nonvacuous
+drained terminal completes: UNSAT, nonvacuous
+empty work without terminal is not completion: UNSAT, nonvacuous
+same numeric stream cannot cross actual owner: UNSAT
+FIN-only mutation: SAT [remaining = 1, complete = True, terminal = True]

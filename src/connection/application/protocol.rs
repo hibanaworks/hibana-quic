@@ -213,11 +213,23 @@ pub type ResetApply = g::Seq<
 pub type ApplyAcknowledgments = g::Msg<178, u64>;
 pub type AcknowledgmentsApplied = g::Msg<179, u64>;
 pub type AcknowledgmentsSettled = g::Msg<180, u64>;
+pub type StreamDelivered = g::Msg<181, u64>;
+pub type StreamDeliverySeen = g::Msg<182, u64>;
+pub type DeliveriesDone = g::Msg<183, u64>;
+pub type Deliveries = g::Roll<
+    g::Route<
+        g::Seq<
+            g::Send<ADAPTER, TRANSMIT, StreamDelivered>,
+            g::Send<TRANSMIT, ADAPTER, StreamDeliverySeen>,
+        >,
+        g::Send<ADAPTER, TRANSMIT, DeliveriesDone>,
+    >,
+>;
 pub type AcknowledgmentApply = g::Seq<
     g::Send<TRANSMIT, ADAPTER, ApplyAcknowledgments>,
     g::Seq<
         g::Send<ADAPTER, TRANSMIT, AcknowledgmentsApplied>,
-        g::Send<TRANSMIT, ADAPTER, AcknowledgmentsSettled>,
+        g::Seq<Deliveries, g::Send<TRANSMIT, ADAPTER, AcknowledgmentsSettled>>,
     >,
 >;
 // Applying a stop is an exclusive alternative to the complete publication
@@ -424,7 +436,17 @@ pub fn publication_choreography() -> g::Program<PublicationFlow> {
                         g::send::<TRANSMIT, ADAPTER, ApplyAcknowledgments>(),
                         g::seq(
                             g::send::<ADAPTER, TRANSMIT, AcknowledgmentsApplied>(),
-                            g::send::<TRANSMIT, ADAPTER, AcknowledgmentsSettled>(),
+                            g::seq(
+                                g::route(
+                                    g::seq(
+                                        g::send::<ADAPTER, TRANSMIT, StreamDelivered>(),
+                                        g::send::<TRANSMIT, ADAPTER, StreamDeliverySeen>(),
+                                    ),
+                                    g::send::<ADAPTER, TRANSMIT, DeliveriesDone>(),
+                                )
+                                .roll(),
+                                g::send::<TRANSMIT, ADAPTER, AcknowledgmentsSettled>(),
+                            ),
                         ),
                     ),
                     g::send::<TRANSMIT, ADAPTER, StopPublication>(),

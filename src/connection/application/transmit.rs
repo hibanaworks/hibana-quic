@@ -77,6 +77,7 @@ pub(crate) struct State<
 > {
     pending: RefCell<Option<Pending<'book, 'streams, N>>>,
     owners: RefCell<Owners<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>>,
+    delivery: crate::connection::tls::Inbox<application_stream::Delivered<'streams>>,
     closing: Cell<bool>,
     drain_deadline: Cell<Option<u64>>,
     completed: Cell<bool>,
@@ -103,6 +104,7 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         Self {
             pending: RefCell::new(None),
             owners: RefCell::new(Owners { book, streams }),
+            delivery: crate::connection::tls::Inbox::new(),
             closing: Cell::new(false),
             drain_deadline: Cell::new(None),
             completed: Cell::new(false),
@@ -271,6 +273,23 @@ pub(crate) async fn run<
                 endpoint.recv::<p::AcknowledgmentsApplied>().await?,
                 sequence,
             )?;
+            loop {
+                let offered = endpoint.offer().await?;
+                match offered.label() {
+                    181 => {
+                        let id = offered.recv::<p::StreamDelivered>().await?;
+                        let receipt = state.delivery.take().map_err(|_| Error::Binding)?;
+                        check(receipt.id(), id)?;
+                        streams.record_delivery(receipt)?;
+                        endpoint.send::<p::StreamDeliverySeen>(&id).await?;
+                    }
+                    183 => {
+                        check(offered.recv::<p::DeliveriesDone>().await?, sequence)?;
+                        break;
+                    }
+                    label => return Err(Error::UnexpectedLabel(label)),
+                }
+            }
             endpoint
                 .send::<p::AcknowledgmentsSettled>(&sequence)
                 .await?;
@@ -726,7 +745,7 @@ pub(crate) async fn publish<
     reset_outcome: &Outcome,
     reset: &super::reset::Exchange<'_>,
     acknowledgments: &super::acknowledgments::Exchange<'scope>,
-    reset_owner: &mut application_stream::FrameEffects<'_, '_, '_, RX, CHUNK>,
+    reset_owner: &mut application_stream::FrameEffects<'streams, '_, '_, RX, CHUNK>,
     socket: &mut impl DatagramTx,
 ) -> Result<(), Error> {
     let mut sequence = 0u64;
@@ -780,6 +799,13 @@ pub(crate) async fn publish<
                 let grant = acknowledgments.pending.take().map_err(|_| Error::Binding)?;
                 reset_owner.acknowledge(grant)?;
                 endpoint.send::<p::AcknowledgmentsApplied>(&id).await?;
+                while let Some(receipt) = reset_owner.take_delivery()? {
+                    let stream = receipt.id();
+                    state.delivery.put(receipt).map_err(|_| Error::Binding)?;
+                    endpoint.send::<p::StreamDelivered>(&stream).await?;
+                    check(endpoint.recv::<p::StreamDeliverySeen>().await?, stream)?;
+                }
+                endpoint.send::<p::DeliveriesDone>(&id).await?;
                 check(endpoint.recv::<p::AcknowledgmentsSettled>().await?, id)?;
                 acknowledgments.settled(control)?;
             }

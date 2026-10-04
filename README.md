@@ -34,7 +34,8 @@ stream opening, rolled data exchange, and a finite FIN/abandon boundary in the
 global and direct local code; data slots no longer carry a hidden FIN flag.
 A one-shot, scope-borrowing production lease now moves to ingress; ordinary chunks
 cannot select a stream, and the lower `send_final` admission field is deleted.
-The lower stream table still uses RESET/ACK control fields. Those are real remaining
+The lower FIN/RESET completion flags and automatic retirement API are deleted.
+Delivery now crosses explicit Hibana receipt edges; remaining loss and stream-control work is real
 control obligations, not merely arithmetic and not guarantees supplied by Hibana
 alone. Passing interop does not complete this migration.
 
