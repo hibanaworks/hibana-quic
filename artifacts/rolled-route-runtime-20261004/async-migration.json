@@ -1,0 +1,46 @@
+{
+  "bounded_tls": {
+    "passed": 16,
+    "failed": 0
+  },
+  "rsa_tls": {
+    "passed": 2,
+    "failed": 0,
+    "rsa_bits": [
+      2048,
+      3072,
+      4096
+    ]
+  },
+  "resumption": {
+    "passed": 7,
+    "failed": 0
+  },
+  "early_tls": {
+    "passed": 4,
+    "failed": 0
+  },
+  "coverage": [
+    "actual projected TLS roles",
+    "pending cancellation zeroization",
+    "wrong trust/name and CertificateVerify/Finished corruption",
+    "PSK binder failure",
+    "0-RTT replay and freshness",
+    "RSA independent rustls peer",
+    "both AEADs",
+    "caller allocation counters"
+  ],
+  "full_library": "migration in progress; obsolete role actor fixtures still present",
+  "official_pilot_source": "9e03afe89efad7a098e6ec17987d4b13b70318e3",
+  "official_pilot_cases": [
+    "handshake",
+    "transfer"
+  ],
+  "official_pilot_directions": [
+    "neqo baseline",
+    "bounded client",
+    "bounded server"
+  ],
+  "official_pilot_results": 6,
+  "official_pilot_unexecuted": 0
+}

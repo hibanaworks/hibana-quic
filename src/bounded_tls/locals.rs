@@ -2,8 +2,7 @@
 //!
 //! The numerical operations never dispatch on a handwritten TLS phase. The
 //! owner's async continuation and the projected endpoints determine order.
-//! The QUIC connection embeds these roles directly. The synchronous handshake
-//! test peer is excluded from default endpoint builds.
+//! The QUIC connection and its transcript tests embed these roles directly.
 use super::{BoundedTls, Failure, Mode, State, protocol as p};
 use crate::tls::Level;
 use core::{

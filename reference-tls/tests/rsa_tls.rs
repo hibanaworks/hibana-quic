@@ -149,70 +149,206 @@ fn exchange(
     client: &mut BoundedTls<'_, '_>,
     server: &mut RustlsProvider,
     corrupt_cv: bool,
-) -> Result<bool, tls::Error> {
-    let mut cpn = [0; 3];
-    let mut spn = [0; 3];
-    let mut saw_rsa_cv = false;
-    let mut wire = [0u8; 8192 + 16];
-    for _ in 0..32 {
-        let mut progress = false;
-        while let Some(out) = measured(|| client.transmit(&mut wire[..8192]))? {
-            let plaintext = out.len;
-            if out.level != Level::Initial {
-                let pn = cpn[index(out.level)];
-                cpn[index(out.level)] += 1;
-                let len = measured(|| client.seal(out.level, pn, b"header", &mut wire, plaintext))?;
-                assert_eq!(
-                    server.open(out.level, pn, b"header", &mut wire[..len])?,
-                    plaintext
-                );
-            }
-            server.receive(out.level, &wire[..plaintext])?;
-            progress = true;
+) -> Result<bool, hibana_quic::bounded_tls::locals::Error> {
+    use core::{
+        cell::RefCell,
+        future::poll_fn,
+        pin::pin,
+        task::{Poll, Waker},
+    };
+    use hibana::runtime::{SessionKitStorage, ids::SessionId};
+    use hibana_quic::{
+        bounded_tls::{locals, protocol},
+        carrier::CarrierStorage,
+        runtime::TaskSet,
+    };
+    struct Access<'a, 'cfg, 'buf> {
+        tls: RefCell<&'a mut BoundedTls<'cfg, 'buf>>,
+        reader: RefCell<Option<Waker>>,
+    }
+    impl locals::CryptoAccess for Access<'_, '_, '_> {
+        fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
+            measured(|| f(&mut self.tls.borrow_mut()))
         }
-        while let Some(out) = server.transmit(&mut wire[..8192])? {
-            if out.level == Level::Handshake {
-                let mut pos = 0;
-                while pos + 4 <= out.len {
-                    let len = ((wire[pos + 1] as usize) << 16)
-                        | ((wire[pos + 2] as usize) << 8)
-                        | wire[pos + 3] as usize;
-                    assert!(
-                        pos + 4 + len <= out.len,
-                        "test fixture fits one bounded flight"
-                    );
-                    if wire[pos] == 15 {
-                        assert_eq!(&wire[pos + 4..pos + 6], &[0x08, 0x04]);
-                        saw_rsa_cv = true;
-                        if corrupt_cv {
-                            wire[pos + 4 + len - 1] ^= 1;
-                        }
-                    }
-                    pos += 4 + len;
-                }
-                assert_eq!(pos, out.len);
+        fn applied(&self) -> Result<(), locals::Error> {
+            let w = self.reader.borrow_mut().take();
+            if let Some(w) = w {
+                w.wake();
             }
-            let plaintext = out.len;
-            if out.level != Level::Initial {
-                let pn = spn[index(out.level)];
-                spn[index(out.level)] += 1;
-                let len = server.seal(out.level, pn, b"header", &mut wire, plaintext)?;
-                assert_eq!(
-                    measured(|| client.open(out.level, pn, b"header", &mut wire[..len]))?,
-                    plaintext
-                );
-            }
-            for fragment in wire[..plaintext].chunks(41) {
-                measured(|| client.receive(out.level, fragment))?;
-            }
-            progress = true;
-        }
-        if !progress {
-            assert!(!client.is_handshaking() && !server.is_handshaking());
-            return Ok(saw_rsa_cv);
+            Ok(())
         }
     }
-    Err(tls::Error::Handshake)
+    struct Input<'a, 'b, 'c, 'cfg, 'buf> {
+        client: &'a Access<'b, 'cfg, 'buf>,
+        server: &'a RefCell<&'c mut RustlsProvider>,
+        reader: &'a RefCell<Option<Waker>>,
+        wire: [u8; 8208],
+        used: usize,
+        end: usize,
+        pn: [u64; 3],
+        level: Level,
+        corrupt: bool,
+        saw: bool,
+    }
+    impl locals::MessageInput for Input<'_, '_, '_, '_, '_> {
+        async fn read_message(
+            &mut self,
+            level: Level,
+            out: &mut [u8],
+        ) -> Result<usize, locals::Error> {
+            if self.used == self.end {
+                let output = poll_fn(|cx| {
+                    self.reader.borrow_mut().replace(cx.waker().clone());
+                    match self.server.borrow_mut().transmit(&mut self.wire[..8192]) {
+                        Ok(Some(o)) => Poll::Ready(Ok(o)),
+                        Ok(None) => Poll::Pending,
+                        Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                    }
+                })
+                .await?;
+                self.used = 0;
+                self.end = output.len;
+                self.level = output.level;
+                if self.level == Level::Handshake {
+                    let mut pos = 0;
+                    while pos < self.end {
+                        let b = &mut self.wire[pos..self.end];
+                        let n =
+                            4 + ((b[1] as usize) << 16) + ((b[2] as usize) << 8) + b[3] as usize;
+                        assert!(n <= b.len());
+                        if b[0] == 15 {
+                            assert_eq!(&b[4..6], &[8, 4]);
+                            self.saw = true;
+                            if self.corrupt {
+                                b[n - 1] ^= 1;
+                            }
+                        }
+                        pos += n;
+                    }
+                }
+                if self.level != Level::Initial {
+                    let pn = self.pn[index(self.level)];
+                    self.pn[index(self.level)] += 1;
+                    let n = self
+                        .server
+                        .borrow_mut()
+                        .seal(self.level, pn, b"header", &mut self.wire, self.end)
+                        .map_err(locals::Error::Input)?;
+                    assert_eq!(
+                        measured(|| self.client.tls.borrow_mut().open(
+                            self.level,
+                            pn,
+                            b"header",
+                            &mut self.wire[..n]
+                        ))
+                        .map_err(locals::Error::Input)?,
+                        self.end
+                    );
+                }
+            }
+            assert_eq!(level, self.level);
+            let b = &self.wire[self.used..self.end];
+            let n = 4 + ((b[1] as usize) << 16) + ((b[2] as usize) << 8) + b[3] as usize;
+            assert!(n <= b.len() && n <= out.len());
+            out[..n].copy_from_slice(&b[..n]);
+            self.used += n;
+            Ok(n)
+        }
+    }
+    let client = Access {
+        tls: RefCell::new(client),
+        reader: RefCell::new(None),
+    };
+    let server = RefCell::new(server);
+    let reader = RefCell::new(None);
+    let mut input = Input {
+        client: &client,
+        server: &server,
+        reader: &reader,
+        wire: [0; 8208],
+        used: 0,
+        end: 0,
+        pn: [0; 3],
+        level: Level::Initial,
+        corrupt: corrupt_cv,
+        saw: false,
+    };
+    let mut bytes = [0; 8192];
+    let slot = locals::MessageSlot::new(&mut bytes);
+    let carrier = CarrierStorage::<1, 16, 4>::new();
+    let mut slab = vec![0; 65536];
+    let mut storage = SessionKitStorage::uninit();
+    let kit = storage.init();
+    let sid = SessionId::new(5900);
+    let rv = kit
+        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+        .unwrap();
+    let programs = protocol::client_programs();
+    let mut owner = rv.enter(sid, &programs.verify).unwrap();
+    let mut receiver = rv.enter(sid, &programs.input).unwrap();
+    let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
+    let result = {
+        let feed = async {
+            let mut wire = [0; 8208];
+            let mut pn = [0; 3];
+            loop {
+                let output = poll_fn(|cx| {
+                    client.reader.borrow_mut().replace(cx.waker().clone());
+                    let mut c = client.tls.borrow_mut();
+                    match measured(|| c.transmit(&mut wire[..8192])) {
+                        Ok(Some(o)) => Poll::Ready(Ok(Some(o))),
+                        Ok(None) if !c.is_handshaking() && !server.borrow().is_handshaking() => {
+                            Poll::Ready(Ok(None))
+                        }
+                        Ok(None) => Poll::Pending,
+                        Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                    }
+                })
+                .await?;
+                let Some(o) = output else {
+                    return Ok(());
+                };
+                if o.level != Level::Initial {
+                    let number = pn[index(o.level)];
+                    pn[index(o.level)] += 1;
+                    let n = measured(|| {
+                        client
+                            .tls
+                            .borrow_mut()
+                            .seal(o.level, number, b"header", &mut wire, o.len)
+                    })
+                    .map_err(locals::Error::Input)?;
+                    assert_eq!(
+                        server
+                            .borrow_mut()
+                            .open(o.level, number, b"header", &mut wire[..n])
+                            .map_err(locals::Error::Input)?,
+                        o.len
+                    );
+                }
+                server
+                    .borrow_mut()
+                    .receive(o.level, &wire[..o.len])
+                    .map_err(locals::Error::Input)?;
+                let w = reader.borrow_mut().take();
+                if let Some(w) = w {
+                    w.wake();
+                }
+                hibana_quic::runtime::yield_now().await;
+            }
+        };
+        let mut owner = pin!(locals::client_owner(&mut owner, &client, &slot));
+        let mut receiver = pin!(locals::client_input(&mut receiver, &slot, &mut input));
+        let mut feed = pin!(feed);
+        reactor
+            .block_on(TaskSet::new([
+                owner.as_mut(),
+                receiver.as_mut(),
+                feed.as_mut(),
+            ]))
+            .unwrap()
+    };
+    result.map(|()| input.saw)
 }
 fn run(bits: u16, corrupt_cv: bool) {
     let id = identity(bits);
@@ -235,12 +371,15 @@ fn run(bits: u16, corrupt_cv: bool) {
     let mut server = RustlsProvider::server(vec![id.leaf], id.key, SERVER_PARAMS.to_vec()).unwrap();
     let result = exchange(&mut client, &mut server, corrupt_cv);
     if corrupt_cv {
-        assert_eq!(result, Err(tls::Error::Authentication));
+        assert!(matches!(
+            result,
+            Err(hibana_quic::bounded_tls::locals::Error::Crypto(_))
+        ));
         assert_eq!(client.state(), State::Failed);
         assert!(!client.has_keys(Level::OneRtt));
         return;
     }
-    assert_eq!(result, Ok(true));
+    assert!(result.unwrap());
     assert_eq!(client.state(), State::Connected);
     assert_eq!(client.peer_transport_parameters(), Some(SERVER_PARAMS));
     assert_eq!(server.peer_transport_parameters(), Some(CLIENT_PARAMS));

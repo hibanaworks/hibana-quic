@@ -1363,7 +1363,7 @@ impl Provider for BoundedTls<'_, '_> {
         // Only authenticated post-handshake ticket framing remains synchronous.
         // Initial/Handshake message order belongs exclusively to async roles.
         if level != Level::OneRtt || self.state != State::Connected || self.side() != Side::Client {
-            return Err(tls::Error::InvalidInput);
+            return Err(self.fail(Failure::State));
         }
         while !bytes.is_empty() {
             let rx = self.rx.as_deref_mut().ok_or(tls::Error::InvalidInput)?;

@@ -3,9 +3,8 @@ use hibana_quic::{
     bounded_tls::{BoundedTls, ClientConfig, ServerConfig, SigningKey, State, Storage},
     crypto::CipherSuite,
     tls::{self, Level, Provider},
-    tls_certificate::{CertificateDer, Limits, ServerName, UnixTime, trust_anchor_from_der},
+    tls_certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
 };
-use hibana_quic_reference_tls::{RustlsProvider, rustls};
 use p256::pkcs8::DecodePrivateKey;
 use rand_core::{CryptoRng, OsRng, RngCore};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
@@ -109,40 +108,6 @@ fn now() -> UnixTime {
 }
 const CLIENT_PARAMS: &[u8] = &[4, 1, 42];
 const SERVER_PARAMS: &[u8] = &[4, 1, 63];
-fn drain(
-    from: &mut impl Provider,
-    to: &mut impl Provider,
-    fragment: usize,
-) -> Result<bool, tls::Error> {
-    let mut buffer = [0; 4096];
-    let mut progress = false;
-    for _ in 0..10000 {
-        let Some(out) = from.transmit(&mut buffer[..fragment])? else {
-            return Ok(progress);
-        };
-        progress = true;
-        to.receive(out.level, &buffer[..out.len])?;
-    }
-    panic!("unbounded handshake output")
-}
-fn handshake(
-    client: &mut impl Provider,
-    server: &mut impl Provider,
-    fragment: usize,
-) -> Result<(), tls::Error> {
-    for _ in 0..16 {
-        let c = drain(client, server, fragment)?;
-        let s = drain(server, client, fragment)?;
-        if !c && !s {
-            return if client.is_handshaking() || server.is_handshaking() {
-                Err(tls::Error::Handshake)
-            } else {
-                Ok(())
-            };
-        }
-    }
-    Err(tls::Error::Handshake)
-}
 fn packets(sender: &mut impl Provider, receiver: &mut impl Provider) {
     for level in [Level::Handshake, Level::OneRtt] {
         let mut bytes = [0; 30];
@@ -169,216 +134,607 @@ fn packets(sender: &mut impl Provider, receiver: &mut impl Provider) {
     }
 }
 
+use hibana_quic::bounded_tls::CipherPolicy;
+#[derive(Clone, Copy)]
+struct Case {
+    fragment: usize,
+    cancel: bool,
+    wrong_ca: bool,
+    wrong_name: bool,
+    corrupt_server: u8,
+    corrupt_client: u8,
+    policy: CipherPolicy,
+    ticket: Option<u8>,
+}
+impl Default for Case {
+    fn default() -> Self {
+        Self {
+            fragment: 8192,
+            cancel: false,
+            wrong_ca: false,
+            wrong_name: false,
+            corrupt_server: 0,
+            corrupt_client: 0,
+            policy: CipherPolicy::Aes128Only,
+            ticket: None,
+        }
+    }
+}
+fn identity_for_wrong_ca() -> Identity {
+    identity()
+}
 #[test]
-fn bounded_both_roles_real_full_handshake_and_packet_keys_allocate_zero() {
-    for fragment in [1, 3, 17, 127, 4096] {
-        let id = identity();
-        let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-        let chain = [id.leaf.as_ref()];
-        let mut cb = Buffers::new();
-        let mut sb = Buffers::new();
-        let mut rng = OsRng;
-        measured(|| {
-            let mut client = BoundedTls::client(
-                ClientConfig {
-                    server_name: "localhost",
-                    trust_anchors: &anchors,
-                    now: now(),
-                    certificate_limits: Limits::default(),
-                    transport_parameters: CLIENT_PARAMS,
-                },
-                cb.storage(),
-                &mut rng,
-            )
-            .unwrap();
-            let mut server = BoundedTls::server(
-                ServerConfig {
-                    certificate_chain: &chain,
-                    signing_key: &id.signing,
-                    transport_parameters: SERVER_PARAMS,
-                },
-                sb.storage(),
-                &mut rng,
-            )
-            .unwrap();
-            if let Err(error) = handshake(&mut client, &mut server, fragment) {
-                panic!(
-                    "{error:?}; client={:?}; server={:?}",
-                    client.last_failure(),
-                    server.last_failure()
-                )
-            }
-            assert_eq!(client.state(), State::Connected);
-            assert_eq!(server.state(), State::Connected);
-            assert_eq!(client.peer_transport_parameters(), Some(SERVER_PARAMS));
-            assert_eq!(server.peer_transport_parameters(), Some(CLIENT_PARAMS));
-            assert_eq!(client.negotiated_alpn(), Some(b"hq-interop".as_slice()));
-            assert_eq!(
-                client.negotiated_suite(),
-                Some(CipherSuite::Aes128GcmSha256)
-            );
-            packets(&mut client, &mut server);
-            packets(&mut server, &mut client);
-            client.discard_keys(Level::Handshake);
-            assert!(!client.has_keys(Level::Handshake));
-            assert_eq!(
-                client.header_mask(Level::Handshake, true, &[0; 16]),
-                Err(tls::Error::KeysUnavailable)
-            );
-            server.discard_keys(Level::OneRtt);
-            assert!(!server.has_keys(Level::OneRtt));
+fn direct_transcript_roles_validate_full_tls_without_allocating() {
+    bounded_case(Case::default());
+}
+#[test]
+fn async_partial_input_cancellation_erases_and_fails_closed() {
+    bounded_case(Case {
+        cancel: true,
+        ..Case::default()
+    });
+}
+#[test]
+fn async_one_byte_fragmentation() {
+    bounded_case(Case {
+        fragment: 1,
+        ..Case::default()
+    });
+}
+#[test]
+fn async_odd_fragmentation() {
+    for fragment in [3, 17, 127, 4096] {
+        bounded_case(Case {
+            fragment,
+            ..Case::default()
         });
     }
 }
-
 #[test]
-fn bounded_client_authenticates_real_rustls_server() {
-    let id = identity();
-    let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-    let mut buffers = Buffers::new();
-    let mut client = BoundedTls::client(
-        ClientConfig {
-            server_name: "localhost",
-            trust_anchors: &anchors,
-            now: now(),
-            certificate_limits: Limits::default(),
-            transport_parameters: CLIENT_PARAMS,
-        },
-        buffers.storage(),
-        &mut OsRng,
-    )
-    .unwrap();
-    let mut server = RustlsProvider::server(
-        vec![id.leaf],
-        rustls::pki_types::PrivatePkcs8KeyDer::from(id.key).into(),
-        SERVER_PARAMS.to_vec(),
-    )
-    .unwrap();
-    if let Err(error) = handshake(&mut client, &mut server, 13) {
-        panic!(
-            "{error:?}; bounded={:?}; rustls={:?}",
-            client.last_failure(),
-            server.last_tls_error()
-        )
+fn async_chacha20_full_handshake_and_packet_keys() {
+    bounded_case(Case {
+        policy: CipherPolicy::ChaCha20Only,
+        ..Case::default()
+    });
+}
+#[test]
+fn async_rejects_wrong_certificate_authority() {
+    bounded_case(Case {
+        wrong_ca: true,
+        ..Case::default()
+    });
+}
+#[test]
+fn async_rejects_wrong_hostname() {
+    bounded_case(Case {
+        wrong_name: true,
+        ..Case::default()
+    });
+}
+#[test]
+fn async_rejects_corrupted_certificate_verify() {
+    bounded_case(Case {
+        corrupt_server: 15,
+        ..Case::default()
+    });
+}
+#[test]
+fn async_rejects_corrupted_server_finished() {
+    bounded_case(Case {
+        corrupt_server: 20,
+        ..Case::default()
+    });
+}
+#[test]
+fn async_rejects_corrupted_client_finished() {
+    bounded_case(Case {
+        corrupt_client: 20,
+        ..Case::default()
+    });
+}
+fn bounded_case(case: Case) {
+    {
+        let cancel = case.cancel;
+        let identity = identity();
+        let unrelated = identity_for_wrong_ca();
+        let anchors = [trust_anchor_from_der(if case.wrong_ca {
+            &unrelated.root
+        } else {
+            &identity.root
+        })
+        .unwrap()];
+        let chain = [identity.leaf.as_ref()];
+        let mut cb = Buffers::new();
+        let mut sb = Buffers::new();
+        let client = Shared {
+            tls: RefCell::new(
+                BoundedTls::client_with_policy(
+                    ClientConfig {
+                        server_name: if case.wrong_name {
+                            "wrong.invalid"
+                        } else {
+                            "localhost"
+                        },
+                        trust_anchors: &anchors,
+                        now: now(),
+                        certificate_limits: Limits::default(),
+                        transport_parameters: CLIENT_PARAMS,
+                    },
+                    cb.storage(),
+                    &mut OsRng,
+                    case.policy,
+                )
+                .unwrap(),
+            ),
+            reader: RefCell::new(None),
+        };
+        let server = Shared {
+            tls: RefCell::new(
+                BoundedTls::server_with_policy(
+                    ServerConfig {
+                        certificate_chain: &chain,
+                        signing_key: &identity.signing,
+                        transport_parameters: SERVER_PARAMS,
+                    },
+                    sb.storage(),
+                    &mut OsRng,
+                    case.policy,
+                )
+                .unwrap(),
+            ),
+            reader: RefCell::new(None),
+        };
+        let mut ci = Input {
+            remote: &server,
+            pending: [0; 8192],
+            used: 0,
+            end: 0,
+            level: Level::Initial,
+            stall: cancel,
+            fragment: case.fragment,
+            corrupt: 0,
+        };
+        let mut si = Input {
+            remote: &client,
+            pending: [0; 8192],
+            used: 0,
+            end: 0,
+            level: Level::Initial,
+            stall: cancel,
+            fragment: case.fragment,
+            corrupt: 0,
+        };
+        ci.corrupt = case.corrupt_server;
+        si.corrupt = case.corrupt_client;
+        let mut cm = [0; 8192];
+        let mut sm = [0; 8192];
+        let cs = locals::MessageSlot::new(&mut cm);
+        let ss = locals::MessageSlot::new(&mut sm);
+        let cc = CarrierStorage::<1, 16, 4>::new();
+        let sc = CarrierStorage::<1, 16, 4>::new();
+        let mut cslab = vec![0; 65536];
+        let mut sslab = vec![0; 65536];
+        let mut ck = SessionKitStorage::uninit();
+        let mut sk = SessionKitStorage::uninit();
+        let cid = SessionId::new(4500);
+        let sid = SessionId::new(4501);
+        let ck = ck.init();
+        let sk = sk.init();
+        let cr = ck.rendezvous(&mut cslab, cc.bind(cid).unwrap()).unwrap();
+        let sr = sk.rendezvous(&mut sslab, sc.bind(sid).unwrap()).unwrap();
+        let cp = protocol::client_programs();
+        let sp = protocol::server_programs();
+        let mut cinput = cr.enter(cid, &cp.input).unwrap();
+        let mut cverify = cr.enter(cid, &cp.verify).unwrap();
+        let mut sinput = sr.enter(sid, &sp.input).unwrap();
+        let mut sverify = sr.enter(sid, &sp.verify).unwrap();
+        let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
+        let result = measured(|| {
+            let mut co = pin!(locals::client_owner(&mut cverify, &client, &cs));
+            let mut cin = pin!(locals::client_input(&mut cinput, &cs, &mut ci));
+            let mut so = pin!(locals::server_owner(&mut sverify, &server, &ss));
+            let mut sin = pin!(locals::server_input(&mut sinput, &ss, &mut si));
+            let tasks = TaskSet::new([co.as_mut(), cin.as_mut(), so.as_mut(), sin.as_mut()]);
+            if cancel {
+                let mut tasks = pin!(tasks);
+                let mut cx = Context::from_waker(Waker::noop());
+                for _ in 0..8 {
+                    assert!(tasks.as_mut().poll(&mut cx).is_pending());
+                }
+                Ok(())
+            } else {
+                reactor.block_on(tasks).unwrap()
+            }
+        });
+        if cancel {
+            assert!(result.is_ok());
+            assert_eq!(client.tls.borrow().state(), State::Failed);
+            assert_eq!(server.tls.borrow().state(), State::Failed);
+        } else if case.wrong_ca
+            || case.wrong_name
+            || case.corrupt_server != 0
+            || case.corrupt_client != 0
+        {
+            assert!(result.is_err(), "invalid transcript accepted");
+            if case.corrupt_client != 0 {
+                assert_eq!(server.tls.borrow().state(), State::Failed);
+            } else {
+                assert_eq!(client.tls.borrow().state(), State::Failed);
+            }
+        } else {
+            result.unwrap();
+            let mut c = client.tls.borrow_mut();
+            let mut s = server.tls.borrow_mut();
+            assert_eq!(c.state(), State::Connected);
+            assert_eq!(s.state(), State::Connected);
+            assert_eq!(c.peer_transport_parameters(), Some(SERVER_PARAMS));
+            assert_eq!(s.peer_transport_parameters(), Some(CLIENT_PARAMS));
+            assert_eq!(c.negotiated_alpn(), Some(b"hq-interop".as_slice()));
+            assert_eq!(
+                c.negotiated_suite(),
+                Some(match case.policy {
+                    CipherPolicy::ChaCha20Only => CipherSuite::ChaCha20Poly1305Sha256,
+                    _ => CipherSuite::Aes128GcmSha256,
+                })
+            );
+            measured(|| {
+                packets(&mut *c, &mut *s);
+                packets(&mut *s, &mut *c);
+            });
+            if let Some(scenario) = case.ticket {
+                let mut ticket = new_session_ticket(&[]);
+                match scenario {
+                    0 => {
+                        let mask = c.header_mask(Level::OneRtt, true, &[3; 16]).unwrap();
+                        measured(|| {
+                            for byte in &ticket {
+                                c.receive(Level::OneRtt, core::slice::from_ref(byte))
+                                    .unwrap();
+                            }
+                            c.receive(Level::OneRtt, &ticket).unwrap();
+                        });
+                        assert_eq!(c.state(), State::Connected);
+                        assert_eq!(c.header_mask(Level::OneRtt, true, &[3; 16]).unwrap(), mask);
+                    }
+                    1 => {
+                        assert!(s.receive(Level::OneRtt, &ticket).is_err());
+                        assert_eq!(s.state(), State::Failed);
+                    }
+                    2 => {
+                        assert!(c.receive(Level::Handshake, &ticket).is_err());
+                    }
+                    3 => {
+                        ticket = new_session_ticket(&[0, 42, 0, 4, 0, 0, 0, 1]);
+                        assert!(c.receive(Level::OneRtt, &ticket).is_err());
+                    }
+                    4 => {
+                        ticket = new_session_ticket(&[
+                            0, 42, 0, 4, 255, 255, 255, 255, 0, 42, 0, 4, 255, 255, 255, 255,
+                        ]);
+                        assert!(c.receive(Level::OneRtt, &ticket).is_err());
+                    }
+                    5 => {
+                        ticket[14] = 0;
+                        ticket.remove(15);
+                        ticket[3] -= 1;
+                        assert!(c.receive(Level::OneRtt, &ticket).is_err());
+                    }
+                    6 => {
+                        ticket[0] = 24;
+                        assert!(c.receive(Level::OneRtt, &ticket).is_err());
+                    }
+                    _ => unreachable!(),
+                }
+                if scenario >= 2 {
+                    assert_eq!(c.state(), State::Failed);
+                    assert!(!c.has_keys(Level::OneRtt));
+                }
+            }
+            c.discard_keys(Level::Handshake);
+            assert!(!c.has_keys(Level::Handshake));
+            assert_eq!(
+                c.header_mask(Level::Handshake, true, &[0; 16]),
+                Err(if c.state() == State::Failed {
+                    tls::Error::Handshake
+                } else {
+                    tls::Error::KeysUnavailable
+                })
+            );
+            s.discard_keys(Level::OneRtt);
+            assert!(!s.has_keys(Level::OneRtt));
+        }
+        drop(cs);
+        drop(ss);
+        assert!(cm.iter().chain(sm.iter()).all(|b| *b == 0));
     }
-    assert_eq!(
-        client.negotiated_group(),
-        Some(hibana_quic::tls_wire::GROUP_X25519)
-    );
-    packets(&mut client, &mut server);
-    packets(&mut server, &mut client);
-    assert_eq!(client.peer_transport_parameters(), Some(SERVER_PARAMS));
+}
+use core::{
+    cell::RefCell,
+    future::{Future, poll_fn},
+    pin::pin,
+    task::{Context, Poll, Waker},
+};
+use hibana::runtime::{SessionKitStorage, ids::SessionId};
+use hibana_quic::{
+    bounded_tls::{locals, protocol},
+    carrier::CarrierStorage,
+    runtime::TaskSet,
+};
+struct Shared<P> {
+    tls: RefCell<P>,
+    reader: RefCell<Option<Waker>>,
+}
+impl locals::CryptoAccess for Shared<BoundedTls<'_, '_>> {
+    fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
+        f(&mut self.tls.borrow_mut())
+    }
+    fn applied(&self) -> Result<(), locals::Error> {
+        let w = self.reader.borrow_mut().take();
+        if let Some(w) = w {
+            w.wake();
+        }
+        Ok(())
+    }
+}
+struct Input<'a, P> {
+    remote: &'a Shared<P>,
+    pending: [u8; 8192],
+    used: usize,
+    end: usize,
+    level: Level,
+    stall: bool,
+    fragment: usize,
+    corrupt: u8,
+}
+impl<P: Provider> locals::MessageInput for Input<'_, P> {
+    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, locals::Error> {
+        if self.stall {
+            out[..4].copy_from_slice(&[1, 0, 0, 0]);
+            return core::future::pending().await;
+        }
+        let mut n = 4;
+        let mut copied = 0;
+        while copied < n {
+            if self.used == self.end {
+                let produced = poll_fn(|cx| {
+                    self.remote.reader.borrow_mut().replace(cx.waker().clone());
+                    match self
+                        .remote
+                        .tls
+                        .borrow_mut()
+                        .transmit(&mut self.pending[..self.fragment])
+                    {
+                        Ok(Some(p)) => Poll::Ready(Ok(p)),
+                        Ok(None) => Poll::Pending,
+                        Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                    }
+                })
+                .await?;
+                self.used = 0;
+                self.end = produced.len;
+                self.level = produced.level;
+            }
+            assert_eq!(level, self.level);
+            let count = (n - copied).min(self.end - self.used);
+            out[copied..copied + count]
+                .copy_from_slice(&self.pending[self.used..self.used + count]);
+            copied += count;
+            self.used += count;
+            if copied == 4 {
+                n = 4 + ((out[1] as usize) << 16) + ((out[2] as usize) << 8) + out[3] as usize;
+                if n > out.len() {
+                    return Err(locals::Error::Capacity);
+                }
+            }
+        }
+        if out[0] == self.corrupt {
+            out[n - 1] ^= 1;
+        }
+        Ok(n)
+    }
 }
 
-#[test]
-fn rustls_client_authenticates_real_bounded_server() {
+use hibana_quic::tls_certificate::ServerName;
+use hibana_quic_reference_tls::{RustlsProvider, rustls};
+// Only the independent rustls peer uses its own Provider interface. The candidate
+// always executes the public projected owner/input roles under the real reactor.
+async fn feed_reference<P: Provider>(
+    candidate: &Shared<P>,
+    reference: &Shared<RustlsProvider>,
+) -> Result<(), locals::Error> {
+    let mut bytes = [0; 37];
+    loop {
+        let output = poll_fn(|cx| {
+            candidate.reader.borrow_mut().replace(cx.waker().clone());
+            let mut source = candidate.tls.borrow_mut();
+            match source.transmit(&mut bytes) {
+                Ok(Some(output)) => Poll::Ready(Ok(Some(output))),
+                Ok(None)
+                    if !source.is_handshaking() && !reference.tls.borrow().is_handshaking() =>
+                {
+                    Poll::Ready(Ok(None))
+                }
+                Ok(None) => Poll::Pending,
+                Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+            }
+        })
+        .await?;
+        let Some(output) = output else {
+            return Ok(());
+        };
+        reference
+            .tls
+            .borrow_mut()
+            .receive(output.level, &bytes[..output.len])
+            .map_err(locals::Error::Input)?;
+        let w = reference.reader.borrow_mut().take();
+        if let Some(w) = w {
+            w.wake();
+        }
+        hibana_quic::runtime::yield_now().await;
+    }
+}
+fn reference_case(candidate_client: bool, retry: bool) {
     let id = identity();
     let chain = [id.leaf.as_ref()];
-    let mut buffers = Buffers::new();
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(id.root.clone()).unwrap();
-    let mut client = RustlsProvider::client_p256(
-        roots,
-        ServerName::try_from("localhost").unwrap(),
-        CLIENT_PARAMS.to_vec(),
-    )
-    .unwrap();
-    let mut server = BoundedTls::server(
-        ServerConfig {
-            certificate_chain: &chain,
-            signing_key: &id.signing,
-            transport_parameters: SERVER_PARAMS,
-        },
-        buffers.storage(),
-        &mut OsRng,
-    )
-    .unwrap();
-    if let Err(error) = handshake(&mut client, &mut server, 19) {
-        panic!(
-            "{error:?}; rustls={:?}; bounded={:?}",
-            client.last_tls_error(),
-            server.last_failure()
-        )
-    }
-    packets(&mut client, &mut server);
-    packets(&mut server, &mut client);
-}
-
-#[test]
-fn bounded_client_rejects_wrong_ca_hostname_and_finished() {
-    for wrong_ca in [true, false] {
-        let id = identity();
-        let unrelated = identity();
-        let root = if wrong_ca { &unrelated.root } else { &id.root };
-        let anchors = [trust_anchor_from_der(root).unwrap()];
-        let mut buffers = Buffers::new();
-        let name = if wrong_ca {
-            "localhost"
-        } else {
-            "wrong.example"
-        };
-        let mut client = BoundedTls::client(
+    let anchors = [trust_anchor_from_der(&id.root).unwrap()];
+    let mut storage = Buffers::new();
+    let bounded = if candidate_client {
+        BoundedTls::client(
             ClientConfig {
-                server_name: name,
+                server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),
                 certificate_limits: Limits::default(),
                 transport_parameters: CLIENT_PARAMS,
             },
-            buffers.storage(),
+            storage.storage(),
             &mut OsRng,
         )
-        .unwrap();
-        let mut server = RustlsProvider::server(
-            vec![id.leaf],
-            rustls::pki_types::PrivatePkcs8KeyDer::from(id.key).into(),
-            SERVER_PARAMS.to_vec(),
-        )
-        .unwrap();
-        assert!(handshake(&mut client, &mut server, 7).is_err());
-        assert_eq!(client.state(), State::Failed);
-        assert!(client.peer_transport_parameters().is_none());
-        assert!(!client.has_keys(Level::Handshake));
-        assert!(!client.has_keys(Level::OneRtt));
-    }
-    let id = identity();
-    let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-    let chain = [id.leaf.as_ref()];
-    let mut cb = Buffers::new();
-    let mut sb = Buffers::new();
-    let mut client = BoundedTls::client(
-        ClientConfig {
-            server_name: "localhost",
-            trust_anchors: &anchors,
-            now: now(),
-            certificate_limits: Limits::default(),
-            transport_parameters: CLIENT_PARAMS,
-        },
-        cb.storage(),
-        &mut OsRng,
-    )
-    .unwrap();
-    let mut server = BoundedTls::server(
-        ServerConfig {
+        .unwrap()
+    } else {
+        let config = ServerConfig {
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: SERVER_PARAMS,
-        },
-        sb.storage(),
-        &mut OsRng,
-    )
-    .unwrap();
-    drain(&mut client, &mut server, 4096).unwrap();
-    let mut buf = [0; 4096];
-    let initial = server.transmit(&mut buf).unwrap().unwrap();
-    assert_eq!(initial.level, Level::Initial);
-    client.receive(initial.level, &buf[..initial.len]).unwrap();
-    let flight = server.transmit(&mut buf).unwrap().unwrap();
-    assert_eq!(flight.level, Level::Handshake);
-    buf[flight.len - 1] ^= 1;
-    assert!(client.receive(flight.level, &buf[..flight.len]).is_err());
-    assert_eq!(client.state(), State::Failed);
-    assert!(!client.has_keys(Level::OneRtt));
+        };
+        if retry {
+            BoundedTls::server_p256(config, storage.storage(), &mut OsRng).unwrap()
+        } else {
+            BoundedTls::server(config, storage.storage(), &mut OsRng).unwrap()
+        }
+    };
+    let reference = if candidate_client {
+        RustlsProvider::server(
+            vec![id.leaf.clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(id.key.clone()).into(),
+            SERVER_PARAMS.to_vec(),
+        )
+        .unwrap()
+    } else {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(id.root.clone()).unwrap();
+        RustlsProvider::client(
+            roots,
+            ServerName::try_from("localhost").unwrap(),
+            CLIENT_PARAMS.to_vec(),
+        )
+        .unwrap()
+    };
+    let candidate = Shared {
+        tls: RefCell::new(bounded),
+        reader: RefCell::new(None),
+    };
+    let reference = Shared {
+        tls: RefCell::new(reference),
+        reader: RefCell::new(None),
+    };
+    let mut input = Input {
+        remote: &reference,
+        pending: [0; 8192],
+        used: 0,
+        end: 0,
+        level: Level::Initial,
+        stall: false,
+        fragment: 13,
+        corrupt: 0,
+    };
+    let mut bytes = [0; 8192];
+    let slot = locals::MessageSlot::new(&mut bytes);
+    let carrier = CarrierStorage::<1, 16, 4>::new();
+    let mut slab = vec![0; 65536];
+    let mut kit = SessionKitStorage::uninit();
+    let kit = kit.init();
+    let id = SessionId::new(4700);
+    let rendezvous = kit
+        .rendezvous(&mut slab, carrier.bind(id).unwrap())
+        .unwrap();
+    let programs = if candidate_client {
+        protocol::client_programs()
+    } else {
+        protocol::server_programs()
+    };
+    let mut verify = rendezvous.enter(id, &programs.verify).unwrap();
+    let mut wire = rendezvous.enter(id, &programs.input).unwrap();
+    let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
+    let owner = async {
+        if candidate_client {
+            locals::client_owner(&mut verify, &candidate, &slot).await
+        } else {
+            locals::server_owner(&mut verify, &candidate, &slot).await
+        }
+    };
+    let receiver = async {
+        if candidate_client {
+            locals::client_input(&mut wire, &slot, &mut input).await
+        } else {
+            locals::server_input(&mut wire, &slot, &mut input).await
+        }
+    };
+    let mut owner = pin!(owner);
+    let mut receiver = pin!(receiver);
+    let mut feed = pin!(feed_reference(&candidate, &reference));
+    reactor
+        .block_on(TaskSet::new([
+            owner.as_mut(),
+            receiver.as_mut(),
+            feed.as_mut(),
+        ]))
+        .unwrap()
+        .unwrap();
+    let mut candidate = candidate.tls.borrow_mut();
+    let mut reference = reference.tls.borrow_mut();
+    assert_eq!(candidate.state(), State::Connected);
+    assert!(!reference.is_handshaking());
+    assert_eq!(
+        candidate.negotiated_group(),
+        Some(if retry {
+            hibana_quic::tls_wire::GROUP_P256
+        } else {
+            hibana_quic::tls_wire::GROUP_X25519
+        })
+    );
+    packets(&mut *candidate, &mut *reference);
+    packets(&mut *reference, &mut *candidate);
+}
+#[test]
+fn async_client_authenticates_independent_rustls_server() {
+    reference_case(true, false);
+}
+#[test]
+fn async_server_authenticates_independent_rustls_client() {
+    reference_case(false, false);
+}
+#[test]
+fn async_server_hello_retry_with_independent_rustls() {
+    reference_case(false, true);
+}
+
+fn new_session_ticket(extension: &[u8]) -> Vec<u8> {
+    let mut message = vec![4, 0, 0, 14, 0, 0, 0, 60, 1, 2, 3, 4, 0, 0, 1, 7, 0, 0];
+    let n = 14 + extension.len();
+    message[1] = (n >> 16) as u8;
+    message[2] = (n >> 8) as u8;
+    message[3] = n as u8;
+    message[16..18].copy_from_slice(&(extension.len() as u16).to_be_bytes());
+    message.extend_from_slice(extension);
+    message
+}
+#[test]
+fn async_authenticated_ticket_keeps_keys_and_allocates_zero() {
+    bounded_case(Case {
+        ticket: Some(0),
+        ..Case::default()
+    });
+}
+#[test]
+fn async_authenticated_ticket_rejects_role_level_and_malformed_fields() {
+    for scenario in 1..=6 {
+        bounded_case(Case {
+            ticket: Some(scenario),
+            ..Case::default()
+        });
+    }
 }
 
 struct NoEntropy;
@@ -418,1086 +774,4 @@ fn caller_entropy_failure_does_not_construct_a_provider() {
         ),
         Err(hibana_quic::bounded_tls::Failure::Entropy)
     ));
-}
-
-#[test]
-fn bounded_entropy_framing_capacity_and_finished_failures_allocate_zero() {
-    let id = identity();
-    let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-    let chain = [id.leaf.as_ref()];
-    let mut cb = Buffers::new();
-    let mut sb = Buffers::new();
-    measured(|| {
-        assert!(matches!(
-            BoundedTls::client(
-                ClientConfig {
-                    server_name: "localhost",
-                    trust_anchors: &anchors,
-                    now: now(),
-                    certificate_limits: Limits::default(),
-                    transport_parameters: CLIENT_PARAMS,
-                },
-                cb.storage(),
-                &mut NoEntropy
-            ),
-            Err(hibana_quic::bounded_tls::Failure::Entropy)
-        ));
-        {
-            let mut client = BoundedTls::client(
-                ClientConfig {
-                    server_name: "localhost",
-                    trust_anchors: &anchors,
-                    now: now(),
-                    certificate_limits: Limits::default(),
-                    transport_parameters: CLIENT_PARAMS,
-                },
-                cb.storage(),
-                &mut OsRng,
-            )
-            .unwrap();
-            assert_eq!(client.transmit(&mut []), Err(tls::Error::Capacity));
-            assert_eq!(
-                client.receive(Level::Initial, &[2, 255, 255, 255]),
-                Err(tls::Error::Capacity)
-            );
-            assert_eq!(client.state(), State::Failed);
-        }
-        {
-            let mut server = BoundedTls::server(
-                ServerConfig {
-                    certificate_chain: &chain,
-                    signing_key: &id.signing,
-                    transport_parameters: SERVER_PARAMS,
-                },
-                sb.storage(),
-                &mut OsRng,
-            )
-            .unwrap();
-            assert!(server.receive(Level::Initial, &[1, 0, 0, 0]).is_err());
-            assert_eq!(server.state(), State::Failed);
-        }
-        let mut client = BoundedTls::client(
-            ClientConfig {
-                server_name: "localhost",
-                trust_anchors: &anchors,
-                now: now(),
-                certificate_limits: Limits::default(),
-                transport_parameters: CLIENT_PARAMS,
-            },
-            cb.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        let mut server = BoundedTls::server(
-            ServerConfig {
-                certificate_chain: &chain,
-                signing_key: &id.signing,
-                transport_parameters: SERVER_PARAMS,
-            },
-            sb.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        drain(&mut client, &mut server, 4096).unwrap();
-        let mut bytes = [0; 4096];
-        let initial = server.transmit(&mut bytes).unwrap().unwrap();
-        client
-            .receive(initial.level, &bytes[..initial.len])
-            .unwrap();
-        let flight = server.transmit(&mut bytes).unwrap().unwrap();
-        bytes[flight.len - 1] ^= 1;
-        assert!(client.receive(flight.level, &bytes[..flight.len]).is_err());
-        assert_eq!(client.state(), State::Failed);
-        assert!(!client.has_keys(Level::Handshake));
-        assert!(!client.has_keys(Level::OneRtt));
-    });
-}
-
-fn new_session_ticket(extension: &[u8]) -> Vec<u8> {
-    let mut message = vec![4, 0, 0, 14, 0, 0, 0, 60, 1, 2, 3, 4, 0, 0, 1, 7, 0, 0];
-    let body_len = 14 + extension.len();
-    message[1] = (body_len >> 16) as u8;
-    message[2] = (body_len >> 8) as u8;
-    message[3] = body_len as u8;
-    message[16..18].copy_from_slice(&(extension.len() as u16).to_be_bytes());
-    message.extend_from_slice(extension);
-    message
-}
-
-#[test]
-fn authenticated_client_discards_valid_tickets_without_allocating_or_changing_keys() {
-    let id = identity();
-    let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-    let chain = [id.leaf.as_ref()];
-    let mut cb = Buffers::new();
-    let mut sb = Buffers::new();
-    let ticket = new_session_ticket(&[0, 42, 0, 4, 255, 255, 255, 255, 0x0a, 0x0a, 0, 1, 7]);
-    measured(|| {
-        let mut client = BoundedTls::client(
-            ClientConfig {
-                server_name: "localhost",
-                trust_anchors: &anchors,
-                now: now(),
-                certificate_limits: Limits::default(),
-                transport_parameters: CLIENT_PARAMS,
-            },
-            cb.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        let mut server = BoundedTls::server(
-            ServerConfig {
-                certificate_chain: &chain,
-                signing_key: &id.signing,
-                transport_parameters: SERVER_PARAMS,
-            },
-            sb.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        handshake(&mut client, &mut server, 17).unwrap();
-        let mask = client.header_mask(Level::OneRtt, true, &[3; 16]).unwrap();
-        for byte in &ticket {
-            client
-                .receive(Level::OneRtt, core::slice::from_ref(byte))
-                .unwrap();
-        }
-        client.receive(Level::OneRtt, &ticket).unwrap();
-        assert_eq!(client.state(), State::Connected);
-        assert_eq!(
-            client.header_mask(Level::OneRtt, true, &[3; 16]).unwrap(),
-            mask
-        );
-        assert_eq!(client.peer_transport_parameters(), Some(SERVER_PARAMS));
-        assert_eq!(client.transmit(&mut [0; 32]), Ok(None));
-        packets(&mut client, &mut server);
-    });
-    assert!(
-        cb.rx[..ticket.len()].iter().all(|byte| *byte == 0),
-        "discarded ticket bytes must not be retained in RX"
-    );
-}
-
-#[test]
-fn tickets_require_client_role_one_rtt_and_valid_structure() {
-    for scenario in 0..6 {
-        let id = identity();
-        let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-        let chain = [id.leaf.as_ref()];
-        let mut cb = Buffers::new();
-        let mut sb = Buffers::new();
-        let mut client = BoundedTls::client(
-            ClientConfig {
-                server_name: "localhost",
-                trust_anchors: &anchors,
-                now: now(),
-                certificate_limits: Limits::default(),
-                transport_parameters: CLIENT_PARAMS,
-            },
-            cb.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        let mut server = BoundedTls::server(
-            ServerConfig {
-                certificate_chain: &chain,
-                signing_key: &id.signing,
-                transport_parameters: SERVER_PARAMS,
-            },
-            sb.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        handshake(&mut client, &mut server, 127).unwrap();
-        let mut ticket = new_session_ticket(&[]);
-        match scenario {
-            0 => {
-                assert!(server.receive(Level::OneRtt, &ticket).is_err());
-                assert_eq!(server.state(), State::Failed);
-                continue;
-            }
-            1 => {
-                assert!(client.receive(Level::Handshake, &ticket).is_err());
-            }
-            2 => {
-                ticket = new_session_ticket(&[0, 42, 0, 4, 0, 0, 0, 1]);
-                assert_eq!(
-                    client.receive(Level::OneRtt, &ticket),
-                    Err(tls::Error::ProtocolViolation)
-                );
-            }
-            3 => {
-                ticket = new_session_ticket(&[
-                    0, 42, 0, 4, 255, 255, 255, 255, 0, 42, 0, 4, 255, 255, 255, 255,
-                ]);
-                assert!(client.receive(Level::OneRtt, &ticket).is_err());
-            }
-            4 => {
-                ticket[14] = 0;
-                ticket.remove(15);
-                ticket[3] -= 1;
-                assert!(client.receive(Level::OneRtt, &ticket).is_err());
-            }
-            5 => {
-                ticket[0] = 24;
-                assert!(client.receive(Level::OneRtt, &ticket).is_err());
-            }
-            _ => unreachable!(),
-        }
-        assert_eq!(client.state(), State::Failed);
-        assert!(!client.has_keys(Level::OneRtt));
-    }
-}
-
-#[test]
-fn default_rustls_client_completes_real_p256_hello_retry_request() {
-    let id = identity();
-    let chain = [id.leaf.as_ref()];
-    let mut buffers = Buffers::new();
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(id.root.clone()).unwrap();
-    let mut client = RustlsProvider::client(
-        roots,
-        ServerName::try_from("localhost").unwrap(),
-        CLIENT_PARAMS.to_vec(),
-    )
-    .unwrap();
-    let mut server = BoundedTls::server_p256(
-        ServerConfig {
-            certificate_chain: &chain,
-            signing_key: &id.signing,
-            transport_parameters: SERVER_PARAMS,
-        },
-        buffers.storage(),
-        &mut OsRng,
-    )
-    .unwrap();
-    drain(&mut client, &mut server, 17).unwrap();
-    assert_eq!(server.state(), State::Handshaking);
-    assert!(!server.has_keys(Level::Handshake));
-    if let Err(error) = handshake(&mut client, &mut server, 11) {
-        panic!(
-            "{error:?}; client={:?}; server={:?}",
-            client.last_tls_error(),
-            server.last_failure()
-        )
-    }
-    assert_eq!(server.state(), State::Connected);
-    packets(&mut client, &mut server);
-    packets(&mut server, &mut client);
-}
-
-#[test]
-fn server_rejects_changed_retry_client_hello_before_installing_keys() {
-    let id = identity();
-    let chain = [id.leaf.as_ref()];
-    let mut buffers = Buffers::new();
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(id.root.clone()).unwrap();
-    let mut client = RustlsProvider::client(
-        roots,
-        ServerName::try_from("localhost").unwrap(),
-        CLIENT_PARAMS.to_vec(),
-    )
-    .unwrap();
-    let mut server = BoundedTls::server_p256(
-        ServerConfig {
-            certificate_chain: &chain,
-            signing_key: &id.signing,
-            transport_parameters: SERVER_PARAMS,
-        },
-        buffers.storage(),
-        &mut OsRng,
-    )
-    .unwrap();
-    drain(&mut client, &mut server, 4096).unwrap();
-    assert_eq!(server.state(), State::Handshaking);
-    let mut bytes = [0; 4096];
-    let hrr = server.transmit(&mut bytes).unwrap().unwrap();
-    assert_eq!(hrr.level, Level::Initial);
-    client.receive(hrr.level, &bytes[..hrr.len]).unwrap();
-    let ch2 = client.transmit(&mut bytes).unwrap().unwrap();
-    assert_eq!(ch2.level, Level::Initial);
-    bytes[6] ^= 1; // ClientHello.random must not change across HRR.
-    assert!(server.receive(ch2.level, &bytes[..ch2.len]).is_err());
-    assert_eq!(server.state(), State::Failed);
-    assert!(!server.has_keys(Level::Handshake));
-}
-
-#[test]
-fn client_cookie_retry_is_bounded_and_repeated_or_same_group_retry_fails() {
-    use hibana_quic::tls_wire;
-    for scenario in 0..3 {
-        let id = identity();
-        let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-        let mut buffers = Buffers::new();
-        let mut client = BoundedTls::client(
-            ClientConfig {
-                server_name: "localhost",
-                trust_anchors: &anchors,
-                now: now(),
-                certificate_limits: Limits::default(),
-                transport_parameters: CLIENT_PARAMS,
-            },
-            buffers.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        let mut first = [0; 2048];
-        let ch1 = client.transmit(&mut first).unwrap().unwrap();
-        let mut message = [0; 2048];
-        let group = if scenario == 0 {
-            Some(tls_wire::GROUP_P256)
-        } else {
-            None
-        };
-        let n = tls_wire::encode_hello_retry_request(&mut message, 0x1301, group, Some(b"cookie"))
-            .unwrap();
-        if scenario == 0 {
-            assert!(client.receive(Level::Initial, &message[..n]).is_err());
-            assert_eq!(client.state(), State::Failed);
-            continue;
-        }
-        measured(|| {
-            client.receive(Level::Initial, &message[..n]).unwrap();
-        });
-        assert_eq!(client.state(), State::Handshaking);
-        assert!(!client.has_keys(Level::Handshake));
-        let mut second = [0; 2048];
-        let ch2 = client.transmit(&mut second).unwrap().unwrap();
-        assert_eq!(ch2.level, Level::Initial);
-        let hrr = tls_wire::parse_hello_retry_request(&message[..n]).unwrap();
-        let parsed =
-            tls_wire::validate_client_hello_retry(&first[..ch1.len], &second[..ch2.len], &hrr)
-                .unwrap();
-        assert_eq!(parsed.cookie, Some(b"cookie".as_slice()));
-        if scenario == 1 {
-            assert!(client.receive(Level::Initial, &message[..n]).is_err());
-        } else {
-            let share: [u8; 65] = parsed.key_share.try_into().unwrap();
-            let n = tls_wire::encode_server_hello(&mut message, &[6; 32], &share, 0x1303).unwrap();
-            assert!(client.receive(Level::Initial, &message[..n]).is_err());
-        }
-        assert_eq!(client.state(), State::Failed);
-        assert!(!client.has_keys(Level::Handshake));
-    }
-}
-
-struct AllocationChecked<T>(T);
-impl<T: Provider> Provider for AllocationChecked<T> {
-    fn receive(&mut self, l: Level, b: &[u8]) -> Result<(), tls::Error> {
-        measured(|| self.0.receive(l, b))
-    }
-    fn transmit(&mut self, b: &mut [u8]) -> Result<Option<tls::Output>, tls::Error> {
-        measured(|| self.0.transmit(b))
-    }
-    fn has_keys(&self, l: Level) -> bool {
-        measured(|| self.0.has_keys(l))
-    }
-    fn discard_keys(&mut self, l: Level) {
-        measured(|| self.0.discard_keys(l))
-    }
-    fn is_handshaking(&self) -> bool {
-        self.0.is_handshaking()
-    }
-    fn peer_transport_parameters(&self) -> Option<&[u8]> {
-        self.0.peer_transport_parameters()
-    }
-    fn seal(
-        &mut self,
-        l: Level,
-        pn: u64,
-        h: &[u8],
-        b: &mut [u8],
-        n: usize,
-    ) -> Result<usize, tls::Error> {
-        measured(|| self.0.seal(l, pn, h, b, n))
-    }
-    fn open(&mut self, l: Level, pn: u64, h: &[u8], b: &mut [u8]) -> Result<usize, tls::Error> {
-        measured(|| self.0.open(l, pn, h, b))
-    }
-    fn header_mask(&self, l: Level, local: bool, s: &[u8; 16]) -> Result<[u8; 5], tls::Error> {
-        measured(|| self.0.header_mask(l, local, s))
-    }
-}
-#[test]
-fn every_bounded_server_call_in_real_hrr_handshake_allocates_zero() {
-    let id = identity();
-    let chain = [id.leaf.as_ref()];
-    let mut buffers = Buffers::new();
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(id.root.clone()).unwrap();
-    let mut client = RustlsProvider::client(
-        roots,
-        ServerName::try_from("localhost").unwrap(),
-        CLIENT_PARAMS.to_vec(),
-    )
-    .unwrap();
-    let server = measured(|| {
-        BoundedTls::server_p256(
-            ServerConfig {
-                certificate_chain: &chain,
-                signing_key: &id.signing,
-                transport_parameters: SERVER_PARAMS,
-            },
-            buffers.storage(),
-            &mut OsRng,
-        )
-        .unwrap()
-    });
-    let mut server = AllocationChecked(server);
-    drain(&mut client, &mut server, 1).unwrap();
-    assert_eq!(server.0.state(), State::Handshaking);
-    handshake(&mut client, &mut server, 1).unwrap();
-    assert_eq!(server.0.state(), State::Connected);
-    packets(&mut client, &mut server);
-    packets(&mut server, &mut client);
-}
-
-#[test]
-fn bounded_key_updates_match_independent_rustls_secrets_for_both_aeads() {
-    use rustls::quic::{KeyChange, PacketKeySet, ServerConnection, Version};
-    use std::sync::Arc;
-    for suite in [
-        rustls::CipherSuite::TLS13_AES_128_GCM_SHA256,
-        rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
-    ] {
-        let id = identity();
-        let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-        let mut cb = Buffers::new();
-        let mut client = measured(|| {
-            BoundedTls::client(
-                ClientConfig {
-                    server_name: "localhost",
-                    trust_anchors: &anchors,
-                    now: now(),
-                    certificate_limits: Limits::default(),
-                    transport_parameters: CLIENT_PARAMS,
-                },
-                cb.storage(),
-                &mut OsRng,
-            )
-            .unwrap()
-        });
-        let mut provider = rustls::crypto::ring::default_provider();
-        provider.cipher_suites.retain(|s| s.suite() == suite);
-        let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(provider))
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![id.leaf.clone()],
-                rustls::pki_types::PrivatePkcs8KeyDer::from(id.key.clone()).into(),
-            )
-            .unwrap();
-        config.alpn_protocols = vec![b"hq-interop".to_vec()];
-        config.send_tls13_tickets = 0;
-        let mut peer =
-            ServerConnection::new(Arc::new(config), Version::V1, SERVER_PARAMS.to_vec()).unwrap();
-        let mut level = Level::Initial;
-        let mut current = None;
-        let mut next = None;
-        let mut headers = None;
-        for _ in 0..20 {
-            let mut out = [0; 8192];
-            while let Some(output) = measured(|| client.transmit(&mut out).unwrap()) {
-                peer.read_hs(&out[..output.len]).unwrap();
-            }
-            loop {
-                let mut output = Vec::new();
-                let change = peer.write_hs(&mut output);
-                if !output.is_empty() {
-                    measured(|| client.receive(level, &output).unwrap());
-                }
-                let changed = change.is_some();
-                match change {
-                    Some(KeyChange::Handshake { .. }) => level = Level::Handshake,
-                    Some(KeyChange::OneRtt {
-                        keys,
-                        next: secrets,
-                    }) => {
-                        level = Level::OneRtt;
-                        headers = Some((keys.local.header, keys.remote.header));
-                        current = Some(PacketKeySet {
-                            local: keys.local.packet,
-                            remote: keys.remote.packet,
-                        });
-                        next = Some(secrets);
-                    }
-                    None => {}
-                }
-                if output.is_empty() && !changed {
-                    break;
-                }
-            }
-            if !client.is_handshaking() && !peer.is_handshaking() {
-                break;
-            }
-        }
-        assert!(!client.is_handshaking());
-        assert!(!peer.is_handshaking());
-        assert_eq!(peer.quic_transport_parameters(), Some(CLIENT_PARAMS));
-        let mut current = current.unwrap();
-        let mut next = next.unwrap();
-        let (peer_local_hp, peer_remote_hp) = headers.unwrap();
-        measured(|| client.confirm_handshake().unwrap());
-        for generation in 0..=4u64 {
-            let instant = generation * 40;
-            measured(|| client.maintain_keys(instant, 10).unwrap());
-            if generation > 0 {
-                current = next.next_packet_keys(); // independent rustls HKDF "quic ku"
-                if generation & 1 != 0 {
-                    measured(|| client.initiate_key_update(instant, 10).unwrap());
-                }
-            }
-            let header = [
-                0x43 | if generation & 1 != 0 { 4 } else { 0 },
-                0,
-                0,
-                0,
-                generation as u8,
-            ];
-            // Alternating local and peer initiation. The peer's updated packet
-            // arrives first in even generations, forcing a synchronous write update.
-            let mut incoming = [0; 20];
-            incoming[..4].copy_from_slice(b"peer");
-            let tag = current
-                .local
-                .encrypt_in_place(generation, &header, &mut incoming[..4])
-                .unwrap();
-            incoming[4..].copy_from_slice(tag.as_ref());
-            let valid = incoming;
-            if generation > 0 {
-                incoming[0] ^= 1;
-                assert_eq!(
-                    measured(|| client.open_one_rtt(
-                        generation,
-                        generation & 1 != 0,
-                        &header,
-                        &mut incoming,
-                        instant,
-                        10
-                    )),
-                    Err(tls::Error::Authentication)
-                );
-                assert_eq!(incoming, [0; 20]);
-            }
-            incoming = valid;
-            let opened = measured(|| {
-                client
-                    .open_one_rtt(
-                        generation,
-                        generation & 1 != 0,
-                        &header,
-                        &mut incoming,
-                        instant,
-                        10,
-                    )
-                    .unwrap()
-            });
-            assert_eq!(opened.generation, generation);
-            assert_eq!(&incoming[..opened.len], b"peer");
-            assert_eq!(client.key_generation(), generation);
-            assert_eq!(client.key_phase(), generation & 1 != 0);
-            let mut outgoing = [0; 20];
-            outgoing[..4].copy_from_slice(b"ours");
-            measured(|| {
-                client
-                    .seal(Level::OneRtt, generation, &header, &mut outgoing, 4)
-                    .unwrap()
-            });
-            assert_eq!(
-                current
-                    .remote
-                    .decrypt_in_place(generation, &header, &mut outgoing)
-                    .unwrap(),
-                b"ours"
-            );
-            // Initial rustls HP keys must match every updated bounded generation.
-            let sample = [9; 16];
-            for (local, peer_hp) in [(true, &peer_remote_hp), (false, &peer_local_hp)] {
-                let mask = client.header_mask(Level::OneRtt, local, &sample).unwrap();
-                let mut first = 0x43;
-                let mut pn = [0; 4];
-                peer_hp
-                    .encrypt_in_place(&sample, &mut first, &mut pn)
-                    .unwrap();
-                assert_eq!(first, 0x43 ^ (mask[0] & 0x1f));
-                assert_eq!(pn, mask[1..]);
-            }
-            measured(|| {
-                client
-                    .acknowledge_one_rtt(generation, opened.generation, instant, 10)
-                    .unwrap()
-            });
-            assert_eq!(
-                measured(|| client.seal(Level::OneRtt, generation, &header, &mut outgoing, 4)),
-                Err(tls::Error::PacketNumberReuse)
-            );
-        }
-        measured(|| client.discard_keys(Level::OneRtt));
-        assert!(!client.has_keys(Level::OneRtt));
-        assert_eq!(
-            measured(|| client.initiate_key_update(200, 10)),
-            Err(tls::Error::KeysUnavailable)
-        );
-    }
-}
-
-#[test]
-fn default_rustls_client_negotiates_x25519_without_retry() {
-    let id = identity();
-    let chain = [id.leaf.as_ref()];
-    let mut buffers = Buffers::new();
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(id.root.clone()).unwrap();
-    let mut client = RustlsProvider::client(
-        roots,
-        ServerName::try_from("localhost").unwrap(),
-        CLIENT_PARAMS.to_vec(),
-    )
-    .unwrap();
-    let mut server = BoundedTls::server(
-        ServerConfig {
-            certificate_chain: &chain,
-            signing_key: &id.signing,
-            transport_parameters: SERVER_PARAMS,
-        },
-        buffers.storage(),
-        &mut OsRng,
-    )
-    .unwrap();
-    drain(&mut client, &mut server, 17).unwrap();
-    assert_eq!(server.state(), State::Handshaking);
-    assert_eq!(
-        server.negotiated_group(),
-        Some(hibana_quic::tls_wire::GROUP_X25519)
-    );
-    assert!(server.has_keys(Level::Handshake));
-    if let Err(error) = handshake(&mut client, &mut server, 11) {
-        panic!(
-            "{error:?}; client={:?}; server={:?}",
-            client.last_tls_error(),
-            server.last_failure()
-        )
-    }
-    assert_eq!(server.state(), State::Connected);
-    packets(&mut client, &mut server);
-    packets(&mut server, &mut client);
-}
-
-#[test]
-fn bounded_server_rejects_noncontributory_x25519_before_keys() {
-    let id = identity();
-    let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-    let chain = [id.leaf.as_ref()];
-    let mut cb = Buffers::new();
-    let mut sb = Buffers::new();
-    let mut client = BoundedTls::client(
-        ClientConfig {
-            server_name: "localhost",
-            trust_anchors: &anchors,
-            now: now(),
-            certificate_limits: Limits::default(),
-            transport_parameters: CLIENT_PARAMS,
-        },
-        cb.storage(),
-        &mut OsRng,
-    )
-    .unwrap();
-    let mut first = [0; 4096];
-    let n = client.transmit(&mut first).unwrap().unwrap().len;
-    let hello = hibana_quic::tls_wire::parse_client_hello(&first[..n]).unwrap();
-    let share: &[u8; 65] = hello.key_share.try_into().unwrap();
-    for low in [0, 1] {
-        let mut x = [0; 32];
-        x[0] = low;
-        let mut forged = [0; 4096];
-        let n = hibana_quic::tls_wire::encode_client_hello_dual(
-            &mut forged,
-            hello.random,
-            share,
-            &x,
-            "localhost",
-            b"hq-interop",
-            CLIENT_PARAMS,
-        )
-        .unwrap();
-        let mut server = BoundedTls::server(
-            ServerConfig {
-                certificate_chain: &chain,
-                signing_key: &id.signing,
-                transport_parameters: SERVER_PARAMS,
-            },
-            sb.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        measured(|| assert!(server.receive(Level::Initial, &forged[..n]).is_err()));
-        assert_eq!(server.state(), State::Failed);
-        assert!(!server.has_keys(Level::Handshake));
-        assert_eq!(server.negotiated_group(), None);
-    }
-}
-
-#[test]
-fn strict_suite_policies_authenticate_and_install_matching_keys_without_allocating() {
-    use hibana_quic::bounded_tls::CipherPolicy;
-    for (policy, expected) in [
-        (CipherPolicy::Aes128Only, CipherSuite::Aes128GcmSha256),
-        (
-            CipherPolicy::ChaCha20Only,
-            CipherSuite::ChaCha20Poly1305Sha256,
-        ),
-    ] {
-        let fragment = 127;
-        let id = identity();
-        let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-        let chain = [id.leaf.as_ref()];
-        let mut cb = Buffers::new();
-        let mut sb = Buffers::new();
-        let mut rng = OsRng;
-        measured(|| {
-            let mut client = BoundedTls::client_with_policy(
-                ClientConfig {
-                    server_name: "localhost",
-                    trust_anchors: &anchors,
-                    now: now(),
-                    certificate_limits: Limits::default(),
-                    transport_parameters: CLIENT_PARAMS,
-                },
-                cb.storage(),
-                &mut rng,
-                policy,
-            )
-            .unwrap();
-            let mut server = BoundedTls::server_with_policy(
-                ServerConfig {
-                    certificate_chain: &chain,
-                    signing_key: &id.signing,
-                    transport_parameters: SERVER_PARAMS,
-                },
-                sb.storage(),
-                &mut rng,
-                policy,
-            )
-            .unwrap();
-            if let Err(error) = handshake(&mut client, &mut server, fragment) {
-                panic!(
-                    "{error:?}; client={:?}; server={:?}",
-                    client.last_failure(),
-                    server.last_failure()
-                )
-            }
-            assert_eq!(client.state(), State::Connected);
-            assert_eq!(server.state(), State::Connected);
-            assert_eq!(client.peer_transport_parameters(), Some(SERVER_PARAMS));
-            assert_eq!(server.peer_transport_parameters(), Some(CLIENT_PARAMS));
-            assert_eq!(client.negotiated_alpn(), Some(b"hq-interop".as_slice()));
-            assert_eq!(client.negotiated_suite(), Some(expected));
-            packets(&mut client, &mut server);
-            packets(&mut server, &mut client);
-            client.discard_keys(Level::Handshake);
-            assert!(!client.has_keys(Level::Handshake));
-            assert_eq!(
-                client.header_mask(Level::Handshake, true, &[0; 16]),
-                Err(tls::Error::KeysUnavailable)
-            );
-            server.discard_keys(Level::OneRtt);
-            assert!(!server.has_keys(Level::OneRtt));
-        });
-    }
-}
-
-#[test]
-fn strict_chacha_rejects_unoffered_server_hello_and_retry_before_keys() {
-    use hibana_quic::{
-        bounded_tls::{CipherPolicy, Failure},
-        tls_wire,
-    };
-    for retry in [false, true] {
-        let id = identity();
-        let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-        let mut cb = Buffers::new();
-        let mut client = BoundedTls::client_with_policy(
-            ClientConfig {
-                server_name: "localhost",
-                trust_anchors: &anchors,
-                now: now(),
-                certificate_limits: Limits::default(),
-                transport_parameters: CLIENT_PARAMS,
-            },
-            cb.storage(),
-            &mut OsRng,
-            CipherPolicy::ChaCha20Only,
-        )
-        .unwrap();
-        let mut raw = [0; 2048];
-        let out = client.transmit(&mut raw).unwrap().unwrap();
-        let hello = tls_wire::parse_client_hello(&raw[..out.len]).unwrap();
-        assert!(!hello.offers_1301 && hello.offers_1303);
-        assert_eq!(&raw[39..43], &[0, 2, 0x13, 3]); // Exact singleton vector, empty legacy session ID.
-        let mut response = [0; 2048];
-        let n = if retry {
-            tls_wire::encode_hello_retry_request(&mut response, 0x1301, None, Some(b"cookie"))
-        } else {
-            tls_wire::encode_server_hello_group(
-                &mut response,
-                &[7; 32],
-                tls_wire::GROUP_X25519,
-                hello.key_share_x25519,
-                0x1301,
-            )
-        }
-        .unwrap();
-        assert!(client.receive(Level::Initial, &response[..n]).is_err());
-        assert!(matches!(
-            client.last_failure(),
-            Some(Failure::UnsupportedSuite)
-        ));
-        assert!(!client.has_keys(Level::Handshake));
-        assert!(!client.has_keys(Level::OneRtt));
-    }
-}
-#[test]
-fn strict_chacha_cookie_retry_preserves_singleton_offer_and_no_overlap_fails() {
-    use hibana_quic::{
-        bounded_tls::{CipherPolicy, Failure},
-        tls_wire,
-    };
-    let id = identity();
-    let anchors = [trust_anchor_from_der(&id.root).unwrap()];
-    let mut cb = Buffers::new();
-    let mut client = BoundedTls::client_with_policy(
-        ClientConfig {
-            server_name: "localhost",
-            trust_anchors: &anchors,
-            now: now(),
-            certificate_limits: Limits::default(),
-            transport_parameters: CLIENT_PARAMS,
-        },
-        cb.storage(),
-        &mut OsRng,
-        CipherPolicy::ChaCha20Only,
-    )
-    .unwrap();
-    let mut first = [0; 2048];
-    let ch1 = client.transmit(&mut first).unwrap().unwrap();
-    let mut raw = [0; 2048];
-    let n = tls_wire::encode_hello_retry_request(&mut raw, 0x1303, None, Some(b"cookie")).unwrap();
-    client.receive(Level::Initial, &raw[..n]).unwrap();
-    let mut second = [0; 2048];
-    let ch2 = client.transmit(&mut second).unwrap().unwrap();
-    let hrr = tls_wire::parse_hello_retry_request(&raw[..n]).unwrap();
-    let hello =
-        tls_wire::validate_client_hello_retry(&first[..ch1.len], &second[..ch2.len], &hrr).unwrap();
-    assert!(!hello.offers_1301 && hello.offers_1303);
-    let chain = [id.leaf.as_ref()];
-    let mut sb = Buffers::new();
-    let mut server = BoundedTls::server_with_policy(
-        ServerConfig {
-            certificate_chain: &chain,
-            signing_key: &id.signing,
-            transport_parameters: SERVER_PARAMS,
-        },
-        sb.storage(),
-        &mut OsRng,
-        CipherPolicy::Aes128Only,
-    )
-    .unwrap();
-    assert!(server.receive(Level::Initial, &first[..ch1.len]).is_err());
-    assert!(matches!(
-        server.last_failure(),
-        Some(Failure::UnsupportedSuite)
-    ));
-    assert!(!server.has_keys(Level::Handshake));
-}
-
-// Both peers run the new direct asynchronous transcript roles.
-#[test]
-fn direct_transcript_roles_validate_full_tls_without_allocating() {
-    use core::{
-        cell::RefCell,
-        future::{Future, poll_fn},
-        pin::pin,
-        task::{Context, Poll, Waker},
-    };
-    use hibana::runtime::{SessionKitStorage, ids::SessionId};
-    use hibana_quic::{
-        bounded_tls::{locals, protocol},
-        carrier::CarrierStorage,
-        runtime::TaskSet,
-    };
-    struct Shared<'cfg, 'buf> {
-        tls: RefCell<BoundedTls<'cfg, 'buf>>,
-        reader: RefCell<Option<Waker>>,
-    }
-    impl locals::CryptoAccess for Shared<'_, '_> {
-        fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
-            f(&mut self.tls.borrow_mut())
-        }
-        fn applied(&self) -> Result<(), locals::Error> {
-            let w = self.reader.borrow_mut().take();
-            if let Some(w) = w {
-                w.wake();
-            }
-            Ok(())
-        }
-    }
-    struct Input<'a, 'cfg, 'buf> {
-        remote: &'a Shared<'cfg, 'buf>,
-        pending: [u8; 8192],
-        used: usize,
-        end: usize,
-        level: Level,
-        stall: bool,
-    }
-    impl locals::MessageInput for Input<'_, '_, '_> {
-        async fn read_message(
-            &mut self,
-            level: Level,
-            out: &mut [u8],
-        ) -> Result<usize, locals::Error> {
-            if self.stall {
-                out[..4].copy_from_slice(&[1, 0, 0, 0]);
-                return core::future::pending().await;
-            }
-            if self.used == self.end {
-                let produced = poll_fn(|cx| {
-                    let old = self.remote.reader.borrow_mut().replace(cx.waker().clone());
-                    drop(old);
-                    match self.remote.tls.borrow_mut().transmit(&mut self.pending) {
-                        Ok(Some(p)) => Poll::Ready(Ok(p)),
-                        Ok(None) => Poll::Pending,
-                        Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
-                    }
-                })
-                .await?;
-                self.used = 0;
-                self.end = produced.len;
-                self.level = produced.level;
-            }
-            assert_eq!(level, self.level);
-            let b = &self.pending[self.used..self.end];
-            assert!(b.len() >= 4);
-            let n = 4 + ((b[1] as usize) << 16) + ((b[2] as usize) << 8) + b[3] as usize;
-            assert!(n <= b.len() && n <= out.len());
-            out[..n].copy_from_slice(&b[..n]);
-            self.used += n;
-            Ok(n)
-        }
-    }
-    for cancel in [false, true] {
-        let identity = identity();
-        let anchors = [trust_anchor_from_der(&identity.root).unwrap()];
-        let chain = [identity.leaf.as_ref()];
-        let mut cb = Buffers::new();
-        let mut sb = Buffers::new();
-        let client = Shared {
-            tls: RefCell::new(
-                BoundedTls::client(
-                    ClientConfig {
-                        server_name: "localhost",
-                        trust_anchors: &anchors,
-                        now: now(),
-                        certificate_limits: Limits::default(),
-                        transport_parameters: CLIENT_PARAMS,
-                    },
-                    cb.storage(),
-                    &mut OsRng,
-                )
-                .unwrap(),
-            ),
-            reader: RefCell::new(None),
-        };
-        let server = Shared {
-            tls: RefCell::new(
-                BoundedTls::server(
-                    ServerConfig {
-                        certificate_chain: &chain,
-                        signing_key: &identity.signing,
-                        transport_parameters: SERVER_PARAMS,
-                    },
-                    sb.storage(),
-                    &mut OsRng,
-                )
-                .unwrap(),
-            ),
-            reader: RefCell::new(None),
-        };
-        let mut ci = Input {
-            remote: &server,
-            pending: [0; 8192],
-            used: 0,
-            end: 0,
-            level: Level::Initial,
-            stall: cancel,
-        };
-        let mut si = Input {
-            remote: &client,
-            pending: [0; 8192],
-            used: 0,
-            end: 0,
-            level: Level::Initial,
-            stall: cancel,
-        };
-        let mut cm = [0; 8192];
-        let mut sm = [0; 8192];
-        let cs = locals::MessageSlot::new(&mut cm);
-        let ss = locals::MessageSlot::new(&mut sm);
-        let cc = CarrierStorage::<1, 16, 4>::new();
-        let sc = CarrierStorage::<1, 16, 4>::new();
-        let mut cslab = vec![0; 65536];
-        let mut sslab = vec![0; 65536];
-        let mut ck = SessionKitStorage::uninit();
-        let mut sk = SessionKitStorage::uninit();
-        let cid = SessionId::new(4500);
-        let sid = SessionId::new(4501);
-        let ck = ck.init();
-        let sk = sk.init();
-        let cr = ck.rendezvous(&mut cslab, cc.bind(cid).unwrap()).unwrap();
-        let sr = sk.rendezvous(&mut sslab, sc.bind(sid).unwrap()).unwrap();
-        let cp = protocol::client_programs();
-        let sp = protocol::server_programs();
-        let mut cinput = cr.enter(cid, &cp.input).unwrap();
-        let mut cverify = cr.enter(cid, &cp.verify).unwrap();
-        let mut sinput = sr.enter(sid, &sp.input).unwrap();
-        let mut sverify = sr.enter(sid, &sp.verify).unwrap();
-        let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
-        measured(|| {
-            let mut co = pin!(locals::client_owner(&mut cverify, &client, &cs));
-            let mut cin = pin!(locals::client_input(&mut cinput, &cs, &mut ci));
-            let mut so = pin!(locals::server_owner(&mut sverify, &server, &ss));
-            let mut sin = pin!(locals::server_input(&mut sinput, &ss, &mut si));
-            let tasks = TaskSet::new([co.as_mut(), cin.as_mut(), so.as_mut(), sin.as_mut()]);
-            if cancel {
-                let mut tasks = pin!(tasks);
-                let mut cx = Context::from_waker(Waker::noop());
-                for _ in 0..8 {
-                    assert!(tasks.as_mut().poll(&mut cx).is_pending());
-                }
-            } else {
-                reactor.block_on(tasks).unwrap().unwrap();
-            }
-        });
-        assert_eq!(
-            client.tls.borrow().state(),
-            if cancel {
-                State::Failed
-            } else {
-                State::Connected
-            }
-        );
-        assert_eq!(
-            server.tls.borrow().state(),
-            if cancel {
-                State::Failed
-            } else {
-                State::Connected
-            }
-        );
-        drop(cs);
-        drop(ss);
-        assert!(cm.iter().chain(sm.iter()).all(|b| *b == 0));
-    }
 }

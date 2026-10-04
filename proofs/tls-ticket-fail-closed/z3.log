@@ -1,0 +1,3 @@
+old rejection retains connected key authority: SAT [connected = True, keys = True]
+disconnected: UNSAT; transition nonvacuous
+revoked: UNSAT; transition nonvacuous

@@ -1,5 +1,7 @@
 //! Protected0RTT TLS-provider evidence. This does not qualify QUIC wire routing,
 //! congestion/rollback or the external runner; those are engine/host gates.
+#[path = "../../tests/support/async_tls_fixture.rs"]
+mod async_fixture;
 use hibana_quic::{
     bounded_tls::{BoundedTls, ClientConfig, ServerConfig, SigningKey, State, Storage},
     tls::{self, Level, Provider},
@@ -126,84 +128,9 @@ impl ticket::TicketClock for Clock {
     }
 }
 const SIZE: usize = 4096;
-fn drain(
-    from: &mut BoundedTls<'_, '_>,
-    to: &mut BoundedTls<'_, '_>,
-    fragment: usize,
-    pns: &mut [u64; 3],
-    certificates: &mut usize,
-    tickets: &mut usize,
-) -> Result<bool, tls::Error> {
-    let mut buffer = [0; 4096 + 16];
-    let mut progress = false;
-    for _ in 0..10000 {
-        let Some(out) = from.transmit(&mut buffer[..fragment])? else {
-            return Ok(progress);
-        };
-        if fragment == 4096 {
-            let mut position = 0;
-            while position + 4 <= out.len {
-                if out.level == Level::Handshake && buffer[position] == 11 {
-                    *certificates += 1;
-                }
-                if out.level == Level::OneRtt && buffer[position] == 4 {
-                    *tickets += 1;
-                }
-                position += 4
-                    + ((buffer[position + 1] as usize) << 16)
-                    + ((buffer[position + 2] as usize) << 8)
-                    + buffer[position + 3] as usize;
-            }
-        }
-        if out.level != Level::Initial {
-            let index = if out.level == Level::Handshake { 1 } else { 2 };
-            let pn = pns[index];
-            pns[index] += 1;
-            let n = from.seal(out.level, pn, b"authenticated CRYPTO", &mut buffer, out.len)?;
-            let plain = to.open(out.level, pn, b"authenticated CRYPTO", &mut buffer[..n])?;
-            assert_eq!(plain, out.len);
-        }
-        to.receive(out.level, &buffer[..out.len])?;
-        progress = true;
-    }
-    panic!("unbounded output")
-}
 fn pump(client: &mut BoundedTls<'_, '_>, server: &mut BoundedTls<'_, '_>) {
-    let mut cp = [0; 3];
-    let mut sp = [0; 3];
-    let mut certificates = 0;
-    let mut tickets = 0;
-    for _ in 0..32 {
-        let c = drain(
-            client,
-            server,
-            127,
-            &mut cp,
-            &mut certificates,
-            &mut tickets,
-        );
-        let s = drain(
-            server,
-            client,
-            127,
-            &mut sp,
-            &mut certificates,
-            &mut tickets,
-        );
-        if c.is_err() || s.is_err() {
-            panic!(
-                "client={c:?}/{:?},server={s:?}/{:?}",
-                client.last_failure(),
-                server.last_failure()
-            );
-        }
-        if !c.unwrap() && !s.unwrap() {
-            assert_eq!(client.state(), State::Connected);
-            assert_eq!(server.state(), State::Connected);
-            return;
-        }
-    }
-    panic!("nonquiescent handshake")
+    async_fixture::handshake_with(client, server, 127, true);
+    async_fixture::drain_authenticated_tickets(server, client, 127);
 }
 fn client_config<'a>(anchors: &'a [TrustAnchor<'a>]) -> ClientConfig<'a> {
     ClientConfig {
@@ -357,54 +284,75 @@ fn real_early_packet_keys_and_finished_quarantine_allocate_zero_both_suites() {
                 cipher,
             )
             .unwrap();
-            let mut hello = [0; 4096];
-            let ch = client.transmit(&mut hello).unwrap().unwrap();
-            server.receive(ch.level, &hello[..ch.len]).unwrap();
-            assert_eq!(server.early_status(), EarlyStatus::AcceptedPendingFinished);
-            assert_eq!(server.early_generation(), Some(2));
-            assert!(server.has_early_keys() && client.has_early_keys());
-            let remembered = server.remembered_early_limits().unwrap();
-            let claim = server.take_early_replay_claim().unwrap();
-            assert!(server.take_early_replay_claim().is_none());
-            let mut quarantine =
-                Quarantine::new(EARLY_POLICY, remembered, claim, &mut held).unwrap();
             let request = b"GET /early\r\n";
             let mut first = [0; 64];
-            first[..request.len()].copy_from_slice(request);
-            let n = client
-                .seal_early(0, b"header", &mut first, request.len())
-                .unwrap();
-            let mut late = first; // protect the delayed retransmission with a fresh PN
-            late[..request.len()].copy_from_slice(request);
-            let late_n = client
-                .seal_early(1, b"header", &mut late, request.len())
-                .unwrap();
-            assert_eq!(
-                client.early_header_mask(true, &[0; 16]).unwrap(),
-                server.early_header_mask(false, &[0; 16]).unwrap()
+            let mut late = [0; 64];
+            let mut late_n = 0;
+            let mut quarantine = None;
+            let mut held_input = Some(&mut held[..]);
+            let mut observed = false;
+            async_fixture::handshake_observe(
+                &mut client,
+                &mut server,
+                127,
+                true,
+                |client, server| {
+                    if observed || server.early_status() != EarlyStatus::AcceptedPendingFinished {
+                        return;
+                    }
+                    observed = true;
+                    assert_eq!(server.early_status(), EarlyStatus::AcceptedPendingFinished);
+                    assert_eq!(server.early_generation(), Some(2));
+                    assert!(server.has_early_keys() && client.has_early_keys());
+                    let remembered = server.remembered_early_limits().unwrap();
+                    let claim = server.take_early_replay_claim().unwrap();
+                    assert!(server.take_early_replay_claim().is_none());
+                    let mut pending_quarantine = Quarantine::new(
+                        EARLY_POLICY,
+                        remembered,
+                        claim,
+                        held_input.take().unwrap(),
+                    )
+                    .unwrap();
+                    first[..request.len()].copy_from_slice(request);
+                    let n = client
+                        .seal_early(0, b"header", &mut first, request.len())
+                        .unwrap();
+                    late = first; // protect the delayed retransmission with a fresh PN
+                    late[..request.len()].copy_from_slice(request);
+                    late_n = client
+                        .seal_early(1, b"header", &mut late, request.len())
+                        .unwrap();
+                    assert_eq!(
+                        client.early_header_mask(true, &[0; 16]).unwrap(),
+                        server.early_header_mask(false, &[0; 16]).unwrap()
+                    );
+                    assert_eq!(
+                        server.seal_early(0, b"header", &mut first, 0),
+                        Err(tls::Error::InvalidInput)
+                    );
+                    assert_eq!(
+                        client.open_early(0, b"header", &mut first[..n]),
+                        Err(tls::Error::InvalidInput)
+                    );
+                    let mut bad = first;
+                    bad[n - 1] ^= 1;
+                    assert_eq!(
+                        server.open_early(0, b"header", &mut bad[..n]),
+                        Err(tls::Error::Authentication)
+                    );
+                    assert!(bad[..n].iter().all(|b| *b == 0));
+                    assert!(server.has_early_keys());
+                    let plain = server.open_early(0, b"header", &mut first[..n]).unwrap();
+                    pending_quarantine
+                        .buffer_authenticated_stream(2, 0, 0, &first[..plain], true)
+                        .unwrap();
+                    assert!(pending_quarantine.next_release().is_err());
+                    quarantine = Some(pending_quarantine);
+                },
             );
-            assert_eq!(
-                server.seal_early(0, b"header", &mut first, 0),
-                Err(tls::Error::InvalidInput)
-            );
-            assert_eq!(
-                client.open_early(0, b"header", &mut first[..n]),
-                Err(tls::Error::InvalidInput)
-            );
-            let mut bad = first;
-            bad[n - 1] ^= 1;
-            assert_eq!(
-                server.open_early(0, b"header", &mut bad[..n]),
-                Err(tls::Error::Authentication)
-            );
-            assert!(bad[..n].iter().all(|b| *b == 0));
-            assert!(server.has_early_keys());
-            let plain = server.open_early(0, b"header", &mut first[..n]).unwrap();
-            quarantine
-                .buffer_authenticated_stream(2, 0, 0, &first[..plain], true)
-                .unwrap();
-            assert!(quarantine.next_release().is_err());
-            pump(&mut client, &mut server);
+            assert!(observed);
+            let mut quarantine = quarantine.unwrap();
             assert!(client.is_resumed() && server.is_resumed());
             assert_eq!(client.early_status(), EarlyStatus::Accepted);
             assert_eq!(server.early_status(), EarlyStatus::Accepted);
@@ -573,17 +521,29 @@ fn replayed_clienthello_cannot_admit_early_after_first_owner_aborts() {
             admission,
         )
         .unwrap();
-        server.receive(Level::Initial, &hello[..out.len]).unwrap();
-        assert_eq!(
-            server.early_status(),
-            if generation == 2 {
-                EarlyStatus::AcceptedPendingFinished
-            } else {
-                EarlyStatus::Rejected
+        async_fixture::probe_server_message(&mut server, &hello[..out.len], |server| {
+            if !server.has_keys(Level::Handshake) {
+                return None;
             }
+            assert_eq!(
+                server.early_status(),
+                if generation == 2 {
+                    EarlyStatus::AcceptedPendingFinished
+                } else {
+                    EarlyStatus::Rejected
+                }
+            );
+            assert_eq!(server.has_early_keys(), generation == 2);
+            assert_eq!(server.take_early_replay_claim().is_some(), generation == 2);
+            Some(())
+        })
+        .unwrap();
+        assert_eq!(
+            server.state(),
+            State::Failed,
+            "dropping the unfinished async owner fails closed"
         );
-        assert_eq!(server.has_early_keys(), generation == 2);
-        assert_eq!(server.take_early_replay_claim().is_some(), generation == 2);
+        assert!(!server.has_early_keys());
     }
 }
 

@@ -1,5 +1,7 @@
-//! Real two-connection PSK_DHE resumption. Fixture setup is host-only; measured
-//! constructors, encrypted TLS flights, issuance, cache and resumption allocate zero.
+#[path = "../../tests/support/async_tls_fixture.rs"]
+mod async_fixture;
+// Real two-connection PSK_DHE resumption. Fixture setup is host-only; measured
+// constructors, encrypted TLS flights, issuance, cache and resumption allocate zero.
 use hibana_quic::{
     bounded_tls::{BoundedTls, ClientConfig, ServerConfig, SigningKey, State, Storage},
     tls::{self, Level, Provider},
@@ -123,48 +125,6 @@ struct Outcome {
     certificate_messages: usize,
     tickets: usize,
 }
-fn drain(
-    from: &mut BoundedTls<'_, '_>,
-    to: &mut BoundedTls<'_, '_>,
-    fragment: usize,
-    pns: &mut [u64; 3],
-    certificates: &mut usize,
-    tickets: &mut usize,
-) -> Result<bool, tls::Error> {
-    let mut buffer = [0; 4096 + 16];
-    let mut progress = false;
-    for _ in 0..10000 {
-        let Some(out) = from.transmit(&mut buffer[..fragment])? else {
-            return Ok(progress);
-        };
-        if fragment == 4096 {
-            let mut position = 0;
-            while position + 4 <= out.len {
-                if out.level == Level::Handshake && buffer[position] == 11 {
-                    *certificates += 1;
-                }
-                if out.level == Level::OneRtt && buffer[position] == 4 {
-                    *tickets += 1;
-                }
-                position += 4
-                    + ((buffer[position + 1] as usize) << 16)
-                    + ((buffer[position + 2] as usize) << 8)
-                    + buffer[position + 3] as usize;
-            }
-        }
-        if out.level != Level::Initial {
-            let index = if out.level == Level::Handshake { 1 } else { 2 };
-            let pn = pns[index];
-            pns[index] += 1;
-            let n = from.seal(out.level, pn, b"authenticated CRYPTO", &mut buffer, out.len)?;
-            let plain = to.open(out.level, pn, b"authenticated CRYPTO", &mut buffer[..n])?;
-            assert_eq!(plain, out.len);
-        }
-        to.receive(out.level, &buffer[..out.len])?;
-        progress = true;
-    }
-    panic!("unbounded output")
-}
 #[allow(clippy::too_many_arguments)]
 fn connect(
     id: &Identity,
@@ -271,38 +231,9 @@ fn connect_clocks_with_cipher(
         cipher,
     )
     .unwrap();
-    let mut cp = [0; 3];
-    let mut sp = [0; 3];
-    let mut certs = 0;
-    let mut tickets = 0;
-    for _ in 0..16 {
-        let c = drain(
-            &mut client,
-            &mut server,
-            fragment,
-            &mut cp,
-            &mut certs,
-            &mut tickets,
-        );
-        let s = drain(
-            &mut server,
-            &mut client,
-            fragment,
-            &mut sp,
-            &mut certs,
-            &mut tickets,
-        );
-        if c.is_err() || s.is_err() {
-            panic!(
-                "c={c:?},s={s:?},client={:?},server={:?}",
-                client.last_failure(),
-                server.last_failure()
-            );
-        }
-        if !c.unwrap() && !s.unwrap() {
-            break;
-        }
-    }
+    let cp = [0; 3];
+    let certs = async_fixture::handshake_with(&mut client, &mut server, fragment, true);
+    let tickets = async_fixture::drain_authenticated_tickets(&mut server, &mut client, fragment);
     assert_eq!(client.state(), State::Connected);
     assert_eq!(server.state(), State::Connected);
     assert_eq!(client.is_resumed(), server.is_resumed());
@@ -573,14 +504,12 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
         .unwrap();
     let offset = psk.binder_offset;
     hello[offset] ^= 1;
-    assert_eq!(
-        server.receive(Level::Initial, &hello[..out.len]),
-        Err(tls::Error::Authentication)
-    );
+    let error = async_fixture::reject_server_message(&mut server, &hello[..out.len]);
     assert!(matches!(
-        server.last_failure(),
-        Some(Failure::Ticket(ticket::Error::Binder))
+        error,
+        hibana_quic::bounded_tls::locals::Error::Crypto(Failure::Ticket(ticket::Error::Binder))
     ));
+    assert_eq!(server.state(), State::Failed);
     assert!(!server.has_keys(Level::OneRtt));
     assert!(!server.has_keys(Level::Handshake));
 }
