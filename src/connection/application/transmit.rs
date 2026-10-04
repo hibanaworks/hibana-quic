@@ -1128,7 +1128,12 @@ mod tests {
             ..
         } = numbers.split();
         let stream = app.open_local().unwrap();
-        app.enqueue(stream, b"GET /\r\n", true).unwrap();
+        let mut production = app.take_production(stream).unwrap();
+        assert_eq!(
+            app.enqueue_prefix(&mut production, b"GET /\r\n", true)
+                .unwrap(),
+            (b"GET /\r\n").len()
+        );
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
         let guard = actor_test_allocator::NoAlloc::start();
         let state = State::new(book_publication, publication);
@@ -1187,7 +1192,12 @@ mod tests {
             ..
         } = numbers.split();
         let stream = app.open_local().unwrap();
-        app.enqueue(stream, b"GET /pending\r\n", true).unwrap();
+        let mut production = app.take_production(stream).unwrap();
+        assert_eq!(
+            app.enqueue_prefix(&mut production, b"GET /pending\r\n", true)
+                .unwrap(),
+            (b"GET /pending\r\n").len()
+        );
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
         let guard = actor_test_allocator::NoAlloc::start();
         let state = State::new(book_publication, publication);

@@ -1,0 +1,34 @@
+{
+  "version_exit_code": 0,
+  "error_classes": [],
+  "effective_uid": 1001,
+  "runner_owner_uid": 1001,
+  "socket_gid": 118,
+  "process_groups": [
+    118,
+    1001
+  ],
+  "server": {
+    "Version": "28.5.1",
+    "ApiVersion": "1.51",
+    "MinAPIVersion": "1.24",
+    "GitCommit": "f8215cc"
+  },
+  "images": {
+    "NEQO_IMAGE": {
+      "exit_code": 0,
+      "id": "sha256:b654f8c870715d88dc0764aa6e7bc33535bab5a4d50b3c66dc69c89238114ff3",
+      "error_classes": []
+    },
+    "BOUNDED_IMAGE": {
+      "exit_code": 0,
+      "id": "sha256:4343cdb9c9b846dde6306c8cbd586778ee7ff139affca6f0826167c02284d964",
+      "error_classes": []
+    },
+    "SIM_IMAGE": {
+      "exit_code": 0,
+      "id": "sha256:fcd0b8adb1eb8f098de3a45af5e9bab8d56499791c5d435fa3598b7af87978b9",
+      "error_classes": []
+    }
+  }
+}

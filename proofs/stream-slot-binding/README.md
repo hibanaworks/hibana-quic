@@ -1,26 +1,31 @@
-# Owned-slot binding at the stream production boundary
+# One-shot stream production and the actual-table boundary
 
-The actual source choreography and direct locals now have a finite FIN/abandon
-boundary outside the rolled data exchange. The production integration tests use
-real projected endpoints and a capacity-one carrier: data reentry, duplicate FIN,
-and repeated abandon are rejected after that boundary. Those ordering checks are
-Hibana's responsibility, not a replacement state machine in this model.
+The source choreography has a finite FIN/abandon outside its rolled data exchange.
+Real projected endpoints reject data reentry, repeated FIN and repeated abandon
+after that boundary. The lower `send_final` permission field has been deleted.
 
-Hibana messages currently carry correlation values; the owned chunk is transferred
-through a private slot. Hibana does not prove that a slot's resource matches its
-announced stream. `io.rs` binds the opened handle and compares the complete chunk
-handle before admission. `StreamHandle` equality includes connection, slot,
-generation and stream ID. The lower table independently validates live handles.
+A non-Copy, non-Clone `Production` lease is issued once per registered live stream.
+It borrows the actual table identity and moves through `SourceOpen`'s private slot
+to ingress. Ingress retains it for exactly this finite production fragment.
+Ordinary chunks cannot name a stream anymore. The source cannot acquire another
+lease for the same registration after FIN or abandonment; a repeated registration
+of the same handle does not replenish issuance. Numeric queue admission requires
+the lease and actual-table pointer equality. A copied numeric StreamHandle alone
+is no longer a public queue-enqueue authority. Retransmission keeps independent
+retained chunk/packet references and does not consume another production lease.
 
-Lean proves matching acceptance, exact identity preservation, and rejection of
-wrong generations/connections for this equality gate. Z3 checks every identity
-component with a satisfiable acceptance premise and finds a counterexample when
-comparison is weakened to stream ID alone. These are scoped models of the explicit
-check, not verified compilation of Rust, a proof of the entire slot mailbox, or a
-claim that all stream lifecycle control has moved into Hibana. In particular,
-lower FIN/RESET/ACK permission fields remain to be replaced.
+Hibana establishes message order; Rust borrowing/affinity and the explicit issuer
+and table-identity checks establish the resource binding. Neither correlation IDs
+nor a private slot automatically acquire this guarantee from Hibana alone.
 
-The two negative/positive runtime tests are in `tests/stream_production.rs` and
-measure zero allocations while actual endpoint operations execute. Empty streams,
-multiple chunks, rejection and abandonment are included. The connected-application
-suite tests the same fragment inside encrypted client/server connections.
+Lean proves exact issuance, spent issuance, non-reissuance, and actual-table
+admission. Z3 checks the corresponding obligations with a satisfiable issuance
+premise, and finds a foreign-table counterexample when the equality gate is
+weakened to numeric handles. These are scoped models, not verified compilation,
+complete mailbox verification, or a proof of the whole stream lifecycle.
+
+Actual Rust tests check non-reissuance after drop and repeated registration, and
+reject a lease from a different table with identical numeric handles. The tests
+measure zero allocations. `tests/stream_production.rs` checks real endpoint order;
+the eight connected-application cases include encrypted empty and multi-chunk
+responses and loss. RESET/ACK control migration is still unfinished.

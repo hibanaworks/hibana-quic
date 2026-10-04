@@ -18,7 +18,7 @@ matrix has not run.
 
 ## Architecture work
 
-- Replace lower stream FIN/RESET/ACK permission fields with actual projected
+- Replace lower stream RESET/ACK permission fields with actual projected
   stream lifecycle and direct local operations. Explicit source FIN alone is
   not the whole lifecycle.
 - Bind every transferred resource to the current affine scope. Correlation IDs

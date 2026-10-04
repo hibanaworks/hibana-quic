@@ -1,12 +1,12 @@
 {
-  "request": "Requalify explicit stream-production terminal migration",
-  "requested_at": "2026-10-04T05:21:00Z",
+  "request": "Requalify affine stream production after deleting send_final control",
+  "requested_at": "2026-10-04T05:49:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"
   ],
   "approval": "User approved disposable GitHub CI Docker allow-direct-routing=true",
-  "local_evidence": "artifacts/rolled-route-runtime-20261004/source-migration-native.json",
+  "local_evidence": "artifacts/rolled-route-runtime-20261004/production-lease-native.json",
   "cases": [
     "handshake",
     "transfer",

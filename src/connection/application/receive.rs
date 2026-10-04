@@ -34,7 +34,7 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
     book: &mut recovery::Rx<'_, 'scope, N>,
     streams: &mut application_stream::Rx<'_, '_, 'scope, RX, CHUNK>,
     app: &RefCell<application_stream::App<'_, '_, 'scope, RX, CHUNK>>,
-    state: &io::State<CHUNK>,
+    state: &io::State<'_, CHUNK>,
     mut keys: keys::RxControl<'_, 'owner, 'scope>,
     control: &Control<'_, 'scope>,
     clock: &impl Clock,
@@ -452,7 +452,7 @@ async fn confirm<'scope, const N: usize>(
 async fn notify_ready<const RX: usize, const CHUNK: usize>(
     endpoint: &mut Endpoint<'_, { p::RECEIVE }>,
     control: &Control<'_, '_>,
-    state: &io::State<CHUNK>,
+    state: &io::State<'_, CHUNK>,
     app: &RefCell<application_stream::App<'_, '_, '_, RX, CHUNK>>,
 ) -> Result<(), Error> {
     // A sink error asks the independent completion lane to close. Do not keep

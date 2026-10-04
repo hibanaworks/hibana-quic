@@ -38,8 +38,7 @@ The next native 2% packet-loss transfer exposed a real fixed-range ACK-history c
 The generic source-data FIN boolean has been removed. The actual global now
 contains stream opening, an inner rolled chunk exchange and a finite FIN/abandon
 route with an explicit admitted/rejected terminal reply. Local ingress holds the
-opened stream binding and rejects a different complete handle before touching
-its bytes. Empty responses and cancellation can leave the data loop without
+opened production lease; ordinary chunks cannot select another stream. Empty responses and cancellation can leave the data loop without
 fabricating a FIN. Abandon is connection-level production cancellation, not a
 RESET_STREAM acknowledgment.
 
@@ -50,9 +49,9 @@ abandon. The complete current core run is 477 unit +59 integration +27 compile-f
 contracts. Scoped Lean/Z3 checks describe the remaining resource-slot identity
 boundary; they do not claim it is supplied by Hibana.
 
-**Still incomplete:** the lower stream table's FIN/RESET/ACK permission fields
+**Still incomplete:** the lower stream table's RESET/ACK permission fields
 and reset publication/recovery control have not yet been replaced. Same-stream
-identity reuse is not prevented by the source graph alone. Interoperability and
+identity reuse is prevented by the one-shot lease issuer in addition to the source graph. Interoperability and
 architecture migration are separate completion criteria. No whole-stack migration
 claim follows from these tests. The published 12/44 runner result predates this
 source-production change and does not qualify it.
@@ -72,3 +71,38 @@ not converted to passes. The remaining core suite is 410 unit +59 integration +2
 compile-fail contracts, all passing. In particular the eight live encrypted
 connection tests and two finite stream-production tests remain. The new capability
 ledger no longer presents old-driver feature tests as current implementation.
+
+## Affine production issuance
+
+The opened resource now moves as a non-Copy/non-Clone `Production` lease borrowing
+its actual table identity. Ordinary chunks no longer contain a stream handle;
+there is no per-chunk stream selector to substitute. Issuance is removed from the
+registered stream exactly once, and repeated registration does not replenish it.
+Ingress retains the lease only through the finite source production continuation.
+Its numeric admission checks the actual table identity, not just numeric IDs.
+
+The lower `send_final` field and its admission checks are deleted. Raw queue enqueue
+is no longer public; the old whole-chunk application enqueue entry point is also
+removed. Lost STREAM/FIN retransmission continues from independently retained
+chunk/packet references and does not reopen production. RESET/ACK control fields
+remain a migration task; this does not claim the entire stream lifecycle is done.
+
+Two additional no-allocation Rust tests reject repeated issuance after drop and
+same-handle registration, and reject a foreign-table lease even when numeric
+handles are identical. Updated Lean/Z3 checks model the actual issuer and scope
+check, with a satisfiable numeric-only mutation counterexample. They are scoped
+models, not a whole-Rust verification claim.
+
+The finite source-production checkpoint c3e01d12c132bef0896b03e605bcf2183dfbc3da
+subsequently passed official runner37179772627: six cases in both directions,
+unchanged 12/44 unique cells, with baseline six kept separate. Runtime CI37179772615
+also passed. Controller-deletion checkpoint c950d725f8fdc21001f45513874ed3d51e42a187
+passed runtime CI37180144793. Evidence for the runner is in interop-pilot-17.
+The newer affine lease change still requires its own runner qualification.
+
+Affine production verification: 412 core unit +59 integration +27 compile-fail
+contracts, 100 host tests, 47 Python tests, thumbv6m core compilation, and the
+scoped Lean/Z3 models pass locally. The production tests also have compile-time
+negative Copy/Clone assertions. Native unchanged-Neqo baseline and both candidate
+directions compare exact 2/3/5 MiB contents; a separate deterministic-loss run
+compares 2 MiB contents. These remain native diagnostics, not runner verdicts.

@@ -32,10 +32,11 @@ implementation is removed rather than retained as a compatibility path.
 **Architecture migration is incomplete.** Source production now spells out
 stream opening, rolled data exchange, and a finite FIN/abandon boundary in the
 global and direct local code; data slots no longer carry a hidden FIN flag.
-The lower stream table still uses FIN/RESET/ACK permission fields, and resource
-slots still require explicit stream-generation/identity checks. Those are real
-remaining control obligations, not merely arithmetic and not guarantees supplied
-by Hibana alone. Passing interop does not complete this migration.
+A one-shot, scope-borrowing production lease now moves to ingress; ordinary chunks
+cannot select a stream, and the lower `send_final` admission field is deleted.
+The lower stream table still uses RESET/ACK control fields. Those are real remaining
+control obligations, not merely arithmetic and not guarantees supplied by Hibana
+alone. Passing interop does not complete this migration.
 
 ## Status
 
@@ -44,9 +45,9 @@ The pinned, unmodified quic-interop-runner passed `handshake`, `transfer`,
 `longrtt`, `transferloss`, `transfercorruption` and `ipv6` against unmodified Neqo
 in both directions: **12 of 44 candidate cells**, with six separate passing
 Neqo/Neqo controls in
-[run 37177524554](https://github.com/hibanaworks/hibana-quic/actions/runs/37177524554).
-That result applies to commit `b8cf48f7636eec7b81942a27175a89ba68a84333`.
-The subsequent source-production changes require fresh runner qualification.
+[run 37179772627](https://github.com/hibanaworks/hibana-quic/actions/runs/37179772627).
+That result applies to commit `c3e01d12c132bef0896b03e605bcf2183dfbc3da`.
+The subsequent affine production-lease changes require fresh runner qualification.
 The other 32 candidate cells, repeat runs and embedded hardware remain unqualified.
 
 See [active implementation and evidence](docs/ACTIVE-IMPLEMENTATION.md).

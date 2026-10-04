@@ -135,7 +135,7 @@ pub(crate) async fn cancel_peer(
 pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usize>(
     endpoint: &mut Endpoint<'_, { p::FILES_EVENT }>,
     exchange: &Exchange<'_, '_, '_>,
-    state: &io::State<CHUNK>,
+    state: &io::State<'_, CHUNK>,
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
     book: &crate::connection::recovery::CompletionObserver<'_, '_, N>,
     side: Side,

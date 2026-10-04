@@ -1,17 +1,35 @@
-"""Check complete slot binding and a stream-ID-only mutation counterexample."""
-from z3 import And, Ints, Not, Solver, sat, unsat
+"""One-shot issuer, exact scope binding, and a numeric-ID-only mutation."""
+from z3 import Bool, Ints, Not, Solver, sat, unsat
 
-opened = Ints('opened_connection opened_slot opened_generation opened_stream')
-chunk = Ints('chunk_connection chunk_slot chunk_generation chunk_stream')
-checked = And(*(a == b for a, b in zip(opened, chunk)))
-for name, index in [('connection', 0), ('slot', 1), ('generation', 2), ('stream', 3)]:
+available, issued, remaining, second = [Bool(name) for name in
+                                      ('available', 'issued', 'remaining', 'second')]
+table, token_table, handle, token_handle = Ints('table token_table handle token_handle')
+step = [issued == available, Not(remaining), second == remaining,
+        token_table == table, token_handle == handle]
+for name, goal in [('issuer spent', Not(remaining)), ('no reissue', Not(second)),
+                   ('exact table', token_table == table), ('exact handle', token_handle == handle)]:
     solver = Solver()
-    solver.add(checked)
-    assert solver.check() == sat, 'acceptance must be reachable'
-    solver.add(opened[index] != chunk[index])
+    solver.add(*step, available)
+    assert solver.check() == sat
+    solver.add(Not(goal))
     assert solver.check() == unsat
-    print(f'accepted slot preserves {name}: UNSAT; acceptance nonvacuous')
+    print(f'{name}: UNSAT; successful issue nonvacuous')
+other_table, other_handle = Ints('other_table other_handle')
 solver = Solver()
-solver.add(opened[3] == chunk[3], opened[2] != chunk[2])
+solver.add(token_table == other_table, token_table != other_table)
+assert solver.check() == unsat
+print('actual-table equality rejects a foreign table: UNSAT')
+solver = Solver()
+solver.add(token_handle == other_handle, token_table != other_table)
 assert solver.check() == sat
-print('stream-ID-only comparison admits a stale generation: SAT', solver.model())
+print('numeric-handle-only admission accepts a foreign table: SAT', solver.model())
+# Idempotent registration preserves spent issuance. A new generation is a
+# different handle and is outside this same-registration obligation.
+registered, incoming = Ints('registered incoming')
+after_registration = Bool('after_registration')
+solver = Solver()
+solver.add(registered == incoming, Not(remaining), after_registration == remaining)
+assert solver.check() == sat
+solver.add(after_registration)
+assert solver.check() == unsat
+print('same registration cannot replenish spent issuance: UNSAT; premise nonvacuous')

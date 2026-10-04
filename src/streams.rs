@@ -128,7 +128,6 @@ struct State {
     send_limit: u64,
     send_end: u64,
     send_emitted: u64,
-    send_final: Option<u64>,
     send_fin_acked: bool,
     send_reset: Option<u64>,
     reset_transmitted: bool,
@@ -151,7 +150,6 @@ impl State {
         send_limit: 0,
         send_end: 0,
         send_emitted: 0,
-        send_final: None,
         send_fin_acked: false,
         send_reset: None,
         reset_transmitted: false,
@@ -422,7 +420,7 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
             return Err(Error::StreamState);
         }
         let s = self.slots[i].state;
-        if s.send_final.is_some() || s.send_reset.is_some() {
+        if s.send_reset.is_some() {
             return Err(Error::SendClosed);
         }
         Ok(SendCredit {
@@ -817,13 +815,13 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
             error_code,
         })
     }
-    fn reserve_send(&mut self, h: StreamHandle, length: usize, fin: bool) -> Result<u64, Error> {
+    fn reserve_send(&mut self, h: StreamHandle, length: usize) -> Result<u64, Error> {
         let i = self.validate(h)?;
         if !self.can_send(h.id) {
             return Err(Error::StreamState);
         }
         let s = self.slots[i].state;
-        if s.send_final.is_some() || s.send_reset.is_some() {
+        if s.send_reset.is_some() {
             return Err(Error::SendClosed);
         }
         let end = s
@@ -844,9 +842,6 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
         state.send_end = end;
         state.pending_chunks = pending;
         state.unacked_chunks = unacked;
-        if fin {
-            state.send_final = Some(end);
-        }
         self.send_reserved = reserved;
         Ok(s.send_end)
     }
@@ -901,7 +896,6 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
         }
         self.send_reserved -= s.send_end - s.send_emitted;
         s.send_end = s.send_emitted;
-        s.send_final = Some(s.send_emitted);
         s.send_reset = Some(error_code);
         s.unacked_chunks = 0;
         Ok(Some(Reset {
@@ -1104,7 +1098,7 @@ impl<'a, const BYTES: usize> SendQueue<'a, BYTES> {
     }
     /// Backpressure is returned before accepting/copying bytes or reserving flow
     /// credit. Empty chunks are permitted only when carrying FIN.
-    pub fn enqueue<const RX: usize>(
+    pub(crate) fn enqueue<const RX: usize>(
         &mut self,
         table: &mut StreamTable<'_, RX>,
         stream: StreamHandle,
@@ -1122,7 +1116,7 @@ impl<'a, const BYTES: usize> SendQueue<'a, BYTES> {
             .iter()
             .position(|c| c.state.stream.is_none() && c.state.generation < u64::MAX)
             .ok_or(Error::Capacity)?;
-        let offset = table.reserve_send(stream, data.len(), fin)?;
+        let offset = table.reserve_send(stream, data.len())?;
         let chunk = &mut self.chunks[slot];
         chunk.bytes[..data.len()].copy_from_slice(data);
         chunk.state = ChunkState {

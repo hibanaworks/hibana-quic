@@ -115,6 +115,19 @@ pub struct Facets<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> 
 pub struct App<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
     core: &'book StreamNumbers<'storage, 'scope, RX, CHUNK>,
 }
+/// One production lease for one live stream in this exact table. It cannot be
+/// cloned or reissued after FIN/abandon. The projected source continuation owns
+/// it while producing bytes; retransmission uses independent retained chunks.
+pub(super) struct Production<'book> {
+    identity: &'book Identity,
+    stream: StreamHandle,
+}
+impl Production<'_> {
+    pub(super) fn id(&self) -> u64 {
+        self.stream.id()
+    }
+}
+
 pub struct Rx<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
     core: &'book StreamNumbers<'storage, 'scope, RX, CHUNK>,
 }
@@ -133,7 +146,7 @@ pub struct Read {
     pub reset: Option<u64>,
 }
 
-impl<const RX: usize, const CHUNK: usize> App<'_, '_, '_, RX, CHUNK> {
+impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
     /// Open a locally initiated bidirectional stream using authenticated peer credit.
     pub fn open_local(&mut self) -> Result<StreamHandle, Error> {
         let mut n = self
@@ -146,30 +159,42 @@ impl<const RX: usize, const CHUNK: usize> App<'_, '_, '_, RX, CHUNK> {
         Ok(stream)
     }
 
-    /// Copy one complete retransmittable chunk. Backpressure leaves its bytes
-    /// with the caller; stream handles retain the table's generation binding.
-    pub fn enqueue(&mut self, stream: StreamHandle, bytes: &[u8], fin: bool) -> Result<(), Error> {
-        let mut n = self
+    pub(super) fn take_production(
+        &mut self,
+        stream: StreamHandle,
+    ) -> Result<Production<'book>, Error> {
+        let mut numbers = self
             .core
             .numbers
             .try_borrow_mut()
             .map_err(|_| Error::Borrowed)?;
-        if n.state(stream)?.deferred_stop.is_some() {
-            return Err(streams::Error::SendClosed.into());
+        let issued = numbers
+            .state_mut(stream)?
+            .production
+            .take()
+            .ok_or(Error::Binding)?;
+        Ok(Production {
+            identity: &self.core.identity,
+            stream: issued,
+        })
+    }
+
+    fn production_stream(&self, production: &Production<'_>) -> Result<StreamHandle, Error> {
+        if !core::ptr::eq(production.identity, &self.core.identity) {
+            return Err(Error::Binding);
         }
-        let Numbers { table, queue, .. } = &mut *n;
-        queue.enqueue(table, stream, bytes, fin)?;
-        Ok(())
+        Ok(production.stream)
     }
 
     /// Admit at most one chunk and the available peer credit. FIN is attached
     /// only when the complete supplied suffix fits.
-    pub fn enqueue_prefix(
+    pub(super) fn enqueue_prefix(
         &mut self,
-        stream: StreamHandle,
+        production: &mut Production<'_>,
         bytes: &[u8],
         fin: bool,
     ) -> Result<usize, Error> {
+        let stream = self.production_stream(production)?;
         let mut n = self
             .core
             .numbers
@@ -761,6 +786,7 @@ impl ControlReference {
 #[derive(Clone, Copy)]
 struct StreamState {
     handle: Option<StreamHandle>,
+    production: Option<StreamHandle>,
     credit: Credit,
     reset: Option<streams::Reset>,
     reset_pending: bool,
@@ -771,6 +797,7 @@ struct StreamState {
 impl StreamState {
     const EMPTY: Self = Self {
         handle: None,
+        production: None,
         credit: Credit::new(0),
         reset: None,
         reset_pending: false,
@@ -823,6 +850,7 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
         };
         self.streams[stream.slot()] = StreamState {
             handle: Some(stream),
+            production: Some(stream),
             credit: Credit::new(maximum),
             ..StreamState::EMPTY
         };
@@ -960,6 +988,100 @@ mod tests {
     }
 
     #[test]
+    fn production_is_one_shot_even_after_drop_and_same_stream_registration() {
+        // These expressions become ambiguous if somebody adds Copy or Clone
+        // to the lease. They check affinity at compile time, without a fixture
+        // that could merely fail because the type is private.
+        trait NotCopy<A> {
+            fn witness() {}
+        }
+        impl<T: ?Sized> NotCopy<()> for T {}
+        impl<T: ?Sized + Copy> NotCopy<u8> for T {}
+        let _ = <Production<'static> as NotCopy<_>>::witness;
+        trait NotClone<A> {
+            fn witness() {}
+        }
+        impl<T: ?Sized> NotClone<()> for T {}
+        impl<T: ?Sized + Clone> NotClone<u8> for T {}
+        let _ = <Production<'static> as NotClone<_>>::witness;
+        let scope = ApplicationKeyScope::new(707);
+        let mut slots = [StreamSlot::<8>::EMPTY];
+        let mut chunks = [SendChunk::<8>::EMPTY];
+        let mut references = [PacketReference::EMPTY; 4];
+        let mut core = StreamNumbers::new(
+            &scope,
+            Role::Client,
+            local(Role::Server),
+            local(Role::Client),
+            &mut slots,
+            &mut chunks,
+            &mut references,
+        )
+        .unwrap();
+        let mut app = core.split().app;
+        let stream = app.open_local().unwrap();
+        let allocation = actor_test_allocator::NoAlloc::start();
+        let production = app.take_production(stream).unwrap();
+        assert!(matches!(app.take_production(stream), Err(Error::Binding)));
+        drop(production);
+        app.core.numbers.borrow_mut().register(stream).unwrap();
+        assert!(matches!(app.take_production(stream), Err(Error::Binding)));
+        allocation.finish();
+    }
+
+    #[test]
+    fn production_cannot_cross_tables_with_identical_numeric_stream_ids() {
+        let scope = ApplicationKeyScope::new(708);
+        let mut slots_a = [StreamSlot::<8>::EMPTY];
+        let mut chunks_a = [SendChunk::<8>::EMPTY];
+        let mut refs_a = [PacketReference::EMPTY; 4];
+        let mut slots_b = [StreamSlot::<8>::EMPTY];
+        let mut chunks_b = [SendChunk::<8>::EMPTY];
+        let mut refs_b = [PacketReference::EMPTY; 4];
+        let mut a = StreamNumbers::new(
+            &scope,
+            Role::Client,
+            local(Role::Server),
+            local(Role::Client),
+            &mut slots_a,
+            &mut chunks_a,
+            &mut refs_a,
+        )
+        .unwrap();
+        let mut b = StreamNumbers::new(
+            &scope,
+            Role::Client,
+            local(Role::Server),
+            local(Role::Client),
+            &mut slots_b,
+            &mut chunks_b,
+            &mut refs_b,
+        )
+        .unwrap();
+        let mut a = a.split().app;
+        let mut b = b.split().app;
+        let sa = a.open_local().unwrap();
+        let sb = b.open_local().unwrap();
+        assert_eq!(
+            sa, sb,
+            "numeric identities alone must not authorize a different table"
+        );
+        let allocation = actor_test_allocator::NoAlloc::start();
+        let mut production = a.take_production(sa).unwrap();
+        assert!(matches!(
+            b.enqueue_prefix(&mut production, b"data", false),
+            Err(Error::Binding)
+        ));
+        assert_eq!(
+            a.enqueue_prefix(&mut production, b"data", false).unwrap(),
+            4
+        );
+        assert_eq!(a.queued_chunks().unwrap(), 1);
+        assert_eq!(b.queued_chunks().unwrap(), 0);
+        allocation.finish();
+    }
+
+    #[test]
     fn three_streams_have_independent_windows_payloads_and_completion() {
         let scope = ApplicationKeyScope::new(13);
         let mut slots = [const { StreamSlot::<8>::EMPTY }; 3];
@@ -1037,7 +1159,11 @@ mod tests {
             .unwrap();
             assert!(app.read(stream, &mut output).unwrap().fin);
             assert_eq!(output, data);
-            app.enqueue(stream, &data, true).unwrap();
+            let mut production = app.take_production(stream).unwrap();
+            assert_eq!(
+                app.enqueue_prefix(&mut production, &data, true).unwrap(),
+                (&data).len()
+            );
         }
         for pn in 3..6 {
             let prepared = tx.prepare::<64>(false).unwrap().unwrap();
@@ -1074,7 +1200,12 @@ mod tests {
             mut publication,
         } = core.split();
         let stream = app.open_local().unwrap();
-        app.enqueue(stream, b"GET /\r\n", true).unwrap();
+        let mut production = app.take_production(stream).unwrap();
+        assert_eq!(
+            app.enqueue_prefix(&mut production, b"GET /\r\n", true)
+                .unwrap(),
+            (b"GET /\r\n").len()
+        );
         let bytes = tx.prepare::<64>(false).unwrap().unwrap();
         let reservation = tx.reserve_transmission(&bytes, 0).unwrap();
         publication.cancel(reservation).unwrap();
@@ -1191,7 +1322,12 @@ mod tests {
             mut publication,
         } = core.split();
         let stream = app.open_local().unwrap();
-        app.enqueue(stream, b"hello", false).unwrap();
+        let mut production = app.take_production(stream).unwrap();
+        assert_eq!(
+            app.enqueue_prefix(&mut production, b"hello", false)
+                .unwrap(),
+            (b"hello").len()
+        );
         let prepared = tx.prepare::<64>(false).unwrap().unwrap();
         let reservation = tx.reserve_transmission(&prepared, 0).unwrap();
         rx.apply(&Frame::StopSending {
