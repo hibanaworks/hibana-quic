@@ -2,22 +2,27 @@
 //! bounded stream IO, ordinary retirement, closing and draining.
 //! Recovered foundations and new integration await fresh compiler/test checks.
 
-pub mod protocol;
 mod io;
 mod keys;
+pub mod protocol;
 mod receive;
-mod termination;
-mod startup;
 mod run;
-mod transmit;
+mod startup;
+mod termination;
 mod timer;
+mod transmit;
 
 pub use run::{client, server};
 
-use core::{cell::{Cell, RefCell}, future::{Future, poll_fn}, pin::pin, task::{Poll, Waker}};
-use hibana::{Endpoint, EndpointError};
+use super::{Config, Outcome, application_stream, parameters, recovery};
 use crate::{crypto, handshake::CryptoBuffer, packet, roles::publication_gate, streams};
-use super::{application_stream, parameters, recovery, Config, Outcome};
+use core::{
+    cell::{Cell, RefCell},
+    future::{Future, poll_fn},
+    pin::pin,
+    task::{Poll, Waker},
+};
+use hibana::{Endpoint, EndpointError};
 
 pub const MAX_REQUEST_BYTES: usize = 1024;
 pub const MAX_REQUESTS: usize = 16;
@@ -29,7 +34,11 @@ pub trait BodyReader {
 /// The request is the actual authenticated, FIN-complete HTTP/0.9 request.
 pub trait ServerHandler {
     type Body: BodyReader;
-    fn open(&mut self, stream_id: u64, request: &[u8]) -> impl Future<Output = Result<Self::Body, ()>>;
+    fn open(
+        &mut self,
+        stream_id: u64,
+        request: &[u8],
+    ) -> impl Future<Output = Result<Self::Body, ()>>;
 }
 /// A pending request stays pending until exactly one successful `started`.
 pub trait ClientRequests {
@@ -60,10 +69,18 @@ pub struct Outcomes {
 }
 impl Outcomes {
     pub const fn new() -> Self {
-        Self { tls: Outcome::new(), handshake_adapter: Outcome::new(), application_adapter: Outcome::new() }
+        Self {
+            tls: Outcome::new(),
+            handshake_adapter: Outcome::new(),
+            application_adapter: Outcome::new(),
+        }
     }
 }
-impl Default for Outcomes { fn default() -> Self { Self::new() } }
+impl Default for Outcomes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Report {
@@ -80,21 +97,21 @@ pub struct Report {
 
 pub struct Roles<'a> {
     pub handshake: super::Roles<'a>,
-    pub source: Endpoint<'a, {protocol::SOURCE}>,
-    pub ingress: Endpoint<'a, {protocol::INGRESS}>,
-    pub receive: Endpoint<'a, {protocol::RECEIVE}>,
-    pub sink: Endpoint<'a, {protocol::SINK}>,
-    pub rx_keys: Endpoint<'a, {protocol::RX_KEYS}>,
-    pub tx_keys: Endpoint<'a, {protocol::TX_KEYS}>,
-    pub clock: Endpoint<'a, {protocol::CLOCK}>,
-    pub tx_clock: Endpoint<'a, {protocol::TX_CLOCK}>,
-    pub transmit: Endpoint<'a, {protocol::TRANSMIT}>,
-    pub adapter: Endpoint<'a, {protocol::ADAPTER}>,
-    pub peer_event: Endpoint<'a, {protocol::PEER_EVENT}>,
-    pub peer_close: Endpoint<'a, {protocol::PEER_CLOSE}>,
-    pub files_event: Endpoint<'a, {protocol::FILES_EVENT}>,
-    pub files_close: Endpoint<'a, {protocol::FILES_CLOSE}>,
-    pub close_join: Endpoint<'a, {protocol::CLOSE_JOIN}>,
+    pub source: Endpoint<'a, { protocol::SOURCE }>,
+    pub ingress: Endpoint<'a, { protocol::INGRESS }>,
+    pub receive: Endpoint<'a, { protocol::RECEIVE }>,
+    pub sink: Endpoint<'a, { protocol::SINK }>,
+    pub rx_keys: Endpoint<'a, { protocol::RX_KEYS }>,
+    pub tx_keys: Endpoint<'a, { protocol::TX_KEYS }>,
+    pub clock: Endpoint<'a, { protocol::CLOCK }>,
+    pub tx_clock: Endpoint<'a, { protocol::TX_CLOCK }>,
+    pub transmit: Endpoint<'a, { protocol::TRANSMIT }>,
+    pub adapter: Endpoint<'a, { protocol::ADAPTER }>,
+    pub peer_event: Endpoint<'a, { protocol::PEER_EVENT }>,
+    pub peer_close: Endpoint<'a, { protocol::PEER_CLOSE }>,
+    pub files_event: Endpoint<'a, { protocol::FILES_EVENT }>,
+    pub files_close: Endpoint<'a, { protocol::FILES_CLOSE }>,
+    pub close_join: Endpoint<'a, { protocol::CLOSE_JOIN }>,
 }
 
 #[derive(Debug)]
@@ -113,13 +130,41 @@ pub enum Error {
     KeyControl,
     UnexpectedLabel(u8),
 }
-impl From<super::Error> for Error { fn from(value: super::Error) -> Self { Self::Connection(value) } }
-impl From<EndpointError> for Error { fn from(value: EndpointError) -> Self { Self::Endpoint(value) } }
-impl From<recovery::Error> for Error { fn from(value: recovery::Error) -> Self { Self::Recovery(value) } }
-impl From<application_stream::Error> for Error { fn from(value: application_stream::Error) -> Self { Self::Streams(value) } }
-impl From<crypto::Error> for Error { fn from(value: crypto::Error) -> Self { Self::Crypto(value) } }
-impl From<packet::Error> for Error { fn from(value: packet::Error) -> Self { Self::Packet(value) } }
-impl From<parameters::Error> for Error { fn from(value: parameters::Error) -> Self { Self::Parameters(value) } }
+impl From<super::Error> for Error {
+    fn from(value: super::Error) -> Self {
+        Self::Connection(value)
+    }
+}
+impl From<EndpointError> for Error {
+    fn from(value: EndpointError) -> Self {
+        Self::Endpoint(value)
+    }
+}
+impl From<recovery::Error> for Error {
+    fn from(value: recovery::Error) -> Self {
+        Self::Recovery(value)
+    }
+}
+impl From<application_stream::Error> for Error {
+    fn from(value: application_stream::Error) -> Self {
+        Self::Streams(value)
+    }
+}
+impl From<crypto::Error> for Error {
+    fn from(value: crypto::Error) -> Self {
+        Self::Crypto(value)
+    }
+}
+impl From<packet::Error> for Error {
+    fn from(value: packet::Error) -> Self {
+        Self::Packet(value)
+    }
+}
+impl From<parameters::Error> for Error {
+    fn from(value: parameters::Error) -> Self {
+        Self::Parameters(value)
+    }
+}
 impl From<keys::Error> for Error {
     fn from(value: keys::Error) -> Self {
         match value {
@@ -146,17 +191,30 @@ pub(crate) struct Control<'gate, 'scope> {
 }
 impl<'gate, 'scope> Control<'gate, 'scope> {
     pub(crate) fn new(stop: publication_gate::Stop<'gate, 'scope>) -> Self {
-        Self { revision: Cell::new(0), wakers: core::array::from_fn(|_| RefCell::new(None)),
-            failed: Cell::new(false), stop: RefCell::new(Some(stop)) }
+        Self {
+            revision: Cell::new(0),
+            wakers: core::array::from_fn(|_| RefCell::new(None)),
+            failed: Cell::new(false),
+            stop: RefCell::new(Some(stop)),
+        }
     }
-    pub(crate) fn stopping(&self) -> bool { self.stop.borrow().is_none() }
-    pub(crate) fn revision(&self) -> u64 { self.revision.get() }
-    pub(crate) fn failed(&self) -> bool { self.failed.get() }
+    pub(crate) fn stopping(&self) -> bool {
+        self.stop.borrow().is_none()
+    }
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+    pub(crate) fn failed(&self) -> bool {
+        self.failed.get()
+    }
     pub(crate) fn changed(&self) -> Result<(), Error> {
-        self.revision.set(self.revision.get().checked_add(1).ok_or(Error::Binding)?);
+        self.revision
+            .set(self.revision.get().checked_add(1).ok_or(Error::Binding)?);
         for slot in &self.wakers {
             let wake = slot.borrow_mut().take();
-            if let Some(wake) = wake { wake.wake(); }
+            if let Some(wake) = wake {
+                wake.wake();
+            }
         }
         Ok(())
     }
@@ -167,30 +225,51 @@ impl<'gate, 'scope> Control<'gate, 'scope> {
     }
     pub(crate) async fn wait(&self, lane: usize, revision: u64) {
         poll_fn(|cx| {
-            if self.revision() != revision || self.stopping() { return Poll::Ready(()); }
+            if self.revision() != revision || self.stopping() {
+                return Poll::Ready(());
+            }
             self.register(lane, cx.waker());
-            if self.revision() != revision || self.stopping() { Poll::Ready(()) } else { Poll::Pending }
-        }).await
+            if self.revision() != revision || self.stopping() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
     }
     pub(crate) async fn until_stop<F: Future>(&self, lane: usize, future: F) -> Option<F::Output> {
         let mut future = pin!(future);
         poll_fn(|cx| {
-            if self.stopping() { return Poll::Ready(None); }
+            if self.stopping() {
+                return Poll::Ready(None);
+            }
             self.register(lane, cx.waker());
-            if self.stopping() { return Poll::Ready(None); }
+            if self.stopping() {
+                return Poll::Ready(None);
+            }
             future.as_mut().poll(cx).map(Some)
-        }).await
+        })
+        .await
     }
     pub(crate) fn revoke(&self) -> Result<(), Error> {
         let stop = self.stop.borrow_mut().take();
-        if let Some(stop) = stop { stop.revoke(); }
+        if let Some(stop) = stop {
+            stop.revoke();
+        }
         self.changed()
     }
-    pub(crate) fn fail(&self) -> Result<(), Error> { self.failed.set(true); self.changed() }
+    pub(crate) fn fail(&self) -> Result<(), Error> {
+        self.failed.set(true);
+        self.changed()
+    }
 }
 
 /// Minted privately only after every ordinary projected role has retired.
-pub struct OrdinaryRetired<'scope> { scope: &'scope crypto::directional::ApplicationKeyScope }
+pub struct OrdinaryRetired<'scope> {
+    scope: &'scope crypto::directional::ApplicationKeyScope,
+}
 impl<'scope> OrdinaryRetired<'scope> {
-    pub(crate) fn scope(&self) -> &'scope crypto::directional::ApplicationKeyScope { self.scope }
+    pub(crate) fn scope(&self) -> &'scope crypto::directional::ApplicationKeyScope {
+        self.scope
+    }
 }

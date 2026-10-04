@@ -1,7 +1,11 @@
 //! Deadline progress is independent of a pending UDP publication.
 use super::{Control, Error, keys::KeyOwner, protocol as p};
 use crate::connection::{Clock, recovery};
-use core::{future::{Future, poll_fn}, pin::pin, task::Poll};
+use core::{
+    future::{Future, poll_fn},
+    pin::pin,
+    task::Poll,
+};
 use hibana::Endpoint;
 
 pub(crate) async fn run<const N: usize>(
@@ -27,11 +31,16 @@ pub(crate) async fn run<const N: usize>(
             let mut wait = pin!(clock.wait_until(deadline.at()));
             let mut changed = pin!(control.wait(5, revision));
             poll_fn(|cx| {
-                if changed.as_mut().poll(cx).is_ready() { return Poll::Ready(false); }
+                if changed.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(false);
+                }
                 wait.as_mut().poll(cx).map(|()| true)
-            }).await
+            })
+            .await
         };
-        if !expired { continue; }
+        if !expired {
+            continue;
+        }
         match book.expire(deadline, clock.now()) {
             Ok(Some(_)) => {
                 endpoint.send::<p::Expired>(&sequence).await?;
@@ -72,5 +81,9 @@ pub(crate) async fn receive(
 }
 
 fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected { Ok(()) } else { Err(Error::Binding) }
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Error::Binding)
+    }
 }

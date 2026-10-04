@@ -5,16 +5,23 @@
 use super::{CloseKind, Control, Error, keys, protocol as p, startup};
 use crate::{
     accounting::AccountingError,
-    connection::{self, Clock, Config, ConnectionId, DatagramTx, Outcome,
-        application_stream, application_wire::{self, SealedApplicationDatagram},
-        recovery, wire},
+    connection::{
+        self, Clock, Config, ConnectionId, DatagramTx, Outcome, application_stream,
+        application_wire::{self, SealedApplicationDatagram},
+        recovery, wire,
+    },
     crypto::directional::{ApplicationKeyScope, ApplicationWriteKeys},
     flights::FlightId,
     packet::{self, Frame},
     roles::publication_gate,
     tls::Level,
 };
-use core::{cell::{Cell, RefCell}, future::{Future, poll_fn}, pin::pin, task::Poll};
+use core::{
+    cell::{Cell, RefCell},
+    future::{Future, poll_fn},
+    pin::pin,
+    task::Poll,
+};
 use hibana::{Endpoint, runtime::resolver::DecisionArm};
 use zeroize::Zeroizing;
 
@@ -24,12 +31,24 @@ enum Sealed<'book, const N: usize> {
 }
 impl<'book, const N: usize> Sealed<'book, N> {
     fn bytes(&self) -> &[u8] {
-        match self { Self::Application(packet) => packet.bytes(), Self::Long(packet) => packet.sealed.bytes() }
+        match self {
+            Self::Application(packet) => packet.bytes(),
+            Self::Long(packet) => packet.sealed.bytes(),
+        }
     }
-    fn into_parts(self) -> (recovery::Reservation<'book>, Option<recovery::AckSnapshot<'book>>) {
+    fn into_parts(
+        self,
+    ) -> (
+        recovery::Reservation<'book>,
+        Option<recovery::AckSnapshot<'book>>,
+    ) {
         match self {
             Self::Application(packet) => (packet.into_reservation(), None),
-            Self::Long(wire::Datagram { sealed: _, reservation, acknowledgment }) => (reservation, acknowledgment),
+            Self::Long(wire::Datagram {
+                sealed: _,
+                reservation,
+                acknowledgment,
+            }) => (reservation, acknowledgment),
         }
     }
 }
@@ -47,14 +66,30 @@ struct Pending<'book, 'streams, const N: usize> {
 /// The slot transfers the actual packet on the declared Datagram edge. It
 /// owns the unique publication facets, so even cancellation before the adapter
 /// takes the slot releases both reservations. Borrows are synchronous only.
-pub(crate) struct State<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const CHUNK: usize> {
+pub(crate) struct State<
+    'book,
+    'streams,
+    'storage,
+    'scope,
+    const N: usize,
+    const RX: usize,
+    const CHUNK: usize,
+> {
     pending: RefCell<Option<Pending<'book, 'streams, N>>>,
     owners: RefCell<Owners<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>>,
     closing: Cell<bool>,
     drain_deadline: Cell<Option<u64>>,
     completed: Cell<bool>,
 }
-struct Owners<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const CHUNK: usize> {
+struct Owners<
+    'book,
+    'streams,
+    'storage,
+    'scope,
+    const N: usize,
+    const RX: usize,
+    const CHUNK: usize,
+> {
     book: recovery::Publication<'book, 'scope, N>,
     streams: application_stream::Publication<'streams, 'storage, 'scope, RX, CHUNK>,
 }
@@ -65,33 +100,67 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         book: recovery::Publication<'book, 'scope, N>,
         streams: application_stream::Publication<'streams, 'storage, 'scope, RX, CHUNK>,
     ) -> Self {
-        Self { pending: RefCell::new(None), owners: RefCell::new(Owners { book, streams }),
-            closing: Cell::new(false), drain_deadline: Cell::new(None), completed: Cell::new(false) }
+        Self {
+            pending: RefCell::new(None),
+            owners: RefCell::new(Owners { book, streams }),
+            closing: Cell::new(false),
+            drain_deadline: Cell::new(None),
+            completed: Cell::new(false),
+        }
     }
-    pub(crate) fn close_completed(&self) -> bool { self.completed.get() }
-    pub(crate) fn snapshot(&self) -> recovery::Snapshot { self.owners.borrow().book.snapshot() }
-    pub(crate) fn retire_all(&self) { self.owners.borrow_mut().book.retire_all(); }
-    fn put(&self, packet: Pending<'book, 'streams, N>) -> Result<(), (Error, Pending<'book, 'streams, N>)> {
-        let Ok(mut slot) = self.pending.try_borrow_mut() else { return Err((Error::Binding, packet)); };
-        if slot.is_some() { return Err((Error::Binding, packet)); }
+    pub(crate) fn close_completed(&self) -> bool {
+        self.completed.get()
+    }
+    pub(crate) fn snapshot(&self) -> recovery::Snapshot {
+        self.owners.borrow().book.snapshot()
+    }
+    pub(crate) fn retire_all(&self) {
+        self.owners.borrow_mut().book.retire_all();
+    }
+    fn put(
+        &self,
+        packet: Pending<'book, 'streams, N>,
+    ) -> Result<(), (Error, Pending<'book, 'streams, N>)> {
+        let Ok(mut slot) = self.pending.try_borrow_mut() else {
+            return Err((Error::Binding, packet));
+        };
+        if slot.is_some() {
+            return Err((Error::Binding, packet));
+        }
         *slot = Some(packet);
         Ok(())
     }
     fn take(&self) -> Result<Pending<'book, 'streams, N>, Error> {
-        self.pending.try_borrow_mut().map_err(|_| Error::Binding)?.take().ok_or(Error::Binding)
+        self.pending
+            .try_borrow_mut()
+            .map_err(|_| Error::Binding)?
+            .take()
+            .ok_or(Error::Binding)
     }
-    fn settle(&self, packet: Pending<'book, 'streams, N>, accepted_at: Option<u64>) -> Result<(), Error> {
+    fn settle(
+        &self,
+        packet: Pending<'book, 'streams, N>,
+        accepted_at: Option<u64>,
+    ) -> Result<(), Error> {
         let mut owners = self.owners.try_borrow_mut().map_err(|_| Error::Binding)?;
         let Owners { book, streams } = &mut *owners;
         settle(packet, book, streams, accepted_at)
     }
     pub(crate) fn cancel_pending(&self) -> Result<(), Error> {
-        let pending = self.pending.try_borrow_mut().map_err(|_| Error::Binding)?.take();
-        if let Some(pending) = pending { self.settle(pending, None)?; }
+        let pending = self
+            .pending
+            .try_borrow_mut()
+            .map_err(|_| Error::Binding)?
+            .take();
+        if let Some(pending) = pending {
+            self.settle(pending, None)?;
+        }
         Ok(())
     }
 }
-impl<const N: usize, const RX: usize, const CHUNK: usize> Drop for State<'_, '_, '_, '_, N, RX, CHUNK> {
+impl<const N: usize, const RX: usize, const CHUNK: usize> Drop
+    for State<'_, '_, '_, '_, N, RX, CHUNK>
+{
     fn drop(&mut self) {
         if let Some(packet) = self.pending.get_mut().take() {
             let Owners { book, streams } = self.owners.get_mut();
@@ -102,19 +171,41 @@ impl<const N: usize, const RX: usize, const CHUNK: usize> Drop for State<'_, '_,
 
 /// The adapter owns this guard across Pending. Cancellation releases both
 /// reservations synchronously; an accepted result is settled before any await.
-struct InFlight<'a, 'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const CHUNK: usize> {
+struct InFlight<
+    'a,
+    'book,
+    'streams,
+    'storage,
+    'scope,
+    const N: usize,
+    const RX: usize,
+    const CHUNK: usize,
+> {
     packet: Option<Pending<'book, 'streams, N>>,
     state: &'a State<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>,
 }
-impl<const N: usize, const RX: usize, const CHUNK: usize> InFlight<'_, '_, '_, '_, '_, N, RX, CHUNK> {
-    fn bytes(&self) -> &[u8] { self.packet.as_ref().expect("live publication").sealed.bytes() }
+impl<const N: usize, const RX: usize, const CHUNK: usize>
+    InFlight<'_, '_, '_, '_, '_, N, RX, CHUNK>
+{
+    fn bytes(&self) -> &[u8] {
+        self.packet
+            .as_ref()
+            .expect("live publication")
+            .sealed
+            .bytes()
+    }
     fn complete(&mut self, accepted_at: Option<u64>) -> Result<(), Error> {
-        self.state.settle(self.packet.take().ok_or(Error::Binding)?, accepted_at)
+        self.state
+            .settle(self.packet.take().ok_or(Error::Binding)?, accepted_at)
     }
 }
-impl<const N: usize, const RX: usize, const CHUNK: usize> Drop for InFlight<'_, '_, '_, '_, '_, N, RX, CHUNK> {
+impl<const N: usize, const RX: usize, const CHUNK: usize> Drop
+    for InFlight<'_, '_, '_, '_, '_, N, RX, CHUNK>
+{
     fn drop(&mut self) {
-        if let Some(packet) = self.packet.take() { let _ = self.state.settle(packet, None); }
+        if let Some(packet) = self.packet.take() {
+            let _ = self.state.settle(packet, None);
+        }
     }
 }
 
@@ -124,7 +215,14 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
     streams: &mut application_stream::Publication<'_, '_, '_, RX, CHUNK>,
     accepted_at: Option<u64>,
 ) -> Result<(), Error> {
-    let Pending { scope: _, sealed, stream, acknowledgment, close_deadline: _, initial_handshake_done: _ } = packet;
+    let Pending {
+        scope: _,
+        sealed,
+        stream,
+        acknowledgment,
+        close_deadline: _,
+        initial_handshake_done: _,
+    } = packet;
     let (reservation, long_ack) = sealed.into_parts();
     // Complete both numeric owners in this synchronous turn even if one owner
     // reports an invariant failure. No peer ACK can interleave between them.
@@ -137,13 +235,22 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
     recovery_result?;
     stream_result?;
     if accepted_at.is_some() {
-        if let Some(ack) = acknowledgment.or(long_ack) { book.acknowledgment_sent(ack)?; }
+        if let Some(ack) = acknowledgment.or(long_ack) {
+            book.acknowledgment_sent(ack)?;
+        }
     }
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(
+pub(crate) async fn run<
+    'book,
+    'streams,
+    'scope,
+    const N: usize,
+    const RX: usize,
+    const CHUNK: usize,
+>(
     endpoint: &mut Endpoint<'_, { p::TRANSMIT }>,
     control: &Control<'_, 'scope>,
     state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
@@ -159,13 +266,23 @@ pub(crate) async fn run<'book, 'streams, 'scope, const N: usize, const RX: usize
     let mut history_floor = book.application_history_floor();
     while !control.stopping() {
         let revision = control.revision();
-        while let Some(packet) = book.take_lost_application() { streams.lost(packet.value)?; }
+        while let Some(packet) = book.take_lost_application() {
+            streams.lost(packet.value)?;
+        }
         let floor = book.application_history_floor();
         while history_floor < floor {
             streams.forget_lost(history_floor)?;
             history_floor += 1;
         }
-        let pending = prepare(keys, book, streams, handshake_done, config, peer, clock.now())?;
+        let pending = prepare(
+            keys,
+            book,
+            streams,
+            handshake_done,
+            config,
+            peer,
+            clock.now(),
+        )?;
         let Some(pending) = pending else {
             control.wait(4, revision).await;
             continue;
@@ -180,11 +297,15 @@ pub(crate) async fn run<'book, 'streams, 'scope, const N: usize, const RX: usize
         match offered.label() {
             27 => {
                 check(offered.recv::<p::Accepted>().await?, sequence)?;
-                if sent_handshake_done { handshake_done = None; }
-            },
+                if sent_handshake_done {
+                    handshake_done = None;
+                }
+            }
             28 => {
                 check(offered.recv::<p::Rejected>().await?, sequence)?;
-                if !control.stopping() { control.fail()?; }
+                if !control.stopping() {
+                    control.fail()?;
+                }
             }
             label => return Err(Error::UnexpectedLabel(label)),
         }
@@ -203,7 +324,10 @@ fn cancel_prepared<'book, 'streams, 'scope, const N: usize, const RX: usize, con
 ) -> Result<(), Error> {
     let (reservation, _) = packet.sealed.into_parts();
     let recovery_result = book.cancel(reservation);
-    let stream_result = packet.stream.map(|stream| streams.cancel_transmission(stream)).unwrap_or(Ok(()));
+    let stream_result = packet
+        .stream
+        .map(|stream| streams.cancel_transmission(stream))
+        .unwrap_or(Ok(()));
     recovery_result?;
     stream_result?;
     Ok(())
@@ -224,9 +348,21 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     // retirement, including ACKs and CRYPTO retransmission after TLS Finished.
     if let Some(ack) = book.pending_ack() {
         if ack.level() != Level::OneRtt && available[level_index(ack.level())] {
-            let frame = Frame::Ack { delay: 0, ranges: packet::AckRanges::new(ack.ranges())?, ecn: None };
+            let frame = Frame::Ack {
+                delay: 0,
+                ranges: packet::AckRanges::new(ack.ranges())?,
+                ecn: None,
+            };
             let plain = wire::PlainPacket::<N>::new(config, peer, ack.level(), frame)?;
-            let reservation = match book.reserve(ack.level(), plain.len() as u64, None, false, plain.padded(), false, now) {
+            let reservation = match book.reserve(
+                ack.level(),
+                plain.len() as u64,
+                None,
+                false,
+                plain.padded(),
+                false,
+                now,
+            ) {
                 Ok(reservation) => Some(reservation),
                 Err(error) if limited(&error) => None,
                 Err(error) => return Err(error.into()),
@@ -235,9 +371,19 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
                 let scope = reservation.scope();
                 let sealed = match keys.seal_long(ack.level(), plain, reservation, Some(ack)) {
                     Ok(sealed) => sealed,
-                    Err((error, reservation)) => { book.cancel(reservation)?; return Err(error.into()); }
+                    Err((error, reservation)) => {
+                        book.cancel(reservation)?;
+                        return Err(error.into());
+                    }
                 };
-                return Ok(Some(Pending { scope, sealed: Sealed::Long(sealed), stream: None, acknowledgment: None, close_deadline: None, initial_handshake_done: false }));
+                return Ok(Some(Pending {
+                    scope,
+                    sealed: Sealed::Long(sealed),
+                    stream: None,
+                    acknowledgment: None,
+                    close_deadline: None,
+                    initial_handshake_done: false,
+                }));
             }
         }
     }
@@ -246,7 +392,9 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     if let Some(flight) = handshake_done {
         let mut plaintext = Zeroizing::new([0; N]);
         let len = packet::encode_frame(&Frame::HandshakeDone, &mut plaintext[..])?;
-        if let Some(mut pending) = application_control_packet(keys, book, peer, &plaintext[..len], flight, false, now)? {
+        if let Some(mut pending) =
+            application_control_packet(keys, book, peer, &plaintext[..len], flight, false, now)?
+        {
             pending.initial_handshake_done = true;
             return Ok(Some(pending));
         }
@@ -255,16 +403,37 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
         if book.is_handshake_done(flight)? {
             let mut plaintext = Zeroizing::new([0; N]);
             let mut len = packet::encode_frame(&Frame::HandshakeDone, &mut plaintext[..])?;
-            pad_probe(&mut plaintext, &mut len, peer, probe, book.pending_probe_minimum())?;
-            if let Some(pending) = application_control_packet(keys, book, peer, &plaintext[..len], flight, probe, now)? {
+            pad_probe(
+                &mut plaintext,
+                &mut len,
+                peer,
+                probe,
+                book.pending_probe_minimum(),
+            )?;
+            if let Some(pending) =
+                application_control_packet(keys, book, peer, &plaintext[..len], flight, probe, now)?
+            {
                 return Ok(Some(pending));
             }
         } else {
             let flight_data = book.flight_data(flight)?;
             let level = flight_data.level();
             if available[level_index(level)] {
-                let frame = Frame::Crypto { offset: flight_data.offset(), data: flight_data.bytes() };
-                if let Some(pending) = long_packet(keys, book, config, peer, level, frame, Some(flight), probe, now)? {
+                let frame = Frame::Crypto {
+                    offset: flight_data.offset(),
+                    data: flight_data.bytes(),
+                };
+                if let Some(pending) = long_packet(
+                    keys,
+                    book,
+                    config,
+                    peer,
+                    level,
+                    frame,
+                    Some(flight),
+                    probe,
+                    now,
+                )? {
                     return Ok(Some(pending));
                 }
             }
@@ -272,34 +441,73 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     }
     if let Some(level) = book.pending_probe() {
         if level != Level::OneRtt && available[level_index(level)] {
-            if let Some(pending) = long_packet(keys, book, config, peer, level, Frame::Ping, None, true, now)? {
+            if let Some(pending) = long_packet(
+                keys,
+                book,
+                config,
+                peer,
+                level,
+                Frame::Ping,
+                None,
+                true,
+                now,
+            )? {
                 return Ok(Some(pending));
             }
         }
     }
     let probe = book.pending_probe() == Some(Level::OneRtt);
-    let acknowledgment = book.pending_ack().filter(|ack| ack.level() == Level::OneRtt);
+    let acknowledgment = book
+        .pending_ack()
+        .filter(|ack| ack.level() == Level::OneRtt);
     let mut plaintext = Zeroizing::new([0; N]);
     let mut len = 0;
     if let Some(ack) = acknowledgment.as_ref() {
-        len = packet::encode_frame(&Frame::Ack { delay: 0, ranges: packet::AckRanges::new(ack.ranges())?, ecn: None }, &mut plaintext[..])?;
+        len = packet::encode_frame(
+            &Frame::Ack {
+                delay: 0,
+                ranges: packet::AckRanges::new(ack.ranges())?,
+                ecn: None,
+            },
+            &mut plaintext[..],
+        )?;
     }
     let prepared = streams.prepare::<N>(probe)?;
     let overhead = short_overhead(peer)?;
     let had_prepared = prepared.is_some();
-    let prepared = prepared.filter(|prepared| len.checked_add(prepared.bytes().len()).and_then(|n| n.checked_add(overhead)).is_some_and(|n| n <= N));
-    if had_prepared && prepared.is_none() && len == 0 && !probe { return Err(Error::Capacity); }
+    let prepared = prepared.filter(|prepared| {
+        len.checked_add(prepared.bytes().len())
+            .and_then(|n| n.checked_add(overhead))
+            .is_some_and(|n| n <= N)
+    });
+    if had_prepared && prepared.is_none() && len == 0 && !probe {
+        return Err(Error::Capacity);
+    }
     if let Some(prepared) = prepared.as_ref() {
         plaintext[len..len + prepared.bytes().len()].copy_from_slice(prepared.bytes());
         len += prepared.bytes().len();
     } else if probe {
         len += packet::encode_frame(&Frame::Ping, &mut plaintext[len..])?;
     }
-    if len == 0 { return Ok(None); }
-    pad_probe(&mut plaintext, &mut len, peer, probe, book.pending_probe_minimum())?;
+    if len == 0 {
+        return Ok(None);
+    }
+    pad_probe(
+        &mut plaintext,
+        &mut len,
+        peer,
+        probe,
+        book.pending_probe_minimum(),
+    )?;
     // Reserve exact recovery bytes before associating a real stream chunk.
     let generation = keys.generation()?;
-    let reservation = match book.reserve_application(&plaintext[..len], generation, (len + overhead) as u64, probe, now) {
+    let reservation = match book.reserve_application(
+        &plaintext[..len],
+        generation,
+        (len + overhead) as u64,
+        probe,
+        now,
+    ) {
         Ok(reservation) => reservation,
         Err(error) if limited(&error) => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -307,51 +515,98 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     let transmission = if let Some(prepared) = prepared.as_ref() {
         match streams.reserve_transmission(prepared, reservation.packet().value) {
             Ok(transmission) => Some(transmission),
-            Err(error) => { book.cancel(reservation)?; return Err(error.into()); }
+            Err(error) => {
+                book.cancel(reservation)?;
+                return Err(error.into());
+            }
         }
-    } else { None };
+    } else {
+        None
+    };
     let scope = reservation.scope();
     match keys.seal(reservation, peer.bytes(), &plaintext[..len]) {
-        Ok(sealed) => Ok(Some(Pending { scope, sealed: Sealed::Application(sealed), stream: transmission, acknowledgment, close_deadline: None, initial_handshake_done: false })),
+        Ok(sealed) => Ok(Some(Pending {
+            scope,
+            sealed: Sealed::Application(sealed),
+            stream: transmission,
+            acknowledgment,
+            close_deadline: None,
+            initial_handshake_done: false,
+        })),
         Err((error, reservation)) => {
             let recovery_result = book.cancel(reservation);
             let stream_result = match transmission {
                 Some(transmission) => streams.cancel_transmission(transmission),
                 None => Ok(()),
             };
-            recovery_result?; stream_result?; Err(error.into())
+            recovery_result?;
+            stream_result?;
+            Err(error.into())
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn long_packet<'book, 'scope, const N: usize>(
-    keys: &keys::KeyOwner<'scope>, book: &mut recovery::Tx<'book, 'scope, N>,
-    config: Config<'_>, peer: &ConnectionId, level: Level, frame: Frame<'_>,
-    flight: Option<FlightId>, probe: bool, now: u64,
+    keys: &keys::KeyOwner<'scope>,
+    book: &mut recovery::Tx<'book, 'scope, N>,
+    config: Config<'_>,
+    peer: &ConnectionId,
+    level: Level,
+    frame: Frame<'_>,
+    flight: Option<FlightId>,
+    probe: bool,
+    now: u64,
 ) -> Result<Option<Pending<'book, 'static, N>>, Error> {
     let ack_eliciting = frame.ack_eliciting();
     let plain = wire::PlainPacket::<N>::new(config, peer, level, frame)?;
-    let reservation = match book.reserve(level, plain.len() as u64, flight, ack_eliciting, plain.padded(), probe, now) {
+    let reservation = match book.reserve(
+        level,
+        plain.len() as u64,
+        flight,
+        ack_eliciting,
+        plain.padded(),
+        probe,
+        now,
+    ) {
         Ok(reservation) => reservation,
         Err(error) if limited(&error) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let scope = reservation.scope();
     match keys.seal_long(level, plain, reservation, None) {
-        Ok(sealed) => Ok(Some(Pending { scope, sealed: Sealed::Long(sealed), stream: None, acknowledgment: None, close_deadline: None, initial_handshake_done: false })),
-        Err((error, reservation)) => { book.cancel(reservation)?; Err(error.into()) }
+        Ok(sealed) => Ok(Some(Pending {
+            scope,
+            sealed: Sealed::Long(sealed),
+            stream: None,
+            acknowledgment: None,
+            close_deadline: None,
+            initial_handshake_done: false,
+        })),
+        Err((error, reservation)) => {
+            book.cancel(reservation)?;
+            Err(error.into())
+        }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn application_control_packet<'book, 'streams, 'scope, const N: usize>(
-    keys: &keys::KeyOwner<'scope>, book: &mut recovery::Tx<'book, 'scope, N>, peer: &ConnectionId,
-    plaintext: &[u8], flight: FlightId, probe: bool, now: u64,
+    keys: &keys::KeyOwner<'scope>,
+    book: &mut recovery::Tx<'book, 'scope, N>,
+    peer: &ConnectionId,
+    plaintext: &[u8],
+    flight: FlightId,
+    probe: bool,
+    now: u64,
 ) -> Result<Option<Pending<'book, 'streams, N>>, Error> {
     let generation = keys.generation()?;
-    let bytes = plaintext.len().checked_add(short_overhead(peer)?).ok_or(Error::Capacity)? as u64;
-    let reservation = book.reserve_application_control(plaintext, generation, bytes, flight, probe, now);
+    let bytes = plaintext
+        .len()
+        .checked_add(short_overhead(peer)?)
+        .ok_or(Error::Capacity)? as u64;
+    let reservation =
+        book.reserve_application_control(plaintext, generation, bytes, flight, probe, now);
     let reservation = match reservation {
         Ok(reservation) => reservation,
         Err(error) if limited(&error) => return Ok(None),
@@ -359,33 +614,78 @@ fn application_control_packet<'book, 'streams, 'scope, const N: usize>(
     };
     let scope = reservation.scope();
     match keys.seal(reservation, peer.bytes(), plaintext) {
-        Ok(sealed) => Ok(Some(Pending { scope, sealed: Sealed::Application(sealed), stream: None, acknowledgment: None, close_deadline: None, initial_handshake_done: false })),
-        Err((error, reservation)) => { book.cancel(reservation)?; Err(error.into()) }
+        Ok(sealed) => Ok(Some(Pending {
+            scope,
+            sealed: Sealed::Application(sealed),
+            stream: None,
+            acknowledgment: None,
+            close_deadline: None,
+            initial_handshake_done: false,
+        })),
+        Err((error, reservation)) => {
+            book.cancel(reservation)?;
+            Err(error.into())
+        }
     }
 }
 
 fn short_overhead(peer: &ConnectionId) -> Result<usize, Error> {
-    peer.bytes().len().checked_add(1 + 4 + 16).ok_or(Error::Capacity)
+    peer.bytes()
+        .len()
+        .checked_add(1 + 4 + 16)
+        .ok_or(Error::Capacity)
 }
-fn pad_probe<const N: usize>(plaintext: &mut [u8; N], len: &mut usize, peer: &ConnectionId, probe: bool, minimum: Option<u16>) -> Result<(), Error> {
+fn pad_probe<const N: usize>(
+    plaintext: &mut [u8; N],
+    len: &mut usize,
+    peer: &ConnectionId,
+    probe: bool,
+    minimum: Option<u16>,
+) -> Result<(), Error> {
     if probe {
         let minimum = usize::from(minimum.ok_or(Error::Binding)?);
         let required = minimum.saturating_sub(short_overhead(peer)?).max(*len);
-        if required.checked_add(short_overhead(peer)?).is_none_or(|bytes| bytes > N) { return Err(Error::Capacity); }
+        if required
+            .checked_add(short_overhead(peer)?)
+            .is_none_or(|bytes| bytes > N)
+        {
+            return Err(Error::Capacity);
+        }
         plaintext[*len..required].fill(0);
         *len = required;
     }
     Ok(())
 }
-fn level_index(level: Level) -> usize { match level { Level::Initial => 0, Level::Handshake => 1, Level::OneRtt => 2 } }
+fn level_index(level: Level) -> usize {
+    match level {
+        Level::Initial => 0,
+        Level::Handshake => 1,
+        Level::OneRtt => 2,
+    }
+}
 fn limited(error: &recovery::Error) -> bool {
-    matches!(error, recovery::Error::CongestionLimited | recovery::Error::Accounting(AccountingError::Full | AccountingError::AmplificationLimited))
+    matches!(
+        error,
+        recovery::Error::CongestionLimited
+            | recovery::Error::Accounting(
+                AccountingError::Full | AccountingError::AmplificationLimited
+            )
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn publish<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(
-    endpoint: &mut Endpoint<'_, { p::ADAPTER }>, control: &Control<'_, 'scope>,
-    state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>, issuer: &mut publication_gate::Issuer<'_, 'scope>,
+pub(crate) async fn publish<
+    'book,
+    'streams,
+    'scope,
+    const N: usize,
+    const RX: usize,
+    const CHUNK: usize,
+>(
+    endpoint: &mut Endpoint<'_, { p::ADAPTER }>,
+    control: &Control<'_, 'scope>,
+    state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
+    issuer: &mut publication_gate::Issuer<'_, 'scope>,
     outcome: &Outcome,
     socket: &mut impl DatagramTx,
 ) -> Result<(), Error> {
@@ -402,7 +702,10 @@ pub(crate) async fn publish<'book, 'streams, 'scope, const N: usize, const RX: u
                 }
                 let accepted_at = {
                     let scope = packet.scope;
-                    let mut pending = InFlight { packet: Some(packet), state };
+                    let mut pending = InFlight {
+                        packet: Some(packet),
+                        state,
+                    };
                     if !core::ptr::eq(scope, issuer.scope()) {
                         pending.complete(None)?;
                         return Err(Error::Binding);
@@ -411,13 +714,20 @@ pub(crate) async fn publish<'book, 'streams, 'scope, const N: usize, const RX: u
                         Ok(permit) => permit.submit(socket.send(pending.bytes())).await,
                         Err(error) => Err(error),
                     };
-                    let accepted_at = match result { Ok(Ok(at)) => Some(at), _ => None };
+                    let accepted_at = match result {
+                        Ok(Ok(at)) => Some(at),
+                        _ => None,
+                    };
                     pending.complete(accepted_at)?;
                     accepted_at
                 };
                 control.changed()?;
                 outcome.set(accepted_at.is_some())?;
-                match outcome.resolver::<{ p::SUBMISSION_RESULT }>().decide().map_err(connection::Error::from)? {
+                match outcome
+                    .resolver::<{ p::SUBMISSION_RESULT }>()
+                    .decide()
+                    .map_err(connection::Error::from)?
+                {
                     DecisionArm::Left => endpoint.send::<p::Accepted>(&sequence).await?,
                     DecisionArm::Right => endpoint.send::<p::Rejected>(&sequence).await?,
                 }
@@ -427,7 +737,9 @@ pub(crate) async fn publish<'book, 'streams, 'scope, const N: usize, const RX: u
             }
             30 => {
                 check(offered.recv::<p::StopPublication>().await?, sequence)?;
-                if state.pending.borrow().is_some() { return Err(Error::Binding); }
+                if state.pending.borrow().is_some() {
+                    return Err(Error::Binding);
+                }
                 endpoint.send::<p::PublicationStopped>(&sequence).await?;
                 return Ok(());
             }
@@ -441,7 +753,15 @@ pub(crate) async fn publish<'book, 'streams, 'scope, const N: usize, const RX: u
 /// retirement proof frees bounded history without resetting any burned PN;
 /// actual key-role retirement releases the sole write key for close sealing.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn close<'book, 'streams, 'owner, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(
+pub(crate) async fn close<
+    'book,
+    'streams,
+    'owner,
+    'scope,
+    const N: usize,
+    const RX: usize,
+    const CHUNK: usize,
+>(
     endpoint: &mut Endpoint<'_, { p::TRANSMIT }>,
     control: &Control<'_, 'scope>,
     state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
@@ -451,15 +771,25 @@ pub(crate) async fn close<'book, 'streams, 'owner, 'scope, const N: usize, const
     peer: &ConnectionId,
     clock: &impl Clock,
 ) -> Result<(), Error> {
-    let startup::Closing { ordinary: retired, keys: quiesced, permission } = closing;
+    let startup::Closing {
+        ordinary: retired,
+        keys: quiesced,
+        permission,
+    } = closing;
     if !core::ptr::eq(owner.scope(), retired.scope())
-        || !core::ptr::eq(owner.scope(), permission.scope()) || !control.stopping()
-        || state.closing.get() || state.pending.borrow().is_some()
-    { return Err(Error::Binding); }
+        || !core::ptr::eq(owner.scope(), permission.scope())
+        || !control.stopping()
+        || state.closing.get()
+        || state.pending.borrow().is_some()
+    {
+        return Err(Error::Binding);
+    }
     let kind = permission.kind();
     let pto = book.pto_duration_us()?.max(1);
     let started_at = clock.now();
-    let deadline = started_at.checked_add(pto.checked_mul(3).ok_or(Error::Capacity)?).ok_or(Error::Capacity)?;
+    let deadline = started_at
+        .checked_add(pto.checked_mul(3).ok_or(Error::Capacity)?)
+        .ok_or(Error::Capacity)?;
     book.discard_for_close(retired)?;
     let mut keys = owner.take_closing(quiesced)?;
     state.closing.set(true);
@@ -474,10 +804,25 @@ pub(crate) async fn close<'book, 'streams, 'owner, 'scope, const N: usize, const
         }
         CloseKind::Local { application, code } => {
             for attempt in 0u64..3 {
-                let at = started_at.checked_add(pto.checked_mul(attempt).ok_or(Error::Capacity)?).ok_or(Error::Capacity)?;
+                let at = started_at
+                    .checked_add(pto.checked_mul(attempt).ok_or(Error::Capacity)?)
+                    .ok_or(Error::Capacity)?;
                 clock.wait_until(at).await;
-                if clock.now() >= deadline { break; }
-                let Some(packet) = close_packet(&mut keys, book, peer, application, code, deadline, clock.now())? else { break; };
+                if clock.now() >= deadline {
+                    break;
+                }
+                let Some(packet) = close_packet(
+                    &mut keys,
+                    book,
+                    peer,
+                    application,
+                    code,
+                    deadline,
+                    clock.now(),
+                )?
+                else {
+                    break;
+                };
                 if let Err((error, packet)) = state.put(packet) {
                     book.cancel(packet.sealed.into_parts().0)?;
                     return Err(error);
@@ -502,32 +847,58 @@ pub(crate) async fn close<'book, 'streams, 'owner, 'scope, const N: usize, const
     keys.discard();
     endpoint.send::<p::Retire>(&sequence).await?;
     check(endpoint.recv::<p::Retired>().await?, sequence)?;
-    if !close_accepted { return Err(Error::Incomplete); }
+    if !close_accepted {
+        return Err(Error::Incomplete);
+    }
     state.completed.set(true);
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn close_packet<'book, 'streams, const N: usize>(
-    keys: &mut ApplicationWriteKeys<'_>, book: &mut recovery::Tx<'book, '_, N>,
-    peer: &ConnectionId, application: bool, code: u64, deadline: u64, now: u64,
+    keys: &mut ApplicationWriteKeys<'_>,
+    book: &mut recovery::Tx<'book, '_, N>,
+    peer: &ConnectionId,
+    application: bool,
+    code: u64,
+    deadline: u64,
+    now: u64,
 ) -> Result<Option<Pending<'book, 'streams, N>>, Error> {
     let mut plaintext = Zeroizing::new([0; N]);
-    let len = packet::encode_frame(&Frame::ConnectionClose {
-        error_code: code, frame_type: if application { None } else { Some(0) }, reason: &[],
-    }, &mut plaintext[..])?;
-    let bytes = len.checked_add(short_overhead(peer)?).ok_or(Error::Capacity)?;
-    if bytes > N { return Err(Error::Capacity); }
-    let reservation = match book.reserve_close(&plaintext[..len], keys.generation(), bytes as u64, now) {
-        Ok(reservation) => reservation,
-        Err(error) if limited(&error) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
+    let len = packet::encode_frame(
+        &Frame::ConnectionClose {
+            error_code: code,
+            frame_type: if application { None } else { Some(0) },
+            reason: &[],
+        },
+        &mut plaintext[..],
+    )?;
+    let bytes = len
+        .checked_add(short_overhead(peer)?)
+        .ok_or(Error::Capacity)?;
+    if bytes > N {
+        return Err(Error::Capacity);
+    }
+    let reservation =
+        match book.reserve_close(&plaintext[..len], keys.generation(), bytes as u64, now) {
+            Ok(reservation) => reservation,
+            Err(error) if limited(&error) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
     let scope = reservation.scope();
     match application_wire::seal(keys, reservation, peer.bytes(), &plaintext[..len]) {
-        Ok(sealed) => Ok(Some(Pending { scope, sealed: Sealed::Application(sealed), stream: None,
-            acknowledgment: None, close_deadline: Some(deadline), initial_handshake_done: false })),
-        Err((error, reservation)) => { book.cancel(reservation)?; Err(error.into()) }
+        Ok(sealed) => Ok(Some(Pending {
+            scope,
+            sealed: Sealed::Application(sealed),
+            stream: None,
+            acknowledgment: None,
+            close_deadline: Some(deadline),
+            initial_handshake_done: false,
+        })),
+        Err((error, reservation)) => {
+            book.cancel(reservation)?;
+            Err(error.into())
+        }
     }
 }
 
@@ -535,10 +906,19 @@ fn close_packet<'book, 'streams, const N: usize>(
 /// closing packet has no ordinary permit: its private construction required
 /// both affine retirement objects, and its UDP attempt is deadline bounded.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn publish_close<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(
+pub(crate) async fn publish_close<
+    'book,
+    'streams,
+    'scope,
+    const N: usize,
+    const RX: usize,
+    const CHUNK: usize,
+>(
     endpoint: &mut Endpoint<'_, { p::ADAPTER }>,
-    state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>, outcome: &Outcome,
-    socket: &mut impl DatagramTx, clock: &impl Clock,
+    state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
+    outcome: &Outcome,
+    socket: &mut impl DatagramTx,
+    clock: &impl Clock,
 ) -> Result<(), Error> {
     let mut sequence = 0u64;
     loop {
@@ -551,12 +931,18 @@ pub(crate) async fn publish_close<'book, 'streams, 'scope, const N: usize, const
                     state.settle(packet, None)?;
                     return Err(Error::Binding);
                 };
-                if !state.closing.get() || packet.stream.is_some() || packet.acknowledgment.is_some() {
+                if !state.closing.get()
+                    || packet.stream.is_some()
+                    || packet.acknowledgment.is_some()
+                {
                     state.settle(packet, None)?;
                     return Err(Error::Binding);
                 }
                 let accepted_at = {
-                    let mut pending = InFlight { packet: Some(packet), state };
+                    let mut pending = InFlight {
+                        packet: Some(packet),
+                        state,
+                    };
                     let accepted_at = {
                         let mut send = pin!(socket.send(pending.bytes()));
                         let mut timeout = pin!(clock.wait_until(deadline));
@@ -569,13 +955,18 @@ pub(crate) async fn publish_close<'book, 'streams, 'scope, const N: usize, const
                                 Poll::Pending => {}
                             }
                             timeout.as_mut().poll(cx).map(|()| None)
-                        }).await
+                        })
+                        .await
                     };
                     pending.complete(accepted_at)?;
                     accepted_at
                 };
                 outcome.set(accepted_at.is_some())?;
-                match outcome.resolver::<{ p::SUBMISSION_RESULT }>().decide().map_err(connection::Error::from)? {
+                match outcome
+                    .resolver::<{ p::SUBMISSION_RESULT }>()
+                    .decide()
+                    .map_err(connection::Error::from)?
+                {
                     DecisionArm::Left => endpoint.send::<p::CloseAccepted>(&sequence).await?,
                     DecisionArm::Right => endpoint.send::<p::CloseRejected>(&sequence).await?,
                 }
@@ -592,7 +983,9 @@ pub(crate) async fn publish_close<'book, 'streams, 'scope, const N: usize, const
             }
             38 => {
                 check(offered.recv::<p::Drain>().await?, sequence)?;
-                if !state.closing.get() { return Err(Error::Binding); }
+                if !state.closing.get() {
+                    return Err(Error::Binding);
+                }
                 let deadline = state.drain_deadline.get().ok_or(Error::Binding)?;
                 clock.wait_until(deadline).await;
                 endpoint.send::<p::Drained>(&sequence).await?;
@@ -602,14 +995,20 @@ pub(crate) async fn publish_close<'book, 'streams, 'scope, const N: usize, const
         }
     }
     check(endpoint.recv::<p::Retire>().await?, sequence)?;
-    if state.pending.borrow().is_some() { return Err(Error::Binding); }
+    if state.pending.borrow().is_some() {
+        return Err(Error::Binding);
+    }
     state.retire_all();
     endpoint.send::<p::Retired>(&sequence).await?;
     Ok(())
 }
 
 fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected { Ok(()) } else { Err(Error::Binding) }
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Error::Binding)
+    }
 }
 
 #[cfg(test)]
@@ -627,8 +1026,8 @@ mod tests {
     const CHUNK: usize = 32;
 
     fn key(secret: u8) -> PacketKey {
-        PacketKey::from_secret(CipherSuite::Aes128GcmSha256, KeyKind::OneRtt,
-            &[secret; 32]).unwrap()
+        PacketKey::from_secret(CipherSuite::Aes128GcmSha256, KeyKind::OneRtt, &[secret; 32])
+            .unwrap()
     }
 
     // Use the actual one-shot installation, packet arena binding and stream
@@ -638,26 +1037,49 @@ mod tests {
             let mut key_scope = ApplicationKeyScope::new(146);
             let mut installation = key_scope.claim().unwrap();
             let mut arena_storage = Arena::<8, 32>::new(146);
-            let arena = ScopedArena::new(&mut arena_storage,
-                installation.take_packet_authority().unwrap()).unwrap();
+            let arena = ScopedArena::new(
+                &mut arena_storage,
+                installation.take_packet_authority().unwrap(),
+            )
+            .unwrap();
             let (_read, mut $write) = installation.install(key(1), key(2)).unwrap();
             let $scope = $write.scope();
             let mut $book = recovery::Recovery::<PACKET>::new(
-                arena.claim_recovery().unwrap(), Side::Client, 333_000, 1200).unwrap();
+                arena.claim_recovery().unwrap(),
+                Side::Client,
+                333_000,
+                1200,
+            )
+            .unwrap();
             let mut slots = [StreamSlot::<CHUNK>::EMPTY];
             let mut chunks = [SendChunk::<CHUNK>::EMPTY];
             // Exactly one reference makes any leaked Reserved entry observable.
             let mut references = [PacketReference::EMPTY];
-            let peer = Limits { max_data: 1024, max_streams_bidi: 1,
-                stream_data_bidi_local: 1024, stream_data_bidi_remote: 1024,
-                ..Limits::ZERO };
+            let peer = Limits {
+                max_data: 1024,
+                max_streams_bidi: 1,
+                stream_data_bidi_local: 1024,
+                stream_data_bidi_remote: 1024,
+                ..Limits::ZERO
+            };
             // Receive credit is backed by this one CHUNK-sized slot. Peer
             // send credit is independent and may legitimately be larger.
-            let local = Limits { max_data: CHUNK as u64, stream_data_bidi_local: CHUNK as u64,
-                stream_data_bidi_remote: CHUNK as u64, ..Limits::ZERO };
+            let local = Limits {
+                max_data: CHUNK as u64,
+                stream_data_bidi_local: CHUNK as u64,
+                stream_data_bidi_remote: CHUNK as u64,
+                ..Limits::ZERO
+            };
             let mut $streams = application_stream::StreamNumbers::new(
-                $scope, Role::Client, peer, local, &mut slots, &mut chunks,
-                &mut references).unwrap();
+                $scope,
+                Role::Client,
+                peer,
+                local,
+                &mut slots,
+                &mut chunks,
+                &mut references,
+            )
+            .unwrap();
         };
     }
 
@@ -666,17 +1088,35 @@ mod tests {
         streams: &mut application_stream::Tx<'streams, '_, '_, CHUNK, CHUNK>,
         keys: &mut ApplicationWriteKeys<'_>,
     ) -> Pending<'book, 'streams, PACKET> {
-        let prepared = streams.prepare::<PACKET>(false).unwrap().expect("queued STREAM");
-        let reservation = book.reserve_application(prepared.bytes(), keys.generation(),
-            (prepared.bytes().len() + 21) as u64, false, 0).unwrap();
+        let prepared = streams
+            .prepare::<PACKET>(false)
+            .unwrap()
+            .expect("queued STREAM");
+        let reservation = book
+            .reserve_application(
+                prepared.bytes(),
+                keys.generation(),
+                (prepared.bytes().len() + 21) as u64,
+                false,
+                0,
+            )
+            .unwrap();
         let scope = reservation.scope();
-        let stream = streams.reserve_transmission(&prepared, reservation.packet().value).unwrap();
+        let stream = streams
+            .reserve_transmission(&prepared, reservation.packet().value)
+            .unwrap();
         let sealed = match application_wire::seal(keys, reservation, &[], prepared.bytes()) {
             Ok(sealed) => sealed,
             Err(_) => panic!("actual reserved STREAM must seal"),
         };
-        Pending { scope, sealed: Sealed::Application(sealed), stream: Some(stream),
-            acknowledgment: None, close_deadline: None, initial_handshake_done: false }
+        Pending {
+            scope,
+            sealed: Sealed::Application(sealed),
+            stream: Some(stream),
+            acknowledgment: None,
+            close_deadline: None,
+            initial_handshake_done: false,
+        }
     }
 
     fn assert_cancelled(snapshot: recovery::Snapshot, next_packet: u64) {
@@ -692,7 +1132,12 @@ mod tests {
     fn dropping_staged_state_cancels_recovery_and_the_only_stream_reference() {
         fixture!(book, write, numbers, scope);
         let _ = scope;
-        let application_stream::Facets { mut app, mut tx, publication, .. } = numbers.split();
+        let application_stream::Facets {
+            mut app,
+            mut tx,
+            publication,
+            ..
+        } = numbers.split();
         let stream = app.open_local().unwrap();
         app.enqueue(stream, b"GET /\r\n", true).unwrap();
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
@@ -719,8 +1164,15 @@ mod tests {
     }
 
     struct Dropped<'a>(&'a Cell<bool>);
-    impl Drop for Dropped<'_> { fn drop(&mut self) { self.0.set(true); } }
-    struct PendingSocket<'a> { polls: &'a Cell<usize>, dropped: &'a Cell<bool> }
+    impl Drop for Dropped<'_> {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+    struct PendingSocket<'a> {
+        polls: &'a Cell<usize>,
+        dropped: &'a Cell<bool>,
+    }
     impl DatagramTx for PendingSocket<'_> {
         fn send(&mut self, bytes: &[u8]) -> impl Future<Output = Result<u64, IoError>> {
             async move {
@@ -729,7 +1181,8 @@ mod tests {
                     assert!(!bytes.is_empty());
                     self.polls.set(self.polls.get() + 1);
                     Poll::<Result<u64, IoError>>::Pending
-                }).await
+                })
+                .await
             }
         }
     }
@@ -738,7 +1191,12 @@ mod tests {
     fn dropping_actual_pending_udp_future_cancels_both_owned_reservations() {
         fixture!(book, write, numbers, scope);
         let _ = scope;
-        let application_stream::Facets { mut app, mut tx, publication, .. } = numbers.split();
+        let application_stream::Facets {
+            mut app,
+            mut tx,
+            publication,
+            ..
+        } = numbers.split();
         let stream = app.open_local().unwrap();
         app.enqueue(stream, b"GET /pending\r\n", true).unwrap();
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
@@ -748,10 +1206,16 @@ mod tests {
         assert!(state.put(packet).is_ok());
         let polls = Cell::new(0);
         let dropped = Cell::new(false);
-        let mut socket = PendingSocket { polls: &polls, dropped: &dropped };
+        let mut socket = PendingSocket {
+            polls: &polls,
+            dropped: &dropped,
+        };
         {
             let mut send = pin!(async {
-                let mut pending = InFlight { packet: Some(state.take().unwrap()), state: &state };
+                let mut pending = InFlight {
+                    packet: Some(state.take().unwrap()),
+                    state: &state,
+                };
                 let accepted_at = socket.send(pending.bytes()).await.unwrap();
                 pending.complete(Some(accepted_at)).unwrap();
             });
@@ -777,7 +1241,9 @@ mod tests {
         guard.finish();
     }
 
-    struct AcceptedSocket { at: u64 }
+    struct AcceptedSocket {
+        at: u64,
+    }
     impl DatagramTx for AcceptedSocket {
         fn send(&mut self, bytes: &[u8]) -> impl Future<Output = Result<u64, IoError>> {
             assert!(!bytes.is_empty());
@@ -794,22 +1260,35 @@ mod tests {
         let state = State::new(book_publication, publication);
         // Burn numbers before filling the 64-record ordinary ledger.
         for expected in 0..3 {
-            let reservation = book_tx.reserve_application(&[1], write.generation(), 22, false, 0).unwrap();
+            let reservation = book_tx
+                .reserve_application(&[1], write.generation(), 22, false, 0)
+                .unwrap();
             assert_eq!(reservation.packet().value, expected);
             book_tx.cancel(reservation).unwrap();
         }
         let mut socket = AcceptedSocket { at: 10 };
         for offset in 0..recovery::LEDGER_CAPACITY as u64 {
             socket.at = 10 + offset;
-            let reservation = book_tx.reserve_application(&[1], write.generation(), 22, false, socket.at).unwrap();
+            let reservation = book_tx
+                .reserve_application(&[1], write.generation(), 22, false, socket.at)
+                .unwrap();
             assert_eq!(reservation.packet().value, 3 + offset);
             let sealed = match application_wire::seal(&mut write, reservation, &[], &[1]) {
                 Ok(sealed) => sealed,
                 Err(_) => panic!("real reserved PING must seal"),
             };
-            let packet = Pending { scope, sealed: Sealed::Application(sealed), stream: None,
-                acknowledgment: None, close_deadline: None, initial_handshake_done: false };
-            let mut pending = InFlight { packet: Some(packet), state: &state };
+            let packet = Pending {
+                scope,
+                sealed: Sealed::Application(sealed),
+                stream: None,
+                acknowledgment: None,
+                close_deadline: None,
+                initial_handshake_done: false,
+            };
+            let mut pending = InFlight {
+                packet: Some(packet),
+                state: &state,
+            };
             let accepted_at = {
                 let mut send = pin!(socket.send(pending.bytes()));
                 let mut context = Context::from_waker(Waker::noop());
@@ -825,40 +1304,78 @@ mod tests {
         assert_eq!(full.pending_publications, [0; 3]);
         assert_eq!(full.bytes_in_flight, 22 * recovery::LEDGER_CAPACITY as u64);
         assert_eq!(full.next_packet_number[2], Some(67));
-        assert!(matches!(book_tx.reserve_application(&[1], write.generation(), 22, false, 80),
-            Err(recovery::Error::Accounting(AccountingError::Full))));
+        assert!(matches!(
+            book_tx.reserve_application(&[1], write.generation(), 22, false, 80),
+            Err(recovery::Error::Accounting(AccountingError::Full))
+        ));
 
         // Only this module's test can construct the private global-join token.
         // Production obtains it after all projected ordinary roles retire.
-        book_tx.discard_for_close(super::super::OrdinaryRetired { scope }).unwrap();
+        book_tx
+            .discard_for_close(super::super::OrdinaryRetired { scope })
+            .unwrap();
         assert_eq!(book_tx.snapshot().retained_packets, 0);
         assert_eq!(book_tx.snapshot().next_packet_number[2], Some(67));
         let mut stream_plaintext = [0; 32];
-        let stream_len = packet::encode_frame(&Frame::Stream { id: 0, offset: 0,
-            fin: false, data: b"x" }, &mut stream_plaintext).unwrap();
-        assert!(matches!(book_tx.reserve_application(&stream_plaintext[..stream_len],
-            write.generation(), (21 + stream_len) as u64, false, 80),
-            Err(recovery::Error::Accounting(AccountingError::Retired))));
+        let stream_len = packet::encode_frame(
+            &Frame::Stream {
+                id: 0,
+                offset: 0,
+                fin: false,
+                data: b"x",
+            },
+            &mut stream_plaintext,
+        )
+        .unwrap();
+        assert!(matches!(
+            book_tx.reserve_application(
+                &stream_plaintext[..stream_len],
+                write.generation(),
+                (21 + stream_len) as u64,
+                false,
+                80
+            ),
+            Err(recovery::Error::Accounting(AccountingError::Retired))
+        ));
         let peer = ConnectionId::new(&[]).unwrap();
         let close = close_packet(&mut write, &mut book_tx, &peer, true, 0, 1000, 80)
-            .unwrap().expect("full ordinary ledger must permit close after retirement");
+            .unwrap()
+            .expect("full ordinary ledger must permit close after retirement");
         assert_eq!(write.last_sealed_packet_number(), Some(67));
         assert_eq!(book_tx.snapshot().next_packet_number[2], Some(68));
 
         // Authenticate the actual protected close bytes with installed peer keys.
         let mut peer_scope = ApplicationKeyScope::new(147);
         let (mut peer_read, _peer_write) = peer_scope.install(key(2), key(1)).unwrap();
-        let opened = application_wire::open::<PACKET>(&mut peer_read,
-            &mut IntegrityBudget::new(), close.sealed.bytes(), &[], Some(66), 80, 1000).unwrap();
+        let opened = application_wire::open::<PACKET>(
+            &mut peer_read,
+            &mut IntegrityBudget::new(),
+            close.sealed.bytes(),
+            &[],
+            Some(66),
+            80,
+            1000,
+        )
+        .unwrap();
         assert_eq!(opened.packet_number(), 67);
-        let frame = packet::FrameIter::new(opened.plaintext(), packet::EncryptionLevel::OneRtt,
-            packet::ParseLimits::default()).unwrap().next().unwrap().unwrap();
-        assert!(matches!(frame, Frame::ConnectionClose { error_code: 0, frame_type: None, reason } if reason.is_empty()));
+        let frame = packet::FrameIter::new(
+            opened.plaintext(),
+            packet::EncryptionLevel::OneRtt,
+            packet::ParseLimits::default(),
+        )
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+        assert!(
+            matches!(frame, Frame::ConnectionClose { error_code: 0, frame_type: None, reason } if reason.is_empty())
+        );
         state.settle(close, None).unwrap();
         assert_eq!(book_tx.snapshot().pending_publications, [0; 3]);
         assert_eq!(book_tx.snapshot().next_packet_number[2], Some(68));
         let second = close_packet(&mut write, &mut book_tx, &peer, true, 0, 1000, 81)
-            .unwrap().expect("cancelled close burns its number");
+            .unwrap()
+            .expect("cancelled close burns its number");
         assert_eq!(write.last_sealed_packet_number(), Some(68));
         state.settle(second, Some(81)).unwrap();
         assert_eq!(book_tx.snapshot().next_packet_number[2], Some(69));

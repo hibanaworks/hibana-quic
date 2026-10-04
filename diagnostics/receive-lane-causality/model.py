@@ -32,7 +32,11 @@ def split_args(text):
         if c=='<': depth+=1
         elif c=='>': depth-=1
         elif c==',' and depth==0: out.append(text[begin:i].strip());begin=i+1
-    out.append(text[begin:].strip())
+    tail = text[begin:].strip()
+    if tail:
+        out.append(tail)
+    if any(not arg for arg in out):
+        raise ValueError('empty non-trailing generic argument')
     return out
 
 class Parser:

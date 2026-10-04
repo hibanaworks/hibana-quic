@@ -83,9 +83,18 @@ pub(super) async fn receive(
 mod tests {
     use super::*;
     use crate::carrier::CarrierStorage;
-    use core::{future::pending, task::{Context, Waker}};
-    use hibana::{g, runtime::{SessionKitStorage, ids::SessionId,
-        program::{RoleProgram, project}}};
+    use core::{
+        future::pending,
+        task::{Context, Waker},
+    };
+    use hibana::{
+        g,
+        runtime::{
+            SessionKitStorage,
+            ids::SessionId,
+            program::{RoleProgram, project},
+        },
+    };
 
     struct PendingUdp;
     impl DatagramTx for PendingUdp {
@@ -97,18 +106,26 @@ mod tests {
     #[test]
     fn expiry_and_retirement_progress_while_udp_publication_is_pending() {
         let global = g::route(
-            g::seq(g::send::<{ p::TIMER }, { p::TIMER_TX }, p::TimerExpired>(),
-                g::send::<{ p::TIMER_TX }, { p::TIMER }, p::TimerTaken>()),
-            g::seq(g::send::<{ p::TIMER }, { p::TIMER_TX }, p::TimerRetired>(),
-                g::send::<{ p::TIMER_TX }, { p::TIMER }, p::TimerAcknowledged>()),
-        ).roll();
+            g::seq(
+                g::send::<{ p::TIMER }, { p::TIMER_TX }, p::TimerExpired>(),
+                g::send::<{ p::TIMER_TX }, { p::TIMER }, p::TimerTaken>(),
+            ),
+            g::seq(
+                g::send::<{ p::TIMER }, { p::TIMER_TX }, p::TimerRetired>(),
+                g::send::<{ p::TIMER_TX }, { p::TIMER }, p::TimerAcknowledged>(),
+            ),
+        )
+        .roll();
         let producer_program: RoleProgram<{ p::TIMER }> = project(&global);
         let receiver_program: RoleProgram<{ p::TIMER_TX }> = project(&global);
         let carrier = CarrierStorage::<1, 16, 128>::new();
         let mut slab = [0; 262144];
         let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(1);
-        let rendezvous = kit.init().rendezvous(&mut slab, carrier.bind(sid).unwrap()).unwrap();
+        let rendezvous = kit
+            .init()
+            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+            .unwrap();
         let mut producer_endpoint = rendezvous.enter(sid, &producer_program).unwrap();
         let mut receiver_endpoint = rendezvous.enter(sid, &receiver_program).unwrap();
         let schedule = Schedule::new();
@@ -116,11 +133,23 @@ mod tests {
         let mut publication = pin!(udp.send(&[0]));
         let mut producer = pin!(async {
             for sequence in 0..3u64 {
-                producer_endpoint.send::<p::TimerExpired>(&sequence).await.unwrap();
-                assert_eq!(producer_endpoint.recv::<p::TimerTaken>().await.unwrap(), sequence);
+                producer_endpoint
+                    .send::<p::TimerExpired>(&sequence)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    producer_endpoint.recv::<p::TimerTaken>().await.unwrap(),
+                    sequence
+                );
             }
             producer_endpoint.send::<p::TimerRetired>(&3).await.unwrap();
-            assert_eq!(producer_endpoint.recv::<p::TimerAcknowledged>().await.unwrap(), 3);
+            assert_eq!(
+                producer_endpoint
+                    .recv::<p::TimerAcknowledged>()
+                    .await
+                    .unwrap(),
+                3
+            );
         });
         let mut receiver = pin!(receive(&mut receiver_endpoint, &schedule));
         let mut cx = Context::from_waker(Waker::noop());
@@ -137,10 +166,19 @@ mod tests {
                     receiver_done = true;
                 }
             }
-            if producer_done && receiver_done { break; }
+            if producer_done && receiver_done {
+                break;
+            }
         }
-        assert!(producer_done && receiver_done, "timer progress depends on stalled UDP");
-        assert_eq!(schedule.revision.get(), 3, "each observed expiry must wake packet preparation");
+        assert!(
+            producer_done && receiver_done,
+            "timer progress depends on stalled UDP"
+        );
+        assert_eq!(
+            schedule.revision.get(),
+            3,
+            "each observed expiry must wake packet preparation"
+        );
         assert!(publication.as_mut().poll(&mut cx).is_pending());
     }
 }

@@ -44,7 +44,10 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
 ) -> Result<keys::KeysQuiesced<'owner, 'scope>, Error> {
     let scope = material.application.scope();
     if !core::ptr::eq(scope, transcript.scope())
-        || material.initial.as_ref().is_some_and(|key| !core::ptr::eq(scope, key.scope()))
+        || material
+            .initial
+            .as_ref()
+            .is_some_and(|key| !core::ptr::eq(scope, key.scope()))
         || !core::ptr::eq(scope, material.handshake.scope())
         || crypto.consumed() != transcript.received_offset(Level::OneRtt)
     {
@@ -80,17 +83,14 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
         while offset < len && !control.stopping() {
             // Parse one bounded packet at a time; all pre-AEAD syntax errors
             // discard the remainder because its next boundary is untrusted.
-            let packet = match PacketIter::new(
-                &datagram[offset..len],
-                config.local_connection_id.len(),
-                1,
-            )
-            .ok()
-            .and_then(|mut packets| packets.next())
-            {
-                Some(Ok(packet)) => packet,
-                _ => break,
-            };
+            let packet =
+                match PacketIter::new(&datagram[offset..len], config.local_connection_id.len(), 1)
+                    .ok()
+                    .and_then(|mut packets| packets.next())
+                {
+                    Some(Ok(packet)) => packet,
+                    _ => break,
+                };
             if packet.bytes.is_empty() {
                 break;
             }
@@ -114,17 +114,15 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
                     )
                     .await
                 }
-                Header::Long { .. } if !confirmed => {
-                    old::<N>(
-                        &mut material,
-                        packet,
-                        len,
-                        config,
-                        transcript,
-                        book,
-                        clock.now(),
-                    )
-                }
+                Header::Long { .. } if !confirmed => old::<N>(
+                    &mut material,
+                    packet,
+                    len,
+                    config,
+                    transcript,
+                    book,
+                    clock.now(),
+                ),
                 _ => Ok(None),
             };
             match result {
@@ -160,7 +158,9 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
     receive.send::<p::ReceiveRetire>(&0).await?;
     check(receive.recv::<p::ReceiveRetired>().await?, 0)?;
     material.application.discard();
-    if let Some(mut initial) = material.initial.take() { initial.discard(); }
+    if let Some(mut initial) = material.initial.take() {
+        initial.discard();
+    }
     material.handshake.discard();
     Ok(keys.retire(rx_keys).await?)
 }
@@ -203,7 +203,9 @@ async fn application<'scope, const N: usize, const RX: usize, const CHUNK: usize
             material.application.accept_write_epoch(installed)?
         }
     };
-    *largest = Some(largest.map_or(opened.packet_number(), |last| last.max(opened.packet_number())));
+    *largest = Some(largest.map_or(opened.packet_number(), |last| {
+        last.max(opened.packet_number())
+    }));
     let outcome = match book.apply_application_packet(receipt, opened.plaintext(), now) {
         Ok(outcome) => outcome,
         // Expired sent history is not evidence that the peer ACKed an unsent
@@ -213,8 +215,13 @@ async fn application<'scope, const N: usize, const RX: usize, const CHUNK: usize
     };
     streams.acknowledge(&outcome.packets)?;
     for grant in outcome.key_acks.into_iter().flatten() {
-        keys.acknowledge(endpoint, ValidatedKeyAck::from_connection_ack(grant)?, now, pto)
-            .await?;
+        keys.acknowledge(
+            endpoint,
+            ValidatedKeyAck::from_connection_ack(grant)?,
+            now,
+            pto,
+        )
+        .await?;
     }
     if let Some(confirmation) = outcome.confirmation {
         confirm(endpoint, keys, material, book, control, confirmation).await?;
@@ -236,7 +243,9 @@ async fn application<'scope, const N: usize, const RX: usize, const CHUNK: usize
             | Frame::StreamDataBlocked { .. }
             | Frame::StreamsBlocked { .. } => streams.apply(&frame)?,
             Frame::Crypto { offset, data } => {
-                reassembly.insert(offset, data).map_err(connection::Error::from)?;
+                reassembly
+                    .insert(offset, data)
+                    .map_err(connection::Error::from)?;
                 loop {
                     let (first, _) = reassembly.ready();
                     if first.is_empty() {
@@ -259,7 +268,9 @@ async fn application<'scope, const N: usize, const RX: usize, const CHUNK: usize
                 // This fixed-path request session does not save resumption or
                 // address-validation tokens for a future connection.
             }
-            Frame::NewConnectionId { retire_prior_to: 0, .. } => {
+            Frame::NewConnectionId {
+                retire_prior_to: 0, ..
+            } => {
                 // Additional peer CIDs are optional on this fixed path. The
                 // current handshake-selected CID remains valid at sequence 0.
             }
@@ -319,9 +330,13 @@ fn old<'book, 'scope, const N: usize>(
     let key = if index == 0 {
         // Initial retirement has its own finite projected lane in the prefix.
         // Once that lane consumes the key, late Initial packets are discarded.
-        let Some(initial) = material.initial.as_ref() else { return Ok(None); };
+        let Some(initial) = material.initial.as_ref() else {
+            return Ok(None);
+        };
         initial
-    } else { &material.handshake };
+    } else {
+        &material.handshake
+    };
     let mut opened = Zeroizing::new([0u8; N]);
     opened[..packet.bytes.len()].copy_from_slice(packet.bytes);
     let bytes = &mut opened[..packet.bytes.len()];
@@ -329,11 +344,16 @@ fn old<'book, 'scope, const N: usize>(
         Ok(len) => len,
         Err(_) => return Ok(None),
     };
-    let truncated = match packet::decode_truncated_packet_number(bytes[0], &bytes[packet_number_offset..]) {
-        Ok((truncated, _)) => truncated,
-        Err(_) => return Ok(None),
-    };
-    let pn = match packet::restore_packet_number(truncated, pn_len as u8, material.largest_received[index]) {
+    let truncated =
+        match packet::decode_truncated_packet_number(bytes[0], &bytes[packet_number_offset..]) {
+            Ok((truncated, _)) => truncated,
+            Err(_) => return Ok(None),
+        };
+    let pn = match packet::restore_packet_number(
+        truncated,
+        pn_len as u8,
+        material.largest_received[index],
+    ) {
         Ok(pn) => pn,
         Err(_) => return Ok(None),
     };
@@ -351,7 +371,8 @@ fn old<'book, 'scope, const N: usize>(
     if plaintext.is_empty() {
         return Err(packet::Error::EmptyPayload.into());
     }
-    material.largest_received[index] = Some(material.largest_received[index].map_or(pn, |last| last.max(pn)));
+    material.largest_received[index] =
+        Some(material.largest_received[index].map_or(pn, |last| last.max(pn)));
     let outcome = match book.apply_packet(receipt, plaintext, now) {
         Ok(outcome) => outcome,
         Err(recovery::Error::Accounting(AccountingError::HistoryUnavailable)) => return Ok(None),
@@ -361,7 +382,9 @@ fn old<'book, 'scope, const N: usize>(
         for frame in received_frames(plaintext, encryption)? {
             match frame? {
                 Frame::Crypto { offset, data } => {
-                    let end = offset.checked_add(data.len() as u64).ok_or(Error::Capacity)?;
+                    let end = offset
+                        .checked_add(data.len() as u64)
+                        .ok_or(Error::Capacity)?;
                     if end > transcript.received_offset(level) {
                         // Finished is a finite boundary. New Initial/Handshake
                         // transcript bytes cannot re-enter completed TLS.
@@ -380,12 +403,19 @@ fn old<'book, 'scope, const N: usize>(
 /// Keep the effect pass bounded identically to recovery's complete preflight.
 /// The caller retains the exact authenticated plaintext throughout both passes;
 /// no copied packet number or frame alone grants application delivery.
-fn received_frames(plaintext: &[u8], level: packet::EncryptionLevel) -> Result<FrameIter<'_>, Error> {
-    Ok(FrameIter::new(plaintext, level, ParseLimits {
-        max_bytes: plaintext.len(),
-        max_frames: 256,
-        max_ack_ranges: recovery::ACK_CAPACITY,
-    })?)
+fn received_frames(
+    plaintext: &[u8],
+    level: packet::EncryptionLevel,
+) -> Result<FrameIter<'_>, Error> {
+    Ok(FrameIter::new(
+        plaintext,
+        level,
+        ParseLimits {
+            max_bytes: plaintext.len(),
+            max_frames: 256,
+            max_ack_ranges: recovery::ACK_CAPACITY,
+        },
+    )?)
 }
 
 async fn confirm<'scope, const N: usize>(
@@ -410,8 +440,14 @@ async fn confirm<'scope, const N: usize>(
             Err(error) => return Err(error.into()),
         }
     }
-    keys.confirm(endpoint, ScopedHandshakeConfirmation::from_connection(confirmation)).await?;
-    if let Some(mut initial) = material.initial.take() { initial.discard(); }
+    keys.confirm(
+        endpoint,
+        ScopedHandshakeConfirmation::from_connection(confirmation),
+    )
+    .await?;
+    if let Some(mut initial) = material.initial.take() {
+        initial.discard();
+    }
     material.handshake.discard();
     control.changed()?;
     Ok(())
@@ -426,8 +462,15 @@ async fn notify_ready<const RX: usize, const CHUNK: usize>(
     // A sink error asks the independent completion lane to close. Do not keep
     // redispatching that same ready stream while that lane is being scheduled.
     while !control.stopping() && !control.failed() {
-        let ready = app.try_borrow().map_err(|_| Error::Binding)?.ready_streams()?;
-        let Some(stream) = ready.into_iter().flatten().find(|stream| !state.is_complete(stream.id())) else {
+        let ready = app
+            .try_borrow()
+            .map_err(|_| Error::Binding)?
+            .ready_streams()?;
+        let Some(stream) = ready
+            .into_iter()
+            .flatten()
+            .find(|stream| !state.is_complete(stream.id()))
+        else {
             break;
         };
         let id = stream.id();
@@ -475,9 +518,13 @@ fn protocol_code(error: &Error) -> u64 {
         Error::Crypto(crypto::Error::KeyUpdateError)
         | Error::Connection(connection::Error::Crypto(crypto::Error::KeyUpdateError)) => 0xe,
         Error::Crypto(crypto::Error::IntegrityLimit | crypto::Error::ConfidentialityLimit)
-        | Error::Connection(connection::Error::Crypto(crypto::Error::IntegrityLimit | crypto::Error::ConfidentialityLimit)) => 0xf,
+        | Error::Connection(connection::Error::Crypto(
+            crypto::Error::IntegrityLimit | crypto::Error::ConfidentialityLimit,
+        )) => 0xf,
         Error::Packet(packet::Error::ReservedBits | packet::Error::EmptyPayload)
-        | Error::Connection(connection::Error::Packet(packet::Error::ReservedBits | packet::Error::EmptyPayload)) => 0xa,
+        | Error::Connection(connection::Error::Packet(
+            packet::Error::ReservedBits | packet::Error::EmptyPayload,
+        )) => 0xa,
         Error::Packet(_) | Error::Recovery(recovery::Error::Packet(_)) => 0x7,
         Error::Recovery(recovery::Error::Accounting(AccountingError::UnsentPacket)) => 0xa,
         _ => 0xa,
@@ -485,5 +532,9 @@ fn protocol_code(error: &Error) -> u64 {
 }
 
 fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected { Ok(()) } else { Err(Error::Binding) }
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Error::Binding)
+    }
 }

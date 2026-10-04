@@ -88,7 +88,11 @@ impl<'scope> KeyOwner<'scope> {
 
     pub(crate) fn generation(&self) -> Result<u64, Error> {
         let owned = self.owned.try_borrow().map_err(|_| Error::Binding)?;
-        Ok(owned.application.as_ref().ok_or(Error::Retired)?.generation())
+        Ok(owned
+            .application
+            .as_ref()
+            .ok_or(Error::Retired)?
+            .generation())
     }
 
     pub(crate) fn phase(&self) -> Result<bool, Error> {
@@ -99,8 +103,11 @@ impl<'scope> KeyOwner<'scope> {
     /// Only short synchronous inspection; no key borrow escapes this call.
     pub(crate) fn available_levels(&self) -> Result<[bool; 3], Error> {
         let owned = self.owned.try_borrow().map_err(|_| Error::Binding)?;
-        Ok([owned.initial.is_some(), owned.handshake.is_some(),
-            owned.application.is_some() && !owned.retired])
+        Ok([
+            owned.initial.is_some(),
+            owned.handshake.is_some(),
+            owned.application.is_some() && !owned.retired,
+        ])
     }
 
     /// Retained Handshake CRYPTO/ACK packets are sealed while borrowing only
@@ -136,8 +143,7 @@ impl<'scope> KeyOwner<'scope> {
         reservation: Reservation<'book>,
         destination_cid: &[u8],
         plaintext: &[u8],
-    ) -> Result<SealedApplicationDatagram<'book, N>, (connection::Error, Reservation<'book>)>
-    {
+    ) -> Result<SealedApplicationDatagram<'book, N>, (connection::Error, Reservation<'book>)> {
         let Ok(mut owned) = self.owned.try_borrow_mut() else {
             return Err((connection::Error::Binding, reservation));
         };
@@ -339,7 +345,11 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
         pto: u64,
     ) -> Result<(), Error> {
         let sequence = self.active()?;
-        self.exchange.key_ack.put(KeyAck { validated, now, pto })?;
+        self.exchange.key_ack.put(KeyAck {
+            validated,
+            now,
+            pto,
+        })?;
         endpoint.send::<p::KeyAck>(&sequence).await?;
         let response = endpoint.offer().await?;
         let accepted = match response.label() {

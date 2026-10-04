@@ -24,8 +24,12 @@ pub(crate) struct Permission<'scope> {
 }
 
 impl<'scope> Permission<'scope> {
-    pub(crate) fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
-    pub(crate) fn kind(&self) -> CloseKind { self.kind }
+    pub(crate) fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.scope
+    }
+    pub(crate) fn kind(&self) -> CloseKind {
+        self.kind
+    }
 }
 
 pub(crate) struct Exchange<'a, 'gate, 'scope> {
@@ -76,7 +80,10 @@ pub(crate) async fn peer_close<'scope>(
     exchange.check_scope(scope)?;
     exchange
         .peer
-        .put(Permission { scope, kind: CloseKind::Peer { code } })
+        .put(Permission {
+            scope,
+            kind: CloseKind::Peer { code },
+        })
         .map_err(|_| Error::Binding)?;
     let sequence = exchange.sequence();
     endpoint.send::<p::PeerClose>(&sequence).await?;
@@ -97,7 +104,10 @@ pub(crate) async fn protocol_failed<'scope>(
         .peer
         .put(Permission {
             scope,
-            kind: CloseKind::Local { application: false, code },
+            kind: CloseKind::Local {
+                application: false,
+                code,
+            },
         })
         .map_err(|_| Error::Binding)?;
     let sequence = exchange.sequence();
@@ -145,10 +155,16 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
         // The actual wire permission retains the close reason; no outer phase
         // flag supplies it. An existing stop takes cancellation priority.
         if exchange.control.failed() {
-            exchange.files.put(Permission {
-                scope: exchange.scope,
-                kind: CloseKind::Local { application: true, code: 0x100 },
-            }).map_err(|_| Error::Binding)?;
+            exchange
+                .files
+                .put(Permission {
+                    scope: exchange.scope,
+                    kind: CloseKind::Local {
+                        application: true,
+                        code: 0x100,
+                    },
+                })
+                .map_err(|_| Error::Binding)?;
             endpoint.send::<p::ApplicationFailed>(&sequence).await?;
             exchange.control.revoke()?;
             return check(endpoint.recv::<p::CompletionSeen>().await?, sequence);
@@ -163,10 +179,16 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
                 .map_err(|_| Error::Binding)?
                 .queued_chunks()?;
             if queued == 0 && book.handshake_confirmed()? && book.ordinary_settled()? {
-                exchange.files.put(Permission {
-                    scope: exchange.scope,
-                    kind: CloseKind::Local { application: true, code: 0 },
-                }).map_err(|_| Error::Binding)?;
+                exchange
+                    .files
+                    .put(Permission {
+                        scope: exchange.scope,
+                        kind: CloseKind::Local {
+                            application: true,
+                            code: 0,
+                        },
+                    })
+                    .map_err(|_| Error::Binding)?;
                 endpoint.send::<p::FilesComplete>(&sequence).await?;
                 exchange.control.revoke()?;
                 return check(endpoint.recv::<p::CompletionSeen>().await?, sequence);
@@ -221,8 +243,12 @@ pub(crate) async fn receive<'scope>(
                     if let Poll::Ready(offered) = peer_wait.as_mut().poll(cx) {
                         return Poll::Ready((Some(offered), None));
                     }
-                    files_wait.as_mut().poll(cx).map(|offered| (None, Some(offered)))
-                }).await
+                    files_wait
+                        .as_mut()
+                        .poll(cx)
+                        .map(|offered| (None, Some(offered)))
+                })
+                .await
             };
             match (peer_offer, files_offer) {
                 (Some(offered), None) => {
@@ -240,7 +266,13 @@ pub(crate) async fn receive<'scope>(
                         45 => {
                             check(offered.recv::<p::PeerFailed>().await?, sequence)?;
                             let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
-                            if !matches!(permission.kind, CloseKind::Local { application: false, .. }) {
+                            if !matches!(
+                                permission.kind,
+                                CloseKind::Local {
+                                    application: false,
+                                    ..
+                                }
+                            ) {
                                 return Err(Error::Binding);
                             }
                             exchange.apply(&permission)?;
@@ -248,7 +280,9 @@ pub(crate) async fn receive<'scope>(
                         }
                         46 => {
                             check(offered.recv::<p::PeerCancelled>().await?, sequence)?;
-                            if !exchange.peer.is_empty() { return Err(Error::Binding); }
+                            if !exchange.peer.is_empty() {
+                                return Err(Error::Binding);
+                            }
                             None
                         }
                         label => return Err(Error::UnexpectedLabel(label)),
@@ -261,7 +295,13 @@ pub(crate) async fn receive<'scope>(
                         48 => {
                             check(offered.recv::<p::FilesComplete>().await?, sequence)?;
                             let permission = exchange.files.take().map_err(|_| Error::Binding)?;
-                            if !matches!(permission.kind, CloseKind::Local { application: true, code: 0 }) {
+                            if !matches!(
+                                permission.kind,
+                                CloseKind::Local {
+                                    application: true,
+                                    code: 0
+                                }
+                            ) {
                                 return Err(Error::Binding);
                             }
                             exchange.apply(&permission)?;
@@ -270,7 +310,13 @@ pub(crate) async fn receive<'scope>(
                         49 => {
                             check(offered.recv::<p::ApplicationFailed>().await?, sequence)?;
                             let permission = exchange.files.take().map_err(|_| Error::Binding)?;
-                            if !matches!(permission.kind, CloseKind::Local { application: true, code: 0x100 }) {
+                            if !matches!(
+                                permission.kind,
+                                CloseKind::Local {
+                                    application: true,
+                                    code: 0x100
+                                }
+                            ) {
                                 return Err(Error::Binding);
                             }
                             exchange.apply(&permission)?;
@@ -278,7 +324,9 @@ pub(crate) async fn receive<'scope>(
                         }
                         50 => {
                             check(offered.recv::<p::CompletionCancelled>().await?, sequence)?;
-                            if !exchange.files.is_empty() { return Err(Error::Binding); }
+                            if !exchange.files.is_empty() {
+                                return Err(Error::Binding);
+                            }
                             None
                         }
                         label => return Err(Error::UnexpectedLabel(label)),
@@ -301,9 +349,16 @@ pub(crate) async fn receive<'scope>(
             }
         }
     }
-    Ok(TerminalOutcomes { peer: peer_permission, files: files_permission })
+    Ok(TerminalOutcomes {
+        peer: peer_permission,
+        files: files_permission,
+    })
 }
 
 fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected { Ok(()) } else { Err(Error::Binding) }
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Error::Binding)
+    }
 }
