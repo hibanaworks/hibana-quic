@@ -1,9 +1,9 @@
 #![no_std]
 #![cfg_attr(test, allow(long_running_const_eval))]
-
 #![forbid(unsafe_code)]
-//! Bounded QUIC v1 building blocks. This crate is not yet a QUIC endpoint.
-//! No interop, full TLS, Pico HIL, or source-level verification claim is made.
+//! Experimental bounded QUIC v1 with direct Hibana choreography and async locals.
+//! Core storage is caller-owned. See the qualification inventory for tested
+//! revisions and the architecture ledger for incomplete lifecycle migration.
 
 #[cfg(test)]
 extern crate self as hibana_quic;
@@ -17,7 +17,6 @@ pub mod flights;
 pub mod flow;
 pub mod handshake;
 pub mod key_exchange;
-pub mod lifecycle;
 
 pub mod ecn;
 pub mod packet;
@@ -33,29 +32,19 @@ pub mod tls_schedule;
 pub mod tls_ticket;
 pub mod tls_wire;
 
-
 #[cfg(test)]
 extern crate std;
 
 pub mod tls_rsa;
 
-pub mod early_data;
-pub mod early_control;
 pub mod connection_id;
+pub mod early_data;
 pub mod path;
-pub mod migration;
-
-pub mod idle;
-
-pub mod early_send;
-
-pub mod version_negotiation;
 
 pub mod trace;
 
 pub mod runtime;
 
 pub mod mailbox;
-
 
 pub mod connection;

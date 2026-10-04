@@ -56,3 +56,19 @@ identity reuse is not prevented by the source graph alone. Interoperability and
 architecture migration are separate completion criteria. No whole-stack migration
 claim follows from these tests. The published 12/44 runner result predates this
 source-production change and does not qualify it.
+
+## Removal of disconnected legacy controllers
+
+Six standalone controllers were still exported but had no callers in the live
+endpoint: early-send, deferred early-control, close lifecycle, idle timeout,
+version-negotiation, and migration selection. They and their private phase/state
+machines have now been deleted, together with obsolete stream-import helpers and
+old usage documents. The actual connection's direct close/drain choreography is
+unchanged. Numerical path/CID and TLS cryptographic building blocks remain where
+they have current tests or callers; no removed feature is counted as migrated.
+
+The 67 unit tests belonging to those deleted controllers were removed with them,
+not converted to passes. The remaining core suite is 410 unit +59 integration +27
+compile-fail contracts, all passing. In particular the eight live encrypted
+connection tests and two finite stream-production tests remain. The new capability
+ledger no longer presents old-driver feature tests as current implementation.
