@@ -673,7 +673,7 @@ fn default_rustls_client_completes_real_p256_hello_retry_request() {
     )
     .unwrap();
     drain(&mut client, &mut server, 17).unwrap();
-    assert_eq!(server.state(), State::ServerClientHelloRetry);
+    assert_eq!(server.state(), State::Handshaking);
     assert!(!server.has_keys(Level::Handshake));
     if let Err(error) = handshake(&mut client, &mut server, 11) {
         panic!(
@@ -711,7 +711,7 @@ fn server_rejects_changed_retry_client_hello_before_installing_keys() {
     )
     .unwrap();
     drain(&mut client, &mut server, 4096).unwrap();
-    assert_eq!(server.state(), State::ServerClientHelloRetry);
+    assert_eq!(server.state(), State::Handshaking);
     let mut bytes = [0; 4096];
     let hrr = server.transmit(&mut bytes).unwrap().unwrap();
     assert_eq!(hrr.level, Level::Initial);
@@ -761,7 +761,7 @@ fn client_cookie_retry_is_bounded_and_repeated_or_same_group_retry_fails() {
         measured(|| {
             client.receive(Level::Initial, &message[..n]).unwrap();
         });
-        assert_eq!(client.state(), State::ClientServerHelloRetry);
+        assert_eq!(client.state(), State::Handshaking);
         assert!(!client.has_keys(Level::Handshake));
         let mut second = [0; 2048];
         let ch2 = client.transmit(&mut second).unwrap().unwrap();
@@ -847,7 +847,7 @@ fn every_bounded_server_call_in_real_hrr_handshake_allocates_zero() {
     });
     let mut server = AllocationChecked(server);
     drain(&mut client, &mut server, 1).unwrap();
-    assert_eq!(server.0.state(), State::ServerClientHelloRetry);
+    assert_eq!(server.0.state(), State::Handshaking);
     handshake(&mut client, &mut server, 1).unwrap();
     assert_eq!(server.0.state(), State::Connected);
     packets(&mut client, &mut server);
@@ -1068,7 +1068,7 @@ fn default_rustls_client_negotiates_x25519_without_retry() {
     )
     .unwrap();
     drain(&mut client, &mut server, 17).unwrap();
-    assert_eq!(server.state(), State::ServerClientFinished);
+    assert_eq!(server.state(), State::Handshaking);
     assert_eq!(
         server.negotiated_group(),
         Some(hibana_quic::tls_wire::GROUP_X25519)
@@ -1313,28 +1313,46 @@ fn strict_chacha_cookie_retry_preserves_singleton_offer_and_no_overlap_fails() {
     assert!(!server.has_keys(Level::Handshake));
 }
 
-// Fresh real-crypto coverage for the new direct transcript roles. No old
-// receive/phase dispatcher runs on the side under test. The opposite side is
-// the existing TLS peer, so this does not claim both sides or HQ are migrated.
+// Both peers run the new direct asynchronous transcript roles.
 #[test]
 fn direct_transcript_roles_validate_full_tls_without_allocating() {
-    use core::cell::RefCell;
+    use core::{
+        cell::RefCell,
+        future::{Future, poll_fn},
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
     use hibana::runtime::{SessionKitStorage, ids::SessionId};
     use hibana_quic::{
         bounded_tls::{locals, protocol},
         carrier::CarrierStorage,
-        runtime,
+        runtime::TaskSet,
     };
-    struct Peer<'a, 'cfg, 'buf, 'peer> {
-        local: &'a RefCell<BoundedTls<'cfg, 'buf>>,
-        remote: BoundedTls<'cfg, 'peer>,
+    struct Shared<'cfg, 'buf> {
+        tls: RefCell<BoundedTls<'cfg, 'buf>>,
+        reader: RefCell<Option<Waker>>,
+    }
+    impl locals::CryptoAccess for Shared<'_, '_> {
+        fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
+            f(&mut self.tls.borrow_mut())
+        }
+        fn applied(&self) -> Result<(), locals::Error> {
+            let w = self.reader.borrow_mut().take();
+            if let Some(w) = w {
+                w.wake();
+            }
+            Ok(())
+        }
+    }
+    struct Input<'a, 'cfg, 'buf> {
+        remote: &'a Shared<'cfg, 'buf>,
         pending: [u8; 8192],
         used: usize,
         end: usize,
         level: Level,
         stall: bool,
     }
-    impl locals::MessageInput for Peer<'_, '_, '_, '_> {
+    impl locals::MessageInput for Input<'_, '_, '_> {
         async fn read_message(
             &mut self,
             level: Level,
@@ -1345,19 +1363,16 @@ fn direct_transcript_roles_validate_full_tls_without_allocating() {
                 return core::future::pending().await;
             }
             if self.used == self.end {
-                let mut flight = [0; 8192];
-                for _ in 0..32 {
-                    let produced = self.local.borrow_mut().transmit(&mut flight).unwrap();
-                    let Some(produced) = produced else { break };
-                    self.remote
-                        .receive(produced.level, &flight[..produced.len])
-                        .unwrap();
-                }
-                let produced = self
-                    .remote
-                    .transmit(&mut self.pending)
-                    .unwrap()
-                    .expect("peer flight");
+                let produced = poll_fn(|cx| {
+                    let old = self.remote.reader.borrow_mut().replace(cx.waker().clone());
+                    drop(old);
+                    match self.remote.tls.borrow_mut().transmit(&mut self.pending) {
+                        Ok(Some(p)) => Poll::Ready(Ok(p)),
+                        Ok(None) => Poll::Pending,
+                        Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                    }
+                })
+                .await?;
                 self.used = 0;
                 self.end = produced.len;
                 self.level = produced.level;
@@ -1372,120 +1387,117 @@ fn direct_transcript_roles_validate_full_tls_without_allocating() {
             Ok(n)
         }
     }
-    for (client, cancel) in [(true, false), (false, false), (true, true), (false, true)] {
+    for cancel in [false, true] {
         let identity = identity();
         let anchors = [trust_anchor_from_der(&identity.root).unwrap()];
         let chain = [identity.leaf.as_ref()];
         let mut cb = Buffers::new();
         let mut sb = Buffers::new();
-        let c = BoundedTls::client(
-            ClientConfig {
-                server_name: "localhost",
-                trust_anchors: &anchors,
-                now: now(),
-                certificate_limits: Limits::default(),
-                transport_parameters: CLIENT_PARAMS,
-            },
-            cb.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        let s = BoundedTls::server(
-            ServerConfig {
-                certificate_chain: &chain,
-                signing_key: &identity.signing,
-                transport_parameters: SERVER_PARAMS,
-            },
-            sb.storage(),
-            &mut OsRng,
-        )
-        .unwrap();
-        let (local, remote) = if client { (c, s) } else { (s, c) };
-        let source = RefCell::new(local);
-        let mut peer = Peer {
-            local: &source,
-            remote,
+        let client = Shared {
+            tls: RefCell::new(
+                BoundedTls::client(
+                    ClientConfig {
+                        server_name: "localhost",
+                        trust_anchors: &anchors,
+                        now: now(),
+                        certificate_limits: Limits::default(),
+                        transport_parameters: CLIENT_PARAMS,
+                    },
+                    cb.storage(),
+                    &mut OsRng,
+                )
+                .unwrap(),
+            ),
+            reader: RefCell::new(None),
+        };
+        let server = Shared {
+            tls: RefCell::new(
+                BoundedTls::server(
+                    ServerConfig {
+                        certificate_chain: &chain,
+                        signing_key: &identity.signing,
+                        transport_parameters: SERVER_PARAMS,
+                    },
+                    sb.storage(),
+                    &mut OsRng,
+                )
+                .unwrap(),
+            ),
+            reader: RefCell::new(None),
+        };
+        let mut ci = Input {
+            remote: &server,
             pending: [0; 8192],
             used: 0,
             end: 0,
             level: Level::Initial,
             stall: cancel,
         };
-        let mut message = [0; 8192];
-        let slot = locals::MessageSlot::new(&mut message);
-        let carrier = CarrierStorage::<1, 16, 48>::new();
-        let mut slab = vec![0; 65536];
-        let mut storage = SessionKitStorage::uninit();
-        let kit = storage.init();
-        let sid = SessionId::new(if client { 4500 } else { 4501 });
-        let rv = kit
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
-        let programs = if client {
-            protocol::client_programs()
-        } else {
-            protocol::server_programs()
+        let mut si = Input {
+            remote: &client,
+            pending: [0; 8192],
+            used: 0,
+            end: 0,
+            level: Level::Initial,
+            stall: cancel,
         };
-        let mut input = rv.enter(sid, &programs.input).unwrap();
-        let mut verify = rv.enter(sid, &programs.verify).unwrap();
+        let mut cm = [0; 8192];
+        let mut sm = [0; 8192];
+        let cs = locals::MessageSlot::new(&mut cm);
+        let ss = locals::MessageSlot::new(&mut sm);
+        let cc = CarrierStorage::<1, 16, 4>::new();
+        let sc = CarrierStorage::<1, 16, 4>::new();
+        let mut cslab = vec![0; 65536];
+        let mut sslab = vec![0; 65536];
+        let mut ck = SessionKitStorage::uninit();
+        let mut sk = SessionKitStorage::uninit();
+        let cid = SessionId::new(4500);
+        let sid = SessionId::new(4501);
+        let ck = ck.init();
+        let sk = sk.init();
+        let cr = ck.rendezvous(&mut cslab, cc.bind(cid).unwrap()).unwrap();
+        let sr = sk.rendezvous(&mut sslab, sc.bind(sid).unwrap()).unwrap();
+        let cp = protocol::client_programs();
+        let sp = protocol::server_programs();
+        let mut cinput = cr.enter(cid, &cp.input).unwrap();
+        let mut cverify = cr.enter(cid, &cp.verify).unwrap();
+        let mut sinput = sr.enter(sid, &sp.input).unwrap();
+        let mut sverify = sr.enter(sid, &sp.verify).unwrap();
         let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
-        if cancel {
-            use core::{
-                future::Future,
-                pin::pin,
-                task::{Context, Waker},
-            };
-            measured(|| {
-                let mut future = pin!(async {
-                    if client {
-                        runtime::join2(
-                            locals::client_owner(&mut verify, &source, &slot),
-                            locals::client_input(&mut input, &slot, &mut peer),
-                        )
-                        .await
-                    } else {
-                        runtime::join2(
-                            locals::server_owner(&mut verify, &source, &slot),
-                            locals::server_input(&mut input, &slot, &mut peer),
-                        )
-                        .await
-                    }
-                });
+        measured(|| {
+            let mut co = pin!(locals::client_owner(&mut cverify, &client, &cs));
+            let mut cin = pin!(locals::client_input(&mut cinput, &cs, &mut ci));
+            let mut so = pin!(locals::server_owner(&mut sverify, &server, &ss));
+            let mut sin = pin!(locals::server_input(&mut sinput, &ss, &mut si));
+            let tasks = TaskSet::new([co.as_mut(), cin.as_mut(), so.as_mut(), sin.as_mut()]);
+            if cancel {
+                let mut tasks = pin!(tasks);
                 let mut cx = Context::from_waker(Waker::noop());
                 for _ in 0..8 {
-                    assert!(future.as_mut().poll(&mut cx).is_pending());
+                    assert!(tasks.as_mut().poll(&mut cx).is_pending());
                 }
-            });
-            assert_eq!(source.borrow().state(), State::Failed);
-            drop(slot);
-            assert!(message.iter().all(|b| *b == 0));
-            continue;
-        }
-        measured(|| {
-            reactor
-                .block_on(async {
-                    if client {
-                        runtime::join2(
-                            locals::client_owner(&mut verify, &source, &slot),
-                            locals::client_input(&mut input, &slot, &mut peer),
-                        )
-                        .await
-                    } else {
-                        runtime::join2(
-                            locals::server_owner(&mut verify, &source, &slot),
-                            locals::server_input(&mut input, &slot, &mut peer),
-                        )
-                        .await
-                    }
-                })
-                .unwrap()
-                .unwrap()
+            } else {
+                reactor.block_on(tasks).unwrap().unwrap();
+            }
         });
-        assert_eq!(source.borrow().state(), State::Connected);
-        // Deliver the generated client Finished to the reference side.
-        if client {
-            drain(&mut *source.borrow_mut(), &mut peer.remote, 4096).unwrap();
-        }
-        assert_eq!(peer.remote.state(), State::Connected);
+        assert_eq!(
+            client.tls.borrow().state(),
+            if cancel {
+                State::Failed
+            } else {
+                State::Connected
+            }
+        );
+        assert_eq!(
+            server.tls.borrow().state(),
+            if cancel {
+                State::Failed
+            } else {
+                State::Connected
+            }
+        );
+        drop(cs);
+        drop(ss);
+        assert!(cm.iter().chain(sm.iter()).all(|b| *b == 0));
     }
 }

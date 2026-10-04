@@ -1,8 +1,7 @@
-//! Direct role-local QUIC connection continuation.
-//! APPROXIMATE SOURCE RECOVERY after executor replacement, 2026-10-03.
-//! This reconstructs the historical handshake orchestration from retained API
-//! and control-flow descriptions. It has not been compiled or tested. The
-//! reconstructed and subsequent implementation requires fresh compilation and tests.
+//! Direct role-local QUIC connection from the composed global choreography.
+//! TLS message order runs in bounded_tls::{protocol,locals}; packet framing,
+//! cryptographic arithmetic and recovery bookkeeping remain role-owned data.
+//! See the current validation ledger for tested and unqualified scenarios.
 
 pub mod application;
 pub mod application_stream;
@@ -90,6 +89,7 @@ pub trait Clock {
 #[derive(Debug)]
 pub enum Error {
     Endpoint(EndpointError),
+    Transcript(crate::bounded_tls::locals::Error),
     Resolver(ResolverError),
     Crypto(crypto::Error),
     EndpointAt {
@@ -383,6 +383,11 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
     };
     let initial = initial::Keys::new(scope, read, write)?;
     let initial_exchange = initial::Exchange::new();
+    let message_buffer = source
+        .material()
+        .take_message_buffer()
+        .map_err(|_| Error::Binding)?;
+    let message_slot = crate::bounded_tls::locals::MessageSlot::new(message_buffer);
     let numbers = transcript::Numbers::new(source);
     let (mut tx, mut rx, mut clock_book, mut publication, mut retirement) = book.split()?;
     let mut initial_owner = tx.initial_retirement_owner();
@@ -398,9 +403,9 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
                 locals::receive(
                     &mut roles.rx,
                     receive_io,
+                    &message_slot,
                     storage,
                     config,
-                    scope,
                     &initial,
                     &initial_exchange,
                     receive_initial.as_deref_mut(),
@@ -433,7 +438,9 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
             &mut roles.tls_rx,
             &numbers,
             storage,
-            tls_outcome
+            tls_outcome,
+            &message_slot,
+            config.side
         ));
         let mut tls_transmit = pin!(transcript::transmit(&mut roles.tls_tx, &numbers, storage));
         let mut publish = pin!(locals::publish(
@@ -477,6 +484,8 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
     if initial.available() {
         return Err(Error::Binding);
     }
+    numbers.restore_buffer(message_slot.into_buffer().map_err(Error::Transcript)?);
+    numbers.record_verified_consumed(received.as_ref().ok_or(Error::Binding)?.verified_consumed)?;
     retirement.disarm();
     Ok((
         received.ok_or(Error::Binding)?,

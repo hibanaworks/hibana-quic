@@ -1,0 +1,7 @@
+sources/hibana-quic/proofs/tls-consumed-boundary/Boundary.lean:5:82: error: failed to synthesize
+  Decidable (admitted 100 50 ∧ ¬admitted 0 50)
+
+Hint: Additional diagnostic information may be available using the `set_option diagnostics true` command.
+'TlsConsumedBoundary.verified_duplicate' does not depend on any axioms
+'TlsConsumedBoundary.new_input_rejected' does not depend on any axioms
+'TlsConsumedBoundary.zero_floor_loses_verified_input' depends on axioms: [sorryAx]

@@ -61,6 +61,9 @@ class Parser:
         self.roles['app'].update({'PREFIX_RX':0,'PREFIX_TLS_RX':1,'PREFIX_TX':2})
     def expand(self,module,expr,path=''):
         expr=expr.strip()
+        prefix="crate::bounded_tls::protocol::"
+        if expr.startswith(prefix):
+            return self.expand("tls",expr[len(prefix):],path)
         m=re.fullmatch(r'(g::)?(\w+)(?:<(.*)>)?',expr,re.S)
         if not m: raise ValueError(('unparsed type',module,expr))
         builtin,name,raw=m.groups(); args=split_args(raw) if raw else []

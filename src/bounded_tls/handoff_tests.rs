@@ -77,7 +77,7 @@ fn actual_owned_tls_keys_and_finished_are_affine_scoped_and_allocation_free() {
             assert!(client.take_finished().is_err());
             legacy_denied(&mut client.provider);
             drain(&mut client, &mut server);
-            assert_eq!(server.state(), State::ServerClientFinished);
+            assert_eq!(server.state(), State::Handshaking);
             assert!(server.take_finished().is_err());
             let (shs_rx, mut shs_tx) = server.take_handshake_keys().unwrap().install();
             let smaterial = server.take_application_keys().unwrap();
@@ -207,7 +207,7 @@ fn key_source_preserves_strict_cookie_hrr_and_never_mints_early_keys_or_finished
     let mut retry = [0; 512];
     let n = crate::tls_wire::encode_hello_retry_request(&mut retry, 0x1301, None, Some(b"cookie")).unwrap();
     source.receive(Level::Initial, &retry[..n]).unwrap();
-    assert_eq!(source.state(), State::ClientServerHelloRetry);
+    assert_eq!(source.state(), State::Handshaking);
     assert!(source.take_handshake_keys().is_err()); assert!(source.take_application_keys().is_err());
     assert!(source.take_early_key().is_err()); assert!(source.take_finished().is_err());
     let mut second = [0; 2048];

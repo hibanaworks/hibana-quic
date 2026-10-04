@@ -2,8 +2,8 @@
 //!
 //! The numerical operations never dispatch on a handwritten TLS phase. The
 //! owner's async continuation and the projected endpoints determine order.
-//! The legacy Provider API is still separate until connection integration is
-//! finished; these roles must not be described as the current HQ wire path yet.
+//! The QUIC connection embeds these roles directly. The synchronous handshake
+//! test peer is excluded from default endpoint builds.
 use super::{BoundedTls, Failure, Mode, State, protocol as p};
 use crate::tls::Level;
 use core::{
@@ -18,6 +18,7 @@ pub enum Error {
     Crypto(Failure),
     Binding,
     Capacity,
+    Input(crate::tls::Error),
 }
 impl From<EndpointError> for Error {
     fn from(e: EndpointError) -> Self {
@@ -57,6 +58,9 @@ impl<'a> MessageSlot<'a> {
         let bytes = self.bytes.borrow();
         let bytes = bytes.as_deref().ok_or(Error::Binding)?;
         f(&bytes[..n]).map_err(Error::Crypto)
+    }
+    pub(crate) fn into_buffer(self) -> Result<&'a mut [u8], Error> {
+        self.bytes.into_inner().ok_or(Error::Binding)
     }
     fn clear(&self) {
         use zeroize::Zeroize;
@@ -120,28 +124,42 @@ async fn fill(
 
 /// A cancelled/erroring owner erases its outstanding message and fails its key
 /// material closed. Successful completion preserves only the normal handoff.
-struct Owner<'a, 'cfg, 'buf, 'slot> {
-    tls: &'a RefCell<BoundedTls<'cfg, 'buf>>,
+/// Borrow access only: this trait carries no protocol events or transition logic.
+/// It permits TX/key handoff locals to borrow the same numeric owner between
+/// awaited input operations without holding a RefCell guard across an await.
+pub trait CryptoAccess {
+    fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R;
+    fn applied(&self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+impl CryptoAccess for RefCell<BoundedTls<'_, '_>> {
+    fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
+        f(&mut self.borrow_mut())
+    }
+}
+struct Owner<'a, 'slot, T: CryptoAccess> {
+    tls: &'a T,
     slot: &'a MessageSlot<'slot>,
     complete: bool,
 }
-impl Drop for Owner<'_, '_, '_, '_> {
+impl<T: CryptoAccess> Drop for Owner<'_, '_, T> {
     fn drop(&mut self) {
         self.slot.clear();
         if !self.complete {
-            self.tls.borrow_mut().fail(Failure::State);
+            self.tls.with_crypto(|tls| {
+                tls.fail(Failure::State);
+            });
         }
     }
 }
 
 pub async fn client_owner(
     endpoint: &mut Endpoint<'_, { p::VERIFY }>,
-    tls: &RefCell<BoundedTls<'_, '_>>,
+    tls: &impl CryptoAccess,
     slot: &MessageSlot<'_>,
 ) -> Result<(), Error> {
-    if !matches!(tls.borrow().mode, Mode::Client(_))
-        || tls.borrow().state != State::ClientServerHello
-    {
+    if !tls.with_crypto(|t| matches!(t.mode, Mode::Client(_)) && t.pristine()) {
         return Err(Error::Binding);
     }
     let mut owner = Owner {
@@ -152,7 +170,8 @@ pub async fn client_owner(
     let mut id = 0;
     endpoint.send::<p::NeedHello>(&id).await?;
     check(endpoint.recv::<p::Hello>().await?, id)?;
-    let retry = slot.apply(|m| owner.tls.borrow_mut().client_hello(m, false))?;
+    let retry = slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_hello(m, false)))?;
+    owner.tls.applied()?;
     slot.clear();
     endpoint.send::<p::Applied>(&id).await?;
     id += 1;
@@ -160,9 +179,10 @@ pub async fn client_owner(
         endpoint.send::<p::Retry>(&id).await?;
         endpoint.send::<p::NeedRetryHello>(&id).await?;
         check(endpoint.recv::<p::RetryHello>().await?, id)?;
-        if slot.apply(|m| owner.tls.borrow_mut().client_hello(m, true))? {
+        if slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_hello(m, true)))? {
             return Err(Error::Binding);
         }
+        owner.tls.applied()?;
         slot.clear();
         endpoint.send::<p::Applied>(&id).await?;
         id += 1;
@@ -171,49 +191,56 @@ pub async fn client_owner(
     }
     endpoint.send::<p::NeedExtensions>(&id).await?;
     check(endpoint.recv::<p::Extensions>().await?, id)?;
-    slot.apply(|m| owner.tls.borrow_mut().client_extensions(m))?;
+    slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_extensions(m)))?;
+    owner.tls.applied()?;
     slot.clear();
     endpoint.send::<p::Applied>(&id).await?;
     id += 1;
-    if owner.tls.borrow().resumed {
+    if owner.tls.with_crypto(|tls| tls.resumed) {
         endpoint.send::<p::Resumed>(&id).await?;
     } else {
         endpoint.send::<p::Full>(&id).await?;
         endpoint.send::<p::NeedCertificate>(&id).await?;
         check(endpoint.recv::<p::Certificate>().await?, id)?;
-        slot.apply(|m| owner.tls.borrow_mut().client_certificate(m))?;
+        slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_certificate(m)))?;
+        owner.tls.applied()?;
         slot.clear();
         endpoint.send::<p::Applied>(&id).await?;
         id += 1;
         endpoint.send::<p::NeedCertificateVerify>(&id).await?;
         check(endpoint.recv::<p::CertificateVerify>().await?, id)?;
-        slot.apply(|m| owner.tls.borrow_mut().client_certificate_verify(m))?;
+        slot.apply(|m| {
+            owner
+                .tls
+                .with_crypto(|tls| tls.client_certificate_verify(m))
+        })?;
+        owner.tls.applied()?;
         slot.clear();
         endpoint.send::<p::Applied>(&id).await?;
         id += 1;
     }
     endpoint.send::<p::NeedFinished>(&id).await?;
     check(endpoint.recv::<p::Finished>().await?, id)?;
-    slot.apply(|m| owner.tls.borrow_mut().client_finished(m))?;
+    slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_finished(m)))?;
+    owner.tls.with_crypto(|tls| tls.state = State::Connected);
+    owner.tls.applied()?;
     slot.clear();
     endpoint.send::<p::Applied>(&id).await?;
     id += 1;
     endpoint.send::<p::Complete>(&id).await?;
     // Compatibility status only, set after the complete projected exchange.
     // No handshake operation dispatches on this field in the async role.
-    owner.tls.borrow_mut().state = State::Connected;
+    owner.tls.with_crypto(|tls| tls.state = State::Connected);
     owner.complete = true;
     Ok(())
 }
 
 pub async fn server_owner(
     endpoint: &mut Endpoint<'_, { p::VERIFY }>,
-    tls: &RefCell<BoundedTls<'_, '_>>,
+    tls: &impl CryptoAccess,
     slot: &MessageSlot<'_>,
 ) -> Result<(), Error> {
-    if !matches!(tls.borrow().mode, Mode::Server(_))
-        || tls.borrow().state != State::ServerClientHello
-    {
+    if !tls.with_crypto(|t| matches!(t.mode, Mode::Server(_)) && t.pristine()) {
         return Err(Error::Binding);
     }
     let mut owner = Owner {
@@ -224,7 +251,8 @@ pub async fn server_owner(
     let mut id = 0;
     endpoint.send::<p::NeedHello>(&id).await?;
     check(endpoint.recv::<p::Hello>().await?, id)?;
-    let retry = slot.apply(|m| owner.tls.borrow_mut().server_hello(m, false))?;
+    let retry = slot.apply(|m| owner.tls.with_crypto(|tls| tls.server_hello(m, false)))?;
+    owner.tls.applied()?;
     slot.clear();
     endpoint.send::<p::Applied>(&id).await?;
     id += 1;
@@ -232,9 +260,10 @@ pub async fn server_owner(
         endpoint.send::<p::Retry>(&id).await?;
         endpoint.send::<p::NeedRetryHello>(&id).await?;
         check(endpoint.recv::<p::RetryHello>().await?, id)?;
-        if slot.apply(|m| owner.tls.borrow_mut().server_hello(m, true))? {
+        if slot.apply(|m| owner.tls.with_crypto(|tls| tls.server_hello(m, true)))? {
             return Err(Error::Binding);
         }
+        owner.tls.applied()?;
         slot.clear();
         endpoint.send::<p::Applied>(&id).await?;
         id += 1;
@@ -243,12 +272,14 @@ pub async fn server_owner(
     }
     endpoint.send::<p::NeedFinished>(&id).await?;
     check(endpoint.recv::<p::Finished>().await?, id)?;
-    slot.apply(|m| owner.tls.borrow_mut().server_finished(m))?;
+    slot.apply(|m| owner.tls.with_crypto(|tls| tls.server_finished(m)))?;
+    owner.tls.with_crypto(|tls| tls.state = State::Connected);
+    owner.tls.applied()?;
     slot.clear();
     endpoint.send::<p::Applied>(&id).await?;
     id += 1;
     endpoint.send::<p::Complete>(&id).await?;
-    owner.tls.borrow_mut().state = State::Connected;
+    owner.tls.with_crypto(|tls| tls.state = State::Connected);
     owner.complete = true;
     Ok(())
 }

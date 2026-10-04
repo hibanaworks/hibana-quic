@@ -1,5 +1,5 @@
-//! Reconstructed from the retained author tool calls after executor replacement.
-//! This is the last implemented finite handshake choreography; rebuild required.
+//! Finite handshake graph: direct TLS message order, independent TX publication,
+//! timer ownership and affine Initial-key retirement compose in parallel.
 use hibana::{
     g,
     runtime::program::{RoleProgram, project},
@@ -12,34 +12,7 @@ pub const UDP: u8 = 4;
 pub const TIMER: u8 = 5;
 pub const TIMER_TX: u8 = 6;
 pub const TX_WIRE: u8 = 7;
-pub const CRYPTO_RESULT: u16 = 1000;
 pub const ADAPTER_RESULT: u16 = 1001;
-pub trait ReceivePhase {
-    type Need: g::Message<Payload = u64>;
-    type Input: g::Message<Payload = u64>;
-    type Accepted: g::Message<Payload = u64>;
-    type Rejected: g::Message<Payload = u64>;
-    type Taken: g::Message<Payload = u64>;
-    type Boundary: g::Message<Payload = u64>;
-}
-macro_rules! rx_phase {
-    ($name:ident,$b:literal) => {
-        pub struct $name;
-        impl ReceivePhase for $name {
-            type Need = g::Msg<{ $b }, u64>;
-            type Input = g::Msg<{ $b + 1 }, u64>;
-            type Accepted = g::Msg<{ $b + 2 }, u64>;
-            type Rejected = g::Msg<{ $b + 3 }, u64>;
-            type Taken = g::Msg<{ $b + 4 }, u64>;
-            type Boundary = g::Msg<{ $b + 5 }, u64>;
-        }
-    };
-}
-rx_phase!(InitialReceive, 0);
-rx_phase!(HandshakeReceive, 7);
-rx_phase!(FinishedReceive, 14);
-pub type ReadHandshake = g::Msg<6, u64>;
-pub type ReadApplication = g::Msg<13, u64>;
 pub type ReceiveComplete = g::Msg<20, u64>;
 pub type ReceiveContinuation = g::Msg<21, u64>;
 pub trait Publication {
@@ -110,47 +83,6 @@ pub type TimerExpired = g::Msg<141, u64>;
 pub type TimerTaken = g::Msg<142, u64>;
 pub type TimerRetired = g::Msg<143, u64>;
 pub type TimerAcknowledged = g::Msg<144, u64>;
-type RxWork<P> = g::Roll<
-    g::Route<
-        g::Seq<
-            g::Send<TLS_RX, RX, <P as ReceivePhase>::Need>,
-            g::Seq<
-                g::Send<RX, TLS_RX, <P as ReceivePhase>::Input>,
-                g::Seq<
-                    g::Resolve<
-                        g::Route<
-                            g::Send<TLS_RX, RX, <P as ReceivePhase>::Accepted>,
-                            g::Send<TLS_RX, RX, <P as ReceivePhase>::Rejected>,
-                        >,
-                        CRYPTO_RESULT,
-                    >,
-                    g::Send<RX, TLS_RX, <P as ReceivePhase>::Taken>,
-                >,
-            >,
-        >,
-        g::Send<TLS_RX, RX, <P as ReceivePhase>::Boundary>,
-    >,
->;
-fn rx_work<P: ReceivePhase>() -> g::Program<RxWork<P>> {
-    g::route(
-        g::seq(
-            g::send::<TLS_RX, RX, P::Need>(),
-            g::seq(
-                g::send::<RX, TLS_RX, P::Input>(),
-                g::seq(
-                    g::route(
-                        g::send::<TLS_RX, RX, P::Accepted>(),
-                        g::send::<TLS_RX, RX, P::Rejected>(),
-                    )
-                    .resolve::<CRYPTO_RESULT>(),
-                    g::send::<RX, TLS_RX, P::Taken>(),
-                ),
-            ),
-        ),
-        g::send::<TLS_RX, RX, P::Boundary>(),
-    )
-    .roll()
-}
 type Publish<P> = g::Seq<
     g::Send<TX_WIRE, UDP, <P as Publication>::Datagram>,
     g::Seq<
@@ -264,16 +196,9 @@ pub type InitialRetirementFlow = g::Seq<
     >,
     g::Send<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>,
 >;
-pub type ReceiveTail = g::Seq<
-    RxWork<FinishedReceive>,
-    g::Seq<g::Send<RX, TLS_RX, ReceiveComplete>, g::Send<TLS_RX, RX, ReceiveContinuation>>,
->;
 pub type ReceiveFlow = g::Seq<
-    RxWork<InitialReceive>,
-    g::Seq<
-        g::Send<TLS_RX, RX, ReadHandshake>,
-        g::Seq<RxWork<HandshakeReceive>, g::Seq<g::Send<TLS_RX, RX, ReadApplication>, ReceiveTail>>,
-    >,
+    crate::bounded_tls::protocol::Flow,
+    g::Seq<g::Send<RX, TLS_RX, ReceiveComplete>, g::Send<TLS_RX, RX, ReceiveContinuation>>,
 >;
 pub type DrainFlow = g::Roll<
     g::Route<
@@ -311,22 +236,10 @@ pub type Flow = g::Par<ReceiveFlow, g::Par<TransmitFlow, g::Par<TimerFlow, Initi
 
 pub fn choreography() -> g::Program<Flow> {
     let receive = g::seq(
-        rx_work::<InitialReceive>(),
+        crate::bounded_tls::protocol::choreography(),
         g::seq(
-            g::send::<TLS_RX, RX, ReadHandshake>(),
-            g::seq(
-                rx_work::<HandshakeReceive>(),
-                g::seq(
-                    g::send::<TLS_RX, RX, ReadApplication>(),
-                    g::seq(
-                        rx_work::<FinishedReceive>(),
-                        g::seq(
-                            g::send::<RX, TLS_RX, ReceiveComplete>(),
-                            g::send::<TLS_RX, RX, ReceiveContinuation>(),
-                        ),
-                    ),
-                ),
-            ),
+            g::send::<RX, TLS_RX, ReceiveComplete>(),
+            g::send::<TLS_RX, RX, ReceiveContinuation>(),
         ),
     );
     let drain = g::route(

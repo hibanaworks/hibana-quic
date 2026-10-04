@@ -28,7 +28,8 @@ Commands (Lean 4.30.0, Z3 5.1.0.0):
     python proofs/tls-input-cancellation/cancellation.py
     cargo test --locked --manifest-path reference-tls/Cargo.toml --test bounded_tls direct_transcript_roles_validate_full_tls_without_allocating
 
-The direct transcript roles are NOT yet wired into the HQ connection. Legacy
-TLS phase dispatch must be removed only after all required caller migrations
-and negative/fragmentation/resumption tests have been ported. Their continued
-existence is explicit unfinished work, not a wrapper-based migration claim.
+The direct transcript roles are now wired into the live connection graph.
+The old phase dispatcher and the temporary synchronous test-peer module/feature
+have been deleted. The current regression drives BOTH peers through direct
+async roles. Historical tests using synchronous handshake input still require
+migration; none are silently counted as passing.

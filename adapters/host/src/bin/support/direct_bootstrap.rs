@@ -14,7 +14,6 @@ pub async fn handshake<'scope>(source: &mut Transcript<'scope, '_, '_>, config: 
     // One session per kit. Full generation is retained by cryptographic scope.
     let session = SessionId::new(generation as u32);
     let rendezvous = kit.rendezvous(&mut slab, queues.bind(session).map_err(|e| format!("carrier: {e:?}"))?).map_err(|e| format!("rendezvous: {e:?}"))?;
-    rendezvous.set_resolver(&programs.tls_rx, tls_result.resolver::<{protocol::CRYPTO_RESULT}>()).map_err(|e| format!("TLS resolver: {e:?}"))?;
     rendezvous.set_resolver(&programs.udp, adapter_result.resolver::<{protocol::ADAPTER_RESULT}>()).map_err(|e| format!("adapter resolver: {e:?}"))?;
     macro_rules! enter { ($name:ident) => { rendezvous.enter(session, &programs.$name).map_err(|e| format!("{} role: {e:?}", stringify!($name)))? }; }
     let mut roles = Roles { rx: enter!(rx), tls_rx: enter!(tls_rx), tx: enter!(tx), tx_wire: enter!(tx_wire), tls_tx: enter!(tls_tx), udp: enter!(udp), timer: enter!(timer), timer_tx: enter!(timer_tx), initial_event: enter!(initial_event), initial_owner: enter!(initial_owner) };
@@ -57,10 +56,7 @@ pub async fn files<'scope>(
         &mut slab,
         queues.bind(session).map_err(|e| format!("carrier: {e:?}"))?,
     ).map_err(|e| format!("rendezvous: {e:?}"))?;
-    rendezvous.set_resolver(
-        &programs.handshake.tls_rx,
-        outcomes.tls.resolver::<{protocol::CRYPTO_RESULT}>(),
-    ).map_err(|e| format!("TLS resolver: {e:?}"))?;
+
     rendezvous.set_resolver(
         &programs.handshake.udp,
         outcomes.handshake_adapter.resolver::<{protocol::ADAPTER_RESULT}>(),

@@ -15,6 +15,7 @@ pub struct ReceiveContinuation<'scope, const P: usize> {
     pub finished: Finished<'scope, P>,
     pub largest_received: [Option<u64>; 2],
     pub(super) peer: ConnectionId,
+    pub(super) verified_consumed: [u64; 2],
 }
 impl<'scope, const P: usize> ReceiveContinuation<'scope, P> {
     pub fn peer_connection_id(&self) -> &[u8] {

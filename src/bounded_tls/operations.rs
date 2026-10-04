@@ -379,7 +379,7 @@ impl BoundedTls<'_, '_> {
         let n = wire::encode_finished(&mut self.tx[self.tx_len..], &verify)?;
         self.commit_output(n)?;
         self.install_application()?;
-        return Ok(false);
+        Ok(false)
     }
     pub(super) fn server_finished(&mut self, message: &[u8]) -> Result<(), Failure> {
         let verify = wire::parse_finished(message)?;

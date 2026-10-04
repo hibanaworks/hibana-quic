@@ -1,3 +1,5 @@
+Current status: see [ACTIVE-IMPLEMENTATION](../../docs/ACTIVE-IMPLEMENTATION.md). Earlier entries below are chronological and superseded where noted.
+
 # Rolled-route runtime continuation
 
 ## Source and scope

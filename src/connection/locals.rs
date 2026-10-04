@@ -1,5 +1,5 @@
-//! Reconstructed from retained author tool calls after executor replacement.
-//! Last pre-loss local implementation; not newly validated.
+//! Direct packet RX, recovery/TX and publication local continuations.
+//! TLS input ordering is projected from bounded_tls::protocol.
 use super::protocol as p;
 use super::wire::{PlainPacket, WriteKeys};
 use super::*;
@@ -30,32 +30,6 @@ struct ReceiveWire<'keys, 'scope, 'buf, const N: usize> {
     peer_learned: bool,
 }
 impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
-    fn ready(
-        &self,
-        scope: &'scope ApplicationKeyScope,
-    ) -> Result<Option<(CryptoInput<'scope, N>, usize, usize)>, Error> {
-        for index in 0..2 {
-            let (first, _) = self.reassembly[index].ready();
-            if !first.is_empty() {
-                let count = first.len().min(N);
-                return Ok(Some((
-                    CryptoInput::new(
-                        scope,
-                        if index == 0 {
-                            Level::Initial
-                        } else {
-                            Level::Handshake
-                        },
-                        self.reassembly[index].consumed(),
-                        &first[..count],
-                    )?,
-                    index,
-                    count,
-                )));
-            }
-        }
-        Ok(None)
-    }
     async fn packet<const P: usize>(
         &mut self,
         io: &mut impl DatagramRx,
@@ -206,87 +180,13 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
         Ok(true)
     }
 }
-async fn receive_phase<'scope, Stage, const N: usize, const P: usize>(
-    endpoint: &mut Endpoint<'_, { p::RX }>,
-    io: &mut impl DatagramRx,
-    slots: &Storage<'scope, '_, N, P>,
-    config: Config<'_>,
-    scope: &'scope ApplicationKeyScope,
-    wire: &mut ReceiveWire<'_, 'scope, '_, N>,
-    exchange: &initial::Exchange<'scope>,
-    initial_endpoint: &mut Option<&mut Endpoint<'_, { p::INITIAL_EVENT }>>,
-    book: &mut recovery::Rx<'_, 'scope, N>,
-    clock: &impl Clock,
-    id: &mut u64,
-) -> Result<(), Error>
-where
-    Stage: p::ReceivePhase,
-{
-    loop {
-        let route = endpoint.offer().await.map_err(|error| Error::EndpointAt {
-            role: p::RX,
-            expected_label: Stage::Need::LOGICAL_LABEL,
-            error,
-        })?;
-        if route.label() == Stage::Boundary::LOGICAL_LABEL {
-            check(route.recv::<Stage::Boundary>().await?, *id)?;
-            return Ok(());
-        }
-        if route.label() != Stage::Need::LOGICAL_LABEL {
-            return Err(Error::UnexpectedLabel(route.label()));
-        }
-        check(route.recv::<Stage::Need>().await?, *id)?;
-        let (input, index, count) = loop {
-            if let Some(input) = wire.ready(scope)? {
-                break input;
-            }
-            wire.packet(
-                io,
-                slots,
-                config,
-                exchange,
-                initial_endpoint,
-                book,
-                clock,
-                false,
-            )
-            .await?;
-            crate::runtime::yield_now().await;
-        };
-        slots.input.put(input)?;
-        endpoint.send::<Stage::Input>(id).await?;
-        let result = endpoint.offer().await.map_err(|error| Error::EndpointAt {
-            role: p::RX,
-            expected_label: Stage::Accepted::LOGICAL_LABEL,
-            error,
-        })?;
-        match result.label() {
-            label if label == Stage::Accepted::LOGICAL_LABEL => {
-                check(result.recv::<Stage::Accepted>().await?, *id)?
-            }
-            label if label == Stage::Rejected::LOGICAL_LABEL => {
-                check(result.recv::<Stage::Rejected>().await?, *id)?;
-                endpoint.send::<Stage::Taken>(id).await?;
-                return Err(slots
-                    .failure
-                    .get()
-                    .unwrap_or(crate::tls::Error::Handshake)
-                    .into());
-            }
-            label => return Err(Error::UnexpectedLabel(label)),
-        }
-        wire.reassembly[index].consume(count)?;
-        endpoint.send::<Stage::Taken>(id).await?;
-        *id = id.checked_add(1).ok_or(Error::Binding)?;
-    }
-}
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, { p::RX }>,
     io: &mut impl DatagramRx,
+    message: &crate::bounded_tls::locals::MessageSlot<'_>,
     slots: &Storage<'scope, '_, N, P>,
     config: Config<'_>,
-    scope: &'scope ApplicationKeyScope,
     initial: &initial::Keys<'scope>,
     exchange: &initial::Exchange<'scope>,
     mut initial_endpoint: Option<&mut Endpoint<'_, { p::INITIAL_EVENT }>>,
@@ -307,53 +207,95 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
         opened: [0; N],
         peer_learned: false,
     };
-    let mut id = 0;
-    receive_phase::<p::InitialReceive, N, P>(
-        endpoint,
-        io,
-        slots,
-        config,
-        scope,
-        &mut wire,
-        exchange,
-        &mut initial_endpoint,
-        book,
-        clock,
-        &mut id,
-    )
-    .await?;
-    check(endpoint.recv::<p::ReadHandshake>().await?, id)?;
-    wire.handshake = Some(slots.read_handshake.take()?);
-    receive_phase::<p::HandshakeReceive, N, P>(
-        endpoint,
-        io,
-        slots,
-        config,
-        scope,
-        &mut wire,
-        exchange,
-        &mut initial_endpoint,
-        book,
-        clock,
-        &mut id,
-    )
-    .await?;
-    check(endpoint.recv::<p::ReadApplication>().await?, id)?;
+    use crate::bounded_tls::{locals as direct, protocol as tls};
+    struct Input<F>(F);
+    impl<F> direct::MessageInput for Input<F>
+    where
+        F: for<'a> core::ops::AsyncFnMut(Level, &'a mut [u8]) -> Result<usize, direct::Error>,
+    {
+        async fn read_message(
+            &mut self,
+            level: Level,
+            bytes: &mut [u8],
+        ) -> Result<usize, direct::Error> {
+            (self.0)(level, bytes).await
+        }
+    }
+    let mut input = Input(async |level: Level, bytes: &mut [u8]| {
+        let index = match level {
+            Level::Initial => 0,
+            Level::Handshake => 1,
+            _ => return Err(direct::Error::Binding),
+        };
+        if index == 1 && wire.handshake.is_none() {
+            wire.handshake = Some(
+                slots
+                    .read_handshake
+                    .take()
+                    .map_err(|_| direct::Error::Binding)?,
+            );
+        }
+        let mut used = 0;
+        let mut target = 4;
+        loop {
+            let (ready, _) = wire.reassembly[index].ready();
+            if !ready.is_empty() {
+                if target > bytes.len() {
+                    return Err(direct::Error::Capacity);
+                }
+                let n = ready.len().min(target - used);
+                bytes[used..used + n].copy_from_slice(&ready[..n]);
+                wire.reassembly[index]
+                    .consume(n)
+                    .map_err(|_| direct::Error::Binding)?;
+                used += n;
+                if used == 4 && target == 4 {
+                    target = 4
+                        + ((bytes[1] as usize) << 16)
+                        + ((bytes[2] as usize) << 8)
+                        + bytes[3] as usize;
+                }
+                if target > bytes.len() {
+                    return Err(direct::Error::Capacity);
+                }
+                if used == target {
+                    return Ok(used);
+                }
+            } else {
+                wire.packet(
+                    io,
+                    slots,
+                    config,
+                    exchange,
+                    &mut initial_endpoint,
+                    book,
+                    clock,
+                    false,
+                )
+                .await
+                .map_err(|_| direct::Error::Binding)?;
+                crate::runtime::yield_now().await;
+            }
+        }
+    });
+    let selected = endpoint.offer().await?;
+    match config.side {
+        Side::Client => {
+            check(selected.recv::<tls::ClientStart>().await?, 0)?;
+            direct::client_input(endpoint, message, &mut input)
+                .await
+                .map_err(Error::Transcript)?;
+        }
+        Side::Server => {
+            check(selected.recv::<tls::ServerStart>().await?, 0)?;
+            direct::server_input(endpoint, message, &mut input)
+                .await
+                .map_err(Error::Transcript)?;
+        }
+    }
+    drop(input);
+    let id = 0;
     let application = slots.read_application.take()?;
-    receive_phase::<p::FinishedReceive, N, P>(
-        endpoint,
-        io,
-        slots,
-        config,
-        scope,
-        &mut wire,
-        exchange,
-        &mut initial_endpoint,
-        book,
-        clock,
-        &mut id,
-    )
-    .await?;
     let finished = slots.finished.take()?;
     let peer = *slots.peer.borrow();
     if !finished
@@ -402,7 +344,9 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     check(endpoint.recv::<p::ReceiveContinuation>().await?, id)?;
     // Recovery reconciliation: the last pre-loss peer field is now initialized.
     // This and the bounded packet-loop yields above require fresh validation.
+    let verified_consumed = [wire.reassembly[0].consumed(), wire.reassembly[1].consumed()];
     Ok(ReceiveContinuation {
+        verified_consumed,
         initial: None,
         handshake: wire.handshake.ok_or(Error::Binding)?,
         application,

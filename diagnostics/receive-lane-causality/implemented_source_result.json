@@ -1,12 +1,13 @@
 {
-  "source_base": "74280de429eb37f86b9aa2e9f9573735eb65f53b",
+  "source_note": "Current source files are identified by source_sha256; this is not a whole-program proof.",
   "caveat": "Executed source-level Python models only. Not Rust compilation, Hibana global validation, runtime, QUIC or interop execution.",
   "source_sha256": {
-    "src/connection/protocol.rs": "e30115e530e5ceebe505d514acfd73a8d00261eb7d0886a54b996b507030ea63",
-    "src/connection/application/protocol.rs": "15d2757eafe9e90ca24c2f8479248ee08bd6b3a156829aed5978b9190dbedc46"
+    "src/connection/protocol.rs": "a9bbc7ccf1205b3e8d5871db14fe727329121e5433caed3bd5d79839c9a5eac2",
+    "src/connection/application/protocol.rs": "15d2757eafe9e90ca24c2f8479248ee08bd6b3a156829aed5978b9190dbedc46",
+    "src/bounded_tls/protocol.rs": "f6f7d542d07e16eb210a7efb428b81b635ecd8c162a82ae21f985db58bc52e24"
   },
-  "events": 173,
-  "markers": 306,
+  "events": 190,
+  "markers": 292,
   "lane_span": 4,
   "structured_failures": [],
   "roll_reentry_failures": [],
@@ -14,512 +15,512 @@
     {
       "index": 0,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "InitialReceive.Need",
+      "to_name": "INPUT",
+      "message": "ClientStart",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Flow:142"
     },
     {
       "index": 1,
-      "from": 0,
-      "from_name": "RX",
-      "to": 1,
-      "to_name": "TLS_RX",
-      "message": "InitialReceive.Input",
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "NeedHello",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 2,
-      "from": 1,
-      "from_name": "TLS_RX",
-      "to": 0,
-      "to_name": "RX",
-      "message": "InitialReceive.Accepted",
+      "from": 0,
+      "from_name": "INPUT",
+      "to": 1,
+      "to_name": "VERIFY",
+      "message": "Hello",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 3,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "InitialReceive.Rejected",
+      "to_name": "INPUT",
+      "message": "Applied",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 4,
-      "from": 0,
-      "from_name": "RX",
-      "to": 1,
-      "to_name": "TLS_RX",
-      "message": "InitialReceive.Taken",
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "Retry",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:HelloFlow:39"
     },
     {
       "index": 5,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "InitialReceive.Boundary",
+      "to_name": "INPUT",
+      "message": "NeedRetryHello",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 6,
-      "from": 1,
-      "from_name": "TLS_RX",
-      "to": 0,
-      "to_name": "RX",
-      "message": "ReadHandshake",
+      "from": 0,
+      "from_name": "INPUT",
+      "to": 1,
+      "to_name": "VERIFY",
+      "message": "RetryHello",
       "lane": 0,
-      "origin": "prefix:ReceiveFlow:271"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 7,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "HandshakeReceive.Need",
+      "to_name": "INPUT",
+      "message": "Applied",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 8,
-      "from": 0,
-      "from_name": "RX",
-      "to": 1,
-      "to_name": "TLS_RX",
-      "message": "HandshakeReceive.Input",
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "HelloReady",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:HelloFlow:39"
     },
     {
       "index": 9,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "HandshakeReceive.Accepted",
+      "to_name": "INPUT",
+      "message": "NeedExtensions",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 10,
-      "from": 1,
-      "from_name": "TLS_RX",
-      "to": 0,
-      "to_name": "RX",
-      "message": "HandshakeReceive.Rejected",
+      "from": 0,
+      "from_name": "INPUT",
+      "to": 1,
+      "to_name": "VERIFY",
+      "message": "Extensions",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 11,
-      "from": 0,
-      "from_name": "RX",
-      "to": 1,
-      "to_name": "TLS_RX",
-      "message": "HandshakeReceive.Taken",
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "Applied",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 12,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "HandshakeReceive.Boundary",
+      "to_name": "INPUT",
+      "message": "Resumed",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:ClientFlow:50"
     },
     {
       "index": 13,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "ReadApplication",
+      "to_name": "INPUT",
+      "message": "Full",
       "lane": 0,
-      "origin": "prefix:ReceiveFlow:271"
+      "origin": "tls:ClientFlow:50"
     },
     {
       "index": 14,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "FinishedReceive.Need",
+      "to_name": "INPUT",
+      "message": "NeedCertificate",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 15,
       "from": 0,
-      "from_name": "RX",
+      "from_name": "INPUT",
       "to": 1,
-      "to_name": "TLS_RX",
-      "message": "FinishedReceive.Input",
+      "to_name": "VERIFY",
+      "message": "Certificate",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 16,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "FinishedReceive.Accepted",
+      "to_name": "INPUT",
+      "message": "Applied",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 17,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "FinishedReceive.Rejected",
+      "to_name": "INPUT",
+      "message": "NeedCertificateVerify",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 18,
       "from": 0,
-      "from_name": "RX",
+      "from_name": "INPUT",
       "to": 1,
-      "to_name": "TLS_RX",
-      "message": "FinishedReceive.Taken",
+      "to_name": "VERIFY",
+      "message": "CertificateVerify",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 19,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 0,
-      "to_name": "RX",
-      "message": "FinishedReceive.Boundary",
+      "to_name": "INPUT",
+      "message": "Applied",
       "lane": 0,
-      "origin": "prefix:RxWork:113"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 20,
-      "from": 0,
-      "from_name": "RX",
-      "to": 1,
-      "to_name": "TLS_RX",
-      "message": "ReceiveComplete",
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "NeedFinished",
       "lane": 0,
-      "origin": "prefix:ReceiveTail:267"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 21,
-      "from": 1,
-      "from_name": "TLS_RX",
-      "to": 0,
-      "to_name": "RX",
-      "message": "ReceiveContinuation",
+      "from": 0,
+      "from_name": "INPUT",
+      "to": 1,
+      "to_name": "VERIFY",
+      "message": "Finished",
       "lane": 0,
-      "origin": "prefix:ReceiveTail:267"
+      "origin": "tls:Receive:35"
     },
     {
       "index": 22,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "Applied",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 23,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "Complete",
+      "lane": 0,
+      "origin": "tls:ClientFlow:50"
+    },
+    {
+      "index": 24,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "ServerStart",
+      "lane": 0,
+      "origin": "tls:Flow:142"
+    },
+    {
+      "index": 25,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "NeedHello",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 26,
+      "from": 0,
+      "from_name": "INPUT",
+      "to": 1,
+      "to_name": "VERIFY",
+      "message": "Hello",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 27,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "Applied",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 28,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "Retry",
+      "lane": 0,
+      "origin": "tls:HelloFlow:39"
+    },
+    {
+      "index": 29,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "NeedRetryHello",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 30,
+      "from": 0,
+      "from_name": "INPUT",
+      "to": 1,
+      "to_name": "VERIFY",
+      "message": "RetryHello",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 31,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "Applied",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 32,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "HelloReady",
+      "lane": 0,
+      "origin": "tls:HelloFlow:39"
+    },
+    {
+      "index": 33,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "NeedFinished",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 34,
+      "from": 0,
+      "from_name": "INPUT",
+      "to": 1,
+      "to_name": "VERIFY",
+      "message": "Finished",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 35,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "Applied",
+      "lane": 0,
+      "origin": "tls:Receive:35"
+    },
+    {
+      "index": 36,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "Complete",
+      "lane": 0,
+      "origin": "tls:ServerFlow:63"
+    },
+    {
+      "index": 37,
+      "from": 0,
+      "from_name": "INPUT",
+      "to": 1,
+      "to_name": "VERIFY",
+      "message": "ReceiveComplete",
+      "lane": 0,
+      "origin": "prefix:ReceiveFlow:199"
+    },
+    {
+      "index": 38,
+      "from": 1,
+      "from_name": "VERIFY",
+      "to": 0,
+      "to_name": "INPUT",
+      "message": "ReceiveContinuation",
+      "lane": 0,
+      "origin": "prefix:ReceiveFlow:199"
+    },
+    {
+      "index": 39,
       "from": 2,
       "from_name": "TX",
       "to": 3,
       "to_name": "TLS_TX",
       "message": "InitialTransmit.Request",
       "lane": 0,
-      "origin": "prefix:SourceWork:193"
+      "origin": "prefix:SourceWork:125"
     },
     {
-      "index": 23,
+      "index": 40,
       "from": 3,
       "from_name": "TLS_TX",
       "to": 2,
       "to_name": "TX",
       "message": "InitialTransmit.Flight",
       "lane": 0,
-      "origin": "prefix:TxResponse:180"
+      "origin": "prefix:TxResponse:112"
     },
     {
-      "index": 24,
+      "index": 41,
       "from": 2,
       "from_name": "TX",
       "to": 3,
       "to_name": "TLS_TX",
       "message": "InitialTransmit.Taken",
       "lane": 0,
-      "origin": "prefix:TxResponse:180"
+      "origin": "prefix:TxResponse:112"
     },
     {
-      "index": 25,
+      "index": 42,
       "from": 3,
       "from_name": "TLS_TX",
       "to": 2,
       "to_name": "TX",
       "message": "InitialTransmit.Idle",
       "lane": 0,
-      "origin": "prefix:TxResponse:180"
+      "origin": "prefix:TxResponse:112"
     },
     {
-      "index": 26,
+      "index": 43,
       "from": 2,
       "from_name": "TX",
       "to": 3,
       "to_name": "TLS_TX",
       "message": "InitialTransmit.Taken",
       "lane": 0,
-      "origin": "prefix:TxResponse:180"
+      "origin": "prefix:TxResponse:112"
     },
     {
-      "index": 27,
+      "index": 44,
       "from": 3,
       "from_name": "TLS_TX",
       "to": 2,
       "to_name": "TX",
       "message": "InitialTransmit.Boundary",
       "lane": 0,
-      "origin": "prefix:TxResponse:180"
+      "origin": "prefix:TxResponse:112"
     },
     {
-      "index": 28,
+      "index": 45,
       "from": 7,
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
       "message": "InitialTransmit.Data.Datagram",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
-      "index": 29,
+      "index": 46,
       "from": 4,
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
       "message": "InitialTransmit.Data.Accepted",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
-      "index": 30,
+      "index": 47,
       "from": 4,
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
       "message": "InitialTransmit.Data.Rejected",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
-      "index": 31,
+      "index": 48,
       "from": 7,
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
       "message": "InitialTransmit.Data.Settled",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
-      "index": 32,
+      "index": 49,
       "from": 7,
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
       "message": "InitialTransmit.Ack.Datagram",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
-      "index": 33,
+      "index": 50,
       "from": 4,
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
       "message": "InitialTransmit.Ack.Accepted",
       "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 34,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "InitialTransmit.Ack.Rejected",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 35,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "InitialTransmit.Ack.Settled",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 36,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "InitialTransmit.Probe.Datagram",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 37,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "InitialTransmit.Probe.Accepted",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 38,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "InitialTransmit.Probe.Rejected",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 39,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "InitialTransmit.Probe.Settled",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 40,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "InitialTransmit.WireBoundary",
-      "lane": 0,
-      "origin": "prefix:WireWork:195"
-    },
-    {
-      "index": 41,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "InitialTransmit.WireBoundarySeen",
-      "lane": 0,
-      "origin": "prefix:WireWork:195"
-    },
-    {
-      "index": 42,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "InitialTransmit.PhaseSettled",
-      "lane": 0,
-      "origin": "prefix:TxWork:210"
-    },
-    {
-      "index": 43,
-      "from": 3,
-      "from_name": "TLS_TX",
-      "to": 2,
-      "to_name": "TX",
-      "message": "WriteHandshake",
-      "lane": 0,
-      "origin": "prefix:TransmitFlow:291"
-    },
-    {
-      "index": 44,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "HandshakeTransmit.Request",
-      "lane": 0,
-      "origin": "prefix:SourceWork:193"
-    },
-    {
-      "index": 45,
-      "from": 3,
-      "from_name": "TLS_TX",
-      "to": 2,
-      "to_name": "TX",
-      "message": "HandshakeTransmit.Flight",
-      "lane": 0,
-      "origin": "prefix:TxResponse:180"
-    },
-    {
-      "index": 46,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "HandshakeTransmit.Taken",
-      "lane": 0,
-      "origin": "prefix:TxResponse:180"
-    },
-    {
-      "index": 47,
-      "from": 3,
-      "from_name": "TLS_TX",
-      "to": 2,
-      "to_name": "TX",
-      "message": "HandshakeTransmit.Idle",
-      "lane": 0,
-      "origin": "prefix:TxResponse:180"
-    },
-    {
-      "index": 48,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "HandshakeTransmit.Taken",
-      "lane": 0,
-      "origin": "prefix:TxResponse:180"
-    },
-    {
-      "index": 49,
-      "from": 3,
-      "from_name": "TLS_TX",
-      "to": 2,
-      "to_name": "TX",
-      "message": "HandshakeTransmit.Boundary",
-      "lane": 0,
-      "origin": "prefix:TxResponse:180"
-    },
-    {
-      "index": 50,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "HandshakeTransmit.Data.Datagram",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 51,
@@ -527,19 +528,19 @@
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
-      "message": "HandshakeTransmit.Data.Accepted",
+      "message": "InitialTransmit.Ack.Rejected",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 52,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "HandshakeTransmit.Data.Rejected",
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "InitialTransmit.Ack.Settled",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 53,
@@ -547,19 +548,19 @@
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
-      "message": "HandshakeTransmit.Data.Settled",
+      "message": "InitialTransmit.Probe.Datagram",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 54,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "HandshakeTransmit.Ack.Datagram",
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "InitialTransmit.Probe.Accepted",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 55,
@@ -567,19 +568,19 @@
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
-      "message": "HandshakeTransmit.Ack.Accepted",
+      "message": "InitialTransmit.Probe.Rejected",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 56,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "HandshakeTransmit.Ack.Rejected",
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "InitialTransmit.Probe.Settled",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 57,
@@ -587,159 +588,159 @@
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
-      "message": "HandshakeTransmit.Ack.Settled",
+      "message": "InitialTransmit.WireBoundary",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:WireWork:127"
     },
     {
       "index": 58,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "HandshakeTransmit.Probe.Datagram",
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "InitialTransmit.WireBoundarySeen",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:WireWork:127"
     },
     {
       "index": 59,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "HandshakeTransmit.Probe.Accepted",
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "InitialTransmit.PhaseSettled",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:TxWork:142"
     },
     {
       "index": 60,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "HandshakeTransmit.Probe.Rejected",
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "WriteHandshake",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:TransmitFlow:216"
     },
     {
       "index": 61,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "HandshakeTransmit.Probe.Settled",
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "HandshakeTransmit.Request",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:SourceWork:125"
     },
     {
       "index": 62,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "HandshakeTransmit.Flight",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 63,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "HandshakeTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 64,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "HandshakeTransmit.Idle",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 65,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "HandshakeTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 66,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "HandshakeTransmit.Boundary",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 67,
       "from": 7,
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
-      "message": "HandshakeTransmit.WireBoundary",
+      "message": "HandshakeTransmit.Data.Datagram",
       "lane": 0,
-      "origin": "prefix:WireWork:195"
+      "origin": "prefix:Publish:86"
     },
     {
-      "index": 63,
+      "index": 68,
       "from": 4,
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
-      "message": "HandshakeTransmit.WireBoundarySeen",
+      "message": "HandshakeTransmit.Data.Accepted",
       "lane": 0,
-      "origin": "prefix:WireWork:195"
-    },
-    {
-      "index": 64,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "HandshakeTransmit.PhaseSettled",
-      "lane": 0,
-      "origin": "prefix:TxWork:210"
-    },
-    {
-      "index": 65,
-      "from": 3,
-      "from_name": "TLS_TX",
-      "to": 2,
-      "to_name": "TX",
-      "message": "WriteApplication",
-      "lane": 0,
-      "origin": "prefix:TransmitFlow:291"
-    },
-    {
-      "index": 66,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "ApplicationTransmit.Request",
-      "lane": 0,
-      "origin": "prefix:SourceWork:193"
-    },
-    {
-      "index": 67,
-      "from": 3,
-      "from_name": "TLS_TX",
-      "to": 2,
-      "to_name": "TX",
-      "message": "ApplicationTransmit.Flight",
-      "lane": 0,
-      "origin": "prefix:TxResponse:180"
-    },
-    {
-      "index": 68,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "ApplicationTransmit.Taken",
-      "lane": 0,
-      "origin": "prefix:TxResponse:180"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 69,
-      "from": 3,
-      "from_name": "TLS_TX",
-      "to": 2,
-      "to_name": "TX",
-      "message": "ApplicationTransmit.Idle",
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.Data.Rejected",
       "lane": 0,
-      "origin": "prefix:TxResponse:180"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 70,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "ApplicationTransmit.Taken",
-      "lane": 0,
-      "origin": "prefix:TxResponse:180"
-    },
-    {
-      "index": 71,
-      "from": 3,
-      "from_name": "TLS_TX",
-      "to": 2,
-      "to_name": "TX",
-      "message": "ApplicationTransmit.Boundary",
-      "lane": 0,
-      "origin": "prefix:TxResponse:180"
-    },
-    {
-      "index": 72,
       "from": 7,
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
-      "message": "ApplicationTransmit.Data.Datagram",
+      "message": "HandshakeTransmit.Data.Settled",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 71,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.Ack.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 72,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.Ack.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 73,
@@ -747,19 +748,19 @@
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
-      "message": "ApplicationTransmit.Data.Accepted",
+      "message": "HandshakeTransmit.Ack.Rejected",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 74,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "ApplicationTransmit.Data.Rejected",
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.Ack.Settled",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 75,
@@ -767,19 +768,19 @@
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
-      "message": "ApplicationTransmit.Data.Settled",
+      "message": "HandshakeTransmit.Probe.Datagram",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 76,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "ApplicationTransmit.Ack.Datagram",
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.Probe.Accepted",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 77,
@@ -787,19 +788,19 @@
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
-      "message": "ApplicationTransmit.Ack.Accepted",
+      "message": "HandshakeTransmit.Probe.Rejected",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 78,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "ApplicationTransmit.Ack.Rejected",
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeTransmit.Probe.Settled",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 79,
@@ -807,199 +808,199 @@
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
-      "message": "ApplicationTransmit.Ack.Settled",
+      "message": "HandshakeTransmit.WireBoundary",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:WireWork:127"
     },
     {
       "index": 80,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "HandshakeTransmit.WireBoundarySeen",
+      "lane": 0,
+      "origin": "prefix:WireWork:127"
+    },
+    {
+      "index": 81,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "HandshakeTransmit.PhaseSettled",
+      "lane": 0,
+      "origin": "prefix:TxWork:142"
+    },
+    {
+      "index": 82,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "WriteApplication",
+      "lane": 0,
+      "origin": "prefix:TransmitFlow:216"
+    },
+    {
+      "index": 83,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "ApplicationTransmit.Request",
+      "lane": 0,
+      "origin": "prefix:SourceWork:125"
+    },
+    {
+      "index": 84,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "ApplicationTransmit.Flight",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 85,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "ApplicationTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 86,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "ApplicationTransmit.Idle",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 87,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "ApplicationTransmit.Taken",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 88,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "ApplicationTransmit.Boundary",
+      "lane": 0,
+      "origin": "prefix:TxResponse:112"
+    },
+    {
+      "index": 89,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Data.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 90,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Data.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 91,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Data.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 92,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Data.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 93,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Ack.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 94,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Ack.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 95,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.Ack.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 96,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Ack.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 97,
       "from": 7,
       "from_name": "TX_WIRE",
       "to": 4,
       "to_name": "UDP",
       "message": "ApplicationTransmit.Probe.Datagram",
       "lane": 0,
-      "origin": "prefix:Publish:154"
+      "origin": "prefix:Publish:86"
     },
     {
-      "index": 81,
+      "index": 98,
       "from": 4,
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
       "message": "ApplicationTransmit.Probe.Accepted",
       "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 82,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "ApplicationTransmit.Probe.Rejected",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 83,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "ApplicationTransmit.Probe.Settled",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 84,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "ApplicationTransmit.WireBoundary",
-      "lane": 0,
-      "origin": "prefix:WireWork:195"
-    },
-    {
-      "index": 85,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "ApplicationTransmit.WireBoundarySeen",
-      "lane": 0,
-      "origin": "prefix:WireWork:195"
-    },
-    {
-      "index": 86,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "ApplicationTransmit.PhaseSettled",
-      "lane": 0,
-      "origin": "prefix:TxWork:210"
-    },
-    {
-      "index": 87,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "DrainAck.Datagram",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 88,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "DrainAck.Accepted",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 89,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "DrainAck.Rejected",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 90,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "DrainAck.Settled",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 91,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "DrainProbe.Datagram",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 92,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "DrainProbe.Accepted",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 93,
-      "from": 4,
-      "from_name": "UDP",
-      "to": 7,
-      "to_name": "TX_WIRE",
-      "message": "DrainProbe.Rejected",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 94,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "DrainProbe.Settled",
-      "lane": 0,
-      "origin": "prefix:Publish:154"
-    },
-    {
-      "index": 95,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "HandshakeRecoveryTransferred",
-      "lane": 0,
-      "origin": "prefix:DrainFlow:278"
-    },
-    {
-      "index": 96,
-      "from": 2,
-      "from_name": "TX",
-      "to": 3,
-      "to_name": "TLS_TX",
-      "message": "TransmitComplete",
-      "lane": 0,
-      "origin": "prefix:CompleteFlow:284"
-    },
-    {
-      "index": 97,
-      "from": 3,
-      "from_name": "TLS_TX",
-      "to": 2,
-      "to_name": "TX",
-      "message": "TransmitContinuation",
-      "lane": 0,
-      "origin": "prefix:CompleteFlow:284"
-    },
-    {
-      "index": 98,
-      "from": 7,
-      "from_name": "TX_WIRE",
-      "to": 4,
-      "to_name": "UDP",
-      "message": "AdapterComplete",
-      "lane": 0,
-      "origin": "prefix:CompleteFlow:284"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 99,
@@ -1007,94 +1008,264 @@
       "from_name": "UDP",
       "to": 7,
       "to_name": "TX_WIRE",
-      "message": "AdapterRetired",
+      "message": "ApplicationTransmit.Probe.Rejected",
       "lane": 0,
-      "origin": "prefix:CompleteFlow:284"
+      "origin": "prefix:Publish:86"
     },
     {
       "index": 100,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.Probe.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 101,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "ApplicationTransmit.WireBoundary",
+      "lane": 0,
+      "origin": "prefix:WireWork:127"
+    },
+    {
+      "index": 102,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "ApplicationTransmit.WireBoundarySeen",
+      "lane": 0,
+      "origin": "prefix:WireWork:127"
+    },
+    {
+      "index": 103,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "ApplicationTransmit.PhaseSettled",
+      "lane": 0,
+      "origin": "prefix:TxWork:142"
+    },
+    {
+      "index": 104,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "DrainAck.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 105,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "DrainAck.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 106,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "DrainAck.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 107,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "DrainAck.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 108,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "DrainProbe.Datagram",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 109,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "DrainProbe.Accepted",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 110,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "DrainProbe.Rejected",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 111,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "DrainProbe.Settled",
+      "lane": 0,
+      "origin": "prefix:Publish:86"
+    },
+    {
+      "index": 112,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "HandshakeRecoveryTransferred",
+      "lane": 0,
+      "origin": "prefix:DrainFlow:203"
+    },
+    {
+      "index": 113,
+      "from": 2,
+      "from_name": "TX",
+      "to": 3,
+      "to_name": "TLS_TX",
+      "message": "TransmitComplete",
+      "lane": 0,
+      "origin": "prefix:CompleteFlow:209"
+    },
+    {
+      "index": 114,
+      "from": 3,
+      "from_name": "TLS_TX",
+      "to": 2,
+      "to_name": "TX",
+      "message": "TransmitContinuation",
+      "lane": 0,
+      "origin": "prefix:CompleteFlow:209"
+    },
+    {
+      "index": 115,
+      "from": 7,
+      "from_name": "TX_WIRE",
+      "to": 4,
+      "to_name": "UDP",
+      "message": "AdapterComplete",
+      "lane": 0,
+      "origin": "prefix:CompleteFlow:209"
+    },
+    {
+      "index": 116,
+      "from": 4,
+      "from_name": "UDP",
+      "to": 7,
+      "to_name": "TX_WIRE",
+      "message": "AdapterRetired",
+      "lane": 0,
+      "origin": "prefix:CompleteFlow:209"
+    },
+    {
+      "index": 117,
       "from": 5,
       "from_name": "TIMER",
       "to": 6,
       "to_name": "TIMER_TX",
       "message": "TimerExpired",
       "lane": 0,
-      "origin": "prefix:TimerFlow:304"
+      "origin": "prefix:TimerFlow:229"
     },
     {
-      "index": 101,
+      "index": 118,
       "from": 6,
       "from_name": "TIMER_TX",
       "to": 5,
       "to_name": "TIMER",
       "message": "TimerTaken",
       "lane": 0,
-      "origin": "prefix:TimerFlow:304"
+      "origin": "prefix:TimerFlow:229"
     },
     {
-      "index": 102,
+      "index": 119,
       "from": 5,
       "from_name": "TIMER",
       "to": 6,
       "to_name": "TIMER_TX",
       "message": "TimerRetired",
       "lane": 0,
-      "origin": "prefix:TimerFlow:304"
+      "origin": "prefix:TimerFlow:229"
     },
     {
-      "index": 103,
+      "index": 120,
       "from": 6,
       "from_name": "TIMER_TX",
       "to": 5,
       "to_name": "TIMER",
       "message": "TimerAcknowledged",
       "lane": 0,
-      "origin": "prefix:TimerFlow:304"
+      "origin": "prefix:TimerFlow:229"
     },
     {
-      "index": 104,
+      "index": 121,
       "from": 18,
       "from_name": "INITIAL_EVENT",
       "to": 19,
       "to_name": "INITIAL_OWNER",
       "message": "ClientInitialRetire",
       "lane": 0,
-      "origin": "prefix:InitialRetirementFlow:260"
+      "origin": "prefix:InitialRetirementFlow:192"
     },
     {
-      "index": 105,
+      "index": 122,
       "from": 18,
       "from_name": "INITIAL_EVENT",
       "to": 19,
       "to_name": "INITIAL_OWNER",
       "message": "ServerInitialRetire",
       "lane": 0,
-      "origin": "prefix:InitialRetirementFlow:260"
+      "origin": "prefix:InitialRetirementFlow:192"
     },
     {
-      "index": 106,
+      "index": 123,
       "from": 19,
       "from_name": "INITIAL_OWNER",
       "to": 18,
       "to_name": "INITIAL_EVENT",
       "message": "InitialRetired",
       "lane": 0,
-      "origin": "prefix:InitialRetirementFlow:260"
+      "origin": "prefix:InitialRetirementFlow:192"
     },
     {
-      "index": 107,
+      "index": 124,
       "from": 0,
-      "from_name": "RX",
+      "from_name": "INPUT",
       "to": 1,
-      "to_name": "TLS_RX",
+      "to_name": "VERIFY",
       "message": "FinishedValidated",
       "lane": 0,
       "origin": "app:Startup:253"
     },
     {
-      "index": 108,
+      "index": 125,
       "from": 1,
-      "from_name": "TLS_RX",
+      "from_name": "VERIFY",
       "to": 10,
       "to_name": "RECEIVE",
       "message": "TranscriptStart",
@@ -1102,7 +1273,7 @@
       "origin": "app:Startup:253"
     },
     {
-      "index": 109,
+      "index": 126,
       "from": 10,
       "from_name": "RECEIVE",
       "to": 13,
@@ -1112,7 +1283,7 @@
       "origin": "app:Startup:253"
     },
     {
-      "index": 110,
+      "index": 127,
       "from": 2,
       "from_name": "TX",
       "to": 13,
@@ -1122,17 +1293,17 @@
       "origin": "app:Startup:253"
     },
     {
-      "index": 111,
+      "index": 128,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 0,
-      "to_name": "RX",
+      "to_name": "INPUT",
       "message": "WriteForAdmission",
       "lane": 1,
       "origin": "app:Startup:253"
     },
     {
-      "index": 112,
+      "index": 129,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 12,
@@ -1142,7 +1313,7 @@
       "origin": "app:Startup:253"
     },
     {
-      "index": 113,
+      "index": 130,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 16,
@@ -1152,7 +1323,7 @@
       "origin": "app:Startup:253"
     },
     {
-      "index": 114,
+      "index": 131,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 8,
@@ -1162,7 +1333,7 @@
       "origin": "app:Startup:253"
     },
     {
-      "index": 115,
+      "index": 132,
       "from": 8,
       "from_name": "SOURCE",
       "to": 9,
@@ -1172,7 +1343,7 @@
       "origin": "app:SourceFlow:83"
     },
     {
-      "index": 116,
+      "index": 133,
       "from": 9,
       "from_name": "INGRESS",
       "to": 8,
@@ -1182,7 +1353,7 @@
       "origin": "app:SourceFlow:83"
     },
     {
-      "index": 117,
+      "index": 134,
       "from": 9,
       "from_name": "INGRESS",
       "to": 8,
@@ -1192,7 +1363,7 @@
       "origin": "app:SourceFlow:83"
     },
     {
-      "index": 118,
+      "index": 135,
       "from": 8,
       "from_name": "SOURCE",
       "to": 9,
@@ -1202,7 +1373,7 @@
       "origin": "app:SourceFlow:83"
     },
     {
-      "index": 119,
+      "index": 136,
       "from": 8,
       "from_name": "SOURCE",
       "to": 9,
@@ -1212,7 +1383,7 @@
       "origin": "app:SourceFlow:83"
     },
     {
-      "index": 120,
+      "index": 137,
       "from": 9,
       "from_name": "INGRESS",
       "to": 8,
@@ -1222,7 +1393,7 @@
       "origin": "app:SourceFlow:83"
     },
     {
-      "index": 121,
+      "index": 138,
       "from": 10,
       "from_name": "RECEIVE",
       "to": 11,
@@ -1232,7 +1403,7 @@
       "origin": "app:ReceiveFlow:101"
     },
     {
-      "index": 122,
+      "index": 139,
       "from": 11,
       "from_name": "SINK",
       "to": 10,
@@ -1242,7 +1413,7 @@
       "origin": "app:ReceiveFlow:101"
     },
     {
-      "index": 123,
+      "index": 140,
       "from": 11,
       "from_name": "SINK",
       "to": 10,
@@ -1252,7 +1423,7 @@
       "origin": "app:ReceiveFlow:101"
     },
     {
-      "index": 124,
+      "index": 141,
       "from": 10,
       "from_name": "RECEIVE",
       "to": 11,
@@ -1262,7 +1433,7 @@
       "origin": "app:ReceiveFlow:101"
     },
     {
-      "index": 125,
+      "index": 142,
       "from": 11,
       "from_name": "SINK",
       "to": 10,
@@ -1272,7 +1443,7 @@
       "origin": "app:ReceiveFlow:101"
     },
     {
-      "index": 126,
+      "index": 143,
       "from": 12,
       "from_name": "RX_KEYS",
       "to": 13,
@@ -1282,7 +1453,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 127,
+      "index": 144,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 12,
@@ -1292,7 +1463,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 128,
+      "index": 145,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 12,
@@ -1302,7 +1473,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 129,
+      "index": 146,
       "from": 12,
       "from_name": "RX_KEYS",
       "to": 13,
@@ -1312,7 +1483,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 130,
+      "index": 147,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 12,
@@ -1322,7 +1493,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 131,
+      "index": 148,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 12,
@@ -1332,7 +1503,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 132,
+      "index": 149,
       "from": 12,
       "from_name": "RX_KEYS",
       "to": 13,
@@ -1342,7 +1513,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 133,
+      "index": 150,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 12,
@@ -1352,7 +1523,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 134,
+      "index": 151,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 12,
@@ -1362,7 +1533,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 135,
+      "index": 152,
       "from": 12,
       "from_name": "RX_KEYS",
       "to": 13,
@@ -1372,7 +1543,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 136,
+      "index": 153,
       "from": 13,
       "from_name": "TX_KEYS",
       "to": 12,
@@ -1382,7 +1553,7 @@
       "origin": "app:KeyFlow:113"
     },
     {
-      "index": 137,
+      "index": 154,
       "from": 14,
       "from_name": "CLOCK",
       "to": 15,
@@ -1392,7 +1563,7 @@
       "origin": "app:TimerFlow:146"
     },
     {
-      "index": 138,
+      "index": 155,
       "from": 15,
       "from_name": "TX_CLOCK",
       "to": 14,
@@ -1402,7 +1573,7 @@
       "origin": "app:TimerFlow:146"
     },
     {
-      "index": 139,
+      "index": 156,
       "from": 14,
       "from_name": "CLOCK",
       "to": 15,
@@ -1412,7 +1583,7 @@
       "origin": "app:TimerFlow:146"
     },
     {
-      "index": 140,
+      "index": 157,
       "from": 15,
       "from_name": "TX_CLOCK",
       "to": 14,
@@ -1422,7 +1593,7 @@
       "origin": "app:TimerFlow:146"
     },
     {
-      "index": 141,
+      "index": 158,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 17,
@@ -1432,7 +1603,7 @@
       "origin": "app:Publish:152"
     },
     {
-      "index": 142,
+      "index": 159,
       "from": 17,
       "from_name": "ADAPTER",
       "to": 16,
@@ -1442,7 +1613,7 @@
       "origin": "app:Publish:152"
     },
     {
-      "index": 143,
+      "index": 160,
       "from": 17,
       "from_name": "ADAPTER",
       "to": 16,
@@ -1452,7 +1623,7 @@
       "origin": "app:Publish:152"
     },
     {
-      "index": 144,
+      "index": 161,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 17,
@@ -1462,7 +1633,7 @@
       "origin": "app:Publish:152"
     },
     {
-      "index": 145,
+      "index": 162,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 17,
@@ -1472,7 +1643,7 @@
       "origin": "app:PublicationFlow:180"
     },
     {
-      "index": 146,
+      "index": 163,
       "from": 17,
       "from_name": "ADAPTER",
       "to": 16,
@@ -1482,7 +1653,7 @@
       "origin": "app:PublicationFlow:180"
     },
     {
-      "index": 147,
+      "index": 164,
       "from": 22,
       "from_name": "PEER_EVENT",
       "to": 23,
@@ -1492,7 +1663,7 @@
       "origin": "app:PeerTerminal:201"
     },
     {
-      "index": 148,
+      "index": 165,
       "from": 22,
       "from_name": "PEER_EVENT",
       "to": 23,
@@ -1502,7 +1673,7 @@
       "origin": "app:PeerTerminal:201"
     },
     {
-      "index": 149,
+      "index": 166,
       "from": 22,
       "from_name": "PEER_EVENT",
       "to": 23,
@@ -1512,7 +1683,7 @@
       "origin": "app:PeerTerminal:201"
     },
     {
-      "index": 150,
+      "index": 167,
       "from": 23,
       "from_name": "PEER_CLOSE",
       "to": 22,
@@ -1522,7 +1693,7 @@
       "origin": "app:PeerTerminal:201"
     },
     {
-      "index": 151,
+      "index": 168,
       "from": 24,
       "from_name": "FILES_EVENT",
       "to": 25,
@@ -1532,7 +1703,7 @@
       "origin": "app:FilesTerminal:211"
     },
     {
-      "index": 152,
+      "index": 169,
       "from": 24,
       "from_name": "FILES_EVENT",
       "to": 25,
@@ -1542,7 +1713,7 @@
       "origin": "app:FilesTerminal:211"
     },
     {
-      "index": 153,
+      "index": 170,
       "from": 24,
       "from_name": "FILES_EVENT",
       "to": 25,
@@ -1552,7 +1723,7 @@
       "origin": "app:FilesTerminal:211"
     },
     {
-      "index": 154,
+      "index": 171,
       "from": 25,
       "from_name": "FILES_CLOSE",
       "to": 24,
@@ -1562,7 +1733,7 @@
       "origin": "app:FilesTerminal:211"
     },
     {
-      "index": 155,
+      "index": 172,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 26,
@@ -1572,7 +1743,7 @@
       "origin": "app:Retirement:226"
     },
     {
-      "index": 156,
+      "index": 173,
       "from": 26,
       "from_name": "CLOSE_JOIN",
       "to": 12,
@@ -1582,7 +1753,7 @@
       "origin": "app:Retirement:226"
     },
     {
-      "index": 157,
+      "index": 174,
       "from": 12,
       "from_name": "RX_KEYS",
       "to": 26,
@@ -1592,7 +1763,7 @@
       "origin": "app:Retirement:226"
     },
     {
-      "index": 158,
+      "index": 175,
       "from": 26,
       "from_name": "CLOSE_JOIN",
       "to": 23,
@@ -1602,7 +1773,7 @@
       "origin": "app:Retirement:226"
     },
     {
-      "index": 159,
+      "index": 176,
       "from": 23,
       "from_name": "PEER_CLOSE",
       "to": 26,
@@ -1612,7 +1783,7 @@
       "origin": "app:Retirement:226"
     },
     {
-      "index": 160,
+      "index": 177,
       "from": 26,
       "from_name": "CLOSE_JOIN",
       "to": 25,
@@ -1622,7 +1793,7 @@
       "origin": "app:Retirement:226"
     },
     {
-      "index": 161,
+      "index": 178,
       "from": 25,
       "from_name": "FILES_CLOSE",
       "to": 26,
@@ -1632,7 +1803,7 @@
       "origin": "app:Retirement:226"
     },
     {
-      "index": 162,
+      "index": 179,
       "from": 26,
       "from_name": "CLOSE_JOIN",
       "to": 16,
@@ -1642,7 +1813,7 @@
       "origin": "app:Retirement:226"
     },
     {
-      "index": 163,
+      "index": 180,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 17,
@@ -1652,7 +1823,7 @@
       "origin": "app:ClosePublish:162"
     },
     {
-      "index": 164,
+      "index": 181,
       "from": 17,
       "from_name": "ADAPTER",
       "to": 16,
@@ -1662,7 +1833,7 @@
       "origin": "app:ClosePublish:162"
     },
     {
-      "index": 165,
+      "index": 182,
       "from": 17,
       "from_name": "ADAPTER",
       "to": 16,
@@ -1672,7 +1843,7 @@
       "origin": "app:ClosePublish:162"
     },
     {
-      "index": 166,
+      "index": 183,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 17,
@@ -1682,7 +1853,7 @@
       "origin": "app:ClosePublish:162"
     },
     {
-      "index": 167,
+      "index": 184,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 17,
@@ -1692,7 +1863,7 @@
       "origin": "app:Closing:175"
     },
     {
-      "index": 168,
+      "index": 185,
       "from": 17,
       "from_name": "ADAPTER",
       "to": 16,
@@ -1702,7 +1873,7 @@
       "origin": "app:Closing:175"
     },
     {
-      "index": 169,
+      "index": 186,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 17,
@@ -1712,7 +1883,7 @@
       "origin": "app:Draining:179"
     },
     {
-      "index": 170,
+      "index": 187,
       "from": 17,
       "from_name": "ADAPTER",
       "to": 16,
@@ -1722,7 +1893,7 @@
       "origin": "app:Draining:179"
     },
     {
-      "index": 171,
+      "index": 188,
       "from": 16,
       "from_name": "TRANSMIT",
       "to": 17,
@@ -1732,7 +1903,7 @@
       "origin": "app:ClosingDraining:248"
     },
     {
-      "index": 172,
+      "index": 189,
       "from": 17,
       "from_name": "ADAPTER",
       "to": 16,

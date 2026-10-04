@@ -31,9 +31,9 @@ use rand_core::{CryptoRng, RngCore};
 use zeroize::Zeroize;
 
 pub mod key_source;
+pub mod locals;
 mod operations;
 pub mod protocol;
-pub mod locals;
 
 pub use crate::tls_wire::CipherPolicy;
 pub use p256::ecdsa::SigningKey;
@@ -72,15 +72,7 @@ enum Mode<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum State {
-    ClientServerHello,
-    ClientServerHelloRetry,
-    ClientEncryptedExtensions,
-    ClientCertificate,
-    ClientCertificateVerify,
-    ClientFinished,
-    ServerClientHello,
-    ServerClientHelloRetry,
-    ServerClientFinished,
+    Handshaking,
     Connected,
     Failed,
 }
@@ -278,7 +270,6 @@ pub struct BoundedTls<'cfg, 'buf> {
     rx: Option<&'buf mut [u8]>,
     rx_used: usize,
     rx_target: usize,
-    rx_level: Option<Level>,
     tx: &'buf mut [u8],
     tx_len: usize,
     tx_sent: usize,
@@ -725,10 +716,7 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
         let x25519 =
             crate::key_exchange::X25519Secret::generate(rng).map_err(|_| Failure::Entropy)?;
         let x25519_share = x25519.public_key();
-        let state = match mode {
-            Mode::Client(_) => State::ClientServerHello,
-            Mode::Server(_) => State::ServerClientHello,
-        };
+        let state = State::Handshaking;
         Ok(Self {
             mode,
             state,
@@ -736,7 +724,6 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             rx: Some(storage.rx_message),
             rx_used: 0,
             rx_target: 0,
-            rx_level: None,
             tx: storage.tx_flight,
             tx_len: 0,
             tx_sent: 0,
@@ -786,6 +773,19 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
         })
     }
 
+    pub(crate) fn pristine(&self) -> bool {
+        self.last_failure.is_none()
+            && !self.handshake_created
+            && !self.application_created
+            && self.retry_suite.is_none()
+            && self.rx_used == 0
+    }
+    pub(crate) fn take_message_buffer(&mut self) -> Result<&'buf mut [u8], Failure> {
+        self.rx.take().ok_or(Failure::State)
+    }
+    pub(crate) fn restore_message_buffer(&mut self, bytes: &'buf mut [u8]) {
+        self.rx = Some(bytes);
+    }
     pub fn state(&self) -> State {
         self.state
     }
@@ -845,28 +845,6 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
         self.tx_len = 0;
         self.tx_sent = 0;
         error
-    }
-
-    fn expected_level(&self) -> Result<Level, Failure> {
-        match self.state {
-            State::ClientServerHello
-            | State::ClientServerHelloRetry
-            | State::ServerClientHello
-            | State::ServerClientHelloRetry => Ok(Level::Initial),
-            State::ClientEncryptedExtensions
-            | State::ClientCertificate
-            | State::ClientCertificateVerify
-            | State::ClientFinished
-            | State::ServerClientFinished => Ok(Level::Handshake),
-            State::Connected
-                if self.side() == Side::Client
-                    && self.application_created
-                    && !self.application_discarded =>
-            {
-                Ok(Level::OneRtt)
-            }
-            _ => Err(Failure::State),
-        }
     }
 
     fn save_parameters(&mut self, bytes: &[u8]) -> Result<(), Failure> {
@@ -1120,102 +1098,6 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             Ok(()) | Err(ticket::Error::Capacity | ticket::Error::DuplicateTicket) => Ok(()),
             Err(error) => Err(error.into()),
         }
-    }
-
-    fn handle_message(&mut self, level: Level, message: &[u8]) -> Result<(), Failure> {
-        if level != self.expected_level()? {
-            return Err(Failure::State);
-        }
-        self.state = match self.state {
-            State::ClientServerHello | State::ClientServerHelloRetry => {
-                if self.client_hello(message, self.state == State::ClientServerHelloRetry)? {
-                    State::ClientServerHelloRetry
-                } else {
-                    State::ClientEncryptedExtensions
-                }
-            }
-            State::ClientEncryptedExtensions => {
-                self.client_extensions(message)?;
-                if self.resumed {
-                    State::ClientFinished
-                } else {
-                    State::ClientCertificate
-                }
-            }
-            State::ClientCertificate => {
-                self.client_certificate(message)?;
-                State::ClientCertificateVerify
-            }
-            State::ClientCertificateVerify => {
-                self.client_certificate_verify(message)?;
-                State::ClientFinished
-            }
-            State::ClientFinished => {
-                self.client_finished(message)?;
-                State::Connected
-            }
-            State::ServerClientHello | State::ServerClientHelloRetry => {
-                if self.server_hello(message, self.state == State::ServerClientHelloRetry)? {
-                    State::ServerClientHelloRetry
-                } else {
-                    State::ServerClientFinished
-                }
-            }
-            State::ServerClientFinished => {
-                self.server_finished(message)?;
-                State::Connected
-            }
-            State::Connected if self.side() == Side::Client => {
-                self.cache_ticket(message)?;
-                State::Connected
-            }
-            _ => return Err(Failure::State),
-        };
-        Ok(())
-    }
-
-    fn receive_inner(&mut self, level: Level, mut bytes: &[u8]) -> Result<(), Failure> {
-        while !bytes.is_empty() {
-            if self.rx_used == 0 {
-                if level != self.expected_level()? {
-                    return Err(Failure::State);
-                }
-                self.rx_level = Some(level);
-                self.rx_target = 4;
-            } else if self.rx_level != Some(level) {
-                return Err(Failure::State);
-            }
-            let rx = self.rx.as_deref_mut().ok_or(Failure::State)?;
-            let n = (self.rx_target - self.rx_used).min(bytes.len());
-            rx[self.rx_used..self.rx_used + n].copy_from_slice(&bytes[..n]);
-            self.rx_used += n;
-            bytes = &bytes[n..];
-            if self.rx_used < self.rx_target {
-                continue;
-            }
-            if self.rx_target == 4 {
-                let body = ((rx[1] as usize) << 16) | ((rx[2] as usize) << 8) | rx[3] as usize;
-                self.rx_target = 4 + body;
-                if self.rx_target > rx.len() {
-                    return Err(Failure::Capacity);
-                }
-                if self.rx_used < self.rx_target {
-                    continue;
-                }
-            }
-            let rx = self.rx.take().ok_or(Failure::State)?;
-            let post_handshake = self.state == State::Connected;
-            let result = self.handle_message(level, &rx[..self.rx_target]);
-            if post_handshake {
-                rx[..self.rx_target].zeroize();
-            }
-            self.rx = Some(rx);
-            self.rx_used = 0;
-            self.rx_target = 0;
-            self.rx_level = None;
-            result?;
-        }
-        Ok(())
     }
 }
 
@@ -1477,15 +1359,52 @@ impl Provider for BoundedTls<'_, '_> {
             other => other.map_err(map_crypto),
         }
     }
-    fn receive(&mut self, level: Level, bytes: &[u8]) -> Result<(), tls::Error> {
-        if self.state == State::Failed {
-            return Err(tls::Error::Handshake);
+    fn receive(&mut self, level: Level, mut bytes: &[u8]) -> Result<(), tls::Error> {
+        // Only authenticated post-handshake ticket framing remains synchronous.
+        // Initial/Handshake message order belongs exclusively to async roles.
+        if level != Level::OneRtt || self.state != State::Connected || self.side() != Side::Client {
+            return Err(tls::Error::InvalidInput);
         }
-        match self.receive_inner(level, bytes) {
-            Ok(()) => Ok(()),
-            Err(error) => Err(self.fail(error)),
+        while !bytes.is_empty() {
+            let rx = self.rx.as_deref_mut().ok_or(tls::Error::InvalidInput)?;
+            let target = if self.rx_target == 0 {
+                4
+            } else {
+                self.rx_target
+            };
+            if target > rx.len() {
+                return Err(self.fail(Failure::Capacity));
+            }
+            let n = (target - self.rx_used).min(bytes.len());
+            rx[self.rx_used..self.rx_used + n].copy_from_slice(&bytes[..n]);
+            self.rx_used += n;
+            bytes = &bytes[n..];
+            if self.rx_used < target {
+                continue;
+            }
+            if self.rx_target == 0 {
+                self.rx_target =
+                    4 + ((rx[1] as usize) << 16) + ((rx[2] as usize) << 8) + rx[3] as usize;
+                if self.rx_target > rx.len() {
+                    return Err(self.fail(Failure::Capacity));
+                }
+                if self.rx_used < self.rx_target {
+                    continue;
+                }
+            }
+            let rx = self.rx.take().ok_or(tls::Error::InvalidInput)?;
+            let result = self.cache_ticket(&rx[..self.rx_target]);
+            rx[..self.rx_target].zeroize();
+            self.rx = Some(rx);
+            self.rx_used = 0;
+            self.rx_target = 0;
+            if let Err(error) = result {
+                return Err(self.fail(error));
+            }
         }
+        Ok(())
     }
+
     fn transmit(&mut self, out: &mut [u8]) -> Result<Option<Output>, tls::Error> {
         if self.state == State::Failed {
             return Err(tls::Error::Handshake);

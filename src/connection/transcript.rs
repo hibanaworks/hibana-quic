@@ -42,14 +42,20 @@ impl<'source, 'scope, 'cfg, 'buf> Numbers<'source, 'scope, 'cfg, 'buf> {
         }
         Ok(())
     }
-    fn receive<const N: usize>(
-        &self,
-        input: CryptoInput<'scope, N>,
-    ) -> Result<(), crate::tls::Error> {
-        self.source.borrow_mut().receive(input)
-    }
     fn transmit<const N: usize>(&self) -> Result<Option<CryptoFlight<N>>, crate::tls::Error> {
         self.source.borrow_mut().transmit()
+    }
+    pub(super) fn record_verified_consumed(&self, consumed: [u64; 2]) -> Result<(), Error> {
+        self.source
+            .borrow_mut()
+            .record_verified_consumed(consumed)
+            .map_err(Error::from)
+    }
+    pub(super) fn restore_buffer(&self, bytes: &'buf mut [u8]) {
+        self.source
+            .borrow_mut()
+            .material()
+            .restore_message_buffer(bytes);
     }
     fn connected(&self) -> bool {
         self.source.borrow().state() == State::Connected
@@ -62,83 +68,58 @@ fn check(actual: u64, expected: u64) -> Result<(), Error> {
         Err(Error::Binding)
     }
 }
-async fn input_phase<'scope, Stage, T, const N: usize, const P: usize>(
-    endpoint: &mut Endpoint<'_, { p::TLS_RX }>,
-    source: &Numbers<'_, 'scope, '_, '_>,
-    slots: &Storage<'scope, '_, N, P>,
-    boundary: &Inbox<T>,
-    outcome: &Outcome,
-    id: &mut u64,
-) -> Result<(), Error>
-where
-    Stage: p::ReceivePhase,
+struct NumericOwner<'a, 'source, 'scope, 'cfg, 'buf, 'book, const N: usize, const P: usize> {
+    numbers: &'a Numbers<'source, 'scope, 'cfg, 'buf>,
+    slots: &'a Storage<'scope, 'book, N, P>,
+}
+impl<const N: usize, const P: usize> crate::bounded_tls::locals::CryptoAccess
+    for NumericOwner<'_, '_, '_, '_, '_, '_, N, P>
 {
-    while boundary.is_empty() {
-        endpoint.send::<Stage::Need>(id).await?;
-        check(endpoint.recv::<Stage::Input>().await?, *id)?;
-        let result = source.receive(slots.input.take()?);
-        outcome.set(result.is_ok())?;
-        match outcome.resolver::<{ p::CRYPTO_RESULT }>().decide()? {
-            DecisionArm::Left => {
-                result?;
-                source.harvest(slots)?;
-                endpoint.send::<Stage::Accepted>(id).await?;
-            }
-            DecisionArm::Right => {
-                slots.failure.set(result.err());
-                endpoint.send::<Stage::Rejected>(id).await?;
-            }
-        }
-        check(endpoint.recv::<Stage::Taken>().await?, *id)?;
-        outcome.clear();
-        if let Some(error) = slots.failure.take() {
-            return Err(error.into());
-        }
-        *id = id.checked_add(1).ok_or(Error::Binding)?;
-        slots.schedule.changed()?;
-        crate::runtime::yield_now().await;
+    fn with_crypto<R>(
+        &self,
+        f: impl FnOnce(&mut crate::bounded_tls::BoundedTls<'_, '_>) -> R,
+    ) -> R {
+        f(self.numbers.source.borrow_mut().material())
     }
-    endpoint.send::<Stage::Boundary>(id).await?;
-    Ok(())
+    fn applied(&self) -> Result<(), crate::bounded_tls::locals::Error> {
+        self.numbers
+            .harvest(self.slots)
+            .map_err(|_| crate::bounded_tls::locals::Error::Binding)?;
+        self.slots
+            .schedule
+            .changed()
+            .map_err(|_| crate::bounded_tls::locals::Error::Binding)
+    }
 }
 pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, { p::TLS_RX }>,
     source: &Numbers<'_, 'scope, '_, '_>,
     slots: &Storage<'scope, '_, N, P>,
-    outcome: &Outcome,
+    _outcome: &Outcome,
+    message: &crate::bounded_tls::locals::MessageSlot<'_>,
+    side: Side,
 ) -> Result<(), Error> {
-    let mut id = 0;
-    input_phase::<p::InitialReceive, _, N, P>(
-        endpoint,
-        source,
+    use crate::bounded_tls::{locals, protocol as tls};
+    let owner = NumericOwner {
+        numbers: source,
         slots,
-        &slots.read_handshake,
-        outcome,
-        &mut id,
-    )
-    .await?;
-    endpoint.send::<p::ReadHandshake>(&id).await?;
-    input_phase::<p::HandshakeReceive, _, N, P>(
-        endpoint,
-        source,
-        slots,
-        &slots.read_application,
-        outcome,
-        &mut id,
-    )
-    .await?;
-    endpoint.send::<p::ReadApplication>(&id).await?;
-    input_phase::<p::FinishedReceive, _, N, P>(
-        endpoint,
-        source,
-        slots,
-        &slots.finished,
-        outcome,
-        &mut id,
-    )
-    .await?;
-    check(endpoint.recv::<p::ReceiveComplete>().await?, id)?;
-    endpoint.send::<p::ReceiveContinuation>(&id).await?;
+    };
+    match side {
+        Side::Client => {
+            endpoint.send::<tls::ClientStart>(&0).await?;
+            locals::client_owner(endpoint, &owner, message)
+                .await
+                .map_err(Error::Transcript)?;
+        }
+        Side::Server => {
+            endpoint.send::<tls::ServerStart>(&0).await?;
+            locals::server_owner(endpoint, &owner, message)
+                .await
+                .map_err(Error::Transcript)?;
+        }
+    }
+    check(endpoint.recv::<p::ReceiveComplete>().await?, 0)?;
+    endpoint.send::<p::ReceiveContinuation>(&0).await?;
     Ok(())
 }
 async fn output_before_key<'scope, Stage, T, const N: usize, const P: usize>(

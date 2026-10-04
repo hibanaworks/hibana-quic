@@ -21,9 +21,13 @@ mod owned_level_tests;
 
 use super::{BoundedTls, DirectionalKeys, Failure, State, map_crypto};
 use crate::{
-    crypto::{self, CipherSuite, IntegrityBudget, KeyKind, PacketKey,
-        directional::{ApplicationKeyInstallation, ApplicationKeyScope,
-            ApplicationReadKeys, ApplicationWriteKeys}},
+    crypto::{
+        self, CipherSuite, IntegrityBudget, KeyKind, PacketKey,
+        directional::{
+            ApplicationKeyInstallation, ApplicationKeyScope, ApplicationReadKeys,
+            ApplicationWriteKeys,
+        },
+    },
     early_data::{EarlyStatus, RememberedLimits, ReplayClaim},
     tls::{self, Level, Output, Provider},
     tls_schedule::Side,
@@ -58,10 +62,12 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
         mut self,
         installation: ApplicationKeyInstallation<'scope>,
     ) -> Result<KeySource<'scope, 'cfg, 'buf>, Failure> {
-        if self.handshake_created || self.application_created
-            || self.handshake_discarded || self.application_discarded
+        if self.handshake_created
+            || self.application_created
+            || self.handshake_discarded
+            || self.application_discarded
             || self.rx_used != 0
-            || !matches!(self.state, State::ClientServerHello | State::ServerClientHello)
+            || !self.pristine()
         {
             return Err(Failure::State);
         }
@@ -77,24 +83,47 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
     }
 }
 
-impl<'scope> KeySource<'scope, '_, '_> {
-    pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
-    pub fn state(&self) -> State { self.provider.state() }
+impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
+    pub(crate) fn material(&mut self) -> &mut BoundedTls<'cfg, 'buf> {
+        &mut self.provider
+    }
+    pub const fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.scope
+    }
+    pub fn state(&self) -> State {
+        self.provider.state()
+    }
     /// The configured TLS role, obtained from the actual owning provider.
-    pub fn side(&self) -> Side { self.provider.side() }
-    pub fn last_failure(&self) -> Option<&Failure> { self.provider.last_failure() }
-    pub fn is_handshaking(&self) -> bool { self.provider.is_handshaking() }
-    pub fn is_resumed(&self) -> bool { self.provider.is_resumed() }
-    pub fn negotiated_suite(&self) -> Option<CipherSuite> { self.provider.negotiated_suite() }
-    pub fn negotiated_group(&self) -> Option<u16> { self.provider.negotiated_group() }
-    pub fn negotiated_alpn(&self) -> Option<&'static [u8]> { self.provider.negotiated_alpn() }
+    pub fn side(&self) -> Side {
+        self.provider.side()
+    }
+    pub fn last_failure(&self) -> Option<&Failure> {
+        self.provider.last_failure()
+    }
+    pub fn is_handshaking(&self) -> bool {
+        self.provider.is_handshaking()
+    }
+    pub fn is_resumed(&self) -> bool {
+        self.provider.is_resumed()
+    }
+    pub fn negotiated_suite(&self) -> Option<CipherSuite> {
+        self.provider.negotiated_suite()
+    }
+    pub fn negotiated_group(&self) -> Option<u16> {
+        self.provider.negotiated_group()
+    }
+    pub fn negotiated_alpn(&self) -> Option<&'static [u8]> {
+        self.provider.negotiated_alpn()
+    }
     pub fn peer_transport_parameters(&self) -> Option<&[u8]> {
         self.provider.peer_transport_parameters()
     }
     pub fn observations(&self) -> tls::Observations {
         let mut observations = self.provider.observations();
         // The fail-closed sentinel is not the live RX budget after transfer.
-        if self.integrity_taken { observations.failed_authentications = None; }
+        if self.integrity_taken {
+            observations.failed_authentications = None;
+        }
         observations
     }
     pub fn write_failure_diagnostic(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
@@ -108,8 +137,12 @@ impl<'scope> KeySource<'scope, '_, '_> {
     pub fn transmit(&mut self, output: &mut [u8]) -> Result<Option<Output>, tls::Error> {
         self.provider.transmit(output)
     }
-    pub fn early_status(&self) -> EarlyStatus { self.provider.early_status() }
-    pub fn early_generation(&self) -> Option<u64> { self.provider.early_generation() }
+    pub fn early_status(&self) -> EarlyStatus {
+        self.provider.early_status()
+    }
+    pub fn early_generation(&self) -> Option<u64> {
+        self.provider.early_generation()
+    }
     pub fn remembered_early_limits(&self) -> Option<RememberedLimits> {
         self.provider.remembered_early_limits()
     }
@@ -121,11 +154,15 @@ impl<'scope> KeySource<'scope, '_, '_> {
     /// completion is not QUIC handshake confirmation; HANDSHAKE_DONE remains
     /// an independently authenticated receive transition.
     pub fn take_finished(&mut self) -> Result<FinishedAuthenticated<'scope>, tls::Error> {
-        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
+        if self.provider.state == State::Failed {
+            return Err(tls::Error::Handshake);
+        }
         if self.finished_taken || self.provider.state != State::Connected {
             return Err(tls::Error::KeysUnavailable);
         }
-        let parameters = self.provider.peer_transport_parameters()
+        let parameters = self
+            .provider
+            .peer_transport_parameters()
             .ok_or(tls::Error::KeysUnavailable)?;
         let receipt = FinishedAuthenticated {
             scope: self.scope,
@@ -141,7 +178,9 @@ impl<'scope> KeySource<'scope, '_, '_> {
     /// failures accumulated by Initial/0-RTT before handoff. No replacement can
     /// be issued, and the source keeps only the existing fail-closed sentinel.
     pub fn take_integrity_budget(&mut self) -> Result<IntegrityBudget, tls::Error> {
-        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
+        if self.provider.state == State::Failed {
+            return Err(tls::Error::Handshake);
+        }
         if self.integrity_taken {
             return Err(tls::Error::KeysUnavailable);
         }
@@ -151,36 +190,67 @@ impl<'scope> KeySource<'scope, '_, '_> {
     /// Move both actual Handshake PacketKeys once. An unavailable early poll
     /// does not consume a future installation; dropping returned material does.
     pub fn take_handshake_keys(&mut self) -> Result<HandshakeKeyMaterial<'scope>, tls::Error> {
-        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
-        let keys = self.provider.handshake.take().ok_or(tls::Error::KeysUnavailable)?;
-        Ok(HandshakeKeyMaterial { scope: self.scope, keys })
+        if self.provider.state == State::Failed {
+            return Err(tls::Error::Handshake);
+        }
+        let keys = self
+            .provider
+            .handshake
+            .take()
+            .ok_or(tls::Error::KeysUnavailable)?;
+        Ok(HandshakeKeyMaterial {
+            scope: self.scope,
+            keys,
+        })
     }
     /// The server can emit these keys before client Finished. Their existence
     /// is never a grant to deliver ordinary data, ACK it, or initiate an update.
     pub fn take_application_keys(&mut self) -> Result<ApplicationKeyMaterial<'scope>, tls::Error> {
-        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
-        let keys = self.provider.application.take_handoff().ok_or(tls::Error::KeysUnavailable)?;
+        if self.provider.state == State::Failed {
+            return Err(tls::Error::Handshake);
+        }
+        let keys = self
+            .provider
+            .application
+            .take_handoff()
+            .ok_or(tls::Error::KeysUnavailable)?;
         let installation = self.application.take().ok_or(tls::Error::KeysUnavailable)?;
         Ok(ApplicationKeyMaterial { installation, keys })
     }
     /// Move the sole early direction with unchanged packet usage. RX quarantine
     /// and TX replay policy are separate from this cryptographic capability.
     pub fn take_early_key(&mut self) -> Result<EarlyKeyMaterial<'scope>, tls::Error> {
-        if self.provider.state == State::Failed { return Err(tls::Error::Handshake); }
+        if self.provider.state == State::Failed {
+            return Err(tls::Error::Handshake);
+        }
         if self.early_taken {
             return Err(tls::Error::KeysUnavailable);
         }
-        let key = self.provider.early_key.take().ok_or(tls::Error::KeysUnavailable)?;
+        let key = self
+            .provider
+            .early_key
+            .take()
+            .ok_or(tls::Error::KeysUnavailable)?;
         self.early_taken = true;
         Ok(match self.provider.side() {
-            Side::Client => EarlyKeyMaterial::Transmit(TransmitPacketKey { scope: self.scope, key }),
-            Side::Server => EarlyKeyMaterial::Receive(ReceivePacketKey { scope: self.scope, key }),
+            Side::Client => EarlyKeyMaterial::Transmit(TransmitPacketKey {
+                scope: self.scope,
+                key,
+            }),
+            Side::Server => EarlyKeyMaterial::Receive(ReceivePacketKey {
+                scope: self.scope,
+                key,
+            }),
         })
     }
     /// Retire material still owned by TLS. The graph must separately retire
     /// already transferred owners before considering level retirement complete.
-    pub fn discard_pending_keys(&mut self, level: Level) { self.provider.discard_keys(level); }
-    pub fn discard_pending_early_key(&mut self) { self.provider.discard_early_keys(); }
+    pub fn discard_pending_keys(&mut self, level: Level) {
+        self.provider.discard_keys(level);
+    }
+    pub fn discard_pending_early_key(&mut self) {
+        self.provider.discard_early_keys();
+    }
 }
 
 /// The actual peer Finished verification in one immutable connection domain.
@@ -201,13 +271,21 @@ pub struct FinishedAuthenticated<'scope> {
     early_generation: Option<u64>,
 }
 impl<'scope> FinishedAuthenticated<'scope> {
-    pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
-    pub const fn side(&self) -> Side { self.side }
+    pub const fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.scope
+    }
+    pub const fn side(&self) -> Side {
+        self.side
+    }
     pub fn authenticates_peer_parameters(&self, parameters: &[u8]) -> bool {
         self.peer_parameters_digest == peer_parameters_digest(parameters)
     }
-    pub const fn early_status(&self) -> EarlyStatus { self.early_status }
-    pub const fn early_generation(&self) -> Option<u64> { self.early_generation }
+    pub const fn early_status(&self) -> EarlyStatus {
+        self.early_status
+    }
+    pub const fn early_generation(&self) -> Option<u64> {
+        self.early_generation
+    }
 }
 fn peer_parameters_digest(parameters: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
@@ -229,10 +307,20 @@ pub struct HandshakeKeyMaterial<'scope> {
     keys: DirectionalKeys,
 }
 impl<'scope> HandshakeKeyMaterial<'scope> {
-    pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
+    pub const fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.scope
+    }
     pub fn install(self) -> (ReceivePacketKey<'scope>, TransmitPacketKey<'scope>) {
-        (ReceivePacketKey { scope: self.scope, key: self.keys.remote },
-         TransmitPacketKey { scope: self.scope, key: self.keys.local })
+        (
+            ReceivePacketKey {
+                scope: self.scope,
+                key: self.keys.remote,
+            },
+            TransmitPacketKey {
+                scope: self.scope,
+                key: self.keys.local,
+            },
+        )
     }
 }
 
@@ -248,9 +336,15 @@ pub struct ApplicationKeyMaterial<'scope> {
     keys: DirectionalKeys,
 }
 impl<'scope> ApplicationKeyMaterial<'scope> {
-    pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.installation.scope() }
-    pub fn install(self) -> Result<(ApplicationReadKeys<'scope>, ApplicationWriteKeys<'scope>), tls::Error> {
-        self.installation.install(self.keys.local, self.keys.remote).map_err(map_crypto)
+    pub const fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.installation.scope()
+    }
+    pub fn install(
+        self,
+    ) -> Result<(ApplicationReadKeys<'scope>, ApplicationWriteKeys<'scope>), tls::Error> {
+        self.installation
+            .install(self.keys.local, self.keys.remote)
+            .map_err(map_crypto)
     }
 }
 
@@ -292,11 +386,21 @@ pub struct AuthenticatedLevelRead<'scope> {
     plaintext_digest: [u8; 32],
 }
 impl<'scope> AuthenticatedLevelRead<'scope> {
-    pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
-    pub const fn kind(&self) -> KeyKind { self.kind }
-    pub const fn packet_number(&self) -> u64 { self.packet_number }
-    pub const fn len(&self) -> usize { self.len }
-    pub const fn is_empty(&self) -> bool { self.len == 0 }
+    pub const fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.scope
+    }
+    pub const fn kind(&self) -> KeyKind {
+        self.kind
+    }
+    pub const fn packet_number(&self) -> u64 {
+        self.packet_number
+    }
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
     pub fn authenticates_plaintext(&self, plaintext: &[u8]) -> bool {
         self.len == plaintext.len()
             && self.plaintext_digest == crate::roles::sealed_packet::plaintext_digest(plaintext)
@@ -306,7 +410,10 @@ impl<'scope> AuthenticatedLevelRead<'scope> {
 /// One inbound Initial, Handshake or 0-RTT key. Successful AEAD is only
 /// cryptographic evidence; graph permissions decide which authenticated frames
 /// may proceed. Only Initial and Handshake can emit AuthenticatedLevelRead.
-pub struct ReceivePacketKey<'scope> { scope: &'scope ApplicationKeyScope, key: PacketKey }
+pub struct ReceivePacketKey<'scope> {
+    scope: &'scope ApplicationKeyScope,
+    key: PacketKey,
+}
 impl<'scope> ReceivePacketKey<'scope> {
     /// Trusted direct RX attachment for an actual independently owned Initial
     /// key. Application and early keys cannot enter this constructor.
@@ -314,14 +421,27 @@ impl<'scope> ReceivePacketKey<'scope> {
         scope: &'scope ApplicationKeyScope,
         key: PacketKey,
     ) -> Result<Self, crypto::Error> {
-        if key.kind() != KeyKind::Initial { return Err(crypto::Error::KeyDerivation); }
+        if key.kind() != KeyKind::Initial {
+            return Err(crypto::Error::KeyDerivation);
+        }
         key.ensure_active()?;
         Ok(Self { scope, key })
     }
-    pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
-    pub const fn kind(&self) -> KeyKind { self.key.kind() }
-    pub fn open(&self, pn: u64, header: &[u8], buffer: &mut [u8], budget: &mut IntegrityBudget)
-        -> Result<usize, crypto::Error> { self.key.open(pn, header, buffer, budget) }
+    pub const fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.scope
+    }
+    pub const fn kind(&self) -> KeyKind {
+        self.key.kind()
+    }
+    pub fn open(
+        &self,
+        pn: u64,
+        header: &[u8],
+        buffer: &mut [u8],
+        budget: &mut IntegrityBudget,
+    ) -> Result<usize, crypto::Error> {
+        self.key.open(pn, header, buffer, budget)
+    }
     /// Perform the actual AEAD and issue its affine, scope-bound evidence.
     /// 0-RTT requires replay/quarantine authority and 1-RTT requires directional
     /// epoch/ACK barriers, so both are rejected before touching the buffer/budget.
@@ -349,26 +469,52 @@ impl<'scope> ReceivePacketKey<'scope> {
     pub fn header_mask(&self, sample: &[u8; 16]) -> Result<[u8; 5], crypto::Error> {
         self.key.header_mask(sample)
     }
-    pub fn unprotect_header(&self, packet: &mut [u8], pn_offset: usize) -> Result<usize, crypto::Error> {
+    pub fn unprotect_header(
+        &self,
+        packet: &mut [u8],
+        pn_offset: usize,
+    ) -> Result<usize, crypto::Error> {
         self.key.unprotect_header(packet, pn_offset)
     }
-    pub fn discard(&mut self) { self.key.discard(); }
+    pub fn discard(&mut self) {
+        self.key.discard();
+    }
 }
 
 /// One outbound Handshake or 0-RTT key retaining nonce/confidentiality accounting.
-pub struct TransmitPacketKey<'scope> { scope: &'scope ApplicationKeyScope, key: PacketKey }
+pub struct TransmitPacketKey<'scope> {
+    scope: &'scope ApplicationKeyScope,
+    key: PacketKey,
+}
 impl<'scope> TransmitPacketKey<'scope> {
-    pub const fn scope(&self) -> &'scope ApplicationKeyScope { self.scope }
-    pub const fn kind(&self) -> KeyKind { self.key.kind() }
-    pub const fn sealed_packets(&self) -> u64 { self.key.sealed_packets() }
-    pub const fn last_sealed_packet_number(&self) -> Option<u64> { self.key.last_sealed_packet_number() }
-    pub fn seal(&mut self, pn: u64, header: &[u8], buffer: &mut [u8], plaintext_len: usize)
-        -> Result<usize, crypto::Error> { self.key.seal(pn, header, buffer, plaintext_len) }
+    pub const fn scope(&self) -> &'scope ApplicationKeyScope {
+        self.scope
+    }
+    pub const fn kind(&self) -> KeyKind {
+        self.key.kind()
+    }
+    pub const fn sealed_packets(&self) -> u64 {
+        self.key.sealed_packets()
+    }
+    pub const fn last_sealed_packet_number(&self) -> Option<u64> {
+        self.key.last_sealed_packet_number()
+    }
+    pub fn seal(
+        &mut self,
+        pn: u64,
+        header: &[u8],
+        buffer: &mut [u8],
+        plaintext_len: usize,
+    ) -> Result<usize, crypto::Error> {
+        self.key.seal(pn, header, buffer, plaintext_len)
+    }
     pub fn header_mask(&self, sample: &[u8; 16]) -> Result<[u8; 5], crypto::Error> {
         self.key.header_mask(sample)
     }
     pub fn protect_header(&self, packet: &mut [u8], pn_offset: usize) -> Result<(), crypto::Error> {
         self.key.protect_header(packet, pn_offset)
     }
-    pub fn discard(&mut self) { self.key.discard(); }
+    pub fn discard(&mut self) {
+        self.key.discard();
+    }
 }

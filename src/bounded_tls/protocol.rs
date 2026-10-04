@@ -3,15 +3,16 @@
 //! INPUT supplies one reassembled TLS message at the requested encryption level.
 //! VERIFY owns parsing, transcript hashing and cryptographic checks. A message
 //! slot is reusable only after Applied. A retry can occur at most once; resumed
-//! handshakes omit Certificate/CertificateVerify only after authenticated PSK
-//! selection. These programs are an integration step, not yet the host path.
+//! handshakes omit Certificate/CertificateVerify only after negotiated PSK
+//! selection; Finished remains mandatory. The connection embeds this graph as its
+//! live receive/transcript path.
 use hibana::{
     g,
     runtime::program::{RoleProgram, project},
 };
 
-pub const INPUT: u8 = 40;
-pub const VERIFY: u8 = 41;
+pub const INPUT: u8 = 0;
+pub const VERIFY: u8 = 1;
 pub type NeedHello = g::Msg<180, u64>;
 pub type Hello = g::Msg<181, u64>;
 pub type Applied = g::Msg<182, u64>;
@@ -134,4 +135,17 @@ pub fn server_programs() -> Programs {
         input: project(&global),
         verify: project(&global),
     }
+}
+
+pub type ClientStart = g::Msg<198, u64>;
+pub type ServerStart = g::Msg<199, u64>;
+pub type Flow = g::Route<
+    g::Seq<g::Send<VERIFY, INPUT, ClientStart>, ClientFlow>,
+    g::Seq<g::Send<VERIFY, INPUT, ServerStart>, ServerFlow>,
+>;
+pub fn choreography() -> g::Program<Flow> {
+    g::route(
+        g::seq(g::send::<VERIFY, INPUT, ClientStart>(), client()),
+        g::seq(g::send::<VERIFY, INPUT, ServerStart>(), server()),
+    )
 }

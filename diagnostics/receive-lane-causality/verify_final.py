@@ -8,7 +8,8 @@ from marker_port import analyze_markers
 
 root = Path(__file__).resolve().parents[2]
 paths = {'prefix': root / 'src/connection/protocol.rs',
-         'app': root / 'src/connection/application/protocol.rs'}
+         'app': root / 'src/connection/application/protocol.rs',
+         'tls': root / 'src/bounded_tls/protocol.rs'}
 p = Parser(paths)
 graph = Node('seq', [p.expand('prefix', 'Flow'),
                     Node('seq', [p.expand('app', 'Startup'), p.expand('app', 'Flow')])])
@@ -17,7 +18,7 @@ other_structured, other_reentry, markers = analyze_markers(graph, events)
 assert structured == other_structured, 'structured analysis implementations disagree'
 assert reentry == other_reentry, 'roll-reentry analysis implementations disagree'
 result = {
-    'source_base': '74280de429eb37f86b9aa2e9f9573735eb65f53b',
+    'source_note': 'Current source files are identified by source_sha256; this is not a whole-program proof.',
     'caveat': 'Executed source-level Python models only. Not Rust compilation, Hibana global validation, runtime, QUIC or interop execution.',
     'source_sha256': {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
                       for path in paths.values()},

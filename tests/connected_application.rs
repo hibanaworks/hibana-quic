@@ -524,7 +524,6 @@ fn connection_case(count: usize, loss: Loss) {
     let server_rv = server_kit.init().rendezvous(&mut server_slab, server_carrier.bind(server_sid).unwrap()).unwrap();
     macro_rules! resolvers {
         ($rv:expr, $outcomes:expr) => {{
-            $rv.set_resolver(&programs.handshake.tls_rx, $outcomes.tls.resolver::<{connection::protocol::CRYPTO_RESULT}>()).unwrap();
             $rv.set_resolver(&programs.handshake.udp, $outcomes.handshake_adapter.resolver::<{connection::protocol::ADAPTER_RESULT}>()).unwrap();
             $rv.set_resolver(&programs.adapter, $outcomes.application_adapter.resolver::<{application::protocol::SUBMISSION_RESULT}>()).unwrap();
         }};
@@ -596,6 +595,12 @@ fn connection_case(count: usize, loss: Loss) {
     let server = server_report.unwrap();
     assert_eq!(client_transcript.state(), State::Connected);
     assert_eq!(server_transcript.state(), State::Connected);
+    for transcript in [&client_transcript,&server_transcript] {
+        assert!(transcript.received_offset(hibana_quic::tls::Level::Initial)>0,
+            "verified Initial consumption must cross the application handoff");
+        assert!(transcript.received_offset(hibana_quic::tls::Level::Handshake)>0,
+            "verified Handshake consumption must cross the application handoff");
+    }
     assert!(client.confirmed && server.confirmed, "Finished alone is not client confirmation");
     assert!(client.close_completed && server.close_completed, "all ordinary roles must retire before close completes");
     assert_eq!(client.submitted_streams, count);

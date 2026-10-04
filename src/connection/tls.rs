@@ -150,6 +150,18 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
     pub fn state(&self) -> State {
         self.source.state()
     }
+    pub(crate) fn material(&mut self) -> &mut crate::bounded_tls::BoundedTls<'cfg, 'buf> {
+        self.source.material()
+    }
+    pub(crate) fn record_verified_consumed(&mut self, consumed: [u64; 2]) -> Result<(), Error> {
+        for (index, end) in consumed.into_iter().enumerate() {
+            if end < self.received[index] || end > MAX_VARINT {
+                return Err(Error::InvalidInput);
+            }
+            self.received[index] = end;
+        }
+        Ok(())
+    }
     pub fn received_offset(&self, level: Level) -> u64 {
         self.received[level_index(level)]
     }
