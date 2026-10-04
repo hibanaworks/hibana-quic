@@ -1,0 +1,18 @@
+info: component rust-std for target thumbv6m-none-eabi is up to date
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana)
+   Compiling hibana-causal-handoff-linear-4 v0.0.0 (/tmp/hibana-causal-handoff-pressure-wjzxYI/causal_handoff_linear_4)
+    Finished `release` profile [optimized] target(s) in 8.72s
+compile pressure observed: causal-handoff linear 4 elapsed=1s seconds_budget=16s max_rss=127MiB rss_budget=129MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-linear-64 v0.0.0 (/tmp/hibana-causal-handoff-pressure-wjzxYI/causal_handoff_linear_64)
+    Finished `release` profile [optimized] target(s) in 0.51s
+compile pressure observed: causal-handoff linear 64 elapsed=1s seconds_budget=16s max_rss=130MiB rss_budget=211MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-linear-256 v0.0.0 (/tmp/hibana-causal-handoff-pressure-wjzxYI/causal_handoff_linear_256)
+    Finished `release` profile [optimized] target(s) in 2.34s
+compile pressure observed: causal-handoff linear 256 elapsed=2s seconds_budget=16s max_rss=153MiB rss_budget=245MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-route-4 v0.0.0 (/tmp/hibana-causal-handoff-pressure-wjzxYI/causal_handoff_route_4)
+    Finished `release` profile [optimized] target(s) in 0.37s
+compile pressure guard violation: causal-handoff route 4 exceeded 129MiB RSS: process pid=152261 rss_mib=141 total_rss_mib=141 comm=rustc matched=1

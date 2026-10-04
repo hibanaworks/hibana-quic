@@ -1,0 +1,96 @@
+{
+  "scope": "Formal pinned hq-interop and local UDP diagnosis remain separate",
+  "core_revision": "adea68456116df8339c76a0d7407889755ae7b87",
+  "quic_source_commit": "3db5597deccd87f9846a8c86a9edf21f9913c27a",
+  "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
+  "neqo_revision": "ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95",
+  "hq_binary_sha256": "512eecaad00b7b15031a37ba3961259970ffb52d0f5ce0246dbf9bbf2d8e9819",
+  "formal_matrix": {
+    "passed": 0,
+    "executed": 0,
+    "target": 120,
+    "status": "NOT_RUN",
+    "by_direction": {
+      "hibana_client_to_neqo_server": {
+        "passed": 0,
+        "executed": 0,
+        "target": 60
+      },
+      "neqo_client_to_hibana_server": {
+        "passed": 0,
+        "executed": 0,
+        "target": 60
+      }
+    },
+    "by_repetition": [
+      {
+        "repetition": 1,
+        "passed": 0,
+        "executed": 0,
+        "target": 40
+      },
+      {
+        "repetition": 2,
+        "passed": 0,
+        "executed": 0,
+        "target": 40
+      },
+      {
+        "repetition": 3,
+        "passed": 0,
+        "executed": 0,
+        "target": 40
+      }
+    ],
+    "per_case_per_direction": {
+      "passed": 0,
+      "executed": 0,
+      "target_repetitions": 3
+    },
+    "implemented_cases": [
+      "handshake",
+      "transfer"
+    ],
+    "other_cases_not_implemented": 18,
+    "upstream_unsupported_verdicts": 0
+  },
+  "native_diagnosis": {
+    "handshake_deadline_seconds": 20,
+    "handshake": {
+      "hibana_client_to_neqo_server": "FILES_EQUAL",
+      "neqo_client_to_hibana_server": "FILES_EQUAL"
+    },
+    "transfer_deadline_seconds": 60,
+    "transfer": {
+      "hibana_client_to_neqo_server": "FILES_EQUAL",
+      "neqo_client_to_hibana_server": "FILES_EQUAL"
+    },
+    "transfer_at_20_seconds": {
+      "hibana_client_to_neqo_server": "FAILED_DEADLINE_TWO_FILES_EQUAL",
+      "neqo_client_to_hibana_server": "FILES_EQUAL"
+    },
+    "counts_are_not_official_runner_results": true
+  },
+  "resource_checks": {
+    "stack_bytes": 2519,
+    "stack_budget_bytes": 3663,
+    "modeled_sram_bytes": 5218,
+    "modeled_sram_budget_bytes": 8954,
+    "thumb_flash_bytes": 88013,
+    "thumb_flash_budget_bytes": 169965,
+    "full_gate_exit": 137,
+    "route_arm_rss_mib": 135,
+    "route_arm_rss_budget_mib": 132,
+    "isolated_route_arm_exit": 0,
+    "causal_handoff_route_rss_mib": 141,
+    "causal_handoff_route_rss_budget_mib": 129,
+    "unmodified_67_causal_handoff_rss_mib": 130
+  },
+  "docker": {
+    "original_daemon": "STOPPED",
+    "uid": 1000,
+    "rootless_uid_map": "OPERATION_NOT_PERMITTED",
+    "isolated_oci_container": "CGROUP_PERMISSION_DENIED"
+  },
+  "performance_comparison": "NOT_COMPLETED"
+}

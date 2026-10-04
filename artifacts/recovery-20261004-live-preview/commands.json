@@ -1,0 +1,483 @@
+{
+  "core_revision": "adea68456116df8339c76a0d7407889755ae7b87",
+  "quic_source_commit": "3db5597deccd87f9846a8c86a9edf21f9913c27a",
+  "records": [
+    {
+      "label": "core-live-preview-release",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--release",
+        "--test",
+        "rolled_publication_exit",
+        "--test",
+        "rolled_resolver_reentry",
+        "--test",
+        "nested_resolver_self_continuations",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana",
+      "source_commit": "67cbf9f0a57fe89a8486766456a769b646f2a3e1",
+      "working_diff_sha256": "1f900db5a45438e014f5dcbf640b72562bea25a287adbb539ea87ffb37715841",
+      "working_status": " M Cargo.toml\n M src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T005906305040Z",
+      "duration_seconds": 38.140836529993976,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T005906305040Z-core-live-preview-release-1.log",
+      "log_sha256": "6607118b7e53c0727963ccaba22d60ae1b275a8768d3dbfb2cd78f34ff85959d",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-live-preview-release-1.log"
+    },
+    {
+      "label": "core-live-preview-clippy",
+      "index": 1,
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/workspace/hibana",
+      "source_commit": "67cbf9f0a57fe89a8486766456a769b646f2a3e1",
+      "working_diff_sha256": "34bd4813aeaa66a5b274a8dfc1979c11303c52ae2ab9d5251087f5393247df78",
+      "working_status": " M .github/scripts/run_final_form_gates.sh\n M Cargo.toml\n M proofs/core-followup/current-source-manifest.json\n M src/endpoint/kernel/core/route_commit_helpers.rs\n M tests/ui/g-roleprogram-witness-mismatch.stderr\n M tests/ui/g-route-roll-before-resolve.stderr\n M tests/ui/resolver-decision-fn-removed.stderr\n?? proofs/live-descendant-preview/\n?? tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "RUSTFLAGS": "--cfg hibana_repo_tests",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T010409926035Z",
+      "duration_seconds": 20.555276320999837,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T010409926035Z-core-live-preview-clippy-1.log",
+      "log_sha256": "a50fcd8926cf32d02e1c799172c3bc5e522981c0d9136a8aa0b9aa3abff98c64",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-live-preview-clippy-1.log"
+    },
+    {
+      "label": "core-live-preview-lto",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--release",
+        "--test",
+        "rolled_publication_exit",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana",
+      "source_commit": "67cbf9f0a57fe89a8486766456a769b646f2a3e1",
+      "working_diff_sha256": "a136b99ace63e8fb90283876de918513d1c3c4f5e9712bdbd756274fad58b803",
+      "working_status": " M .github/maintainability/owner_partitions.tsv\n M .github/scripts/run_final_form_gates.sh\n M Cargo.toml\n M proofs/core-followup/current-source-manifest.json\n M src/endpoint/kernel/core/route_commit_helpers.rs\n?? proofs/live-descendant-preview/\n?? tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "RUSTFLAGS": "--cfg hibana_repo_tests",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T010917699324Z",
+      "duration_seconds": 70.29886244800582,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T010917699324Z-core-live-preview-lto-1.log",
+      "log_sha256": "ba4449782a9a211e29459ccae771c2243aa34f0cb2a5cfca39764371239269b2",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-live-preview-lto-1.log"
+    },
+    {
+      "label": "core-live-preview-workspace-fixed",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--workspace",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana",
+      "source_commit": "67cbf9f0a57fe89a8486766456a769b646f2a3e1",
+      "working_diff_sha256": "a136b99ace63e8fb90283876de918513d1c3c4f5e9712bdbd756274fad58b803",
+      "working_status": " M .github/maintainability/owner_partitions.tsv\n M .github/scripts/run_final_form_gates.sh\n M Cargo.toml\n M proofs/core-followup/current-source-manifest.json\n M src/endpoint/kernel/core/route_commit_helpers.rs\n?? proofs/live-descendant-preview/\n?? tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "RUSTFLAGS": "--cfg hibana_repo_tests",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T010916453354Z",
+      "duration_seconds": 86.20438382800057,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T010916453354Z-core-live-preview-workspace-fixed-1.log",
+      "log_sha256": "3a9cc525ea8614e7f546384804be3bd52ff5f293cd122f438f1e95ef773fc3a3",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-live-preview-workspace-fixed-1.log"
+    },
+    {
+      "label": "core-live-preview-subsystem",
+      "index": 1,
+      "command": [
+        "bash",
+        ".github/scripts/check_subsystem_budget_gates.sh"
+      ],
+      "cwd": "/workspace/hibana",
+      "source_commit": "67cbf9f0a57fe89a8486766456a769b646f2a3e1",
+      "working_diff_sha256": "337b18cbf3d27e1552c10d1d17a64563959dab2ee3f6fec6a4339edfb08158ca",
+      "working_status": " M .github/maintainability/owner_partitions.tsv\n M .github/scripts/run_final_form_gates.sh\n M Cargo.toml\n M proofs/core-followup/current-source-manifest.json\n M src/endpoint/kernel/core/route_commit_helpers.rs\n?? proofs/live-descendant-preview/\n?? tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "RUSTFLAGS": "--cfg hibana_repo_tests",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011127179909Z",
+      "duration_seconds": 1.287654150997696,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011127179909Z-core-live-preview-subsystem-1.log",
+      "log_sha256": "d2141c1a5aaf1addda75c8e29cb8d9dee27d3a1ae68d8f2396c884e374643b0a",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-live-preview-subsystem-1.log"
+    },
+    {
+      "label": "core-live-preview-route-pressure",
+      "index": 1,
+      "command": [
+        "bash",
+        ".github/scripts/check_route_arm_projection_pressure.sh"
+      ],
+      "cwd": "/workspace/hibana",
+      "source_commit": "67cbf9f0a57fe89a8486766456a769b646f2a3e1",
+      "working_diff_sha256": "65e4898827eddc18c4dc25d28c9ad78552a9671824949c05048c22d871c86d6c",
+      "working_status": " M .github/maintainability/owner_partitions.tsv\n M .github/scripts/run_final_form_gates.sh\n M Cargo.toml\n M README.md\n M proofs/core-followup/current-source-manifest.json\n M src/endpoint/kernel/core/route_commit_helpers.rs\n?? proofs/live-descendant-preview/\n?? tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011241051193Z",
+      "duration_seconds": 17.970525664997695,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011241051193Z-core-live-preview-route-pressure-1.log",
+      "log_sha256": "d1d798e45d6ba5e35a20014fafd96a823d7712bdf1964c14a4e7e626d143ccb0",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-live-preview-route-pressure-1.log"
+    },
+    {
+      "label": "core-live-preview-resources-synced",
+      "index": 1,
+      "command": [
+        "bash",
+        ".github/scripts/check_final_form_measurements.sh"
+      ],
+      "cwd": "/workspace/hibana",
+      "source_commit": "67cbf9f0a57fe89a8486766456a769b646f2a3e1",
+      "working_diff_sha256": "65e4898827eddc18c4dc25d28c9ad78552a9671824949c05048c22d871c86d6c",
+      "working_status": " M .github/maintainability/owner_partitions.tsv\n M .github/scripts/run_final_form_gates.sh\n M Cargo.toml\n M README.md\n M proofs/core-followup/current-source-manifest.json\n M src/endpoint/kernel/core/route_commit_helpers.rs\n?? proofs/live-descendant-preview/\n?? tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011239761791Z",
+      "duration_seconds": 207.18614548799815,
+      "exit_code": 137,
+      "log": "/workspace/validation/20261004T011239761791Z-core-live-preview-resources-synced-1.log",
+      "log_sha256": "86a2f972648424ce718cec37832dfdecc4160877156b87870360b717aa9fe74d",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-live-preview-resources-synced-1.log"
+    },
+    {
+      "label": "core-live-preview-causal-pressure",
+      "index": 1,
+      "command": [
+        "bash",
+        ".github/scripts/check_causal_handoff_pressure.sh"
+      ],
+      "cwd": "/workspace/hibana",
+      "source_commit": "adea68456116df8339c76a0d7407889755ae7b87",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011712974583Z",
+      "duration_seconds": 13.321271291999437,
+      "exit_code": 137,
+      "log": "/workspace/validation/20261004T011712974583Z-core-live-preview-causal-pressure-1.log",
+      "log_sha256": "75a5f42972a751f33acb7ab6fac7a3e1649b468edb0013f7f42f1ba6b61e1672",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-live-preview-causal-pressure-1.log"
+    },
+    {
+      "label": "core-preview-fixed-q1-debug",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "connection_publication_route",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+      "working_diff_sha256": "a2ce1f386cc3dd5e633c9532ad9614ce89b0193b80a936cbf564b48de89f9e6d",
+      "working_status": " M Cargo.toml\n M adapters/host/src/bin/support/direct_bootstrap.rs\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M src/connection/initial.rs\n M src/connection/locals.rs\n M src/connection/mod.rs\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/maintainability/owner_partitions.tsv\n M vendor/hibana/.github/scripts/run_final_form_gates.sh\n M vendor/hibana/Cargo.toml\n M vendor/hibana/README.md\n M vendor/hibana/proofs/core-followup/current-source-manifest.json\n M vendor/hibana/src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/connection_publication_route.rs\n?? vendor/hibana/proofs/live-descendant-preview/\n?? vendor/hibana/tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011618121238Z",
+      "duration_seconds": 84.25292727800115,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011618121238Z-core-preview-fixed-q1-debug-1.log",
+      "log_sha256": "a9bd14ef54ccf39a695a59986695ae3408726cd686a6591f74661c0751a5d50f",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-preview-fixed-q1-debug-1.log"
+    },
+    {
+      "label": "core-67-causal-pressure-baseline",
+      "index": 1,
+      "command": [
+        "bash",
+        ".github/scripts/check_causal_handoff_pressure.sh"
+      ],
+      "cwd": "/workspace/hibana-release-diagnostic",
+      "source_commit": "67cbf9f0a57fe89a8486766456a769b646f2a3e1",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011850540396Z",
+      "duration_seconds": 12.603043527000409,
+      "exit_code": 137,
+      "log": "/workspace/validation/20261004T011850540396Z-core-67-causal-pressure-baseline-1.log",
+      "log_sha256": "cf7beb596d8fddca57e6e3851765b4f78f99de91bb6c423dfaab52111cc7e77c",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-67-causal-pressure-baseline-1.log"
+    },
+    {
+      "label": "core-preview-fixed-q1-release",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--release",
+        "--test",
+        "connection_publication_route",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+      "working_diff_sha256": "a2ce1f386cc3dd5e633c9532ad9614ce89b0193b80a936cbf564b48de89f9e6d",
+      "working_status": " M Cargo.toml\n M adapters/host/src/bin/support/direct_bootstrap.rs\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M src/connection/initial.rs\n M src/connection/locals.rs\n M src/connection/mod.rs\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/maintainability/owner_partitions.tsv\n M vendor/hibana/.github/scripts/run_final_form_gates.sh\n M vendor/hibana/Cargo.toml\n M vendor/hibana/README.md\n M vendor/hibana/proofs/core-followup/current-source-manifest.json\n M vendor/hibana/src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/connection_publication_route.rs\n?? vendor/hibana/proofs/live-descendant-preview/\n?? vendor/hibana/tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011742517658Z",
+      "duration_seconds": 135.09059188899846,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011742517658Z-core-preview-fixed-q1-release-1.log",
+      "log_sha256": "eec71a8ddaf49cc37a0d3e5ea7841e8477a2eabe255f84995ba0d1703df2a586",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-preview-fixed-q1-release-1.log"
+    },
+    {
+      "label": "core-preview-fixed-hq-build",
+      "index": 1,
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "--manifest-path",
+        "adapters/host/Cargo.toml",
+        "--bin",
+        "hq"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+      "working_diff_sha256": "a2ce1f386cc3dd5e633c9532ad9614ce89b0193b80a936cbf564b48de89f9e6d",
+      "working_status": " M Cargo.toml\n M adapters/host/src/bin/support/direct_bootstrap.rs\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M src/connection/initial.rs\n M src/connection/locals.rs\n M src/connection/mod.rs\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/maintainability/owner_partitions.tsv\n M vendor/hibana/.github/scripts/run_final_form_gates.sh\n M vendor/hibana/Cargo.toml\n M vendor/hibana/README.md\n M vendor/hibana/proofs/core-followup/current-source-manifest.json\n M vendor/hibana/src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/connection_publication_route.rs\n?? vendor/hibana/proofs/live-descendant-preview/\n?? vendor/hibana/tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic-host",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011601843223Z",
+      "duration_seconds": 286.48904110700096,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011601843223Z-core-preview-fixed-hq-build-1.log",
+      "log_sha256": "090bfdeda6fa5b2cbf43600c8cb72dda7aa5bbcc10a88ccd2456b596891c49e9",
+      "public_log": "artifacts/recovery-20261004-live-preview/core-preview-fixed-hq-build-1.log"
+    },
+    {
+      "label": "final-six",
+      "index": 1,
+      "command": [
+        "python3",
+        "ci/audit_source.py",
+        "--check"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+      "working_diff_sha256": "b29b648290f37a2d29d0c71f8ae8246af5dff3b578a0c46d7078826ef7314064",
+      "working_status": " M Cargo.toml\n M adapters/host/src/bin/support/direct_bootstrap.rs\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M src/connection/initial.rs\n M src/connection/locals.rs\n M src/connection/mod.rs\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/maintainability/owner_partitions.tsv\n M vendor/hibana/.github/scripts/run_final_form_gates.sh\n M vendor/hibana/Cargo.toml\n M vendor/hibana/README.md\n M vendor/hibana/proofs/core-followup/current-source-manifest.json\n M vendor/hibana/src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/connection_publication_route.rs\n?? vendor/hibana/proofs/live-descendant-preview/\n?? vendor/hibana/tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011957719162Z",
+      "duration_seconds": 0.733164842997212,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011957719162Z-final-six-1.log",
+      "log_sha256": "81ffdc48deb08560636cb7eb1f30487c944bbc6339e6839e47bc77db3cbc5519",
+      "public_log": "artifacts/recovery-20261004-live-preview/final-six-1.log"
+    },
+    {
+      "label": "final-six",
+      "index": 2,
+      "command": [
+        "python3",
+        "diagnostics/receive-lane-causality/verify_final.py"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+      "working_diff_sha256": "b29b648290f37a2d29d0c71f8ae8246af5dff3b578a0c46d7078826ef7314064",
+      "working_status": " M Cargo.toml\n M adapters/host/src/bin/support/direct_bootstrap.rs\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M src/connection/initial.rs\n M src/connection/locals.rs\n M src/connection/mod.rs\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/maintainability/owner_partitions.tsv\n M vendor/hibana/.github/scripts/run_final_form_gates.sh\n M vendor/hibana/Cargo.toml\n M vendor/hibana/README.md\n M vendor/hibana/proofs/core-followup/current-source-manifest.json\n M vendor/hibana/src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/connection_publication_route.rs\n?? vendor/hibana/proofs/live-descendant-preview/\n?? vendor/hibana/tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011958529842Z",
+      "duration_seconds": 0.13036186499812175,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011958529842Z-final-six-2.log",
+      "log_sha256": "4b715744b645497cd67eae7c5b7c91c454f24cec5b84f3838f59c03197ad3df1",
+      "public_log": "artifacts/recovery-20261004-live-preview/final-six-2.log"
+    },
+    {
+      "label": "final-six",
+      "index": 3,
+      "command": [
+        "python3",
+        "diagnostics/receive-lane-causality/finite_q1_model.py"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+      "working_diff_sha256": "b29b648290f37a2d29d0c71f8ae8246af5dff3b578a0c46d7078826ef7314064",
+      "working_status": " M Cargo.toml\n M adapters/host/src/bin/support/direct_bootstrap.rs\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M src/connection/initial.rs\n M src/connection/locals.rs\n M src/connection/mod.rs\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/maintainability/owner_partitions.tsv\n M vendor/hibana/.github/scripts/run_final_form_gates.sh\n M vendor/hibana/Cargo.toml\n M vendor/hibana/README.md\n M vendor/hibana/proofs/core-followup/current-source-manifest.json\n M vendor/hibana/src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/connection_publication_route.rs\n?? vendor/hibana/proofs/live-descendant-preview/\n?? vendor/hibana/tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011958706757Z",
+      "duration_seconds": 0.05553219500143314,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011958706757Z-final-six-3.log",
+      "log_sha256": "6b4f08cdcfbdee59f470eab2bdab9ca44cf7ac3edc7e15827bf3c54097d85ab0",
+      "public_log": "artifacts/recovery-20261004-live-preview/final-six-3.log"
+    },
+    {
+      "label": "final-six",
+      "index": 4,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "application_wire",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+      "working_diff_sha256": "b29b648290f37a2d29d0c71f8ae8246af5dff3b578a0c46d7078826ef7314064",
+      "working_status": " M Cargo.toml\n M adapters/host/src/bin/support/direct_bootstrap.rs\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M src/connection/initial.rs\n M src/connection/locals.rs\n M src/connection/mod.rs\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/maintainability/owner_partitions.tsv\n M vendor/hibana/.github/scripts/run_final_form_gates.sh\n M vendor/hibana/Cargo.toml\n M vendor/hibana/README.md\n M vendor/hibana/proofs/core-followup/current-source-manifest.json\n M vendor/hibana/src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/connection_publication_route.rs\n?? vendor/hibana/proofs/live-descendant-preview/\n?? vendor/hibana/tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011958808046Z",
+      "duration_seconds": 0.6984727650051354,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011958808046Z-final-six-4.log",
+      "log_sha256": "55e4e6435037b8bfe60c5b0f79c4e1dc8b1e40b08ff1b33e37ae07453ca13036",
+      "public_log": "artifacts/recovery-20261004-live-preview/final-six-4.log"
+    },
+    {
+      "label": "final-six",
+      "index": 5,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "connected_application",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+      "working_diff_sha256": "b29b648290f37a2d29d0c71f8ae8246af5dff3b578a0c46d7078826ef7314064",
+      "working_status": " M Cargo.toml\n M adapters/host/src/bin/support/direct_bootstrap.rs\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M src/connection/initial.rs\n M src/connection/locals.rs\n M src/connection/mod.rs\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/maintainability/owner_partitions.tsv\n M vendor/hibana/.github/scripts/run_final_form_gates.sh\n M vendor/hibana/Cargo.toml\n M vendor/hibana/README.md\n M vendor/hibana/proofs/core-followup/current-source-manifest.json\n M vendor/hibana/src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/connection_publication_route.rs\n?? vendor/hibana/proofs/live-descendant-preview/\n?? vendor/hibana/tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T011959542094Z",
+      "duration_seconds": 19.9622175389959,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T011959542094Z-final-six-5.log",
+      "log_sha256": "cb39a97a8976e20eab75a16a74ea5f964bf8fcb8bd91b94527619e3a0eb05263",
+      "public_log": "artifacts/recovery-20261004-live-preview/final-six-5.log"
+    },
+    {
+      "label": "final-six",
+      "index": 6,
+      "command": [
+        "env",
+        "CARGO_TARGET_DIR=/workspace/targets/quic-host",
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "adapters/host/Cargo.toml",
+        "--bin",
+        "hq",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+      "working_diff_sha256": "b29b648290f37a2d29d0c71f8ae8246af5dff3b578a0c46d7078826ef7314064",
+      "working_status": " M Cargo.toml\n M adapters/host/src/bin/support/direct_bootstrap.rs\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M src/connection/initial.rs\n M src/connection/locals.rs\n M src/connection/mod.rs\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/maintainability/owner_partitions.tsv\n M vendor/hibana/.github/scripts/run_final_form_gates.sh\n M vendor/hibana/Cargo.toml\n M vendor/hibana/README.md\n M vendor/hibana/proofs/core-followup/current-source-manifest.json\n M vendor/hibana/src/endpoint/kernel/core/route_commit_helpers.rs\n?? tests/connection_publication_route.rs\n?? vendor/hibana/proofs/live-descendant-preview/\n?? vendor/hibana/tests/rolled_publication_exit.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261004T012019552265Z",
+      "duration_seconds": 100.08226711400494,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261004T012019552265Z-final-six-6.log",
+      "log_sha256": "69ba11e0a3a95aad84d9b6b3cf2ac3385d464ba97e83ee6395a974503324b54e",
+      "public_log": "artifacts/recovery-20261004-live-preview/final-six-6.log"
+    }
+  ]
+}

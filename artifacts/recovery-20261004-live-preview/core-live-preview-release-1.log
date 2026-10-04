@@ -1,0 +1,82 @@
+   Compiling proc-macro2 v1.0.103
+   Compiling unicode-ident v1.0.20
+   Compiling quote v1.0.41
+   Compiling serde_core v1.0.228
+   Compiling libc v0.2.177
+   Compiling memchr v2.7.6
+   Compiling pin-project-lite v0.2.16
+   Compiling futures-core v0.3.31
+   Compiling futures-sink v0.3.31
+   Compiling futures-channel v0.3.31
+   Compiling syn v2.0.108
+   Compiling target-triple v0.1.4
+   Compiling futures-task v0.3.31
+   Compiling pin-utils v0.1.0
+   Compiling slab v0.4.11
+   Compiling serde_json v1.0.145
+   Compiling winnow v0.7.13
+   Compiling futures-io v0.3.31
+   Compiling serde v1.0.228
+   Compiling toml_writer v1.0.4
+   Compiling ryu v1.0.20
+   Compiling itoa v1.0.15
+   Compiling toml_datetime v0.7.3
+   Compiling serde_spanned v1.0.3
+   Compiling toml_parser v1.0.4
+   Compiling socket2 v0.6.2
+   Compiling futures-macro v0.3.31
+   Compiling tokio-macros v2.6.0
+   Compiling serde_derive v1.0.228
+   Compiling futures-util v0.3.31
+   Compiling toml v0.9.8
+   Compiling mio v1.1.0
+   Compiling termcolor v1.4.1
+   Compiling bytes v1.11.1
+   Compiling glob v0.3.3
+   Compiling futures-executor v0.3.31
+   Compiling futures v0.3.31
+   Compiling trybuild v1.0.112
+   Compiling tokio v1.48.0
+   Compiling static_assertions v1.1.0
+   Compiling hibana v0.9.6 (/workspace/hibana)
+    Finished `release` profile [optimized] target(s) in 38.09s
+     Running tests/nested_resolver_self_continuations.rs (/workspace/targets/hibana-core/release/deps/nested_resolver_self_continuations-f24d9f85ce024cb4)
+
+running 8 tests
+test a_fresh_nested_region_resolves_its_outer_choice_before_a_descendant ... ok
+test a_future_nested_choice_is_resolved_after_its_sequential_predecessor ... ok
+test a_wrong_nested_payload_schema_cannot_publish_any_ancestor_choice ... ok
+test dropped_nested_preview_restores_the_same_affine_choice_without_committing_progress ... ok
+test inner_rejection_is_terminal_without_outer_success_or_event_progress ... ok
+test nested_branch_send_preserves_preview_and_delivers_the_chosen_payload_to_its_peer ... ok
+test nested_right_local_arm_is_received_at_its_own_descriptor_and_audits_each_decision_once ... ok
+test nested_roll_can_reenter_before_its_sequential_tail_is_consumed ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/rolled_publication_exit.rs (/workspace/targets/hibana-core/release/deps/rolled_publication_exit-a39c5162b58f07c2)
+
+running 1 test
+test rolled_publication_exit_keeps_only_live_descendant_selection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/rolled_resolver_reentry.rs (/workspace/targets/hibana-core/release/deps/rolled_resolver_reentry-ecc8641c80572f68)
+
+running 13 tests
+test rolled_deep_left_spine_passive_offer_reenters_across_all_depths ... ok
+test rolled_deep_right_spine_passive_offer_reenters_across_all_depths ... ok
+test rolled_mirrored_nested_resolved_route_reenters_asymmetric_paths ... ok
+test rolled_mirrored_nested_resolved_route_reenters_passive_offer_asymmetric_paths ... ok
+test rolled_nested_resolved_route_reenters_asymmetric_paths ... ok
+test rolled_nested_resolved_route_reenters_passive_offer_asymmetric_paths ... ok
+test rolled_parallel_resolved_routes_reenter_after_both_lanes_settle ... ok
+test rolled_resolved_route_par_seq_route_roll_mixed_corpus_reenters_by_scope ... ok
+test rolled_resolved_route_par_seq_route_roll_mixed_right_corpus_reenters_by_scope ... ok
+test rolled_resolved_route_preserves_buffered_decision_order ... ok
+test rolled_resolved_route_reenters_left_right_left_rows ... ok
+test rolled_resolved_route_reenters_passive_offer_left_right_left ... ok
+test rolled_resolved_same_label_reenters_with_selected_schema ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

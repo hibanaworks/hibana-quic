@@ -1,0 +1,53 @@
+{
+  "source_commit": "c69dd583837724bece879c40ebbb31f56633d2bb",
+  "source_status": "",
+  "purpose": "native loopback diagnosis; NOT official interop qualification",
+  "mode": "baseline",
+  "case": "handshake",
+  "server_command": [
+    "unshare",
+    "--user",
+    "--map-root-user",
+    "--mount",
+    "--pid",
+    "--fork",
+    "--mount-proc",
+    "sh",
+    "/workspace/interop/native-neqo-server.sh",
+    "/workspace/interop/native-debug-20261004T001844Z/www",
+    "/workspace/interop/neqo-artifacts/bin/neqo-server",
+    "--cc",
+    "cubic",
+    "--qns-test",
+    "handshake",
+    "-d",
+    "/workspace/interop/native-debug-20261004T001844Z/db",
+    "-k",
+    "cert",
+    "127.0.0.1:14443"
+  ],
+  "client_command": [
+    "/workspace/interop/neqo-artifacts/bin/neqo-client",
+    "--cc",
+    "cubic",
+    "--qns-test",
+    "handshake",
+    "--output-dir",
+    "/workspace/interop/native-debug-20261004T001844Z/baseline-handshake-002056/downloads",
+    "https://127.0.0.1:14443/small.dat"
+  ],
+  "hq_sha256": "1a68d1c88fc9abb8cfe7cd63f5da2e26c01ddcf7aaf4b4e5eafce0c0c42a9790",
+  "started_utc": "2026-10-04T00:20:56.767003+00:00",
+  "client_exit_code": 0,
+  "server_running_after_client": true,
+  "server_exit_code": -9,
+  "files": [
+    {
+      "name": "small.dat",
+      "expected_bytes": 1024,
+      "received_bytes": 1024,
+      "equal": true
+    }
+  ],
+  "files_equal": true
+}

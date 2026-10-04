@@ -1,0 +1,56 @@
+    Finished `test` profile [unoptimized] target(s) in 0.10s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+test endpoint::tests::endpoint_surface_size_gates_hold ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 476 filtered out; finished in 0.00s
+    Finished `test` profile [unoptimized] target(s) in 0.07s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+test endpoint::tests::send_future_and_runtime_descriptor_size_gates_hold ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 476 filtered out; finished in 0.00s
+    Finished `test` profile [unoptimized] target(s) in 0.09s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+test global::typestate::facts::tests::inbound_frame_key_is_exact_three_byte_identity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 476 filtered out; finished in 0.00s
+    Finished `test` profile [unoptimized] target(s) in 0.08s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+protocol-matrix name=minimal_send_recv program_blob_len=9 role_blob_len=16 endpoint_scratch_bytes=284 largest_section_bytes=160
+protocol-matrix name=nested_par_join program_blob_len=42 role_blob_len=37 endpoint_scratch_bytes=284 largest_section_bytes=160
+protocol-matrix name=route_with_unselected_nested_par program_blob_len=114 role_blob_len=158 endpoint_scratch_bytes=296 largest_section_bytes=160
+protocol-matrix name=triple_nested_route program_blob_len=141 role_blob_len=251 endpoint_scratch_bytes=326 largest_section_bytes=160
+protocol-matrix name=passive_nested_route_observer program_blob_len=120 role_blob_len=199 endpoint_scratch_bytes=315 largest_section_bytes=160
+protocol-matrix name=alternating_par_route program_blob_len=168 role_blob_len=262 endpoint_scratch_bytes=372 largest_section_bytes=160
+protocol-matrix name=huge_legal_choreography program_blob_len=223 role_blob_len=375 endpoint_scratch_bytes=345 largest_section_bytes=160
+test global::role_program::tests::protocol_matrix::projected_protocol_matrix_reports_compact_resident_images ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 476 filtered out; finished in 0.03s
+    Finished `test` profile [unoptimized] target(s) in 0.18s
+     Running ../../tests/public_surface_guards.rs (/workspace/targets/hibana-core/debug/deps/public_surface_guards-9b372edb5d0af203)
+
+running 1 test
+test core_resolver_audit_has_no_in_crate_resolver_owner ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.05s
+    Finished `test` profile [unoptimized] target(s) in 0.16s
+     Running ../../tests/public_surface_guards.rs (/workspace/targets/hibana-core/debug/deps/public_surface_guards-9b372edb5d0af203)
+
+running 1 test
+test dynamic_resolver_surface_uses_one_decision_resolver ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.01s
+    Finished `test` profile [unoptimized] target(s) in 0.07s
+     Running ../../tests/public_surface_guards.rs (/workspace/targets/hibana-core/debug/deps/public_surface_guards-9b372edb5d0af203)
+
+running 1 test
+test transport_context_owner_stays_forbidden ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s

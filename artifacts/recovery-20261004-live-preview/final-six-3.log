@@ -1,0 +1,4 @@
+actual_write_finished_admission_round_trip {'reachable_states': 11, 'terminal_states': 1, 'nonterminal_deadlocks': []}
+actual_key_control_and_stream_admission {'reachable_states': 7, 'terminal_states': 1, 'nonterminal_deadlocks': []}
+actual_accumulated_retirement_grants {'reachable_states': 17, 'terminal_states': 1, 'nonterminal_deadlocks': []}
+rejected_unordered_parallel_receive_design {'reachable_states': 6, 'terminal_states': 1, 'nonterminal_deadlocks': [{'counters': (0, 1, 0), 'queue': (10, 13, 165)}]}

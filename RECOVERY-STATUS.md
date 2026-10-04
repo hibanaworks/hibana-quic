@@ -125,3 +125,55 @@ The five source commits have been published through GitHub's Git data API and
 their trees verified against the locally tested commits. The core integration
 branch is published at 67cbf9f0. Main was not merged. Comparable QUIC performance
 measurements and performance improvement remain uncompleted.
+
+## 2026-10-04: completed descendant preview correction and fresh native diagnosis
+
+A core defect was isolated without QUIC or TLS: a completed roll descendant
+selection was previewed as live when a fresh poll selected a different arm.
+Rust 1.95.0 release execution failed with `offer / PhaseInvariant`. Hibana
+`adea68456116df8339c76a0d7407889755ae7b87` repairs the preview using the existing
+completion predicate, while preserving rejection of live conflicting evidence.
+Eight source-linked Lean theorems and four Z3 UNSAT obligations pass; one old
+SAT witness is retained. Core workspace tests pass 874 (11 ignored), release
+regressions pass 22, release/LTO and Clippy pass. These scoped proofs do not
+certify the whole Rust implementation or QUIC interoperability.
+
+QUIC `3db5597deccd87f9846a8c86a9edf21f9913c27a` vendors the exact published core
+with no local patches, adds the actual capacity-one carrier regression (debug
+and release pass), records bounded failure context, and passes all six requested
+local checks in order, including code generation/execution (4 + 7 + 27 tests).
+Both publication-only and the combined global are exercised; no storage limit,
+assertion, compiler or stack limit was raised.
+
+Fresh release native UDP diagnosis against the pinned Neqo confirms handshake
+with a real 1 KiB file in both directions. At the upstream default 60-second
+deadline, both directions also compare the actual 2/3/5 MiB files exactly after
+passing Neqo/Neqo baseline. The prior 20-second Hibana client transfer timeout
+(two files matched, third incomplete) remains a failure; the opposite 20-second
+transfer passed. These are local diagnosis results, **not official runner
+passes**, and not HTTP/3. The formal 120-cell matrix remains 0 passed/0 executed:
+60 target cells per direction, 40 per repetition, 3 per case/direction.
+Handshake/transfer are implemented; 18 other cases remain unimplemented and
+unexecuted. There is no upstream unsupported verdict for unexecuted cells.
+
+Resource validation is not fully green. The full unchanged gate still fails
+route-arm compiler RSS at 135/132 MiB (isolated run passes at 132 MiB). A separate
+causal-handoff route check fails at 141/129 MiB; unmodified 67cbf9f0 also fails
+that check at 130/129 MiB. Measured stack 2,519/3,663 bytes, modeled SRAM
+5,218/8,954 bytes and flash 88,013/169,965 bytes remain within their limits.
+Flash increased 157 bytes. Comparable QUIC performance measurement and
+performance improvement remain incomplete.
+
+Docker restoration was attempted through genuine RootlessKit/uidmap and a
+private user-namespace daemon. The former cannot write uid_map; the latter can
+serve the Docker API but cannot start a real OCI container because cgroup
+creation is denied. The session has UID 1000 and no OS-root command runner;
+reinstalling binaries under that UID does not restore those privileges.
+Root-owned Docker data/images remain preserved. `ci/restore-local-docker.sh`
+is the concrete actual-root restoration procedure, including direct routing
+and zombie-aware liveness checks. It was syntax-checked and exercised for its
+non-root refusal. The original `/var/run/docker.sock` remains unavailable.
+After actual root restoration, run the unchanged official Neqo baseline,
+candidate pilot, then matrix; no runner checks or environment predicates were
+weakened. Commands, exits, source identities, failure logs and native byte
+comparisons are preserved under `artifacts/recovery-20261004-live-preview/`.
