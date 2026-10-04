@@ -85,7 +85,14 @@ pub(super) async fn retire<'scope, const N: usize>(
     exchange: &Exchange<'scope>, schedule: &Schedule,
     owner: &mut recovery::InitialRetirementOwner<'_, 'scope, N>, side: Side,
 ) -> Result<(), Error> {
-    let offered = endpoint.offer().await?;
+    let offered = endpoint.offer().await.map_err(|error| Error::EndpointAt {
+        role: p::INITIAL_OWNER,
+        expected_label: match side {
+            Side::Client => p::ClientInitialRetire::LOGICAL_LABEL,
+            Side::Server => p::ServerInitialRetire::LOGICAL_LABEL,
+        },
+        error,
+    })?;
     let event = match offered.label() {
         label if label == p::ClientInitialRetire::LOGICAL_LABEL && side == Side::Client => {
             if offered.recv::<p::ClientInitialRetire>().await? != 0 { return Err(Error::Binding); }

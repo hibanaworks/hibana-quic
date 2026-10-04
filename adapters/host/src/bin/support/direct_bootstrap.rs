@@ -122,6 +122,11 @@ pub async fn files<'scope>(
             book, &outcomes, server,
         )).await,
     }.map_err(|e| format!("direct application: {e:?}"));
+    if result.is_err() && std::env::var("HIBANA_QUIC_DIAGNOSTICS").as_deref() == Ok("1") {
+        for event in rendezvous.tap() {
+            eprintln!("direct Hibana runtime: {event:?}");
+        }
+    }
     if result.is_ok() && queues.queued() != 0 {
         return Err("connected roles left queued carrier frames".into());
     }

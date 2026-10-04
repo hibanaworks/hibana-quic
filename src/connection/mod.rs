@@ -66,6 +66,7 @@ pub trait Clock {
 #[derive(Debug)]
 pub enum Error {
     Endpoint(EndpointError), Resolver(ResolverError), Crypto(crypto::Error),
+    EndpointAt { role: u8, expected_label: u8, error: EndpointError },
     Tls(crate::tls::Error), Packet(crate::packet::Error),
     Reassembly(crate::handshake::Error), Recovery(recovery::Error),
     Gate(publication_gate::Error), Slot(InboxError), Io(IoError),

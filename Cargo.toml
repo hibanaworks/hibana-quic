@@ -46,7 +46,7 @@ connection-target-budget = "unavailable: legacy controller probes removed; recov
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"
 branch = "fix/elastic-roll-wire-colors-20261002"
-revision = "67cbf9f0a57fe89a8486766456a769b646f2a3e1"
+revision = "adea68456116df8339c76a0d7407889755ae7b87"
 upstream-base = "5cd7a6a570886c592a88f0f35a01d5a7daa158d7"
 local-patches = false
 
