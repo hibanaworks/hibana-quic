@@ -87,12 +87,17 @@ pub type SourceAbandon = g::Msg<170, u64>;
 pub type SourceEnded = g::Msg<171, u64>;
 pub type SourceEndRejected = g::Msg<172, u64>;
 pub type SourceDataFinished = g::Msg<173, u64>;
+pub type SourceStopped = g::Msg<187, u64>;
+pub type SourceEndStopped = g::Msg<188, u64>;
 pub type SourceChunk = g::Seq<
     g::Send<SOURCE, INGRESS, SourceData>,
     g::Seq<
         g::Route<
             g::Send<INGRESS, SOURCE, SourceAccepted>,
-            g::Send<INGRESS, SOURCE, SourceRejected>,
+            g::Route<
+                g::Send<INGRESS, SOURCE, SourceStopped>,
+                g::Send<INGRESS, SOURCE, SourceRejected>,
+            >,
         >,
         g::Send<SOURCE, INGRESS, SourceTaken>,
     >,
@@ -105,7 +110,10 @@ pub type StreamProduction = g::Seq<
             g::Route<g::Send<SOURCE, INGRESS, SourceFin>, g::Send<SOURCE, INGRESS, SourceAbandon>>,
             g::Route<
                 g::Send<INGRESS, SOURCE, SourceEnded>,
-                g::Send<INGRESS, SOURCE, SourceEndRejected>,
+                g::Route<
+                    g::Send<INGRESS, SOURCE, SourceEndStopped>,
+                    g::Send<INGRESS, SOURCE, SourceEndRejected>,
+                >,
             >,
         >,
     >,
@@ -383,7 +391,10 @@ pub fn source_choreography() -> g::Program<SourceFlow> {
             g::seq(
                 g::route(
                     g::send::<INGRESS, SOURCE, SourceAccepted>(),
-                    g::send::<INGRESS, SOURCE, SourceRejected>(),
+                    g::route(
+                        g::send::<INGRESS, SOURCE, SourceStopped>(),
+                        g::send::<INGRESS, SOURCE, SourceRejected>(),
+                    ),
                 ),
                 g::send::<SOURCE, INGRESS, SourceTaken>(),
             ),
@@ -402,7 +413,10 @@ pub fn source_choreography() -> g::Program<SourceFlow> {
                 ),
                 g::route(
                     g::send::<INGRESS, SOURCE, SourceEnded>(),
-                    g::send::<INGRESS, SOURCE, SourceEndRejected>(),
+                    g::route(
+                        g::send::<INGRESS, SOURCE, SourceEndStopped>(),
+                        g::send::<INGRESS, SOURCE, SourceEndRejected>(),
+                    ),
                 ),
             ),
         ),

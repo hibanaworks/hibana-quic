@@ -121,6 +121,14 @@ fn backpressure(error: &application_stream::Error) -> bool {
     )
 }
 
+// Results of one actual ingress exchange, not connection/stream phases.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Accepted,
+    Stopped,
+    Interrupted,
+}
+
 /// Transfer a real owned chunk before announcing it on the source wire. The
 /// ingress response and SourceTaken settle the lane even during shutdown.
 async fn submit<const CHUNK: usize>(
@@ -128,18 +136,22 @@ async fn submit<const CHUNK: usize>(
     state: &State<'_, CHUNK>,
     sequence: &mut u64,
     chunk: Chunk<CHUNK>,
-) -> Result<bool, Error> {
+) -> Result<Admission, Error> {
     state.chunks.put(chunk).map_err(|_| Error::Binding)?;
     endpoint.send::<p::SourceData>(sequence).await?;
     let reply = endpoint.offer().await?;
     let accepted = match reply.label() {
         1 => {
             check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
-            true
+            Admission::Accepted
         }
         2 => {
             check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
-            false
+            Admission::Interrupted
+        }
+        187 => {
+            check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
+            Admission::Stopped
         }
         label => return Err(Error::UnexpectedLabel(label)),
     };
@@ -163,10 +175,10 @@ async fn begin_stream<'book, const CHUNK: usize>(
 async fn end_stream(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     stream_id: u64,
-    complete: bool,
-) -> Result<bool, Error> {
+    outcome: Admission,
+) -> Result<Admission, Error> {
     endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
-    if complete {
+    if outcome == Admission::Accepted {
         endpoint.send::<p::SourceFin>(&stream_id).await?;
     } else {
         // Connection shutdown abandons production; this is not a fabricated
@@ -177,11 +189,15 @@ async fn end_stream(
     match reply.label() {
         171 => {
             check(reply.recv::<p::SourceEnded>().await?, stream_id)?;
-            Ok(complete)
+            Ok(outcome)
         }
         172 => {
             check(reply.recv::<p::SourceEndRejected>().await?, stream_id)?;
-            Ok(false)
+            Ok(Admission::Interrupted)
+        }
+        188 => {
+            check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
+            Ok(Admission::Stopped)
         }
         label => Err(Error::UnexpectedLabel(label)),
     }
@@ -277,18 +293,31 @@ async fn client_requests<'book, const RX: usize, const CHUNK: usize>(
                     len: count,
                 };
                 chunk.bytes[..count].copy_from_slice(&request[offset..offset + count]);
-                if !submit(endpoint, state, sequence, chunk).await? {
-                    return Ok(false);
+                let admitted = submit(endpoint, state, sequence, chunk).await?;
+                if admitted != Admission::Accepted {
+                    return Ok(admitted);
                 }
                 offset += count;
                 crate::runtime::yield_now().await;
             }
-            Ok::<_, Error>(offset == len)
+            Ok::<_, Error>(if offset == len {
+                Admission::Accepted
+            } else {
+                Admission::Interrupted
+            })
         }
         .await;
-        let finished = end_stream(endpoint, stream.id(), matches!(result, Ok(true))).await?;
-        if !result? || !finished {
-            return Ok(());
+        let finished = end_stream(
+            endpoint,
+            stream.id(),
+            result.as_ref().copied().unwrap_or(Admission::Interrupted),
+        )
+        .await?;
+        result?;
+        match finished {
+            Admission::Interrupted => return Ok(()),
+            Admission::Stopped => continue,
+            Admission::Accepted => {}
         }
     }
     Ok(())
@@ -373,26 +402,35 @@ async fn server_responses<'book, const CHUNK: usize>(
                 };
                 let len = match control.until_stop(0, body.read(&mut chunk.bytes)).await {
                     Some(result) => result.map_err(|_| Error::Application)?,
-                    None => return Ok(false),
+                    None => return Ok(Admission::Interrupted),
                 };
                 if len > CHUNK {
                     return Err(Error::Capacity);
                 }
                 if len == 0 {
-                    return Ok(true);
+                    return Ok(Admission::Accepted);
                 }
                 chunk.len = len;
-                if !submit(endpoint, state, sequence, chunk).await? {
-                    return Ok(false);
+                let admitted = submit(endpoint, state, sequence, chunk).await?;
+                if admitted != Admission::Accepted {
+                    return Ok(admitted);
                 }
                 crate::runtime::yield_now().await;
             }
-            Ok(false)
+            Ok(Admission::Interrupted)
         }
         .await;
-        let finished = end_stream(endpoint, stream_id, matches!(result, Ok(true))).await?;
-        if !result? || !finished {
-            return Ok(());
+        let finished = end_stream(
+            endpoint,
+            stream_id,
+            result.as_ref().copied().unwrap_or(Admission::Interrupted),
+        )
+        .await?;
+        result?;
+        match finished {
+            Admission::Interrupted => return Ok(()),
+            Admission::Stopped => continue,
+            Admission::Accepted => {}
         }
         state.bodies_finished.set(
             state
@@ -431,13 +469,19 @@ pub(crate) async fn ingress<const RX: usize, const CHUNK: usize>(
                                     Ok(accepted) => accepted,
                                     Err(_) => {
                                         control.fail()?;
-                                        false
+                                        Admission::Interrupted
                                     }
                                 };
-                            if accepted {
-                                endpoint.send::<p::SourceAccepted>(&sequence).await?;
-                            } else {
-                                endpoint.send::<p::SourceRejected>(&sequence).await?;
+                            match accepted {
+                                Admission::Accepted => {
+                                    endpoint.send::<p::SourceAccepted>(&sequence).await?
+                                }
+                                Admission::Stopped => {
+                                    endpoint.send::<p::SourceStopped>(&sequence).await?
+                                }
+                                Admission::Interrupted => {
+                                    endpoint.send::<p::SourceRejected>(&sequence).await?
+                                }
                             }
                             check(endpoint.recv::<p::SourceTaken>().await?, sequence)?;
                             sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
@@ -457,14 +501,20 @@ pub(crate) async fn ingress<const RX: usize, const CHUNK: usize>(
                             bytes: [0; CHUNK],
                             len: 0,
                         };
-                        if matches!(
-                            admit(control, app, &mut production, &terminal, true).await,
-                            Ok(true)
-                        ) {
-                            endpoint.send::<p::SourceEnded>(&stream_id).await?;
-                        } else {
-                            control.fail()?;
-                            endpoint.send::<p::SourceEndRejected>(&stream_id).await?;
+                        match admit(control, app, &mut production, &terminal, true).await {
+                            Ok(Admission::Accepted) => {
+                                endpoint.send::<p::SourceEnded>(&stream_id).await?
+                            }
+                            Ok(Admission::Stopped) => {
+                                endpoint.send::<p::SourceEndStopped>(&stream_id).await?
+                            }
+                            Ok(Admission::Interrupted) => {
+                                endpoint.send::<p::SourceEndRejected>(&stream_id).await?
+                            }
+                            Err(_) => {
+                                control.fail()?;
+                                endpoint.send::<p::SourceEndRejected>(&stream_id).await?;
+                            }
                         }
                     }
                     170 => {
@@ -493,14 +543,14 @@ async fn admit<const RX: usize, const CHUNK: usize>(
     production: &mut Production<'_>,
     chunk: &Chunk<CHUNK>,
     fin: bool,
-) -> Result<bool, Error> {
+) -> Result<Admission, Error> {
     if (chunk.len == 0 && !fin) || chunk.len > CHUNK {
         return Err(Error::Binding);
     }
     let mut offset = 0;
     loop {
         if control.stopping() {
-            return Ok(false);
+            return Ok(Admission::Interrupted);
         }
         let revision = control.revision();
         let result = app
@@ -512,11 +562,14 @@ async fn admit<const RX: usize, const CHUNK: usize>(
                 offset = offset.checked_add(count).ok_or(Error::Capacity)?;
                 control.changed()?;
                 if offset == chunk.len {
-                    return Ok(true);
+                    return Ok(Admission::Accepted);
                 }
                 if count == 0 {
                     return Err(Error::Binding);
                 }
+            }
+            Err(application_stream::Error::Streams(streams::Error::SendClosed)) => {
+                return Ok(Admission::Stopped);
             }
             Err(error) if backpressure(&error) => control.wait(1, revision).await,
             Err(error) => return Err(error.into()),
@@ -811,5 +864,150 @@ mod tests {
         assert_eq!(requests.remaining, 1);
         assert_eq!(requests.started, MAX_REQUESTS);
         assert_eq!(state.submitted_count(), MAX_REQUESTS);
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    use crate::{
+        carrier::CarrierStorage,
+        connection::{
+            application_stream::{Facets, StreamNumbers},
+            publication_gate::PublicationGate,
+        },
+        crypto::directional::ApplicationKeyScope,
+        streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
+    };
+    use core::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+    use hibana::runtime::{
+        SessionKitStorage,
+        ids::SessionId,
+        program::{RoleProgram, project},
+    };
+
+    fn stopped_ingress(fin: bool) {
+        let mut scope = ApplicationKeyScope::new(912);
+        let mut installation = scope.claim().unwrap();
+        let mut gate = PublicationGate::new(installation.take_publication_gate().unwrap());
+        let (_issuer, stop) = gate.split().unwrap();
+        let control = Control::new(stop);
+        let limits = Limits {
+            max_data: 16,
+            max_streams_bidi: 2,
+            max_streams_uni: 0,
+            stream_data_bidi_local: 8,
+            stream_data_bidi_remote: 8,
+            stream_data_uni: 0,
+        };
+        let mut slots = [StreamSlot::<8>::EMPTY; 2];
+        let mut chunks = [SendChunk::<8>::EMPTY; 4];
+        let mut refs = [PacketReference::EMPTY; 4];
+        let mut numbers = StreamNumbers::new(
+            installation.scope(),
+            Role::Client,
+            limits,
+            Limits {
+                max_streams_bidi: 0,
+                ..limits
+            },
+            &mut slots,
+            &mut chunks,
+            &mut refs,
+        )
+        .unwrap();
+        let Facets {
+            mut app,
+            mut rx,
+            reset: mut effects,
+            ..
+        } = numbers.split();
+        let first = app.open_local().unwrap();
+        let first_production = app.take_production(first).unwrap();
+        effects
+            .apply(rx.stop_intent(first.id(), 7).unwrap())
+            .unwrap();
+        let second = app.open_local().unwrap();
+        let second_production = app.take_production(second).unwrap();
+        let app = RefCell::new(app);
+        let state = State::<8>::new();
+        let global = p::source_choreography();
+        let source: RoleProgram<{ p::SOURCE }> = project(&global);
+        let ingress_role: RoleProgram<{ p::INGRESS }> = project(&global);
+        let carrier = CarrierStorage::<1, 16, 8>::new();
+        let mut slab = [0; 65536];
+        let mut storage = SessionKitStorage::uninit();
+        let id = SessionId::new(912);
+        let rv = storage
+            .init()
+            .rendezvous(&mut slab, carrier.bind(id).unwrap())
+            .unwrap();
+        let mut source = rv.enter(id, &source).unwrap();
+        let mut input = rv.enter(id, &ingress_role).unwrap();
+        let allocations = actor_test_allocator::NoAlloc::start();
+        let mut all = pin!(crate::runtime::join2(
+            async {
+                let mut sequence = 0;
+                begin_stream(&mut source, &state, first_production).await?;
+                let outcome = if fin {
+                    Admission::Accepted
+                } else {
+                    let result = submit(
+                        &mut source,
+                        &state,
+                        &mut sequence,
+                        Chunk {
+                            bytes: [1; 8],
+                            len: 1,
+                        },
+                    )
+                    .await?;
+                    assert!(result == Admission::Stopped);
+                    result
+                };
+                assert!(end_stream(&mut source, first.id(), outcome).await? == Admission::Stopped);
+                assert!(!control.failed());
+                assert!(!control.stopping());
+                begin_stream(&mut source, &state, second_production).await?;
+                assert!(
+                    submit(
+                        &mut source,
+                        &state,
+                        &mut sequence,
+                        Chunk {
+                            bytes: [2; 8],
+                            len: 1
+                        }
+                    )
+                    .await?
+                        == Admission::Accepted
+                );
+                assert!(
+                    end_stream(&mut source, second.id(), Admission::Accepted).await?
+                        == Admission::Accepted
+                );
+                source_finished(&mut source, &control, &state, sequence).await?;
+                Ok::<_, Error>(())
+            },
+            ingress(&mut input, &control, &state, &app)
+        ));
+        for _ in 0..1000 {
+            if let Poll::Ready(result) = all.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+            {
+                result.unwrap();
+                allocations.finish();
+                return;
+            }
+        }
+        panic!("real ingress stalled after peer stop");
+    }
+    #[test]
+    fn actual_ingress_preserves_connection_after_stopped_data_and_fin() {
+        stopped_ingress(false);
+        stopped_ingress(true);
     }
 }

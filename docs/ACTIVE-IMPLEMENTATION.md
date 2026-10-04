@@ -34,9 +34,11 @@ No old compatibility controller is retained.
 This is not a claim that all QUIC control or all required interop is complete.
 Numeric stream/recovery kernels still retain flow-control limits, packet/frame
 references and loss history. Their legitimate arithmetic/resource bookkeeping
-must not become an independent protocol phase selector. Peer STOP handling across
-all source continuations and explicit stream-slot retirement/reuse remain to be
-integrated and qualified. Other unsupported interop features need actual global
+must not become an independent protocol phase selector. Peer STOP now has explicit SourceStopped/SourceEndStopped arms that terminate
+only the current finite production and continue the next stream. Both the real
+ingress and projected endpoints are tested for STOP during data and FIN without
+connection failure. Actual encrypted peer-STOP interoperability and explicit
+stream-slot retirement/reuse remain to be integrated and qualified. Other unsupported interop features need actual global
 and local implementations, not resurrected old controllers.
 
 Four obsolete automatic table-retirement tests were removed with that API; they
@@ -68,3 +70,27 @@ Lean/Z3 models prove only the stated resource/payload arithmetic outside Hibana'
 order guarantee. They are not full Rust verification or a second QUIC FSM.
 See proofs/stream-delivery and proofs/reset-observation for exact scope.
 Historical checkpoints are retained in MIGRATION-HISTORY.md, not as current results.
+
+
+## Source-stop continuation
+
+The previous receive-side SendClosed-to-control.fail mapping and producer-wide
+return on a stopped stream have been removed. SourceStopped and SourceEndStopped
+are distinct global alternatives. Local SOURCE and INGRESS spell out their
+send/recv/offer calls; a stopped production sends its finite abandon/end boundary
+and the next stream continues on the same endpoints. Admission is the result of
+one ingress exchange, not a replacement stream-phase FSM. Connection interruption
+and actual application failure remain separate outcomes.
+
+Local source-stop tests: 414 unit +67 integration +27 compile-fail =508; host100;
+thumbv6m compile. The new actual-ingress test uses the real scoped publication
+gate, stopped stream, real endpoints and no-allocation check. It verifies that
+both data and FIN rejection leave connection health intact and admit another
+stream. This does not by itself qualify an encrypted peer-STOP runner case.
+
+The source-stop checkpoint also passes unchanged-Neqo clean 2/3/5 MiB and
+2 MiB deterministic-loss transfers in both directions, with a separate Neqo
+baseline and matching payload hashes. Sanitized evidence is in
+artifacts/rolled-route-runtime-20261004/explicit-stream-control. The existing
+seven official cases are requested again for regression qualification; no new
+case was added and no new official pass is claimed before its result.

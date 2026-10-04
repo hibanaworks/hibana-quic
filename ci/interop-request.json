@@ -1,12 +1,12 @@
 {
-  "request": "Requalify choreographed stop application and existing strict ChaCha endpoint",
-  "requested_at": "2026-10-04T06:28:00Z",
+  "request": "Requalify the existing seven cases after deleting FIN/RESET controllers and projecting ACK, loss and stopped-source continuations",
+  "requested_at": "2026-10-04T08:38:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"
   ],
   "approval": "User approved disposable GitHub CI Docker allow-direct-routing=true",
-  "local_evidence": "artifacts/rolled-route-runtime-20261004/reset-native.json",
+  "local_evidence": "artifacts/rolled-route-runtime-20261004/explicit-stream-control/native-clean.json",
   "cases": [
     "handshake",
     "transfer",
