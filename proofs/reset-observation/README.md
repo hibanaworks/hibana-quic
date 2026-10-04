@@ -28,9 +28,18 @@ capture and adapter completion do not secretly reset, duplicate observations kee
 the original code, and connection retirement drops unapplied observations without
 claiming reset publication or acknowledgment.
 
-The lower reset publication/ACK flags and reference history remain unfinished
-migration work. This change concerns authority to apply the stop, not a claim that
-all RESET/ACK control or end-to-end peer STOP interoperability is qualified.
+The publication-level `reset_pending`/`reset_acked` and table-level
+`reset_transmitted` flags have been deleted. Retained RESET frame work and actual
+published/lost packet references determine retransmission availability. Validated
+ACK evidence now crosses the exclusive projected ApplyAcknowledgments /
+AcknowledgmentsApplied / AcknowledgmentsSettled fragment; RX no longer directly
+applies stream ACK effects. The evidence is affine and scope-bound, and can merge
+only with evidence from the same actual key scope. ACK capture cannot block
+handshake confirmation. Already captured ACKs drain before publication retirement.
+
+Lower FIN/reset completion flags and some loss/reference control remain unfinished
+migration work. This does not claim full stream choreography migration or
+end-to-end peer STOP interoperability qualification.
 
 The reset-result route has an independent resolver/outcome cell. Additional actual
 endpoint tests reject an opposite result and a missing reset verdict despite a

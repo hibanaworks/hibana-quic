@@ -210,10 +210,28 @@ pub type ResetApply = g::Seq<
         g::Send<TRANSMIT, ADAPTER, StopSettled>,
     >,
 >;
+pub type ApplyAcknowledgments = g::Msg<178, u64>;
+pub type AcknowledgmentsApplied = g::Msg<179, u64>;
+pub type AcknowledgmentsSettled = g::Msg<180, u64>;
+pub type AcknowledgmentApply = g::Seq<
+    g::Send<TRANSMIT, ADAPTER, ApplyAcknowledgments>,
+    g::Seq<
+        g::Send<ADAPTER, TRANSMIT, AcknowledgmentsApplied>,
+        g::Send<TRANSMIT, ADAPTER, AcknowledgmentsSettled>,
+    >,
+>;
 // Applying a stop is an exclusive alternative to the complete publication
 // fragment. The actual adapter owner settles its send before offering again.
 pub type PublicationFlow = g::Seq<
-    g::Roll<g::Route<Publish, g::Route<ResetApply, g::Send<TRANSMIT, ADAPTER, StopPublication>>>>,
+    g::Roll<
+        g::Route<
+            Publish,
+            g::Route<
+                ResetApply,
+                g::Route<AcknowledgmentApply, g::Send<TRANSMIT, ADAPTER, StopPublication>>,
+            >,
+        >,
+    >,
     g::Send<ADAPTER, TRANSMIT, PublicationStopped>,
 >;
 pub type FilesOutcome = g::Msg<52, u64>;
@@ -399,7 +417,19 @@ pub fn publication_choreography() -> g::Program<PublicationFlow> {
     g::seq(
         g::route(
             publish,
-            g::route(reset, g::send::<TRANSMIT, ADAPTER, StopPublication>()),
+            g::route(
+                reset,
+                g::route(
+                    g::seq(
+                        g::send::<TRANSMIT, ADAPTER, ApplyAcknowledgments>(),
+                        g::seq(
+                            g::send::<ADAPTER, TRANSMIT, AcknowledgmentsApplied>(),
+                            g::send::<TRANSMIT, ADAPTER, AcknowledgmentsSettled>(),
+                        ),
+                    ),
+                    g::send::<TRANSMIT, ADAPTER, StopPublication>(),
+                ),
+            ),
         )
         .roll(),
         g::send::<ADAPTER, TRANSMIT, PublicationStopped>(),

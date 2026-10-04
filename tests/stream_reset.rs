@@ -74,6 +74,11 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 forbidden_rejected.set(true);
                 return Ok(());
             }
+            if illegal_at == 5 {
+                assert!(tx.send::<p::ApplyAcknowledgments>(&0).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
             let outcome = tx.offer().await?;
             if rejected {
                 assert_eq!(outcome.recv::<p::Rejected>().await?, 0);
@@ -88,6 +93,11 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 forbidden_rejected.set(true);
                 return Ok(());
             }
+            if illegal_at == 6 {
+                assert!(tx.send::<p::ApplyAcknowledgments>(&0).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
             tx.send::<p::Settled>(&0).await?;
             tx.send::<p::ApplyStop>(&4).await?;
             let outcome = tx.offer().await?;
@@ -97,13 +107,21 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 assert_eq!(outcome.recv::<p::StopApplied>().await?, 4);
             }
             tx.send::<p::StopSettled>(&4).await?;
+            tx.send::<p::ApplyAcknowledgments>(&1).await?;
+            assert_eq!(tx.recv::<p::AcknowledgmentsApplied>().await?, 1);
+            if illegal_at == 7 {
+                assert!(tx.send::<p::Datagram>(&1).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            tx.send::<p::AcknowledgmentsSettled>(&1).await?;
             tx.send::<p::StopPublication>(&1).await?;
             assert_eq!(tx.recv::<p::PublicationStopped>().await?, 1);
             Ok::<_, EndpointError>(())
         },
         async {
             assert_eq!(adapter.offer().await?.recv::<p::Datagram>().await?, 0);
-            if illegal_at == 1 {
+            if illegal_at == 1 || illegal_at == 5 {
                 return Ok(());
             }
             if rejected {
@@ -111,7 +129,7 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
             } else {
                 adapter.send::<p::Accepted>(&0).await?;
             }
-            if illegal_at == 2 {
+            if illegal_at == 2 || illegal_at == 6 {
                 return Ok(());
             }
             assert_eq!(adapter.recv::<p::Settled>().await?, 0);
@@ -135,6 +153,19 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 adapter.send::<p::StopApplied>(&4).await?;
             }
             assert_eq!(adapter.recv::<p::StopSettled>().await?, 4);
+            assert_eq!(
+                adapter
+                    .offer()
+                    .await?
+                    .recv::<p::ApplyAcknowledgments>()
+                    .await?,
+                1
+            );
+            adapter.send::<p::AcknowledgmentsApplied>(&1).await?;
+            if illegal_at == 7 {
+                return Ok(());
+            }
+            assert_eq!(adapter.recv::<p::AcknowledgmentsSettled>().await?, 1);
             assert_eq!(
                 adapter.offer().await?.recv::<p::StopPublication>().await?,
                 1
@@ -189,5 +220,14 @@ fn independent_reset_resolver_rejects_a_fabricated_opposite_outcome() {
 fn missing_reset_verdict_cannot_reuse_the_udp_publication_result() {
     for rejected in [false, true] {
         run(4, rejected, false);
+    }
+}
+
+#[test]
+fn acknowledgment_effects_cannot_cross_an_unsettled_publication() {
+    for at in [5, 6, 7] {
+        for rejected in [false, true] {
+            run(at, rejected, false);
+        }
     }
 }

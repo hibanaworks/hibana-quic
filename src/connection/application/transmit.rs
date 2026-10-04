@@ -255,6 +255,7 @@ pub(crate) async fn run<
     book: &mut recovery::Tx<'book, 'scope, N>,
     streams: &mut application_stream::Tx<'streams, '_, 'scope, RX, CHUNK>,
     reset: &super::reset::Exchange<'streams>,
+    acknowledgments: &super::acknowledgments::Exchange<'scope>,
     mut handshake_done: Option<FlightId>,
     config: Config<'_>,
     peer: &ConnectionId,
@@ -262,8 +263,21 @@ pub(crate) async fn run<
 ) -> Result<(), Error> {
     let mut sequence = 0u64;
     let mut history_floor = book.application_history_floor();
-    while !control.stopping() {
+    while !control.stopping() || !acknowledgments.pending.is_empty() {
         let revision = control.revision();
+        if !acknowledgments.pending.is_empty() {
+            endpoint.send::<p::ApplyAcknowledgments>(&sequence).await?;
+            check(
+                endpoint.recv::<p::AcknowledgmentsApplied>().await?,
+                sequence,
+            )?;
+            endpoint
+                .send::<p::AcknowledgmentsSettled>(&sequence)
+                .await?;
+        }
+        if control.stopping() {
+            break;
+        }
         // This branch is outside the complete Datagram/Accepted-or-Rejected/
         // Settled fragment. The global forbids resetting an unresolved send.
         if let Some(id) = reset.stage()? {
@@ -711,7 +725,8 @@ pub(crate) async fn publish<
     outcome: &Outcome,
     reset_outcome: &Outcome,
     reset: &super::reset::Exchange<'_>,
-    reset_owner: &mut application_stream::ResetOwner<'_, '_, '_, RX, CHUNK>,
+    acknowledgments: &super::acknowledgments::Exchange<'scope>,
+    reset_owner: &mut application_stream::FrameEffects<'_, '_, '_, RX, CHUNK>,
     socket: &mut impl DatagramTx,
 ) -> Result<(), Error> {
     let mut sequence = 0u64;
@@ -759,6 +774,14 @@ pub(crate) async fn publish<
                 check(endpoint.recv::<p::Settled>().await?, sequence)?;
                 outcome.clear();
                 sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+            }
+            178 => {
+                let id = offered.recv::<p::ApplyAcknowledgments>().await?;
+                let grant = acknowledgments.pending.take().map_err(|_| Error::Binding)?;
+                reset_owner.acknowledge(grant)?;
+                endpoint.send::<p::AcknowledgmentsApplied>(&id).await?;
+                check(endpoint.recv::<p::AcknowledgmentsSettled>().await?, id)?;
+                acknowledgments.settled(control)?;
             }
             174 => {
                 let id = offered.recv::<p::ApplyStop>().await?;

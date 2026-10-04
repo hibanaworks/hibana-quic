@@ -357,7 +357,37 @@ pub struct PacketOutcome {
     pub ack_eliciting: bool,
     pub newly_acknowledged: usize,
 }
+/// Affine evidence issued only after authenticated recovery validated these ACKs.
+pub(crate) struct FrameAcknowledgments<'scope> {
+    scope: &'scope ApplicationKeyScope,
+    packets: [Option<PacketNumber>; LEDGER_CAPACITY],
+}
+impl FrameAcknowledgments<'_> {
+    pub(crate) fn scope(&self) -> &ApplicationKeyScope {
+        self.scope
+    }
+    pub(crate) fn packets(&self) -> &[Option<PacketNumber>] {
+        &self.packets
+    }
+    pub(crate) fn merge(&mut self, other: Self) -> Result<(), Error> {
+        if !core::ptr::eq(self.scope, other.scope) {
+            return Err(Error::Binding);
+        }
+        for packet in other.packets.into_iter().flatten() {
+            if self.packets.contains(&Some(packet)) {
+                continue;
+            }
+            *self
+                .packets
+                .iter_mut()
+                .find(|p| p.is_none())
+                .ok_or(Error::Capacity)? = Some(packet);
+        }
+        Ok(())
+    }
+}
 pub struct ApplicationOutcome<'scope> {
+    pub(crate) frame_acks: Option<FrameAcknowledgments<'scope>>,
     pub duplicate: bool,
     pub ack_eliciting: bool,
     pub newly_acknowledged: usize,
@@ -1702,6 +1732,7 @@ fn process_packet<'scope, const B: usize>(
     let mut received = n.received[index];
     let duplicate = received.insert(packet_number)?;
     let mut outcome = ApplicationOutcome {
+        frame_acks: None,
         duplicate,
         ack_eliciting,
         newly_acknowledged: 0,
@@ -1747,6 +1778,12 @@ fn process_packet<'scope, const B: usize>(
     n.reclaim_application()?;
     n.changed()?;
     outcome.history_floor = n.floor[2];
+    if space == PacketNumberSpace::ApplicationData && outcome.packets.iter().any(Option::is_some) {
+        outcome.frame_acks = Some(FrameAcknowledgments {
+            scope,
+            packets: outcome.packets,
+        });
+    }
     Ok(outcome)
 }
 #[allow(clippy::too_many_arguments)]

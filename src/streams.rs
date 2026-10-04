@@ -130,7 +130,6 @@ struct State {
     send_emitted: u64,
     send_fin_acked: bool,
     send_reset: Option<u64>,
-    reset_transmitted: bool,
     reset_acked: bool,
     pending_chunks: usize,
     unacked_chunks: usize,
@@ -152,7 +151,6 @@ impl State {
         send_emitted: 0,
         send_fin_acked: false,
         send_reset: None,
-        reset_transmitted: false,
         reset_acked: false,
         pending_chunks: 0,
         unacked_chunks: 0,
@@ -904,20 +902,20 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
             final_size: s.send_emitted,
         }))
     }
-    pub fn reset_transmitted(&mut self, h: StreamHandle) -> Result<(), Error> {
+    // Called only after the connection's projected ACK application consumed
+    // validated packet evidence and matched a published RESET frame reference.
+    pub(crate) fn reset_acknowledged(
+        &mut self,
+        h: StreamHandle,
+        reset: Reset,
+    ) -> Result<(), Error> {
         let i = self.validate(h)?;
         let s = &mut self.slots[i].state;
-        if s.send_reset.is_none() {
+        if reset.id != h.id
+            || s.send_reset != Some(reset.error_code)
+            || s.send_emitted != reset.final_size
+        {
             return Err(Error::InvalidTransition);
-        }
-        s.reset_transmitted = true;
-        Ok(())
-    }
-    pub fn reset_acknowledged(&mut self, h: StreamHandle) -> Result<(), Error> {
-        let i = self.validate(h)?;
-        let s = &mut self.slots[i].state;
-        if !s.reset_transmitted {
-            return Err(Error::UnsentAcknowledgment);
         }
         s.reset_acked = true;
         Ok(())
@@ -1880,12 +1878,18 @@ mod tests {
             q.enqueue(&mut table, stream, b"x", false),
             Err(Error::SendClosed)
         );
-        assert_eq!(
-            table.reset_acknowledged(stream),
-            Err(Error::UnsentAcknowledgment)
-        );
-        table.reset_transmitted(stream).unwrap();
-        table.reset_acknowledged(stream).unwrap();
+        // Arithmetic fixture: publication/ACK authority is covered by the
+        // real connection-global tests, not duplicated by a table phase flag.
+        table
+            .reset_acknowledged(
+                stream,
+                Reset {
+                    id: stream.id(),
+                    error_code: 42,
+                    final_size: 4,
+                },
+            )
+            .unwrap();
         assert_eq!(table.retire(stream), Err(Error::NotTerminal));
         q.on_packet_lost(1);
         q.forget_lost_packet(&mut table, 1).unwrap();

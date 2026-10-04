@@ -236,6 +236,7 @@ async fn connected<
     let publication_state = transmit::State::new(book_publication, publication);
     let terminal = termination::Exchange::new(&control, scope);
     let reset_exchange = reset::Exchange::new();
+    let acknowledgments = super::acknowledgments::Exchange::new();
     let mut request_slots = [const { None }; io::REQUEST_CAPACITY];
     let requests = Mailbox::<io::OwnedRequest, { io::REQUEST_CAPACITY }>::new(&mut request_slots)
         .map_err(|_| Error::Capacity)?;
@@ -302,6 +303,7 @@ async fn connected<
                     &mut book_rx,
                     &mut rx,
                     &reset_exchange,
+                    &acknowledgments,
                     &app,
                     &state,
                     rx_control,
@@ -336,6 +338,7 @@ async fn connected<
             &mut book_tx,
             &mut tx,
             &reset_exchange,
+            &acknowledgments,
             handshake_done,
             config,
             &peer_id,
@@ -349,6 +352,7 @@ async fn connected<
             &outcomes.application_adapter,
             &outcomes.application_reset,
             &reset_exchange,
+            &acknowledgments,
             &mut reset_owner,
             send_io
         ));

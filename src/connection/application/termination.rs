@@ -1,6 +1,3 @@
-//! APPROXIMATE RECOVERY ARTIFACT: reconstructed from the coordinator's design
-//! after execution storage loss. This file has not been compiled or tested.
-//!
 //! Independent peer and application terminal edges carry actual affine close
 //! permissions. Wire payloads are correlation observations, never authority.
 use super::{CloseKind, Control, Error, io, protocol as p};

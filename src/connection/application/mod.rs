@@ -1,6 +1,7 @@
 //! A single projected connection from authenticated application admission to
 //! bounded stream IO, ordinary retirement, closing and draining.
 
+mod acknowledgments;
 mod io;
 mod keys;
 pub mod protocol;

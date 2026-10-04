@@ -97,7 +97,7 @@ impl<'storage, 'scope, const RX: usize, const CHUNK: usize>
             rx: Rx { core: self },
             tx: Tx { core: self },
             publication: Publication { core: self },
-            reset: ResetOwner { core: self },
+            reset: FrameEffects { core: self },
         }
     }
 
@@ -111,7 +111,7 @@ pub struct Facets<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> 
     pub rx: Rx<'book, 'storage, 'scope, RX, CHUNK>,
     pub tx: Tx<'book, 'storage, 'scope, RX, CHUNK>,
     pub publication: Publication<'book, 'storage, 'scope, RX, CHUNK>,
-    pub(crate) reset: ResetOwner<'book, 'storage, 'scope, RX, CHUNK>,
+    pub(crate) reset: FrameEffects<'book, 'storage, 'scope, RX, CHUNK>,
 }
 
 pub struct App<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
@@ -140,7 +140,7 @@ pub struct Publication<'book, 'storage, 'scope, const RX: usize, const CHUNK: us
     core: &'book StreamNumbers<'storage, 'scope, RX, CHUNK>,
 }
 
-pub(crate) struct ResetOwner<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
+pub(crate) struct FrameEffects<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
     core: &'book StreamNumbers<'storage, 'scope, RX, CHUNK>,
 }
 
@@ -161,7 +161,20 @@ impl StopIntent<'_> {
         core::ptr::eq(self.identity, other.identity) && self.stream == other.stream
     }
 }
-impl<const RX: usize, const CHUNK: usize> ResetOwner<'_, '_, '_, RX, CHUNK> {
+impl<const RX: usize, const CHUNK: usize> FrameEffects<'_, '_, '_, RX, CHUNK> {
+    pub(super) fn acknowledge(
+        &mut self,
+        grant: super::recovery::FrameAcknowledgments<'_>,
+    ) -> Result<(), Error> {
+        if !core::ptr::eq(grant.scope(), self.core.scope) {
+            return Err(Error::Binding);
+        }
+        self.core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?
+            .acknowledge(grant.packets())
+    }
     pub(super) fn apply(&mut self, intent: StopIntent<'_>) -> Result<(), Error> {
         if !core::ptr::eq(intent.identity, &self.core.identity) {
             return Err(Error::Binding);
@@ -177,7 +190,6 @@ impl<const RX: usize, const CHUNK: usize> ResetOwner<'_, '_, '_, RX, CHUNK> {
             let state = n.state_mut(intent.stream)?;
             if state.reset.is_none() {
                 state.reset = Some(reset);
-                state.reset_pending = true;
             }
         }
         Ok(())
@@ -407,42 +419,6 @@ impl<'book, const RX: usize, const CHUNK: usize> Rx<'book, '_, '_, RX, CHUNK> {
             Frame::DataBlocked { .. } | Frame::StreamsBlocked { .. } => {}
             _ => return Err(Error::UnsupportedFrame),
         }
-        Ok(())
-    }
-
-    /// Only actual newly acknowledged packet numbers returned by Recovery may
-    /// enter here. The stream queue never interprets unvalidated ACK ranges.
-    pub(super) fn acknowledge(&mut self, packets: &[Option<PacketNumber>]) -> Result<(), Error> {
-        if packets
-            .iter()
-            .flatten()
-            .any(|pn| pn.space != PacketNumberSpace::ApplicationData)
-        {
-            return Err(Error::Binding);
-        }
-        let contains = |pn| packets.iter().flatten().any(|packet| packet.value == pn);
-        let mut n = self
-            .core
-            .numbers
-            .try_borrow_mut()
-            .map_err(|_| Error::Borrowed)?;
-        if n.controls
-            .iter()
-            .any(|r| r.state == ReferenceState::Reserved && contains(r.packet))
-        {
-            return Err(streams::Error::UnsentAcknowledgment.into());
-        }
-        let Numbers { table, queue, .. } = &mut *n;
-        queue.on_packets_acked(table, contains)?;
-        queue.release_acked_references(table)?;
-        for index in 0..CONTROL_CAPACITY {
-            let reference = n.controls[index];
-            if reference.state != ReferenceState::Free && contains(reference.packet) {
-                n.acknowledge_control(reference.contents)?;
-                n.controls[index].state = ReferenceState::Free;
-            }
-        }
-        n.collect_controls();
         Ok(())
     }
 }
@@ -688,8 +664,6 @@ impl<const RX: usize, const CHUNK: usize> Publication<'_, '_, '_, RX, CHUNK> {
                     n.control_cursor = (stream.slot() + 1) % MAX_LIVE_STREAMS;
                 }
                 if let Some((stream, _)) = contents.reset {
-                    n.table.reset_transmitted(stream)?;
-                    n.state_mut(stream)?.reset_pending = false;
                     n.control_cursor = (stream.slot() + 1) % MAX_LIVE_STREAMS;
                 }
             } else {
@@ -792,8 +766,6 @@ struct StreamState {
     production: Option<StreamHandle>,
     credit: Credit,
     reset: Option<streams::Reset>,
-    reset_pending: bool,
-    reset_acked: bool,
 }
 impl StreamState {
     const EMPTY: Self = Self {
@@ -801,8 +773,6 @@ impl StreamState {
         production: None,
         credit: Credit::new(0),
         reset: None,
-        reset_pending: false,
-        reset_acked: false,
     };
 }
 struct Numbers<'storage, const RX: usize, const CHUNK: usize> {
@@ -878,6 +848,37 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
         }
         Ok(())
     }
+    /// Only actual newly acknowledged packet numbers returned by Recovery may
+    /// enter here. The stream queue never interprets unvalidated ACK ranges.
+    fn acknowledge(&mut self, packets: &[Option<PacketNumber>]) -> Result<(), Error> {
+        if packets
+            .iter()
+            .flatten()
+            .any(|pn| pn.space != PacketNumberSpace::ApplicationData)
+        {
+            return Err(Error::Binding);
+        }
+        let contains = |pn| packets.iter().flatten().any(|packet| packet.value == pn);
+        let n = self;
+        if n.controls
+            .iter()
+            .any(|r| r.state == ReferenceState::Reserved && contains(r.packet))
+        {
+            return Err(streams::Error::UnsentAcknowledgment.into());
+        }
+        let Numbers { table, queue, .. } = &mut *n;
+        queue.on_packets_acked(table, contains)?;
+        queue.release_acked_references(table)?;
+        for index in 0..CONTROL_CAPACITY {
+            let reference = n.controls[index];
+            if reference.state != ReferenceState::Free && contains(reference.packet) {
+                n.acknowledge_control(reference.contents)?;
+                n.controls[index].state = ReferenceState::Free;
+            }
+        }
+        n.collect_controls();
+        Ok(())
+    }
     fn next_controls(&self, probe: bool) -> Controls {
         let mut controls = Controls {
             max_data: self.data_credit.next(probe),
@@ -892,7 +893,18 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
                 controls.max_stream_data =
                     state.credit.next(probe).map(|maximum| (stream, maximum));
             }
-            if controls.reset.is_none() && (state.reset_pending || (probe && !state.reset_acked)) {
+            if controls.reset.is_none()
+                && (probe
+                    || !self.controls.iter().any(|reference| {
+                        matches!(
+                            reference.state,
+                            ReferenceState::Reserved | ReferenceState::Sent
+                        ) && reference
+                            .contents
+                            .reset
+                            .is_some_and(|(handle, _)| handle == stream)
+                    }))
+            {
                 controls.reset = state.reset.map(|reset| (stream, reset));
             }
         }
@@ -904,13 +916,16 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
             self.state_mut(stream)?.credit.acknowledge(Some(maximum));
         }
         if let Some((stream, reset)) = contents.reset {
-            if self.state(stream)?.reset != Some(reset) {
+            if self
+                .state(stream)?
+                .reset
+                .is_some_and(|retained| retained != reset)
+            {
                 return Err(Error::Binding);
             }
-            self.table.reset_acknowledged(stream)?;
+            self.table.reset_acknowledged(stream, reset)?;
             let state = self.state_mut(stream)?;
-            state.reset_acked = true;
-            state.reset_pending = false;
+            state.reset = None;
         }
         Ok(())
     }
@@ -921,14 +936,8 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
                 state.credit.retry(Some(maximum));
             }
         }
-        if let Some((stream, _)) = contents.reset {
-            if let Ok(state) = self.state_mut(stream) {
-                if !state.reset_acked {
-                    state.reset_pending = true;
-                }
-            }
-        }
     }
+
     fn collect_controls(&mut self) {
         for index in 0..CONTROL_CAPACITY {
             let r = self.controls[index];
@@ -942,7 +951,7 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
                 })
                 && r.contents
                     .reset
-                    .is_none_or(|(stream, _)| self.state(stream).is_ok_and(|s| s.reset_acked))
+                    .is_none_or(|(stream, _)| self.state(stream).is_ok_and(|s| s.reset.is_none()))
             {
                 self.controls[index].state = ReferenceState::Free;
             }
@@ -1130,7 +1139,11 @@ mod tests {
             publication.commit(reservation).unwrap();
         }
         assert_eq!(seen, [true; 3]);
-        rx.acknowledge(&[packet(0), packet(1), packet(2)]).unwrap();
+        rx.core
+            .numbers
+            .borrow_mut()
+            .acknowledge(&[packet(0), packet(1), packet(2)])
+            .unwrap();
         assert!(tx.prepare::<64>(true).unwrap().is_none());
         for stream in handles.into_iter().flatten() {
             let data = [stream.id() as u8; 8];
@@ -1154,7 +1167,11 @@ mod tests {
             let reservation = tx.reserve_transmission(&prepared, pn).unwrap();
             publication.commit(reservation).unwrap();
         }
-        rx.acknowledge(&[packet(3), packet(4), packet(5)]).unwrap();
+        rx.core
+            .numbers
+            .borrow_mut()
+            .acknowledge(&[packet(3), packet(4), packet(5)])
+            .unwrap();
         for stream in handles.into_iter().flatten() {
             assert!(app.send_complete(stream).unwrap());
             assert!(app.receive_complete(stream).unwrap());
@@ -1204,7 +1221,11 @@ mod tests {
         assert_eq!(bytes.bytes(), retransmission.bytes());
         let reservation = tx.reserve_transmission(&retransmission, 2).unwrap();
         publication.commit(reservation).unwrap();
-        rx.acknowledge(&[packet(1)]).unwrap();
+        rx.core
+            .numbers
+            .borrow_mut()
+            .acknowledge(&[packet(1)])
+            .unwrap();
         assert!(app.send_complete(stream).unwrap());
         assert_eq!(app.queued_chunks().unwrap(), 0);
         assert!(tx.prepare::<64>(true).unwrap().is_none());
@@ -1270,7 +1291,11 @@ mod tests {
         assert_eq!(update.bytes(), resend.bytes());
         let reservation = tx.reserve_transmission(&resend, 1).unwrap();
         publication.commit(reservation).unwrap();
-        rx.acknowledge(&[packet(0)]).unwrap();
+        rx.core
+            .numbers
+            .borrow_mut()
+            .acknowledge(&[packet(0)])
+            .unwrap();
         assert!(tx.prepare::<64>(true).unwrap().is_none());
         rx.apply(&Frame::Stream {
             id: 0,
@@ -1340,7 +1365,11 @@ mod tests {
         let reservation = tx.reserve_transmission(&reset, 1).unwrap();
         publication.commit(reservation).unwrap();
         assert!(!app.send_complete(stream).unwrap());
-        rx.acknowledge(&[packet(1)]).unwrap();
+        rx.core
+            .numbers
+            .borrow_mut()
+            .acknowledge(&[packet(1)])
+            .unwrap();
         assert!(app.send_complete(stream).unwrap());
     }
 
@@ -1371,10 +1400,13 @@ mod tests {
             Err(Error::Streams(streams::Error::StreamLimit))
         );
         assert_eq!(
-            rx.acknowledge(&[Some(PacketNumber {
-                space: PacketNumberSpace::Handshake,
-                value: 0
-            })]),
+            rx.core
+                .numbers
+                .borrow_mut()
+                .acknowledge(&[Some(PacketNumber {
+                    space: PacketNumberSpace::Handshake,
+                    value: 0
+                })]),
             Err(Error::Binding)
         );
     }

@@ -41,6 +41,7 @@ pub(crate) async fn run<
     book: &mut recovery::Rx<'_, 'scope, N>,
     streams: &mut application_stream::Rx<'streams, '_, 'scope, RX, CHUNK>,
     reset: &reset::Exchange<'streams>,
+    acknowledgments: &super::acknowledgments::Exchange<'scope>,
     app: &RefCell<application_stream::App<'_, '_, 'scope, RX, CHUNK>>,
     state: &io::State<'_, CHUNK>,
     mut keys: keys::RxControl<'_, 'owner, 'scope>,
@@ -116,6 +117,7 @@ pub(crate) async fn run<
                         book,
                         streams,
                         reset,
+                        acknowledgments,
                         control,
                         clock.now(),
                         &mut largest,
@@ -182,6 +184,7 @@ async fn application<'streams, 'scope, const N: usize, const RX: usize, const CH
     book: &mut recovery::Rx<'_, 'scope, N>,
     streams: &mut application_stream::Rx<'streams, '_, 'scope, RX, CHUNK>,
     reset: &reset::Exchange<'streams>,
+    acknowledgments: &super::acknowledgments::Exchange<'scope>,
     control: &Control<'_, 'scope>,
     now: u64,
     largest: &mut Option<u64>,
@@ -219,7 +222,9 @@ async fn application<'streams, 'scope, const N: usize, const RX: usize, const CH
         Err(recovery::Error::Accounting(AccountingError::HistoryUnavailable)) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    streams.acknowledge(&outcome.packets)?;
+    if let Some(grant) = outcome.frame_acks {
+        acknowledgments.deliver(grant, control)?;
+    }
     for grant in outcome.key_acks.into_iter().flatten() {
         keys.acknowledge(
             endpoint,

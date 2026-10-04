@@ -161,3 +161,26 @@ runner37183144899 and runtime37183144902. ChaCha20 passed in both directions,
 raising unique candidate qualification to14/44, excluding seven baseline cases.
 The next priority is deletion/replacement of remaining reset retry and ACK control;
 no further interoperability-case expansion is planned before that migration.
+
+## ACK application and deleted RESET controls
+
+RX now retains an affine, actual-scope-bound FrameAcknowledgments grant issued
+by validated recovery. It cannot directly update stream delivery. The explicit
+publication branch ApplyAcknowledgments / AcknowledgmentsApplied /
+AcknowledgmentsSettled consumes the grant through the adapter owner, outside any
+unsettled datagram publication. Captured ACKs drain before publication retirement.
+
+Deleted controls: application reset_pending, application reset_acked, and table
+reset_transmitted, including the public reset_transmitted operation. Published
+RESET frame references provide the actual in-flight evidence. The lower
+send_fin_acked/reset_acked completion fields remain migration work; this is not
+an assertion that the entire stream lifecycle has been migrated.
+
+Local validation at this checkpoint: 415 unit tests, 64 integration tests and 27
+compile-fail tests; 100 host tests; thumbv6m no-default-features compile. Real
+projected-endpoint tests reject ACK application before publication result or
+settlement and reject a new datagram before ACK settlement. Earlier intermediate
+versions stalled handshake confirmation and skipped captured ACKs on retirement;
+these were fixed, without deleting or weakening the eight connected tests.
+Official interop remains 14/44 at the previously identified commit, not this
+unqualified source revision. No additional interop cases were added.
