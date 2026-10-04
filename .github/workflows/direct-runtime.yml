@@ -16,6 +16,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
+      RUSTUP_TOOLCHAIN: 1.95.0
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -34,3 +35,7 @@ jobs:
         run: cargo +1.95.0 test --locked --manifest-path reference-tls/Cargo.toml --test bounded_tls --test rsa_tls --test resumption --test early_tls
       - name: Host runtime and endpoint
         run: cargo +1.95.0 test --locked --manifest-path adapters/host/Cargo.toml
+      - name: Bounded diagnostics and local impairment fixture tests
+        run: |
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          python3 -m unittest discover -s adapters/host/tests -p 'test_udp_impairment.py'

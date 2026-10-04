@@ -1,0 +1,86 @@
+{
+  "scope": "native-peer-diagnostics",
+  "official_interop_pass": false,
+  "scenario": "loss",
+  "impairment": {
+    "drop_every": 50
+  },
+  "coverage_gaps": [
+    "not ns-3 topology or exact stochastic impairment",
+    "no packet-trace verdicts",
+    "forward ordinary-Neqo generated-zero payloads"
+  ],
+  "binaries": {
+    "hq": "cf91f88cfb6b6c07eac91af343cbc34e3676799b26aad6c60bff1fa230c35c1e",
+    "neqo-client": "b7ab072bf524c18cbf1ebf4bceddec58234625388e2d3fc2afbd566584ccf76a",
+    "neqo-server": "30e4a18bcfcbfeb8201a4fa5c065977ee046fb02d3d2f33caf15d87a99a32b6e"
+  },
+  "runs": [
+    {
+      "direction": "baseline",
+      "client_exit": 0,
+      "elapsed_seconds": 0.054,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        }
+      ],
+      "proxy": {
+        "to_server_received": 107,
+        "peak_queued_bytes": 65543,
+        "to_server_forwarded": 105,
+        "to_client_received": 229,
+        "to_client_forwarded": 225,
+        "to_client_dropped": 4,
+        "to_server_dropped": 2
+      }
+    },
+    {
+      "direction": "forward",
+      "client_exit": 0,
+      "elapsed_seconds": 2.788,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        }
+      ],
+      "proxy": {
+        "to_server_received": 4786,
+        "peak_queued_bytes": 1571,
+        "to_server_forwarded": 4691,
+        "to_client_received": 3603,
+        "to_client_forwarded": 3531,
+        "to_client_dropped": 72,
+        "to_server_dropped": 95
+      }
+    },
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "elapsed_seconds": 1.424,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a",
+          "received_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a"
+        }
+      ],
+      "proxy": {
+        "to_server_received": 1064,
+        "peak_queued_bytes": 1472,
+        "to_server_forwarded": 1043,
+        "to_client_received": 2097,
+        "to_client_forwarded": 2056,
+        "to_client_dropped": 41,
+        "to_server_dropped": 21
+      }
+    }
+  ]
+}

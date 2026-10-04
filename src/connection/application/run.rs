@@ -6,6 +6,7 @@ use super::{
     ServerHandler, Setup, StreamSink, io, keys, receive, startup, termination, timer, transmit,
 };
 use crate::{
+    connection::publication_gate::{Issuer, Stop},
     connection::{
         self, Clock, ConnectionId, DatagramRx, DatagramTx, Side, Storage,
         application_stream::{self, StreamNumbers},
@@ -13,7 +14,6 @@ use crate::{
         tls::Transcript,
     },
     mailbox::Mailbox,
-    connection::publication_gate::{Issuer, Stop},
     streams,
 };
 use core::{cell::RefCell, pin::pin};
@@ -424,6 +424,9 @@ async fn connected<
     retirement.retire_all();
     result?;
     if let Some(error) = first_io_error.into_inner() {
+        return Err(error);
+    }
+    if let Some(error) = control.take_protocol_error() {
         return Err(error);
     }
     if control.failed() {

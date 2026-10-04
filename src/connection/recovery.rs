@@ -417,6 +417,8 @@ struct Numbers<const B: usize> {
 struct Received {
     ranges: [packet::AckRange; ACK_CAPACITY],
     len: usize,
+    // Packets below this monotone cutoff are never accepted again.
+    floor: u64,
 }
 impl Received {
     const EMPTY: Self = Self {
@@ -425,11 +427,17 @@ impl Received {
             largest: 0,
         }; ACK_CAPACITY],
         len: 0,
+        floor: 0,
     };
-    /// Insert into a temporary copy first: full-range failure preserves history.
+    /// Bound ACK memory by retiring the oldest disjoint ranges, while retaining
+    /// the largest and permanently excluding discarded packet numbers.
+    /// RFC 9000 section 13.2.3; no capacity increase or fabricated ACK ranges.
     fn insert(&mut self, pn: u64) -> Result<bool, Error> {
         if pn > packet::MAX_VARINT {
             return Err(Error::Binding);
+        }
+        if pn < self.floor {
+            return Ok(true);
         }
         if self.ranges[..self.len]
             .iter()
@@ -448,6 +456,7 @@ impl Received {
         };
         items[..self.len + 1].sort_unstable_by(|a, b| b.largest.cmp(&a.largest));
         let mut next = Self::EMPTY;
+        next.floor = self.floor;
         for range in &items[..self.len + 1] {
             if next.len != 0
                 && range.largest.saturating_add(1) >= next.ranges[next.len - 1].smallest
@@ -456,14 +465,17 @@ impl Received {
                     next.ranges[next.len - 1].smallest.min(range.smallest);
             } else {
                 if next.len == ACK_CAPACITY {
-                    return Err(Error::Capacity);
+                    next.floor = next
+                        .floor
+                        .max(range.largest.checked_add(1).ok_or(Error::Binding)?);
+                    continue;
                 }
                 next.ranges[next.len] = *range;
                 next.len += 1;
             }
         }
         *self = next;
-        Ok(false)
+        Ok(pn < self.floor)
     }
 }
 
@@ -1646,6 +1658,9 @@ fn process_packet<'scope, const B: usize>(
         return Err(AccountingError::HistoryUnavailable.into());
     }
     n.check_time(now)?;
+    if packet_number < n.received[index].floor {
+        return Err(AccountingError::HistoryUnavailable.into());
+    }
     let level = [
         EncryptionLevel::Initial,
         EncryptionLevel::Handshake,
@@ -1718,8 +1733,10 @@ fn process_packet<'scope, const B: usize>(
                 side: n.side,
             });
         }
-        n.received[index] = received;
     }
+    // Even an incoming packet below a newly pruned cutoff commits that cutoff.
+    // No frame effects are applied when the insertion reported it discarded.
+    n.received[index] = received;
     if ack_eliciting {
         n.ack_revision[index] = n.ack_revision[index]
             .checked_add(1)
@@ -2392,15 +2409,28 @@ mod tests {
     }
 
     #[test]
-    fn bounded_ranges_reorder_merge_and_capacity_error_preserve_history() {
+    fn gapped_receive_history_remains_bounded_without_terminating_transfer() {
+        let mut ranges = Received::EMPTY;
+        for pn in 0..(ACK_CAPACITY as u64 * 4) {
+            assert!(
+                ranges.insert(pn * 2).is_ok(),
+                "a legal loss gap must not terminate the connection"
+            );
+            assert!(ranges.len <= ACK_CAPACITY);
+            assert_eq!(ranges.ranges[0].largest, pn * 2);
+        }
+        assert!(
+            ranges.insert(0).unwrap(),
+            "discarded packet numbers cannot be accepted again"
+        );
+    }
+
+    #[test]
+    fn bounded_ranges_reorder_merge_without_acknowledging_gaps() {
         let mut ranges = Received::EMPTY;
         for pn in 0..ACK_CAPACITY as u64 {
             ranges.insert(pn * 2).unwrap();
         }
-        let before = ranges;
-        assert!(matches!(ranges.insert(1000), Err(Error::Capacity)));
-        assert_eq!(ranges.ranges, before.ranges);
-        assert_eq!(ranges.len, before.len);
         ranges.insert(1).unwrap();
         assert_eq!(ranges.len, ACK_CAPACITY - 1);
         assert!(ranges.insert(2).unwrap());

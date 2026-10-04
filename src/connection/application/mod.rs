@@ -15,7 +15,7 @@ mod transmit;
 pub use run::{client, server};
 
 use super::{Config, Outcome, application_stream, parameters, recovery};
-use crate::{crypto, handshake::CryptoBuffer, packet, connection::publication_gate, streams};
+use crate::{connection::publication_gate, crypto, handshake::CryptoBuffer, packet, streams};
 use core::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},
@@ -187,6 +187,7 @@ pub(crate) struct Control<'gate, 'scope> {
     revision: Cell<u64>,
     wakers: [RefCell<Option<Waker>>; 8],
     failed: Cell<bool>,
+    protocol_error: RefCell<Option<Error>>,
     stop: RefCell<Option<publication_gate::Stop<'gate, 'scope>>>,
 }
 impl<'gate, 'scope> Control<'gate, 'scope> {
@@ -195,8 +196,19 @@ impl<'gate, 'scope> Control<'gate, 'scope> {
             revision: Cell::new(0),
             wakers: core::array::from_fn(|_| RefCell::new(None)),
             failed: Cell::new(false),
+            protocol_error: RefCell::new(None),
             stop: RefCell::new(Some(stop)),
         }
+    }
+    // Diagnostic outcome only; this does not choose a protocol continuation.
+    pub(crate) fn record_protocol_error(&self, error: Error) {
+        let mut first = self.protocol_error.borrow_mut();
+        if first.is_none() {
+            *first = Some(error);
+        }
+    }
+    pub(crate) fn take_protocol_error(&self) -> Option<Error> {
+        self.protocol_error.borrow_mut().take()
     }
     pub(crate) fn stopping(&self) -> bool {
         self.stop.borrow().is_none()

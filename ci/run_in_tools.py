@@ -17,7 +17,7 @@ RUNNER = ROOT / '.ci-work/runner'
 SAFE = ROOT / 'ci-safe-results'
 RAW = ROOT / '.ci-work/raw'
 EXPECTED = {'handshake', 'transfer'}
-CASE_ABBREVIATIONS = {'handshake': 'H', 'transfer': 'DC'}
+CASE_ABBREVIATIONS = {'handshake': 'H', 'transfer': 'DC', 'longrtt': 'LR', 'transferloss': 'L2', 'transfercorruption': 'C2', 'ipv6': '6'}
 IMPLEMENTATIONS = {'neqo', 'hibana-quic'}
 # Diagnostics are untrusted input, including logs produced by the peer. Nothing
 # below copies a message, pathname, JSON key, or unknown enum into the artifact.
@@ -465,7 +465,7 @@ def phase(name, client, server, candidate):
     env['COMPOSE_PROJECT_NAME'] = 'hibana-pilot'
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     cmd = [sys.executable, str(RUNNER / 'run.py'), '-s', server, '-c', client,
-           '-d', '-t', 'handshake,transfer', '-n', client + ',' + server,
+           '-d', '-t', ','.join(sorted(EXPECTED)), '-n', client + ',' + server,
            '-j', str(output), '-l', str(logs), '-f', 'true']
     record = {'phase': name, 'client': client, 'server': server, 'status': 'NOT_RUN'}
     started = time.monotonic()
@@ -517,7 +517,16 @@ def phase(name, client, server, candidate):
         print(name + ': ' + record['status'], flush=True)
     return record
 
+def requested_cases(value):
+    require(isinstance(value, list) and value and all(isinstance(x, str) for x in value), 'invalid requested cases')
+    require(len(value) == len(set(value)), 'duplicate requested case')
+    require(set(value) <= set(CASE_ABBREVIATIONS), 'unqualified requested case')
+    return set(value)
+
 def main():
+    global EXPECTED
+    request=json.loads((ROOT / 'ci/interop-request.json').read_text())
+    EXPECTED=requested_cases(request.get('cases', ['handshake', 'transfer']))
     SAFE.mkdir(exist_ok=True)
     RAW.mkdir(exist_ok=True)
     version = subprocess.check_output(['tshark', '--version'], text=True).splitlines()[0]
@@ -538,7 +547,8 @@ def main():
     clean = not subprocess.check_output(['git', '-C', str(RUNNER), 'status', '--porcelain'], text=True).strip()
     passed = len(records) == 3 and all(r['status'] == 'PASSED' for r in records) and clean
     write('summary.json', {'status': 'PASSED' if passed else 'NOT_PASSED',
-        'scope': 'one unmodified runner pilot: Neqo baseline plus two-case bounded subset each direction',
+        'scope': 'one unmodified runner pilot: Neqo baseline plus explicitly selected cases each direction',
+        'selected_cases': sorted(EXPECTED),
         'runner_source_unchanged': clean, 'phases': [r['phase'] for r in records],
         'case_results': sum(len(r.get('results', [])) for r in records),
         'non_null_case_results': sum(r.get('non_null_case_results', 0) for r in records),

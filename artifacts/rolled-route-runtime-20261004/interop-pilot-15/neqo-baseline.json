@@ -1,0 +1,188 @@
+{
+  "phase": "neqo-baseline",
+  "client": "neqo",
+  "server": "neqo",
+  "status": "PASSED",
+  "exit_code": 0,
+  "quic_version": "0x1",
+  "results": [
+    {
+      "name": "handshake",
+      "result": "succeeded",
+      "abbr": "H"
+    },
+    {
+      "name": "transfer",
+      "result": "succeeded",
+      "abbr": "DC"
+    }
+  ],
+  "original_json_sha256": "54504341fc397c7f53c3e4dd7b2e517894779b6ad3bc123d72da72e2ea913732",
+  "non_null_case_results": 2,
+  "unexecuted_case_results": 0,
+  "passed": true,
+  "cleanup_exit_code": 0,
+  "console_file": {
+    "state": "too-large",
+    "bytes": 18336833
+  },
+  "duration_seconds": 39.973,
+  "case_diagnostics": {
+    "handshake": {
+      "runner_output": {
+        "state": "present",
+        "bytes": 61493,
+        "sha256": "c82855c6e76c90e306b8d164c6927013e72c365099a11492b886ed0a73c7449b",
+        "parse_state": "parsed",
+        "line_count": 724,
+        "error_classes": [
+          "authentication",
+          "certificate"
+        ],
+        "runner_classes": [
+          "container-exit-abort",
+          "file-check-passed"
+        ],
+        "console_error_classes": [],
+        "container_exit_codes": {
+          "client": [
+            0
+          ],
+          "server": [
+            137
+          ],
+          "sim": [
+            143
+          ]
+        },
+        "case_timeout_count": 0,
+        "case_timeout_seconds": []
+      },
+      "client_log": {
+        "state": "present",
+        "bytes": 21547,
+        "sha256": "c6df23a8a0baf1d3bd5e7cd953b3048b78a242143e9de4d1e60c4c2397790aa2",
+        "parse_state": "parsed",
+        "line_count": 246,
+        "error_classes": [
+          "authentication",
+          "certificate"
+        ],
+        "json_record_count": 0,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": []
+      },
+      "server_log": {
+        "state": "present",
+        "bytes": 24827,
+        "sha256": "7bca8c204d12f1937963275f9cb24c8bd542e86ce3ada338fa91550f0f77b490",
+        "parse_state": "parsed",
+        "line_count": 289,
+        "error_classes": [],
+        "json_record_count": 0,
+        "json_state": "parsed",
+        "json_records_omitted": 0,
+        "json_records": []
+      },
+      "captures": {
+        "left": {
+          "state": "present",
+          "bytes": 21148,
+          "sha256": "a758ee551d87493fb882a5df6133724cb9cfbe36948b59df29163b967255706d"
+        },
+        "right": {
+          "state": "present",
+          "bytes": 20940,
+          "sha256": "1b328b23ba0b45a10f80ac4281c0722e84af8a05483576d39928dd2ad6c99a2a"
+        }
+      },
+      "application_files": {
+        "server_www": {
+          "state": "missing"
+        },
+        "client_downloads": {
+          "state": "missing"
+        },
+        "client_www": {
+          "state": "missing"
+        },
+        "server_downloads": {
+          "state": "missing"
+        }
+      }
+    },
+    "transfer": {
+      "runner_output": {
+        "state": "too-large",
+        "bytes": 18275198
+      },
+      "client_log": {
+        "state": "too-large",
+        "bytes": 9658270
+      },
+      "server_log": {
+        "state": "present",
+        "bytes": 6715966,
+        "sha256": "3833cc9e4df74ed9e9797e925396fad68c02dd42e8add5634daf18cd6dc76dba",
+        "parse_state": "too-many-lines"
+      },
+      "captures": {
+        "left": {
+          "state": "present",
+          "bytes": 11387400,
+          "sha256": "60d7378c5fbfbbff62397489b4c3071c81f2091a307612a58b3eb751e4d16d6d"
+        },
+        "right": {
+          "state": "present",
+          "bytes": 11499652,
+          "sha256": "a1f53409a1c202885388515be10a12b91de2a1fec673241b5c5880f3971eda11"
+        }
+      },
+      "application_files": {
+        "server_www": {
+          "state": "missing"
+        },
+        "client_downloads": {
+          "state": "missing"
+        },
+        "client_www": {
+          "state": "missing"
+        },
+        "server_downloads": {
+          "state": "missing"
+        }
+      }
+    }
+  },
+  "captures": [
+    {
+      "state": "present",
+      "bytes": 21148,
+      "sha256": "a758ee551d87493fb882a5df6133724cb9cfbe36948b59df29163b967255706d",
+      "case": "handshake",
+      "side": "left"
+    },
+    {
+      "state": "present",
+      "bytes": 20940,
+      "sha256": "1b328b23ba0b45a10f80ac4281c0722e84af8a05483576d39928dd2ad6c99a2a",
+      "case": "handshake",
+      "side": "right"
+    },
+    {
+      "state": "present",
+      "bytes": 11387400,
+      "sha256": "60d7378c5fbfbbff62397489b4c3071c81f2091a307612a58b3eb751e4d16d6d",
+      "case": "transfer",
+      "side": "left"
+    },
+    {
+      "state": "present",
+      "bytes": 11499652,
+      "sha256": "a1f53409a1c202885388515be10a12b91de2a1fec673241b5c5880f3971eda11",
+      "case": "transfer",
+      "side": "right"
+    }
+  ]
+}

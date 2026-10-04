@@ -19,7 +19,7 @@ Path('ci-safe-results/environment.json').write_text(json.dumps({
  'github_sha':os.environ.get('GITHUB_SHA'),'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
  'run_id':os.environ.get('GITHUB_RUN_ID'),'run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
  'runner_os':os.environ.get('RUNNER_OS'),'runner_image':os.environ.get('ImageVersion'),
- 'machine':platform.machine(),'public_repository':True,'scope':'one explicitly requested pilot; baseline plus handshake/transfer only',
+ 'machine':platform.machine(),'public_repository':True,'scope':'one explicitly requested pilot; baseline plus explicitly selected registered cases',
  'not_claimed':['full 40-cell matrix','three release repetitions','Pico hardware','whole-host zero allocation']},indent=2)+'\n')
 PY
 # Upstream Compose uses interface_name, which requires daemon API >= 1.49.

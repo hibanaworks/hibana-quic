@@ -1,11 +1,18 @@
 {
-  "request": "Requalify direct recovery installation after removing obsolete actors",
-  "requested_at": "2026-10-04T04:01:30Z",
+  "request": "Qualify ACK history fix and network impairment cases",
+  "requested_at": "2026-10-04T04:29:00Z",
   "scope": [
     "unchanged Neqo baseline",
-    "handshake",
-    "transfer"
+    "selected cases in both candidate directions"
   ],
   "approval": "User approved disposable GitHub CI Docker allow-direct-routing=true",
-  "local_evidence": "artifacts/rolled-route-runtime-20261004/clean-native-neqo.json"
+  "local_evidence": "artifacts/rolled-route-runtime-20261004/native-loss-fixed.json",
+  "cases": [
+    "handshake",
+    "transfer",
+    "longrtt",
+    "transferloss",
+    "transfercorruption",
+    "ipv6"
+  ]
 }

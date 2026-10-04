@@ -133,13 +133,9 @@ pub(crate) async fn run<'owner, 'scope, const N: usize, const RX: usize, const C
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    termination::protocol_failed(
-                        peer_event,
-                        termination,
-                        scope,
-                        protocol_code(&error),
-                    )
-                    .await?;
+                    let code = protocol_code(&error);
+                    control.record_protocol_error(error);
+                    termination::protocol_failed(peer_event, termination, scope, code).await?;
                     peer_reported = true;
                     break 'receive;
                 }

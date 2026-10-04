@@ -250,6 +250,12 @@ class Diagnostics(unittest.TestCase):
         result = self.module.collect_case_diagnostics(self.logs, '../SECRET', 'neqo')
         self.assertEqual(result, {'state': 'invalid-matrix-identifiers'})
 
+    def test_requested_case_scope_is_explicit_and_fail_closed(self):
+        self.assertEqual(self.module.requested_cases(['longrtt', 'transferloss', 'transfercorruption', 'ipv6']), {'longrtt', 'transferloss', 'transfercorruption', 'ipv6'})
+        for invalid in ([], ['transfer', 'transfer'], ['unknown'], ['../secret'], ['http3'], 'transfer', [None]):
+            with self.assertRaises(RuntimeError):
+                self.module.requested_cases(invalid)
+
     def fixture(self, states=('succeeded', 'failed')):
         return {'start_time': 1790942400.123456, 'end_time': 1790942460.123456,
                 'quic_version': '0x1', 'clients': ['hibana-quic'], 'servers': ['neqo'],

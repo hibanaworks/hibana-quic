@@ -26,3 +26,9 @@ The main bounded TLS transcript suite is now entirely asynchronous: 16 cases cov
 The old packet arena was unused by the live connection except as a recovery claim factory. Recovery now consumes a one-shot scope-bound installation directly; no compatibility arena is allocated. The actual recovery ledger, authenticated receive checks, accepted-send evidence and handshake confirmation remain in the direct roles. The direct construction obligation has separate scoped Lean/Z3 evidence.
 
 The pinned runner registers 22 QUIC cases, including HTTP/3 and QUIC v2. Both directions require 44 cells per attempt (132 for three attempts). The earlier 20-case count was incomplete. [The qualification inventory](../interop/qualification.json) distinguishes each case and does not count missing, unsupported or skipped cases as passes.
+
+## Network impairment qualification in progress
+
+The cleanup revision 92731a990f11f3bd293e776a1535d6f36cbfb3ff independently passed the same official pilot (run37176305141) and direct-runtime CI (run37176305247). Unique candidate qualification remains 4/44, excluding baseline cases and repeat runs.
+
+The next native 2% packet-loss transfer exposed a real fixed-range ACK-history capacity failure. The new retention cutoff keeps the 32-range bound and never readmits discarded packet numbers. Scoped Lean/Z3 models, a failing-before regression, and real authenticated sparse-packet tests accompany the fix. Native Neqo baseline and both directions now pass deterministic loss, 1.5-second round-trip delay, corruption, and IPv6 diagnostics. Their official runner results remain pending.

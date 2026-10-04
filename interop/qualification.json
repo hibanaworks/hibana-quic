@@ -2,8 +2,8 @@
   "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
   "registered_quic_cases": 22,
   "directions": 2,
-  "pilot_commit": "9e03afe89efad7a098e6ec17987d4b13b70318e3",
-  "current_cleanup_commit_qualification": "pending",
+  "pilot_commit": "92731a990f11f3bd293e776a1535d6f36cbfb3ff",
+  "current_cleanup_commit_qualification": "handshake and transfer passed both directions in run37176305141",
   "cases": [
     {
       "case": "handshake",
@@ -137,5 +137,6 @@
       "client_vs_neqo": "not-run",
       "server_vs_neqo": "not-run"
     }
-  ]
+  ],
+  "network_impairment_qualification": "local diagnostics passed; official expansion pending"
 }
