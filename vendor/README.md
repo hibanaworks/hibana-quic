@@ -1,7 +1,7 @@
 # Selected upstream snapshot
 
 `hibana/` is the exact tracked source of `development/route-metadata-performance`
-at `56d405671931eaac615edeb59b6562337f9edbb4`, without local patches.
+at `dafdf8a27198f73f3a6ce9e21c1de86e50008b43`, without local patches.
 It includes explicit-join validation, removal of manual source ownership tables,
 and validated immutable resolver/dispatch lookup optimizations. Public APIs and
 protocol order are unchanged. Consumer correctness and performance are measured

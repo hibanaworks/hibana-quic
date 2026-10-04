@@ -3,6 +3,25 @@
 This is an optimization checkpoint, not Neqo performance parity or an increase
 in official interoperability qualification (still 14 of 44 cells).
 
+## Bulk receive spans, 2026-10-04
+
+With the original 64 KiB backed window and 64-datagram budget, splitting
+circular receive operations into at most two contiguous slices gave a five-run
+32 MiB median of 0.531682573 s, versus Neqo 0.045999752 s (11.56x).
+Client RSS stayed about 10.6 MiB. The earlier same-host checkpoint was
+0.721776265 s; host timing variation remains visible across runs.
+
+The 256 KiB window / 256-datagram experiment reached 0.375339414 s with the
+same span implementation, but used about 22.9 MiB RSS. It is not the adopted
+default. The chosen change removes repeated per-byte circular indexing, uses
+bulk copying/clearing, and preserves complete overlap validation before mutation.
+Lean/Z3 models and differential/transactional tests are in `proofs/ring-spans/`.
+It adds no receive storage, allocation, protocol flags or public API.
+
+A separate exact-match search hint was rejected: seven-run comparisons gave
+0.517780069 s with it and 0.520965310 s without it, not a demonstrated benefit.
+The gap to Neqo and the sub-0.1 s target remains substantial.
+
 ## Latest candidate, adopted 2026-10-04
 
 The selected Hibana revision is `56d405671931eaac615edeb59b6562337f9edbb4`.

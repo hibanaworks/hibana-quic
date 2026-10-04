@@ -1,6 +1,6 @@
 {
   "upstream": "https://github.com/hibanaworks/hibana",
-  "revision": "56d405671931eaac615edeb59b6562337f9edbb4",
+  "revision": "dafdf8a27198f73f3a6ce9e21c1de86e50008b43",
   "local_patches": [],
   "files": {
     ".gitattributes": "818cbff433decf3d92b969293887cb18679861b8d948cfdb6c0ba89192cb0512",
@@ -18,7 +18,7 @@
     ".github/scripts/check_boundary_contracts.sh": "5ef46d2a11cd6de71782e55ee0339b715618bf92185c1bf2a3cda1ad4b7f6a75",
     ".github/scripts/check_causal_handoff_pressure.sh": "1084294a68eb350e69a68d5e52cffaab9607e1f4ffb2fbc62c049ca526ada18b",
     ".github/scripts/check_compiled_descriptor_authority.sh": "c05c8f895fc2964662fb245317d5328c973e0afbad03ddc6746d315e6ff17433",
-    ".github/scripts/check_descriptor_streaming_hygiene.sh": "ce12827ebc0cbd575c84b1d2b1269419893554bd7f064c5c706eb6f4fe4f03bb",
+    ".github/scripts/check_descriptor_streaming_hygiene.sh": "47011f3bdb5fd21d334076a6e15a050ec72032ae54ef1d43495b2d5b2bb2af7e",
     ".github/scripts/check_direct_projection_binary.sh": "7793b1c43bca3131d4f03a32b08a0335bb44a21365d7bd893580867ee5d524fb",
     ".github/scripts/check_endpoint_surface_owner.sh": "a7398bd593ebf7ad307c1b08e930141c0d14545586f4057849859af9206c1266",
     ".github/scripts/check_exact_layout_hygiene.sh": "177b015e919a5ccb32457e64ab2261832de6cec8b525d5b61dd08cc5044ec662",
@@ -1263,6 +1263,6 @@
     "tests/visible_route_reentry.rs": "723a5c82962459b8df8cfe91ecfdb800aaf3fc4e13fa6fcc3815ea69a44d9231"
   },
   "qualification": "Exact published immutable-metadata optimization; consumer tests and workload-specific performance are qualified separately.",
-  "base_commit": "56d405671931eaac615edeb59b6562337f9edbb4",
+  "base_commit": "dafdf8a27198f73f3a6ce9e21c1de86e50008b43",
   "branch": "development/route-metadata-performance"
 }

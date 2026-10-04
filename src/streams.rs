@@ -177,8 +177,48 @@ impl<const RX: usize> StreamSlot<RX> {
         if self.state.receive_reset.is_some() {
             return 0;
         }
-        (0..RX).take_while(|i| self.present[self.index(*i)]).count()
+        let first = &self.present[self.state.head..];
+        let ready = present_prefix(first);
+        if ready < first.len() {
+            ready
+        } else {
+            ready + present_prefix(&self.present[..self.state.head])
+        }
     }
+}
+
+// Compare fixed-size spans so the compiler can use bulk equality instead
+// of performing a circular-index calculation for every byte.
+fn present_prefix(present: &[bool]) -> usize {
+    let mut offset = 0;
+    while present.len() - offset >= 32 {
+        if present[offset..offset + 32] != [true; 32] {
+            break;
+        }
+        offset += 32;
+    }
+    offset
+        + present[offset..]
+            .iter()
+            .position(|p| !*p)
+            .unwrap_or(present.len() - offset)
+}
+
+fn overlap_matches(old: &[u8], present: &[bool], new: &[u8]) -> bool {
+    debug_assert_eq!(old.len(), new.len());
+    debug_assert_eq!(present.len(), new.len());
+    let mut offset = 0;
+    while new.len() - offset >= 32 {
+        let flags = &present[offset..offset + 32];
+        if flags != [false; 32]
+            && old[offset..offset + 32] != new[offset..offset + 32]
+            && (0..32).any(|i| flags[i] && old[offset + i] != new[offset + i])
+        {
+            return false;
+        }
+        offset += 32;
+    }
+    (offset..new.len()).all(|i| !present[i] || old[i] == new[i])
 }
 
 /// Read view is valid only while the table is borrowed. A FIN is ready when the
@@ -704,17 +744,27 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
             let start = offset.max(s.consumed);
             let skip = (start - offset) as usize;
             let relative = (start - s.consumed) as usize;
-            for (n, byte) in data[skip..].iter().enumerate() {
-                let index = slot.index(relative + n);
-                if slot.present[index] && slot.bytes[index] != *byte {
-                    return Err(Error::ConflictingOverlap);
-                }
+            let incoming = &data[skip..];
+            let index = slot.index(relative);
+            let first = incoming.len().min(RX - index);
+            let second = incoming.len() - first;
+            // Validate both spans before copying either: conflicting overlap
+            // must leave all bytes, presence and accounting unchanged.
+            if !overlap_matches(
+                &slot.bytes[index..index + first],
+                &slot.present[index..index + first],
+                &incoming[..first],
+            ) || !overlap_matches(
+                &slot.bytes[..second],
+                &slot.present[..second],
+                &incoming[first..],
+            ) {
+                return Err(Error::ConflictingOverlap);
             }
-            for (n, byte) in data[skip..].iter().enumerate() {
-                let index = slot.index(relative + n);
-                slot.bytes[index] = *byte;
-                slot.present[index] = true;
-            }
+            slot.bytes[index..index + first].copy_from_slice(&incoming[..first]);
+            slot.bytes[..second].copy_from_slice(&incoming[first..]);
+            slot.present[index..index + first].fill(true);
+            slot.present[..second].fill(true);
         }
         slot.state.receive_highest = s.receive_highest.max(end);
         if fin {
@@ -770,10 +820,9 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
         if count > slot.ready_len() {
             return Err(Error::ConsumeBeyondReady);
         }
-        for n in 0..count {
-            let index = slot.index(n);
-            slot.present[index] = false;
-        }
+        let first = count.min(RX - slot.state.head);
+        slot.present[slot.state.head..slot.state.head + first].fill(false);
+        slot.present[..count - first].fill(false);
         if count < RX {
             slot.state.head = slot.index(count);
         }
@@ -1501,6 +1550,41 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_second_span_conflict_leaves_first_span_untouched() {
+        let mut slots = [StreamSlot::<8>::EMPTY];
+        let mut table = StreamTable::new(
+            &mut slots,
+            Role::Server,
+            1,
+            local_limits(0, 1),
+            limits(0, 0),
+        )
+        .unwrap();
+        let h = table.get_or_accept(2).unwrap();
+        table.on_stream(h, 0, b"abcdef", false).unwrap();
+        table.consume(h, 6).unwrap();
+        table.grant_max_stream_data(h, 14).unwrap();
+        table.grant_max_data(14).unwrap();
+        table.on_stream(h, 8, b"ijkl", false).unwrap();
+        let bytes = table.slots[h.slot].bytes;
+        let present = table.slots[h.slot].present;
+        let charged = table.receive_charged();
+        assert_eq!(
+            table.on_stream(h, 6, b"ghijkX", true),
+            Err(Error::ConflictingOverlap)
+        );
+        assert_eq!(table.slots[h.slot].bytes, bytes);
+        assert_eq!(table.slots[h.slot].present, present);
+        assert_eq!(table.slots[h.slot].state.receive_final, None);
+        assert_eq!(table.receive_charged(), charged);
+        table.on_stream(h, 6, b"ghijkl", true).unwrap();
+        let view = table.receive(h).unwrap();
+        assert_eq!(view.first, b"gh");
+        assert_eq!(view.second, b"ijkl");
+        assert!(view.fin);
+    }
+
+    #[test]
     fn receive_errors_and_overlaps_are_transactional() {
         let mut slots = [StreamSlot::<8>::EMPTY];
         let mut table = StreamTable::new(
@@ -2011,5 +2095,54 @@ mod tests {
         q.on_packet_acked(&mut table, 3).unwrap();
         q.enqueue(&mut table, stream, b"y", false).unwrap();
         assert_eq!(q.next_pending(), Some(lost));
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    #[test]
+    fn bulk_prefix_matches_scalar_across_every_ring_boundary() {
+        for head in 0..65 {
+            for hole in 0..=65 {
+                let mut slot = StreamSlot::<65>::EMPTY;
+                slot.state.head = head;
+                slot.present.fill(true);
+                if hole < 65 {
+                    let index = slot.index(hole);
+                    slot.present[index] = false;
+                }
+                let reference = (0..65).take_while(|i| slot.present[slot.index(*i)]).count();
+                assert_eq!(slot.ready_len(), reference);
+            }
+        }
+    }
+
+    #[test]
+    fn bulk_overlap_matches_scalar_for_full_partial_and_empty_blocks() {
+        let old = [42u8; 97];
+        for len in 0..=97 {
+            for mismatch in 0..=97 {
+                for pattern in 0..5 {
+                    let mut new = old;
+                    if mismatch < 97 {
+                        new[mismatch] = 43;
+                    }
+                    let flags: [bool; 97] = core::array::from_fn(|i| match pattern {
+                        0 => false,
+                        1 => true,
+                        2 => i % 2 == 0,
+                        3 => i == mismatch,
+                        _ => i != mismatch,
+                    });
+                    let reference = (0..len).all(|i| !flags[i] || old[i] == new[i]);
+                    assert_eq!(
+                        overlap_matches(&old[..len], &flags[..len], &new[..len]),
+                        reference
+                    );
+                }
+            }
+        }
     }
 }
