@@ -321,8 +321,15 @@ pub(crate) async fn run<
             // repeated peer requests must not starve ACK/retransmission output.
             crate::runtime::yield_now().await;
         }
-        while let Some(packet) = book.take_lost_application() {
-            streams.lost(packet.value)?;
+        while let Some(grant) = book.take_lost_application() {
+            let packet = grant.packet().value;
+            acknowledgments
+                .loss
+                .put(grant)
+                .map_err(|_| Error::Binding)?;
+            endpoint.send::<p::ApplyLoss>(&packet).await?;
+            check(endpoint.recv::<p::LossApplied>().await?, packet)?;
+            endpoint.send::<p::LossSettled>(&packet).await?;
         }
         let floor = book.application_history_floor();
         while history_floor < floor {
@@ -793,6 +800,15 @@ pub(crate) async fn publish<
                 check(endpoint.recv::<p::Settled>().await?, sequence)?;
                 outcome.clear();
                 sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+            }
+            184 => {
+                let packet = offered.recv::<p::ApplyLoss>().await?;
+                let grant = acknowledgments.loss.take().map_err(|_| Error::Binding)?;
+                check(grant.packet().value, packet)?;
+                reset_owner.apply_loss(grant)?;
+                endpoint.send::<p::LossApplied>(&packet).await?;
+                check(endpoint.recv::<p::LossSettled>().await?, packet)?;
+                control.changed()?;
             }
             178 => {
                 let id = offered.recv::<p::ApplyAcknowledgments>().await?;

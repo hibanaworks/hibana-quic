@@ -4,11 +4,13 @@ use super::{Control, Error};
 use crate::connection::{recovery::FrameAcknowledgments, tls::Inbox};
 pub(super) struct Exchange<'scope> {
     pub(super) pending: Inbox<FrameAcknowledgments<'scope>>,
+    pub(super) loss: Inbox<crate::connection::recovery::ApplicationLoss<'scope>>,
 }
 impl<'scope> Exchange<'scope> {
     pub(super) fn new() -> Self {
         Self {
             pending: Inbox::new(),
+            loss: Inbox::new(),
         }
     }
     pub(super) fn deliver(

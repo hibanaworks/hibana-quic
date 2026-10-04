@@ -162,6 +162,23 @@ impl StopIntent<'_> {
     }
 }
 impl<'book, const RX: usize, const CHUNK: usize> FrameEffects<'book, '_, '_, RX, CHUNK> {
+    pub(super) fn apply_loss(
+        &mut self,
+        grant: super::recovery::ApplicationLoss<'_>,
+    ) -> Result<(), Error> {
+        if !core::ptr::eq(grant.scope(), self.core.scope) {
+            return Err(Error::Binding);
+        }
+        let packet = grant.packet();
+        if packet.space != PacketNumberSpace::ApplicationData {
+            return Err(Error::Binding);
+        }
+        self.core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?
+            .lost(packet.value)
+    }
     pub(super) fn take_delivery(&mut self) -> Result<Option<Delivered<'book>>, Error> {
         let mut n = self
             .core
@@ -518,22 +535,6 @@ impl<'book, const RX: usize, const CHUNK: usize> Tx<'book, '_, '_, RX, CHUNK> {
             final_size: receipt.evidence.final_size,
             reset: receipt.evidence.reset,
         });
-        Ok(())
-    }
-    pub(super) fn lost(&mut self, packet_number: u64) -> Result<(), Error> {
-        let mut n = self
-            .core
-            .numbers
-            .try_borrow_mut()
-            .map_err(|_| Error::Borrowed)?;
-        n.queue.on_packet_lost(packet_number);
-        for index in 0..CONTROL_CAPACITY {
-            let reference = n.controls[index];
-            if reference.packet == packet_number && reference.state == ReferenceState::Sent {
-                n.controls[index].state = ReferenceState::Lost;
-                n.retry_control(reference.contents);
-            }
-        }
         Ok(())
     }
 
@@ -972,6 +973,19 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
         n.collect_controls();
         Ok(())
     }
+    fn lost(&mut self, packet_number: u64) -> Result<(), Error> {
+        let n = self;
+        n.queue.on_packet_lost(packet_number);
+        for index in 0..CONTROL_CAPACITY {
+            let reference = n.controls[index];
+            if reference.packet == packet_number && reference.state == ReferenceState::Sent {
+                n.controls[index].state = ReferenceState::Lost;
+                n.retry_control(reference.contents);
+            }
+        }
+        Ok(())
+    }
+
     fn next_controls(&self, probe: bool) -> Controls {
         let mut controls = Controls {
             max_data: self.data_credit.next(probe),
@@ -1089,6 +1103,7 @@ mod tests {
         impl<T: ?Sized + Copy> NotCopy<u8> for T {}
         let _ = <Production<'static> as NotCopy<_>>::witness;
         let _ = <Delivered<'static> as NotCopy<_>>::witness;
+        let _ = <super::super::recovery::ApplicationLoss<'static> as NotCopy<_>>::witness;
         trait NotClone<A> {
             fn witness() {}
         }
@@ -1096,6 +1111,7 @@ mod tests {
         impl<T: ?Sized + Clone> NotClone<u8> for T {}
         let _ = <Production<'static> as NotClone<_>>::witness;
         let _ = <Delivered<'static> as NotClone<_>>::witness;
+        let _ = <super::super::recovery::ApplicationLoss<'static> as NotClone<_>>::witness;
         let scope = ApplicationKeyScope::new(707);
         let mut slots = [StreamSlot::<8>::EMPTY];
         let mut chunks = [SendChunk::<8>::EMPTY];
@@ -1322,7 +1338,7 @@ mod tests {
         let reservation = tx.reserve_transmission(&bytes, 1).unwrap();
         publication.commit(reservation).unwrap();
         assert!(tx.prepare::<64>(false).unwrap().is_none());
-        tx.lost(1).unwrap();
+        tx.core.numbers.borrow_mut().lost(1).unwrap();
         let retransmission = tx.prepare::<64>(false).unwrap().unwrap();
         assert_eq!(bytes.bytes(), retransmission.bytes());
         let reservation = tx.reserve_transmission(&retransmission, 2).unwrap();
@@ -1395,7 +1411,7 @@ mod tests {
         let reservation = tx.reserve_transmission(&update, 0).unwrap();
         publication.commit(reservation).unwrap();
         assert!(tx.prepare::<64>(false).unwrap().is_none());
-        tx.lost(0).unwrap();
+        tx.core.numbers.borrow_mut().lost(0).unwrap();
         let resend = tx.prepare::<64>(false).unwrap().unwrap();
         assert_eq!(update.bytes(), resend.bytes());
         let reservation = tx.reserve_transmission(&resend, 1).unwrap();

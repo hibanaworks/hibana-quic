@@ -232,6 +232,13 @@ pub type AcknowledgmentApply = g::Seq<
         g::Seq<Deliveries, g::Send<TRANSMIT, ADAPTER, AcknowledgmentsSettled>>,
     >,
 >;
+pub type ApplyLoss = g::Msg<184, u64>;
+pub type LossApplied = g::Msg<185, u64>;
+pub type LossSettled = g::Msg<186, u64>;
+pub type LossApply = g::Seq<
+    g::Send<TRANSMIT, ADAPTER, ApplyLoss>,
+    g::Seq<g::Send<ADAPTER, TRANSMIT, LossApplied>, g::Send<TRANSMIT, ADAPTER, LossSettled>>,
+>;
 // Applying a stop is an exclusive alternative to the complete publication
 // fragment. The actual adapter owner settles its send before offering again.
 pub type PublicationFlow = g::Seq<
@@ -240,7 +247,10 @@ pub type PublicationFlow = g::Seq<
             Publish,
             g::Route<
                 ResetApply,
-                g::Route<AcknowledgmentApply, g::Send<TRANSMIT, ADAPTER, StopPublication>>,
+                g::Route<
+                    AcknowledgmentApply,
+                    g::Route<LossApply, g::Send<TRANSMIT, ADAPTER, StopPublication>>,
+                >,
             >,
         >,
     >,
@@ -449,7 +459,16 @@ pub fn publication_choreography() -> g::Program<PublicationFlow> {
                             ),
                         ),
                     ),
-                    g::send::<TRANSMIT, ADAPTER, StopPublication>(),
+                    g::route(
+                        g::seq(
+                            g::send::<TRANSMIT, ADAPTER, ApplyLoss>(),
+                            g::seq(
+                                g::send::<ADAPTER, TRANSMIT, LossApplied>(),
+                                g::send::<TRANSMIT, ADAPTER, LossSettled>(),
+                            ),
+                        ),
+                        g::send::<TRANSMIT, ADAPTER, StopPublication>(),
+                    ),
                 ),
             ),
         )

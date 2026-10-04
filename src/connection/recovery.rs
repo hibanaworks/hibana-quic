@@ -357,6 +357,19 @@ pub struct PacketOutcome {
     pub ack_eliciting: bool,
     pub newly_acknowledged: usize,
 }
+/// One-shot loss evidence from the installed recovery owner and actual key scope.
+pub struct ApplicationLoss<'scope> {
+    scope: &'scope ApplicationKeyScope,
+    packet: PacketNumber,
+}
+impl ApplicationLoss<'_> {
+    pub fn packet(&self) -> PacketNumber {
+        self.packet
+    }
+    pub(crate) fn scope(&self) -> &ApplicationKeyScope {
+        self.scope
+    }
+}
 /// Affine evidence issued only after authenticated recovery validated these ACKs.
 pub(crate) struct FrameAcknowledgments<'scope> {
     scope: &'scope ApplicationKeyScope,
@@ -1317,12 +1330,16 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     pub fn acknowledgment_sent(&mut self, snapshot: AckSnapshot<'book>) -> Result<(), Error> {
         ack_sent(self.book, snapshot)
     }
-    pub fn take_lost_application(&mut self) -> Option<PacketNumber> {
+    pub fn take_lost_application(&mut self) -> Option<ApplicationLoss<'scope>> {
         let mut n = self.book.numbers.borrow_mut();
         n.lost
             .iter_mut()
             .find(|slot| slot.is_some())
             .and_then(Option::take)
+            .map(|packet| ApplicationLoss {
+                scope: self.book.scope,
+                packet,
+            })
     }
     pub fn application_history_floor(&self) -> u64 {
         self.book.numbers.borrow().floor[2]
@@ -2298,15 +2315,18 @@ mod tests {
         let receipt = app_receipt(&mut read, &mut peer, 0, &plaintext[..len], 20);
         rx.apply_application_packet(receipt, &plaintext[..len], 20)
             .unwrap();
-        assert_eq!(tx.take_lost_application(), None);
+        assert_eq!(tx.take_lost_application().map(|grant| grant.packet()), None);
         assert_eq!(tx.snapshot().reserved_in_flight, 32);
         publication
             .settle(Completion::from_adapter(delayed, Some(10)))
             .unwrap();
         // Only now does PN 0 carry actual accepted-send evidence; its three
         // genuinely accepted successors already establish packet-threshold loss.
-        assert_eq!(tx.take_lost_application(), Some(delayed_packet));
-        assert_eq!(tx.take_lost_application(), None);
+        assert_eq!(
+            tx.take_lost_application().map(|grant| grant.packet()),
+            Some(delayed_packet)
+        );
+        assert_eq!(tx.take_lost_application().map(|grant| grant.packet()), None);
         assert_eq!(tx.snapshot().history_floor[2], 1);
         assert_eq!(tx.snapshot().bytes_in_flight, 64);
         assert_eq!(tx.snapshot().accepted_bytes, 128);
@@ -2685,13 +2705,13 @@ mod tests {
         assert_eq!(outcome.newly_acknowledged, 1);
         assert_eq!(outcome.history_floor, 1);
         assert_eq!(
-            tx.take_lost_application(),
+            tx.take_lost_application().map(|grant| grant.packet()),
             Some(PacketNumber {
                 space: PacketNumberSpace::ApplicationData,
                 value: 0
             })
         );
-        assert_eq!(tx.take_lost_application(), None);
+        assert_eq!(tx.take_lost_application().map(|grant| grant.packet()), None);
         let receipt = app_receipt(&mut read, &mut peer, 1, &plaintext[..len], 5);
         let duplicate = rx
             .apply_application_packet(receipt, &plaintext[..len], 5)
@@ -2710,7 +2730,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            tx.take_lost_application(),
+            tx.take_lost_application().map(|grant| grant.packet()),
             Some(PacketNumber {
                 space: PacketNumberSpace::ApplicationData,
                 value: 1

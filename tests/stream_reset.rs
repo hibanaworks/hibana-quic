@@ -74,6 +74,11 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 forbidden_rejected.set(true);
                 return Ok(());
             }
+            if illegal_at == 9 {
+                assert!(tx.send::<p::ApplyLoss>(&0).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
             if illegal_at == 5 {
                 assert!(tx.send::<p::ApplyAcknowledgments>(&0).await.is_err());
                 forbidden_rejected.set(true);
@@ -90,6 +95,11 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                     tx.send::<p::ApplyStop>(&4).await.is_err(),
                     "reset entered before Settled"
                 );
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            if illegal_at == 10 {
+                assert!(tx.send::<p::ApplyLoss>(&0).await.is_err());
                 forbidden_rejected.set(true);
                 return Ok(());
             }
@@ -121,13 +131,21 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
             tx.send::<p::StreamDeliverySeen>(&4).await?;
             assert_eq!(tx.offer().await?.recv::<p::DeliveriesDone>().await?, 1);
             tx.send::<p::AcknowledgmentsSettled>(&1).await?;
+            tx.send::<p::ApplyLoss>(&7).await?;
+            assert_eq!(tx.recv::<p::LossApplied>().await?, 7);
+            if illegal_at == 11 {
+                assert!(tx.send::<p::Datagram>(&1).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            tx.send::<p::LossSettled>(&7).await?;
             tx.send::<p::StopPublication>(&1).await?;
             assert_eq!(tx.recv::<p::PublicationStopped>().await?, 1);
             Ok::<_, EndpointError>(())
         },
         async {
             assert_eq!(adapter.offer().await?.recv::<p::Datagram>().await?, 0);
-            if illegal_at == 1 || illegal_at == 5 {
+            if illegal_at == 1 || illegal_at == 5 || illegal_at == 9 {
                 return Ok(());
             }
             if rejected {
@@ -135,7 +153,7 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
             } else {
                 adapter.send::<p::Accepted>(&0).await?;
             }
-            if illegal_at == 2 || illegal_at == 6 {
+            if illegal_at == 2 || illegal_at == 6 || illegal_at == 10 {
                 return Ok(());
             }
             assert_eq!(adapter.recv::<p::Settled>().await?, 0);
@@ -183,6 +201,12 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
             assert_eq!(adapter.recv::<p::StreamDeliverySeen>().await?, 4);
             adapter.send::<p::DeliveriesDone>(&1).await?;
             assert_eq!(adapter.recv::<p::AcknowledgmentsSettled>().await?, 1);
+            assert_eq!(adapter.offer().await?.recv::<p::ApplyLoss>().await?, 7);
+            adapter.send::<p::LossApplied>(&7).await?;
+            if illegal_at == 11 {
+                return Ok(());
+            }
+            assert_eq!(adapter.recv::<p::LossSettled>().await?, 7);
             assert_eq!(
                 adapter.offer().await?.recv::<p::StopPublication>().await?,
                 1
@@ -253,5 +277,14 @@ fn acknowledgment_effects_cannot_cross_an_unsettled_publication() {
 fn delivery_batch_cannot_finish_before_the_consumer_receives_completion() {
     for rejected in [false, true] {
         run(8, rejected, false);
+    }
+}
+
+#[test]
+fn loss_application_cannot_bypass_publication_or_its_own_settlement() {
+    for at in [9, 10, 11] {
+        for rejected in [false, true] {
+            run(at, rejected, false);
+        }
     }
 }
