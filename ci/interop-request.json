@@ -1,12 +1,12 @@
 {
-  "request": "Requalify the existing seven cases after owned parallel stream reclamation",
-  "requested_at": "2026-10-04T10:00:00Z",
+  "request": "Qualify the completed existing-control Hibana migration before adding 0-RTT",
+  "requested_at": "2026-10-04T12:13:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"
   ],
   "approval": "User authorized the existing interop workflow for these unchanged cases.",
-  "local_evidence": "artifacts/rolled-route-runtime-20261004/stream-reclaim/native-clean.json",
+  "local_evidence": "docs/control-migration-audit.md",
   "cases": [
     "handshake",
     "transfer",
@@ -15,5 +15,6 @@
     "transfercorruption",
     "ipv6",
     "chacha20"
-  ]
+  ],
+  "source_control_checkpoint": "aae9f1f176ba49f124e9764d929c2ed4aee2d382"
 }
