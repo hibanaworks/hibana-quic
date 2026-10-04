@@ -1,6 +1,6 @@
 {
   "upstream": "https://github.com/hibanaworks/hibana",
-  "revision": "adea68456116df8339c76a0d7407889755ae7b87",
+  "revision": "9fbb84cdc932cbd0a81ee995a8689393f322763e",
   "local_patches": [],
   "files": {
     ".gitattributes": "818cbff433decf3d92b969293887cb18679861b8d948cfdb6c0ba89192cb0512",
@@ -364,14 +364,14 @@
     "proofs/lean/runtime-generated-claim-surface.txt": "da6fc7c40e55afc30ad03a186e2de6e68371e83f65bf27ecc1d7d58bd2261e8e",
     "proofs/live-descendant-preview/LiveDescendantPreview.lean": "2149ce71139a77d9c9fa8349465819e1d989b5f2c8ef262bbddb5d1a0f399bac",
     "proofs/live-descendant-preview/LiveDescendantPreview.smt2": "593ee31391d91d424657cb5bb74c38c29058cb22cd5a0cbdfb0c2b417e34905f",
-    "proofs/live-descendant-preview/README.md": "cb7d0a8621f5e6e8904fe1f9e8f03aaf31969fc7bd91e0a3b914ea08efb349db",
+    "proofs/live-descendant-preview/README.md": "98a1314275838d2f526d1b4fe1d8afe8ffa9032885247db0f12ef6b22e889e4f",
     "proofs/live-descendant-preview/check.sh": "ab26146fde526f96878c0e4b76650ec07cc67917e2ec173e55d39825cbefcabb",
     "proofs/live-descendant-preview/evidence/historical-release.log": "96231ee9cb79aff306e9603ecf2b3f73075b3f6e96b7ff158e5eb73e1abc33fd",
     "proofs/live-descendant-preview/evidence/lean.log": "bf8f5d5aa37b5307d3d615e39a9403556848a84b4c57909a68a9ccd1090ea7fc",
     "proofs/live-descendant-preview/evidence/release-lto.log": "a33b602e439219c99054d2fefff297ac6499ed628c9c95f8a038f0f1c3f31939",
     "proofs/live-descendant-preview/evidence/source.log": "03774191b3d25bf4ac176a4001f832fcdafd0b82078123d961975a0b934ae256",
     "proofs/live-descendant-preview/evidence/z3.log": "a811b1e0fa6d0c8398f700e0af08a7076bddef944039d4b062d6f71cdb47e0d2",
-    "proofs/live-descendant-preview/source.sha256": "a770f3d446e80cb24694eedaec63bb7f5fd60c68b5fc3420ad1b765952844413",
+    "proofs/live-descendant-preview/source.sha256": "06047b183cd52867516fc9b225b9dddd032901441b0065b69d98063098845491",
     "proofs/offer-completed-sibling/IngressSelection.lean": "6556a64142b6e6532c6414c58d0e24399af1ba0a2668e1b9a9d42db5d6d12346",
     "proofs/offer-completed-sibling/README.md": "853f4da5109a109f02465ef6d83dfd0a5418a904082cfa420edf7fa50346d454",
     "proofs/offer-completed-sibling/TraceValidity.lean": "e2c336dbf8ff7b452d05c26010430810301d825785b41661c3af5fbd463a94b9",
@@ -1020,7 +1020,7 @@
     "tests/parallel_route_nesting.rs": "4b254479d4d728bfd17a02316022a55e5b893a27ef9087c2a25fe2b10eb3f0df",
     "tests/program_capacity_regression.rs": "845584639446a995cbb21b126da972db56109bcbd75dc3fd35f38b73bf1089fa",
     "tests/public_surface_guards.rs": "7e88e1097e3983733b30a7d07bdb29e77bbf5203d17c9a8ce0059322ee8d85bd",
-    "tests/rolled_publication_exit.rs": "f80934e33195dadba824f6c835bececa152b5ca9e170dcf8e8540cff638510d6",
+    "tests/rolled_publication_exit.rs": "af22afe2039d1fbc9ea922a3d52386578045afd1e067d20a4400746cc1ac7ae1",
     "tests/rolled_resolver_reentry.rs": "088f8cf8aac2e4b801034137443a4403163e263f6a642a99dbec99fa590568c9",
     "tests/root_surface.rs": "e14f256031cd3ff9a34415442f5b17283d08a301420dcc0647b17fa16e33c79a",
     "tests/route_branch_send.rs": "1a803020571a5027a3b7d977f8d326bb2d89464b99fd2cf17ea804828bed9791",
@@ -1242,6 +1242,7 @@
     "tests/verification_oracles/participant_validation.rs": "b722662e56fa2bfeac4e690967bc8aa42c9de12be17e24f399a69ec72cab4905",
     "tests/visible_route_reentry.rs": "723a5c82962459b8df8cfe91ecfdb800aaf3fc4e13fa6fcc3815ea69a44d9231"
   },
-  "qualification": "Fresh local core workspace: 874 passed, 11 ignored; release/LTO regression, Clippy, 8 new Lean theorems and Z3 4 UNSAT + 1 historical SAT passed. Stack/SRAM/flash within unchanged limits. Full resource gate fails route-arm RSS 135/132 MiB; causal-handoff route 4 fails 141/129 MiB, also 130/129 MiB on unmodified 67cbf9f0. QUIC actual capacity-one debug/release regressions and all six requested local checks pass; official interop remains unqualified.",
-  "base_commit": "adea68456116df8339c76a0d7407889755ae7b87"
+  "qualification": "Selected branch snapshot imported; fresh consumer validation pending. Earlier qualification applies only to its recorded revision.",
+  "base_commit": "9fbb84cdc932cbd0a81ee995a8689393f322763e",
+  "branch": "development/rolled-route-ownership"
 }

@@ -1,3 +1,11 @@
+# Selected upstream snapshot
+
+`hibana/` is the exact tracked source of `development/rolled-route-ownership`
+at `9fbb84cdc932cbd0a81ee995a8689393f322763e`, without local patches. Fresh consumer verification is pending.
+The runtime source matches the previously vendored adea684 snapshot; upstream
+proof links and publication regression hygiene have advanced. Historical
+validation below applies to the recorded earlier commit, not this import.
+
 # Audited local dependency snapshots
 
 `hibana/` is the complete tracked source at published commit
