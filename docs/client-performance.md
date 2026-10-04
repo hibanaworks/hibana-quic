@@ -3,6 +3,23 @@
 This is an optimization checkpoint, not Neqo performance parity or an increase
 in official interoperability qualification (still 14 of 44 cells).
 
+## Latest candidate, adopted 2026-10-04
+
+The selected Hibana revision is `56d405671931eaac615edeb59b6562337f9edbb4`.
+With its certified raw-column lookup, a 64 KiB backed host receive window and
+owned response-reader handoff, three-run local release measurements gave:
+
+| File | hibana-quic median | Neqo median | Latency ratio |
+| --- | ---: | ---: | ---: |
+| 1 MiB | 0.036542986 s | 0.011526408 s | 3.17x |
+| 32 MiB | 0.692855196 s | 0.052620986 s | 13.17x |
+
+Peak client RSS was about 10.6 MiB, compared with about 7.5 MiB before
+the host receive-window increase. These remain local measurements; the gap
+is too large to meet the near-Neqo target. See `proofs/owned-body-input/` for
+ownership checks and separately scoped sending-path diagnostics.
+The earlier checkpoint below is retained as measurement history.
+
 ## Reproducible workload
 
 `adapters/host/tests/compare_release_clients.py` compares release clients against
@@ -40,7 +57,7 @@ the small-file ratio must not be presented as general performance parity.
   handling for tiny windows and the maximum offset. Credit is still backed by
   real released receive capacity and recovery owns retransmission evidence.
 - The receiver processes only already-ready datagrams opportunistically. It
-  flushes ready streams before waiting for input, after 16 datagrams or 1 ms of
+  flushes ready streams before waiting for input, after 64 datagrams or a 1 ms budget of
   work, before peer close, and when an ACK receipt requires consumption. A
   pending receive remains pinned and owned during delivery; it is not cancelled
   and reissued to obtain batching. The loop yields at bounded batch boundaries.

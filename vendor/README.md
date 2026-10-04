@@ -1,15 +1,15 @@
 # Selected upstream snapshot
 
 `hibana/` is the exact tracked source of `development/route-metadata-performance`
-at `4ba7510cfacff984dd02202fccf288823f3589ee`, without local patches.
+at `56d405671931eaac615edeb59b6562337f9edbb4`, without local patches.
 It includes explicit-join validation, removal of manual source ownership tables,
 and validated immutable resolver/dispatch lookup optimizations. Public APIs and
 protocol order are unchanged. Consumer correctness and performance are measured
 separately; this pin is not a claim of Neqo performance parity.
 
-# Audited local dependency snapshots
+# Historical audited dependency snapshots
 
-`hibana/` is the complete tracked source at published commit
+The earlier snapshot was the complete tracked source at published commit
 `adea68456116df8339c76a0d7407889755ae7b87` on
 `fix/elastic-roll-wire-colors-20261002`, incorporating the rolled-route ownership
 follow-up through `67cbf9f0a57fe89a8486766456a769b646f2a3e1` and the fresh completed

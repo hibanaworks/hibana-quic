@@ -248,7 +248,7 @@ async fn connected<
     )
     .await?;
     let control = Control::new(stop);
-    let state = io::State::<CHUNK>::new();
+    let state = io::State::<CHUNK, H::Body>::new();
     let publication_state = transmit::State::new(book_publication, publication);
     let terminal = termination::Exchange::new(&control, scope);
     let reset_exchange = reset::Exchange::new();
@@ -328,7 +328,7 @@ async fn connected<
             }
         });
         let mut receiving = pin!(async {
-            receive::run::<N, RX, CHUNK>(
+            receive::run::<N, RX, CHUNK, _>(
                 &mut roles.receive,
                 &mut roles.rx_keys,
                 &mut roles.peer_event,

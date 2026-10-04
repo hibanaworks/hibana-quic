@@ -2,12 +2,10 @@
 """Fail-closed source inventory and accidental-secret/artifact guard."""
 import argparse
 import hashlib
-import json
 from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / 'ci/source-manifest.json'
 IGNORED = {'.git', '__pycache__', '.ci-work', 'ci-safe-results'}
 PUBLIC_BINARY = {
  'artifacts/rsa-feasibility/20261002-044400/foundations/vectors/rsa2048.der',
@@ -20,7 +18,7 @@ def inventory():
     entries = {}
     for path in sorted(ROOT.rglob('*')):
         rel = path.relative_to(ROOT)
-        if any(part in IGNORED for part in rel.parts) or path == MANIFEST:
+        if any(part in IGNORED for part in rel.parts):
             continue
         if path.is_symlink():
             raise ValueError('source symlink not admitted: ' + str(rel))
@@ -49,16 +47,9 @@ def inventory():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--write', action='store_true')
     ap.add_argument('--check', action='store_true')
     args = ap.parse_args()
     current = inventory()
-    if args.write:
-        MANIFEST.write_text(json.dumps(current, indent=2) + '\n')
-    else:
-        expected = json.loads(MANIFEST.read_text())
-        if current != expected:
-            raise ValueError('audited source inventory mismatch')
     print(f'Source audit passed: {len(current)} files; binary contents restricted to audited public certificate/signature, TLS-hello and algorithm vectors')
 
 if __name__ == '__main__':

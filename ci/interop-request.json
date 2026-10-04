@@ -1,6 +1,6 @@
 {
-  "request": "Requalify the existing 14 cells after receive and flow-credit batching with the exact published Hibana dependency",
-  "requested_at": "2026-10-04T16:20:00Z",
+  "request": "Requalify the existing 14 cells after owned response-reader transfer and bounded receive batching with published Hibana 56d40567",
+  "requested_at": "2026-10-04T22:02:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"

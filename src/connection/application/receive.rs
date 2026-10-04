@@ -35,6 +35,7 @@ pub(crate) async fn run<
     const N: usize,
     const RX: usize,
     const CHUNK: usize,
+    B,
 >(
     receive: &mut Endpoint<'_, { p::RECEIVE }>,
     rx_keys: &mut Endpoint<'_, { p::RX_KEYS }>,
@@ -48,7 +49,7 @@ pub(crate) async fn run<
     reset: &reset::Exchange<'streams>,
     acknowledgments: &super::acknowledgments::Exchange<'scope>,
     app: &RefCell<application_stream::App<'_, '_, 'scope, RX, CHUNK>>,
-    state: &io::State<'_, CHUNK>,
+    state: &io::State<'_, CHUNK, B>,
     mut keys: keys::RxControl<'_, 'owner, 'scope>,
     control: &Control<'_, 'scope>,
     clock: &impl Clock,
@@ -86,8 +87,9 @@ pub(crate) async fn run<
     // A Finished-gated early bridge may already have retained request bytes.
     notify_ready(receive, control, state, app).await?;
     // Bounded opportunistic batching: flush ready streams before actually
-    // waiting for input, and after at most sixteen datagrams or one millisecond of work. Pending receive IO
-    // stays pinned/owned while delivery runs; it is not cancelled for batching.
+    // waiting for input. At datagram boundaries, flush after sixty-four items
+    // or a one-millisecond work budget (not a hard real-time guarantee).
+    // Pending receive IO stays pinned/owned during delivery; no batching cancel.
     let mut burst = 0usize;
     let mut burst_started = 0u64;
     'receive: while !control.stopping() {
@@ -190,7 +192,7 @@ pub(crate) async fn run<
                 crate::runtime::yield_now().await;
             }
         }
-        if burst >= 16 || clock.now().saturating_sub(burst_started) >= 1_000 {
+        if burst >= 64 || clock.now().saturating_sub(burst_started) >= 1_000 {
             notify_ready(receive, control, state, app).await?;
             burst = 0;
             crate::runtime::yield_now().await;
@@ -508,10 +510,10 @@ async fn confirm<'scope, const N: usize>(
     Ok(())
 }
 
-async fn notify_ready<const RX: usize, const CHUNK: usize>(
+async fn notify_ready<const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::RECEIVE }>,
     control: &Control<'_, '_>,
-    state: &io::State<'_, CHUNK>,
+    state: &io::State<'_, CHUNK, B>,
     app: &RefCell<application_stream::App<'_, '_, '_, RX, CHUNK>>,
 ) -> Result<(), Error> {
     // A sink error asks the independent completion lane to close. Do not keep

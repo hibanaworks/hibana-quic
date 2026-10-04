@@ -6,7 +6,7 @@ use hibana_quic::{
     streams::{Limits, PacketReference, SendChunk, StreamSlot},
 };
 pub const STREAMS: usize = hibana_quic::connection::application_stream::MAX_LIVE_STREAMS;
-pub const RECEIVE_BYTES: usize = 16 * 1024;
+pub const RECEIVE_BYTES: usize = 64 * 1024;
 pub const CHUNK_BYTES: usize = 1024;
 pub const SEND_CHUNKS: usize = 64;
 pub const PACKET_REFERENCES: usize = 128;

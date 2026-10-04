@@ -42,20 +42,26 @@ pub(crate) struct OwnedRequest<'book> {
     len: usize,
 }
 
-/// Application job observations only. Packet/key/connection phase is owned by
-/// the transport continuations, never by these completion counters.
-pub(crate) struct State<'book, const CHUNK: usize> {
-    chunks: Inbox<Chunk<CHUNK>>,
+// The data edge carries either bounded request bytes or the actual response
+// reader. This is owned input data, not an independently advanced phase.
+enum Input<B, const CHUNK: usize> {
+    Chunk(Chunk<CHUNK>),
+    Body(B),
+}
+
+/// Application observations; protocol progression stays in the local awaits.
+pub(crate) struct State<'book, const CHUNK: usize, B> {
+    data: Inbox<Input<B, CHUNK>>,
     opened: Inbox<Production<'book>>,
     submitted: Cell<usize>,
     bodies_finished: Cell<usize>,
     done: Cell<bool>,
     completed: RefCell<[Option<u64>; MAX_LIVE_STREAMS]>,
 }
-impl<const CHUNK: usize> State<'_, CHUNK> {
+impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
     pub(crate) const fn new() -> Self {
         Self {
-            chunks: Inbox::new(),
+            data: Inbox::new(),
             opened: Inbox::new(),
             submitted: Cell::new(0),
             bodies_finished: Cell::new(0),
@@ -131,15 +137,15 @@ enum Admission {
     Interrupted,
 }
 
-/// Transfer a real owned chunk before announcing it on the source wire. The
+/// Transfer actual owned input before announcing it on the source wire. The
 /// ingress response and SourceTaken settle the lane even during shutdown.
-async fn submit<const CHUNK: usize>(
+async fn submit<const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
-    state: &State<'_, CHUNK>,
+    state: &State<'_, CHUNK, B>,
     sequence: &mut u64,
-    chunk: Chunk<CHUNK>,
+    input: Input<B, CHUNK>,
 ) -> Result<Admission, Error> {
-    state.chunks.put(chunk).map_err(|_| Error::Binding)?;
+    state.data.put(input).map_err(|_| Error::Binding)?;
     endpoint.send::<p::SourceData>(sequence).await?;
     let reply = endpoint.offer().await?;
     let accepted = match reply.label() {
@@ -163,9 +169,9 @@ async fn submit<const CHUNK: usize>(
 }
 
 // A stream is bound once at the start of its finite production fragment.
-async fn begin_stream<'book, const CHUNK: usize>(
+async fn begin_stream<'book, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
-    state: &State<'book, CHUNK>,
+    state: &State<'book, CHUNK, B>,
     production: Production<'book>,
 ) -> Result<(), Error> {
     let id = production.id();
@@ -205,10 +211,10 @@ async fn end_stream(
     }
 }
 
-async fn source_finished<const CHUNK: usize>(
+async fn source_finished<const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     control: &Control<'_, '_>,
-    state: &State<'_, CHUNK>,
+    state: &State<'_, CHUNK, B>,
     sequence: u64,
 ) -> Result<(), Error> {
     endpoint.send::<p::SourceDone>(&sequence).await?;
@@ -218,10 +224,10 @@ async fn source_finished<const CHUNK: usize>(
     Ok(())
 }
 
-pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize>(
+pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     control: &Control<'_, '_>,
-    state: &State<'book, CHUNK>,
+    state: &State<'book, CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut impl ClientRequests,
 ) -> Result<(), Error> {
@@ -234,10 +240,10 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize>(
     result
 }
 
-async fn client_requests<'book, const RX: usize, const CHUNK: usize>(
+async fn client_requests<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     control: &Control<'_, '_>,
-    state: &State<'book, CHUNK>,
+    state: &State<'book, CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut impl ClientRequests,
     sequence: &mut u64,
@@ -297,7 +303,7 @@ async fn client_requests<'book, const RX: usize, const CHUNK: usize>(
                     len: count,
                 };
                 chunk.bytes[..count].copy_from_slice(&request[offset..offset + count]);
-                let admitted = submit(endpoint, state, sequence, chunk).await?;
+                let admitted = submit(endpoint, state, sequence, Input::Chunk(chunk)).await?;
                 if admitted != Admission::Accepted {
                     return Ok(admitted);
                 }
@@ -330,8 +336,8 @@ async fn client_requests<'book, const RX: usize, const CHUNK: usize>(
 /// `next` must still be called at the limit so exactly MAX_REQUESTS requests
 /// can end normally. A seventeenth pending request is rejected before opening
 /// an impossible stream or consuming the caller's pending request via started.
-async fn next_request<const CHUNK: usize>(
-    state: &State<'_, CHUNK>,
+async fn next_request<const CHUNK: usize, B>(
+    state: &State<'_, CHUNK, B>,
     requests: &mut impl ClientRequests,
     output: &mut [u8],
 ) -> Result<Option<usize>, Error> {
@@ -348,12 +354,17 @@ async fn next_request<const CHUNK: usize>(
     Ok(Some(len))
 }
 
-pub(crate) async fn server_source<'book, const CHUNK: usize>(
+pub(crate) async fn server_source<
+    'book,
+    const CHUNK: usize,
+    B: BodyReader,
+    H: ServerHandler<Body = B>,
+>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     control: &Control<'_, '_>,
-    state: &State<'book, CHUNK>,
+    state: &State<'book, CHUNK, B>,
     requests: &mut Receiver<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
-    handler: &mut impl ServerHandler,
+    handler: &mut H,
 ) -> Result<(), Error> {
     let mut sequence = 0;
     let result = server_responses(endpoint, control, state, requests, handler, &mut sequence).await;
@@ -365,12 +376,12 @@ pub(crate) async fn server_source<'book, const CHUNK: usize>(
     result
 }
 
-async fn server_responses<'book, const CHUNK: usize>(
+async fn server_responses<'book, const CHUNK: usize, B: BodyReader, H: ServerHandler<Body = B>>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     control: &Control<'_, '_>,
-    state: &State<'book, CHUNK>,
+    state: &State<'book, CHUNK, B>,
     requests: &mut Receiver<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
-    handler: &mut impl ServerHandler,
+    handler: &mut H,
     sequence: &mut u64,
 ) -> Result<(), Error> {
     if CHUNK == 0 {
@@ -384,7 +395,7 @@ async fn server_responses<'book, const CHUNK: usize>(
         if state.submitted_count() >= MAX_REQUESTS {
             return Err(Error::Capacity);
         }
-        let mut body = match control
+        let body = match control
             .until_stop(
                 0,
                 handler.open(request.production.id(), &request.bytes[..request.len]),
@@ -398,32 +409,10 @@ async fn server_responses<'book, const CHUNK: usize>(
         control.changed()?;
         let stream_id = request.production.id();
         begin_stream(endpoint, state, request.production).await?;
-        let result = async {
-            while !control.stopping() {
-                let mut chunk = Chunk {
-                    bytes: [0; CHUNK],
-                    len: 0,
-                };
-                let len = match control.until_stop(0, body.read(&mut chunk.bytes)).await {
-                    Some(result) => result.map_err(|_| Error::Application)?,
-                    None => return Ok(Admission::Interrupted),
-                };
-                if len > CHUNK {
-                    return Err(Error::Capacity);
-                }
-                if len == 0 {
-                    return Ok(Admission::Accepted);
-                }
-                chunk.len = len;
-                let admitted = submit(endpoint, state, sequence, chunk).await?;
-                if admitted != Admission::Accepted {
-                    return Ok(admitted);
-                }
-                crate::runtime::yield_now().await;
-            }
-            Ok(Admission::Interrupted)
-        }
-        .await;
+        // The actual reader moves once through the Hibana data edge. Ingress
+        // alone owns the reader until EOF, failure or cancellation; each packet
+        // still uses its ordinary bounded send chunk and publication contract.
+        let result = submit(endpoint, state, sequence, Input::Body(body)).await;
         let finished = end_stream(
             endpoint,
             stream_id,
@@ -448,10 +437,10 @@ async fn server_responses<'book, const CHUNK: usize>(
     Ok(())
 }
 
-pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize>(
+pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyReader>(
     endpoint: &mut Endpoint<'_, { p::INGRESS }>,
     control: &Control<'_, '_>,
-    state: &State<'book, CHUNK>,
+    state: &State<'book, CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     reclaim: &super::reclaim::Exchange<'book>,
 ) -> Result<(), Error> {
@@ -468,15 +457,22 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize>(
                     match offered.label() {
                         0 => {
                             check(offered.recv::<p::SourceData>().await?, sequence)?;
-                            let chunk = state.chunks.take().map_err(|_| Error::Binding)?;
-                            let accepted =
-                                match admit(control, app, &mut production, &chunk, false).await {
-                                    Ok(accepted) => accepted,
-                                    Err(_) => {
-                                        control.fail()?;
-                                        Admission::Interrupted
-                                    }
-                                };
+                            let input = state.data.take().map_err(|_| Error::Binding)?;
+                            let result = match input {
+                                Input::Chunk(chunk) => {
+                                    admit(control, app, &mut production, &chunk, false).await
+                                }
+                                Input::Body(body) => {
+                                    read_body(control, app, &mut production, body).await
+                                }
+                            };
+                            let accepted = match result {
+                                Ok(accepted) => accepted,
+                                Err(_) => {
+                                    control.fail()?;
+                                    Admission::Interrupted
+                                }
+                            };
                             match accepted {
                                 Admission::Accepted => {
                                     endpoint.send::<p::SourceAccepted>(&sequence).await?
@@ -537,7 +533,7 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize>(
             }
             4 => {
                 check(offered.recv::<p::SourceDone>().await?, sequence)?;
-                if !state.chunks.is_empty() {
+                if !state.data.is_empty() {
                     control.fail()?;
                 }
                 endpoint.send::<p::ProductionReclaimsDone>(&0).await?;
@@ -548,6 +544,44 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize>(
             label => return Err(Error::UnexpectedLabel(label)),
         }
     }
+}
+
+// A body is a data resource, not a control phase. Only a real zero-length
+// read means EOF. No FIN or successful completion is manufactured on stop.
+async fn read_body<B: BodyReader, const RX: usize, const CHUNK: usize>(
+    control: &Control<'_, '_>,
+    app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
+    production: &mut Production<'_>,
+    mut body: B,
+) -> Result<Admission, Error> {
+    let mut work = 0usize;
+    while !control.stopping() {
+        let mut chunk = Chunk {
+            bytes: [0; CHUNK],
+            len: 0,
+        };
+        let len = match control.until_stop(1, body.read(&mut chunk.bytes)).await {
+            Some(result) => result.map_err(|_| Error::Application)?,
+            None => return Ok(Admission::Interrupted),
+        };
+        if len > CHUNK {
+            return Err(Error::Capacity);
+        }
+        if len == 0 {
+            return Ok(Admission::Accepted);
+        }
+        chunk.len = len;
+        let accepted = admit(control, app, production, &chunk, false).await?;
+        if accepted != Admission::Accepted {
+            return Ok(accepted);
+        }
+        work += 1;
+        if work == 16 {
+            work = 0;
+            crate::runtime::yield_now().await;
+        }
+    }
+    Ok(Admission::Interrupted)
 }
 
 async fn admit<const RX: usize, const CHUNK: usize>(
@@ -605,10 +639,10 @@ fn ready_handle<const RX: usize, const CHUNK: usize>(
         .ok_or(Error::Binding)
 }
 
-pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize>(
+pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SINK }>,
     control: &Control<'_, '_>,
-    state: &State<'book, CHUNK>,
+    state: &State<'book, CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     sink: &mut impl StreamSink,
     reclaim: &super::reclaim::Exchange<'book>,
@@ -661,9 +695,9 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize>(
     }
 }
 
-async fn deliver<const RX: usize, const CHUNK: usize>(
+async fn deliver<const RX: usize, const CHUNK: usize, B>(
     control: &Control<'_, '_>,
-    state: &State<'_, CHUNK>,
+    state: &State<'_, CHUNK, B>,
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
     sink: &mut impl StreamSink,
     stream_id: u64,
@@ -700,10 +734,10 @@ async fn deliver<const RX: usize, const CHUNK: usize>(
     Ok(read.fin)
 }
 
-pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize>(
+pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SINK }>,
     control: &Control<'_, '_>,
-    state: &State<'book, CHUNK>,
+    state: &State<'book, CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut Sender<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
     reclaim: &super::reclaim::Exchange<'book>,
@@ -761,9 +795,9 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize>(
     }
 }
 
-async fn receive_request<'book, const RX: usize, const CHUNK: usize>(
+async fn receive_request<'book, const RX: usize, const CHUNK: usize, B>(
     control: &Control<'_, '_>,
-    state: &State<'book, CHUNK>,
+    state: &State<'book, CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut Sender<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
     pending: &mut [Option<PendingRequest>; MAX_LIVE_STREAMS],
@@ -819,6 +853,15 @@ async fn receive_request<'book, const RX: usize, const CHUNK: usize>(
 }
 
 #[cfg(test)]
+struct EmptyBody;
+#[cfg(test)]
+impl BodyReader for EmptyBody {
+    async fn read(&mut self, _: &mut [u8]) -> Result<usize, ()> {
+        panic!("chunk-only fixture must not read a body")
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use core::{
@@ -868,7 +911,7 @@ mod tests {
 
     #[test]
     fn exactly_sixteen_requests_reach_eof_without_capacity_failure() {
-        let state = State::<8>::new();
+        let state = State::<8, EmptyBody>::new();
         let mut requests = Requests {
             remaining: MAX_REQUESTS,
             pending: false,
@@ -895,7 +938,7 @@ mod tests {
 
     #[test]
     fn seventeenth_request_is_rejected_while_still_pending() {
-        let state = State::<8>::new();
+        let state = State::<8, EmptyBody>::new();
         let mut requests = Requests {
             remaining: MAX_REQUESTS + 1,
             pending: false,
@@ -941,7 +984,45 @@ mod stop_tests {
         program::{RoleProgram, project},
     };
 
-    fn stopped_ingress(fin: bool) {
+    struct CountingBody<'a> {
+        drops: &'a Cell<usize>,
+        reads: &'a Cell<usize>,
+        byte: Option<u8>,
+        fail: bool,
+    }
+    impl BodyReader for CountingBody<'_> {
+        async fn read(&mut self, output: &mut [u8]) -> Result<usize, ()> {
+            let mut yielded = false;
+            core::future::poll_fn(|cx| {
+                if !yielded {
+                    yielded = true;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+            .await;
+            self.reads.set(self.reads.get() + 1);
+            if self.fail {
+                return Err(());
+            }
+            match self.byte.take() {
+                Some(byte) => {
+                    output[0] = byte;
+                    Ok(1)
+                }
+                None => Ok(0),
+            }
+        }
+    }
+    impl Drop for CountingBody<'_> {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    fn stopped_ingress(fin: bool, body: bool, fail_second: bool) {
         let mut scope = ApplicationKeyScope::new(912);
         let mut installation = scope.claim().unwrap();
         let mut gate = PublicationGate::new(installation.take_publication_gate().unwrap());
@@ -985,7 +1066,9 @@ mod stop_tests {
         let second = app.open_local().unwrap();
         let second_production = app.take_production(second).unwrap();
         let app = RefCell::new(app);
-        let state = State::<8>::new();
+        let drops = Cell::new(0);
+        let reads = Cell::new(0);
+        let state = State::<8, CountingBody<'_>>::new();
         let global = p::source_choreography();
         let source: RoleProgram<{ p::SOURCE }> = project(&global);
         let ingress_role: RoleProgram<{ p::INGRESS }> = project(&global);
@@ -1014,9 +1097,18 @@ mod stop_tests {
                         &mut source,
                         &state,
                         &mut sequence,
-                        Chunk {
-                            bytes: [1; 8],
-                            len: 1,
+                        if body {
+                            Input::Body(CountingBody {
+                                drops: &drops,
+                                reads: &reads,
+                                byte: Some(1),
+                                fail: false,
+                            })
+                        } else {
+                            Input::Chunk(Chunk {
+                                bytes: [1; 8],
+                                len: 1,
+                            })
                         },
                     )
                     .await?;
@@ -1027,23 +1119,33 @@ mod stop_tests {
                 assert!(!control.failed());
                 assert!(!control.stopping());
                 begin_stream(&mut source, &state, second_production).await?;
-                assert!(
-                    submit(
-                        &mut source,
-                        &state,
-                        &mut sequence,
-                        Chunk {
+                let second_outcome = submit(
+                    &mut source,
+                    &state,
+                    &mut sequence,
+                    if body {
+                        Input::Body(CountingBody {
+                            drops: &drops,
+                            reads: &reads,
+                            byte: Some(2),
+                            fail: fail_second,
+                        })
+                    } else {
+                        Input::Chunk(Chunk {
                             bytes: [2; 8],
-                            len: 1
-                        }
-                    )
-                    .await?
-                        == Admission::Accepted
-                );
-                assert!(
-                    end_stream(&mut source, second.id(), Admission::Accepted).await?
-                        == Admission::Accepted
-                );
+                            len: 1,
+                        })
+                    },
+                )
+                .await?;
+                let expected = if fail_second {
+                    Admission::Interrupted
+                } else {
+                    Admission::Accepted
+                };
+                assert!(second_outcome == expected);
+                assert!(end_stream(&mut source, second.id(), second_outcome).await? == expected);
+                assert_eq!(control.failed(), fail_second);
                 source_finished(&mut source, &control, &state, sequence).await?;
                 Ok::<_, Error>(())
             },
@@ -1057,6 +1159,12 @@ mod stop_tests {
             {
                 result.unwrap();
                 allocations.finish();
+                if body {
+                    // The stopped body is read once, never reaches EOF, and
+                    // is dropped once. The next body is read through real EOF.
+                    assert_eq!(reads.get(), if fail_second { 2 } else { 3 });
+                    assert_eq!(drops.get(), 2);
+                }
                 return;
             }
         }
@@ -1064,7 +1172,15 @@ mod stop_tests {
     }
     #[test]
     fn actual_ingress_preserves_connection_after_stopped_data_and_fin() {
-        stopped_ingress(false);
-        stopped_ingress(true);
+        stopped_ingress(false, false, false);
+        stopped_ingress(true, false, false);
+    }
+    #[test]
+    fn actual_owned_body_moves_once_and_stop_does_not_fabricate_eof() {
+        stopped_ingress(false, true, false);
+    }
+    #[test]
+    fn actual_body_read_failure_is_rejected_without_a_successful_eof() {
+        stopped_ingress(false, true, true);
     }
 }

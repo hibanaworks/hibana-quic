@@ -129,10 +129,10 @@ pub(crate) async fn cancel_peer(
 /// Observe completion independently of UDP receive and publication. A client
 /// finishes only when its source retired, at least one request was submitted,
 /// each sink consumed FIN, and no retransmittable request chunks remain.
-pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usize>(
+pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::FILES_EVENT }>,
     exchange: &Exchange<'_, '_, '_>,
-    state: &io::State<'_, CHUNK>,
+    state: &io::State<'_, CHUNK, B>,
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
     book: &crate::connection::recovery::CompletionObserver<'_, '_, N>,
     side: Side,
