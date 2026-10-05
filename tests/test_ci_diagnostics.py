@@ -252,6 +252,7 @@ class Diagnostics(unittest.TestCase):
 
     def test_requested_case_scope_is_explicit_and_fail_closed(self):
         self.assertEqual(self.module.requested_cases(['chacha20']), {'chacha20'})
+        self.assertEqual(self.module.requested_cases(['resumption']), {'resumption'})
         self.assertEqual(self.module.requested_cases(['longrtt', 'transferloss', 'transfercorruption', 'ipv6']), {'longrtt', 'transferloss', 'transfercorruption', 'ipv6'})
         for invalid in ([], ['transfer', 'transfer'], ['unknown'], ['../secret'], ['http3'], 'transfer', [None]):
             with self.assertRaises(RuntimeError):

@@ -51,16 +51,35 @@ HRR preserves the existing strict one-requested-share rule, group/suite continui
 - Negative/transition tests cover changed trust anchors/limits even through an unfiltered lookup, known-ticket bad binder, expired/unknown issuer fallback, server policy/limit changes, cache pressure, and equivalent parameter encodings/CID changes
 - `reference-tls/tests/resumption_rustls.rs`: real resumed handshakes in both directions against pinned rustls 0.23.45 QUIC with shared configurations, plus a resumed rustls client through an actual P-256 HRR; both sides' 1-RTT packet keys interoperate
 
-These provider tests are not a persistent UDP host test or the runner resumption gate. Full endpoint/lifecycle integration and the host work below remain separate evidence. The allocating rustls peer is not included in the bounded allocation counter. The core builds for thumbv6m without alloc/std; final hardware RAM/stack qualification is still required.
+These provider tests alone do not qualify the complete UDP endpoint or official
+runner gate. The allocating rustls peer is outside the bounded allocation
+counter. Core thumbv6m compilation is separate from final hardware RAM/stack
+qualification.
 
-## Proposed host integration
+## Direct host integration and current qualification
 
-Reuse the clean `adapters/host` package and existing shared `hq`/`bounded-handshake` sources. Add an explicit bounded sequential-connection mode, initially exactly two connections, rather than claiming that a single handshake proves resumption. Keep OS entropy, injected `Instant`-based millisecond ticket clock, root material, one fixed cache slot and one server key/replay slice outside per-connection construction. Do not serialize PSKs/private ticket keys or enable key logging.
+The direct Hibana host implements `hq client --session resume` and
+`hq server --session resume`. Each executes exactly two sequential connections
+with fresh transport/TLS ownership. The client sends the first requested file
+on connection one and the remaining files on connection two, retaining its
+bounded four-slot authenticated ticket cache across the actual finite retirement
+boundary. The server retains one ticket-key owner and eight replay slots across
+both connections. A wall-clock ticket service supplies checked ticket time.
+No PSK, private ticket-key persistence or endpoint key-log export is enabled.
 
-For each connection, allocate fresh random CIDs and a checked new transport/Driver generation; `Config.generation` must equal `Driver` generation, and every transmit callback must carry that generation. Preserve first-generation state until its callbacks/packets are retired according to the real lifecycle, or route stale packets by CID and reject them. Never reuse a descriptor from connection one in connection two.
+The client must actually receive an authenticated ticket and consume an offer
+matching its current origin, cipher and trust configuration. Connection two
+must report genuine PSK resumption; full-handshake fallback fails this requested
+mode. File hashes, both Finished proofs and actual lifecycle closure remain
+required. Native Neqo tests cover both directions using the runner's 5 KiB and
+10 KiB response sizes.
 
-Client flow: authenticate and flush the first connection, keep reading authenticated OneRtt CRYPTO until an NST is actually cached within its bounded deadline, close/retire appropriately, consume an offer matching the current trust configuration, then create and drive connection two. Server flow: use the same ticket key with a new independent transport/TLS connection and checked generation. Report each connection's full/resumed status, authenticated peer and output completion separately; a requested resumption test fails if connection two merely falls back.
+The QNS adapter now maps the registered `resumption` testcase to this existing
+mode on both roles. Official qualification is pending the unmodified runner's
+verdict, including exactly two handshakes, certificate presence only on the
+first, and all transferred files. The Neqo peer's real key log is available to
+the runner; the candidate does not fabricate one or export secrets in artifacts.
 
-Suggested explicit CLI additions are `--connections 2` and `--require-resumption true` on the client and `--max-connections 2` on the server. These flags are a proposal, not implemented commands. The existing hq transfer interface can later map the pinned runner's real resumption testcase onto this lifecycle; retain exact runner fixture/authentication and file checks. No success may be inferred from queueing a ticket, a timeout, or a full fallback.
-
-0-RTT remains rejected until a separate server anti-replay policy and actual remembered QUIC transport limits/application replay policy are implemented and verified.
+This mode does not enable client 0-RTT. The separate explicit server early-data
+reception path and its replay/remembered-limit checks are described in
+[early-data-integration.md](early-data-integration.md).

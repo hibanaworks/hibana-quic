@@ -83,7 +83,7 @@ def main():
     env['LD_LIBRARY_PATH'] = str(nss / 'lib')
     env.pop('SSLKEYLOGFILE', None)
     ipv6 = args.scenario == 'ipv6'
-    sizes = [32, 33] if args.scenario in ('resumption', 'zerortt') else [3 << 20] if args.scenario == 'chacha20' else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
+    sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario == 'chacha20' else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
     if args.ordinary_files != 3:
         if args.scenario != 'clean':
             parser.error('--ordinary-files requires the clean scenario')

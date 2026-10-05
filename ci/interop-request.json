@@ -1,20 +1,14 @@
 {
-  "request": "Requalify existing 14 cells after request-backed receive windows and bounded request/ACK-history capacity fixes",
-  "requested_at": "2026-10-05T02:17:00Z",
+  "request": "Qualify real TLS session resumption in both candidate directions after native 5 KiB/10 KiB peer checks",
+  "requested_at": "2026-10-05T02:50:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"
   ],
-  "approval": "User authorized the existing interop workflow for these unchanged cases.",
-  "local_evidence": "docs/client-performance.md",
+  "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
+  "local_evidence": "docs/resumption-integration.md",
   "cases": [
-    "handshake",
-    "transfer",
-    "longrtt",
-    "transferloss",
-    "transfercorruption",
-    "ipv6",
-    "chacha20"
+    "resumption"
   ],
-  "qualification": "No new supported cases are claimed; server early receive and client performance remain separately scoped."
+  "qualification": "Two new candidate cells are requested, not claimed passed; prior seven-case bidirectional qualification remains separately recorded."
 }

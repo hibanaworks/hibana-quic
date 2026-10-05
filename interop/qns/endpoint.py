@@ -7,7 +7,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit
 
-SUPPORTED = {'handshake', 'transfer', 'chacha20'}
+SUPPORTED = {'handshake', 'transfer', 'chacha20', 'resumption'}
 
 class Unsupported(ValueError):
     pass
@@ -23,6 +23,8 @@ def command(env, resolve=socket.getaddrinfo):
     args = ['/usr/local/bin/hibana-quic-hq', role]
     if case == 'chacha20':
         args += ['--cipher', 'chacha20']
+    if case == 'resumption':
+        args += ['--session', 'resume']
     if role == 'server':
         return args + ['--listen', '[::]:443', '--cert', '/certs/cert.pem',
                        '--key', '/certs/priv.key', '--www', '/www',
@@ -30,6 +32,8 @@ def command(env, resolve=socket.getaddrinfo):
     requests = env.get('REQUESTS', '').split()
     if not requests:
         raise ValueError('client REQUESTS must contain at least one HTTPS URL')
+    if case == 'resumption' and len(requests) < 2:
+        raise ValueError('resumption requires requests for two connections')
     origin = None
     for request in requests:
         url = urlsplit(request)

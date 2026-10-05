@@ -41,8 +41,19 @@ class EndpointCommand(unittest.TestCase):
             self.assertEqual(args[args.index('--cipher')+1], 'chacha20')
         self.assertNotIn('--cipher',module.command(self.env(),resolve))
 
+    def test_resumption_uses_two_connections_without_fabricating_keylogs(self):
+        for role in ('client', 'server'):
+            env = self.env(); env.update(ROLE=role, TESTCASE='resumption')
+            args = module.command(env, resolve)
+            self.assertEqual(args[args.index('--session') + 1], 'resume')
+            self.assertNotIn('--early', args)
+        env = self.env(); env.update(TESTCASE='resumption', REQUESTS='https://server/a')
+        with self.assertRaises(ValueError):
+            module.command(env, resolve)
+        self.assertNotIn('--session', module.command(self.env(), resolve))
+
     def test_unsupported_is_explicit(self):
-        for case in ('keyupdate', 'retry', 'zerortt', 'resumption', 'http3', 'unknown'):
+        for case in ('keyupdate', 'retry', 'zerortt', 'http3', 'unknown'):
             with self.assertRaises(module.Unsupported):
                 module.command({'ROLE':'client', 'TESTCASE':case}, resolve)
     def test_extra_params_not_evaluated(self):
