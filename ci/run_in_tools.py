@@ -87,6 +87,11 @@ RUNNER_PATTERNS = {
     'file-check-passed': ('Check of downloaded files succeeded.',),
     'capture-or-file-missing': ('testcase.check() threw FileNotFoundError:',),
     'handshake-count-mismatch': ('Expected exactly 1 handshake. Got:',),
+    'two-handshake-count-mismatch': ('Expected exactly 2 handshakes. Got:',),
+    'resumption-handshake-count-mismatch': ('Expected exactly 2 handshake. Got:',),
+    'early-data-not-sent': ("Client didn't send any 0-RTT data.",),
+    'early-late-payload-limit': ('Client sent too much data in 1-RTT packets.',),
+    'resumption-unexpected-certificate': ('Server sent a Certificate message in the second handshake.',),
     'quic-version-mismatch': ('Wrong version. Expected',),
 }
 SAFE_VALIDATION_ERRORS = {'wrong QUIC version', 'wrong matrix direction', 'missing result row', 'unexpected/duplicate case', 'case abbreviation mismatch', 'missing case', 'unknown case result', 'invalid result file', 'invalid result schema'}
@@ -291,6 +296,15 @@ def summarize_log(raw, endpoint=False):
     record['container_exit_codes'] = {role: sorted(codes) for role, codes in exits.items()}
     record['case_timeout_count'] = len(timeouts)
     record['case_timeout_seconds'] = sorted(set(timeouts))
+    # Fixed runner diagnostics only. Never export log text, paths or secrets.
+    # These counters explain a verdict; they cannot override the runner result.
+    early_sizes = {label: set() for label in ('zero_rtt_payload_bytes', 'one_rtt_payload_bytes')}
+    for line in lines:
+        for label, marker in (('zero_rtt_payload_bytes', '0-RTT size:'), ('one_rtt_payload_bytes', '1-RTT size:')):
+            match = re.search(re.escape(marker) + r' ([0-9]{1,13})(?![0-9])(?:\s|$)', line)
+            if match and int(match.group(1)) <= MAX_BYTES and len(early_sizes[label]) < MAX_JSON_SAMPLES:
+                early_sizes[label].add(int(match.group(1)))
+    record['early_payload_diagnostics'] = {label: sorted(values) for label, values in early_sizes.items() if values}
     return record
 
 def directory_sizes(root, parts):

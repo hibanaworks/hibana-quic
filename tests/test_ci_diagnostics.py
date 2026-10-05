@@ -72,6 +72,17 @@ class Diagnostics(unittest.TestCase):
         self.assertIn('non-native-udp-source', failure['error_classes'])
         self.assertTrue(failure['error']['withheld'])
 
+    def test_early_runner_reason_and_sizes_are_bounded_metadata_only(self):
+        raw = b"DEBUG:root:0-RTT size: 10023\nDEBUG:root:1-RTT size: 7000\nClient sent too much data in 1-RTT packets.\nPRIVATE secret-token\n1-RTT size: -10\n0-RTT size: 99999999999999\n"
+        result = self.module.summarize_log(raw)
+        self.assertEqual(result['early_payload_diagnostics'], {'zero_rtt_payload_bytes':[10023], 'one_rtt_payload_bytes':[7000]})
+        self.assertIn('early-late-payload-limit', result['runner_classes'])
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        self.assertNotIn('secret-token', json.dumps(result))
+        missing = self.module.summarize_log(b"Client didn't send any 0-RTT data.\nExpected exactly 2 handshakes. Got: 3\n")
+        self.assertIn('early-data-not-sent', missing['runner_classes'])
+        self.assertIn('two-handshake-count-mismatch', missing['runner_classes'])
+
     def test_panic_backtrace_refcell_without_messages(self):
         raw = b"thread 'PRIVATE_NAME' panicked at PRIVATE_PATH\nalready borrowed: BorrowMutError\nstack backtrace:\nfatal runtime error: stack overflow\n"
         result = self.module.summarize_log(raw, endpoint=True)

@@ -1,6 +1,6 @@
 {
-  "request": "Qualify server-only 0-RTT reception with the unchanged forty-file runner workload",
-  "requested_at": "2026-10-05T03:07:00Z",
+  "request": "Diagnose failed unchanged Neqo 0-RTT control before allowing server-only candidate qualification",
+  "requested_at": "2026-10-05T03:29:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"
@@ -10,7 +10,7 @@
   "cases": [
     "zerortt"
   ],
-  "qualification": "One new server-direction cell is requested, not claimed passed; client 0-RTT remains unsupported and previous 16 candidate cells are separate evidence.",
+  "qualification": "Previous Neqo baseline failed and candidate was not run; add bounded fixed verdict diagnostics without changing peers, runner or pass criteria. Candidate qualification remains 16/44.",
   "candidate_directions": [
     "server"
   ]
