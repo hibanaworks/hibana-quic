@@ -1,16 +1,16 @@
 {
-  "request": "Qualify actual locally initiated key update in both directions",
-  "requested_at": "2026-10-05T07:00:00Z",
+  "request": "Qualify address-validation amplification budget with the pinned long chain",
+  "requested_at": "2026-10-05T07:15:00Z",
   "scope": [
-    "unchanged Neqo keyupdate baseline",
-    "keyupdate in both candidate directions"
+    "unchanged Neqo amplificationlimit baseline",
+    "amplificationlimit in both candidate directions"
   ],
   "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
-    "keyupdate"
+    "amplificationlimit"
   ],
-  "qualification": "The server direction passed officially at 6bfdf43 in run37274077941. Client once-policy derives readiness from actual scoped QUIC confirmation and accepted-packet ACK evidence, then uses existing projected LocalUpdate/LocalInstalled/LocalSettled ownership transfer. Native baseline and both candidate directions repeatedly match 3 MiB; candidate client reports actual installed write generation one and completed ACK/close. Existing no-update default, zero-RTT and blackhole regressions pass. Require unchanged Neqo control and both exact runner key-phase trace verdicts.",
+  "qualification": "Unchanged pinned runner certificate generator produced nine certificates and a 9662-byte DER chain. Native real client/server transfer completed with client datagrams 2..7 dropped. Before observed client Handshake publication, server sent 2400 bytes after receiving 1200, below the strict 3x allowance. All 5120 file bytes matched and authenticated close completed. This is native evidence only; require unchanged runner certificate/trace checks, Neqo control, and both actual candidate verdicts.",
   "candidate_directions": [
     "client",
     "server"

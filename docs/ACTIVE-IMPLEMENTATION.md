@@ -240,3 +240,19 @@ byte-identical 3 MiB transfers. The candidate client reports key generation 1,
 real confirmation, all stream bytes ACKed and completed close. Native 0-RTT and
 blackhole regressions also pass. These local results do not substitute for the
 runner's encrypted packet-trace requirement for key-phase changes on both sides.
+
+## Long-chain amplification candidate
+
+Two native controlled trials use the pinned runner's unchanged nine-certificate
+generator, including its inflated SAN leaf, for a 9,662-byte DER chain. Actual
+client/server processes authenticate and close after six selected client UDP
+datagrams are lost; all 5,120 file bytes match. Before the first observed client
+Handshake publication the server emits 2,400 bytes against 1,200 received.
+The official amplificationlimit request retains the unchanged generator, trace
+limit and both directions with a Neqo baseline; this is not yet a counted pass.
+
+A separate native stateless VN diagnostic checks three CID geometries, reversed
+CIDs, v1 advertisement, the threefold byte budget, invalid-input/VN-loop silence,
+and a subsequent authenticated v1 handshake on the same listener. It adds no VN
+qualification claim or official request: an eligible reference control has not
+been established for that case. No runtime behavior is changed by these tests.

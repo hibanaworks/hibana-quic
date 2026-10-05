@@ -17,7 +17,7 @@ RUNNER = ROOT / '.ci-work/runner'
 SAFE = ROOT / 'ci-safe-results'
 RAW = ROOT / '.ci-work/raw'
 EXPECTED = {'handshake', 'transfer'}
-CASE_ABBREVIATIONS = {'handshake': 'H', 'transfer': 'DC', 'longrtt': 'LR', 'transferloss': 'L2', 'transfercorruption': 'C2', 'ipv6': '6', 'chacha20': 'C20', 'resumption': 'R', 'zerortt': 'Z', 'blackhole': 'B', 'keyupdate': 'U'}
+CASE_ABBREVIATIONS = {'handshake': 'H', 'transfer': 'DC', 'longrtt': 'LR', 'transferloss': 'L2', 'transfercorruption': 'C2', 'ipv6': '6', 'chacha20': 'C20', 'resumption': 'R', 'zerortt': 'Z', 'blackhole': 'B', 'keyupdate': 'U', 'amplificationlimit': 'A'}
 REFERENCE = 'neqo'
 IMPLEMENTATIONS = {'neqo', 'quiche', 'hibana-quic'}
 # Diagnostics are untrusted input, including logs produced by the peer. Nothing
