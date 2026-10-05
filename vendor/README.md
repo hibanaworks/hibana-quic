@@ -1,11 +1,13 @@
 # Selected upstream snapshot
 
-`hibana/` is the exact tracked source of `development/route-metadata-performance`
-at `dafdf8a27198f73f3a6ce9e21c1de86e50008b43`, without local patches.
-It includes explicit-join validation, removal of manual source ownership tables,
-and validated immutable resolver/dispatch lookup optimizations. Public APIs and
-protocol order are unchanged. Consumer correctness and performance are measured
-separately; this pin is not a claim of Neqo performance parity.
+`hibana/` is the tracked source of `development/rolled-route-ownership`
+at `4d0077b9ad3bfe3758165995f07d69a844d47632`, without local patches.
+The update removes the intrinsic send-preview scan of unselected descendant
+contracts, so an interior matching send cannot hide the real outer entry.
+It also includes the upstream cleanup of source-spelling and fixed-count audits.
+No public API, stored runtime field or capacity is added by the entry repair.
+All changed files were checked against the upstream Git blob identities.
+Consumer regressions and native interoperability are qualified separately.
 
 # Historical audited dependency snapshots
 

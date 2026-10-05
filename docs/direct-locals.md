@@ -145,3 +145,29 @@ connected-application tests, selected host Clippy and thumbv6m. Native forty-fil
 0-RTT passed both directions; the impaired fifty-connection run matched every
 file and retired every connection, including fifteen genuine idle expiries.
 The formal runner remains responsible for exact-head interoperability verdicts.
+
+## Upstream intrinsic entry repair
+
+The next dependency candidate selects upstream Hibana 4d0077b9, whose intrinsic
+controller selection no longer scans an unchosen arm's descendants before the
+other arm's actual entry. Three upstream histories were also exercised with
+the actual capacity-one QUIC carrier: repeated completed reads followed by the
+outer return, rejection of a premature return, and either nested initial arm.
+All passed. The full QUIC core/integration suites and selected host Clippy passed;
+thumbv6m compiled. The standalone upstream test runner could not fetch its
+additional crates under this workspace's network policy and is not counted as
+a local pass. Native forty-file 0-RTT and 1999-file multiplexing passed both directions.
+The fifty-connection impaired server diagnostic preserved all files and retired
+all resources, with seventeen actual idle expiries.
+
+CI run 37378345713 on 8936b133 actually executed and passed the six existing Lean
+and six Z3 model groups. Its quiche self-control passed L1/M/Z but failed C1, so
+no candidate phase ran. This does not increase the historical 30/44 inventory.
+
+The exact 5fd93508 runtime CI passed. Official run 37379219813 had passing
+quiche controls and all four server-side C1/L1/M/Z verdicts. Client C1 timed out
+at 300 seconds with fifty length-complete files; this does not prove content
+checks or proper retirement. Client L1 reported successful transfer/retirement
+with 259285 ms duration, but the overall 600-second client phase expired before
+M/Z and produced no final client verdict JSON. The next request isolates M/Z;
+C1/L1 termination latency remains an explicit regression investigation.
