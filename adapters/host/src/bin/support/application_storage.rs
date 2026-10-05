@@ -13,6 +13,11 @@ pub const CLIENT_RECEIVE_BYTES: usize = 1024 * 1024;
 pub fn client_uses_large_window(requests: usize) -> bool {
     requests != 0 && requests <= STREAMS * RECEIVE_BYTES / CLIENT_RECEIVE_BYTES
 }
+// A declared finite server request limit also bounds simultaneous streams.
+// Use the same value for advertised credit and physically owned receive slots.
+pub fn server_capacity(limit: Option<core::num::NonZeroUsize>) -> usize {
+    limit.map_or(STREAMS, |count| count.get().min(STREAMS))
+}
 pub const CHUNK_BYTES: usize = 1024;
 pub const SEND_CHUNKS: usize = 64;
 pub const PACKET_REFERENCES: usize = 128;
@@ -125,6 +130,22 @@ impl EarlyStorage {
 mod tests {
     use super::*;
 
+    #[test]
+    fn finite_server_credit_matches_owned_slots() {
+        for count in [1, 2, STREAMS] {
+            let capacity = server_capacity(core::num::NonZeroUsize::new(count));
+            let storage = Storage::<1024>::new(capacity).unwrap();
+            let limits = local_limits::<1024>(Side::Server, capacity);
+            assert_eq!(storage.streams.len(), count);
+            assert_eq!(limits.max_streams_bidi, count as u64);
+            assert_eq!(limits.max_data, (count * 1024) as u64);
+        }
+        assert_eq!(server_capacity(None), STREAMS);
+        assert_eq!(
+            server_capacity(core::num::NonZeroUsize::new(STREAMS + 1)),
+            STREAMS
+        );
+    }
     #[test]
     fn client_limits_are_backed_by_exact_requested_slot_count() {
         for count in [1, 2, 40, STREAMS] {

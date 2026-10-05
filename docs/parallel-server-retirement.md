@@ -169,3 +169,28 @@ sample did not establish a stable gain. Initial RTT remains 333 ms. A larger
 
 RFC references: https://www.rfc-editor.org/rfc/rfc9000.html#section-8.1.3 and
 https://www.rfc-editor.org/rfc/rfc9000.html#section-8.1.4 .
+
+## Capacity follows the declared finite request limit
+
+Each independent multiconnect worker declares that it completes one request.
+The host previously allocated and advertised 64 simultaneous receive-stream
+slots anyway. A single capacity function now derives both the TLS credit and
+the owned storage count from that existing request limit, capped at the same
+64-slot maximum. A server without a finite limit keeps the original capacity.
+The core choreography, packet timing, application completion and loss policy
+are unchanged.
+
+Three native fifty-connection burst-loss runs verified every file and actual
+retirement. Client times were 18.666, 18.384 and 22.303 seconds. Measured server
+peak RSS was 26,496, 29,908 and 24,124 KiB, compared with 142,912 KiB in the
+preceding instrumented published-server run. This is an observed resource
+reduction, not a guarantee of the same peak in every workload. The 15-second
+objective remains unmet.
+
+A separate interleaved three-pair comparison before this capacity change
+measured unchanged Neqo at 10.480/10.354/13.377 seconds and Hibana at
+23.887/34.920/29.043 seconds. One wait4 sample measured server CPU at
+0.364 seconds for Neqo and 1.579 seconds for Hibana; CPU alone does not explain
+the wall-time gap. No transfer timeout or loss setting was relaxed. Additional
+DATA+FIN and Handshake-ACK piggyback experiments were withdrawn rather than
+claiming a stable improvement from their inconsistent timings.

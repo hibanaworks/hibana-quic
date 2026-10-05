@@ -132,9 +132,12 @@ impl Files {
                     )
                 }
             }
-            Self::Server(_) => application_storage::local_limits::<
-                { application_storage::RECEIVE_BYTES },
-            >(Side::Server, application_storage::STREAMS),
+            Self::Server(server) => {
+                application_storage::local_limits::<{ application_storage::RECEIVE_BYTES }>(
+                    Side::Server,
+                    application_storage::server_capacity(server.completion_limit),
+                )
+            }
         }
     }
 }
@@ -300,7 +303,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
         Files::Server(server) => {
             let mut storage =
                 application_storage::Storage::<{ application_storage::RECEIVE_BYTES }>::new(
-                    application_storage::STREAMS,
+                    application_storage::server_capacity(server.completion_limit),
                 )?;
             let mut setup = storage.setup(config)?;
             setup.server_token = server_token;

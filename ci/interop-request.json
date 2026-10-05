@@ -1,6 +1,6 @@
 {
-  "request": "Requalify bounded NEW_TOKEN issuance with actual parallel TLS resumption",
-  "requested_at": "2026-10-05T16:37:00Z",
+  "request": "Requalify finite request capacity with matching TLS credit and owned storage",
+  "requested_at": "2026-10-05T17:51:00Z",
   "scope": [
     "unchanged Neqo fifty-connection controls",
     "handshakeloss and handshakecorruption as candidate server"
@@ -11,7 +11,7 @@
     "handshakeloss",
     "handshakecorruption"
   ],
-  "qualification": "Real one-use random address tokens are bound to IP and expiry in a bounded listener-owned store. Exact token bytes share the authenticated HANDSHAKE_DONE retained flight and actual publication, ACK and retransmission. Initial tokens are validated; invalid tokens remain ordinary unvalidated admissions. Strict amplification limits remain even for valid tokens. The clean native fifty-request test verifies 49 TLS resumptions, all files, and clean retirement. The loss diagnostic took 23.271 seconds and does not meet 15 seconds; measured-RTT reuse and 1120-byte chunk experiments were removed. The prior dbc4d56 runtime run 37333549933 and official run 37333549847 both passed, including unchanged Neqo controls and server L1/C1. Historical qualification remains 28/44. Require verdicts for this exact head.",
+  "qualification": "Derive owned receive slots and advertised stream/data credit from the existing finite server request limit. A one-request parallel worker now owns one slot instead of 64; servers without a finite limit retain 64. No core protocol, timeout, loss or completion policy changes. Three native loss runs verified all 50 files and resource retirement at 18.666, 18.384 and 22.303 seconds, with measured peak RSS 26496, 29908 and 24124 KiB. The 15-second target remains unmet. Prior cc5ae83 runtime 37343370244 and official interop 37343369994 passed both server cases and unchanged Neqo controls. Keep historical qualification at 28/44 and require exact-head official verdicts.",
   "candidate_directions": [
     "server"
   ],
