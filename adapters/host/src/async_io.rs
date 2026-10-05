@@ -187,6 +187,22 @@ impl<const S: usize, const T: usize> Reactor<S, T> {
     pub fn statistics(&self) -> Statistics {
         self.statistics.get()
     }
+    /// Actual retained native owners, inspected after the root future drops.
+    pub fn active_resources(&self) -> (usize, usize) {
+        let state = self.state.borrow();
+        (
+            state
+                .sockets
+                .iter()
+                .filter(|slot| slot.entry.is_some())
+                .count(),
+            state
+                .timers
+                .iter()
+                .filter(|slot| slot.entry.is_some())
+                .count(),
+        )
+    }
     fn update_statistics(&self, update: impl FnOnce(&mut Statistics)) {
         let mut statistics = self.statistics.get();
         update(&mut statistics);

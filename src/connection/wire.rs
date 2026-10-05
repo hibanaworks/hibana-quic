@@ -124,8 +124,20 @@ impl<const N: usize> PlainPacket<N> {
         level: Level,
         frame: Frame<'_>,
     ) -> Result<Self, Error> {
+        Self::with_extra(config, peer, level, frame, None)
+    }
+    pub(super) fn with_extra(
+        config: Config<'_>,
+        peer: &ConnectionId,
+        level: Level,
+        frame: Frame<'_>,
+        extra: Option<Frame<'_>>,
+    ) -> Result<Self, Error> {
         let mut plain = [0u8; N];
         let mut plen = packet::encode_frame(&frame, &mut plain)?;
+        if let Some(extra) = extra.as_ref() {
+            plen += packet::encode_frame(extra, &mut plain[plen..])?;
+        }
         let encoded_len = plen;
         let kind = match level {
             Level::Initial => LongType::Initial,
@@ -169,7 +181,9 @@ impl<const N: usize> PlainPacket<N> {
             header_len: hlen,
             plaintext_len: plen,
             level,
-            padded: plen > encoded_len || matches!(frame,Frame::Padding{length}if length!=0),
+            padded: plen > encoded_len
+                || matches!(frame,Frame::Padding{length}if length!=0)
+                || matches!(extra,Some(Frame::Padding{length})if length!=0),
         })
     }
     pub fn len(&self) -> usize {
@@ -283,4 +297,63 @@ impl<const N: usize> PlainPacket<N> {
 enum BorrowedWriteKey<'key, 'scope> {
     Initial(&'key mut PacketKey),
     Handshake(&'key mut TransmitPacketKey<'scope>),
+}
+
+#[cfg(test)]
+mod initial_ack_tests {
+    use super::*;
+    #[test]
+    fn retained_crypto_fits_the_existing_initial_ack_datagram() {
+        let config = Config {
+            side: Side::Server,
+            local_connection_id: b"serverid",
+            original_destination_id: b"original",
+            peer_connection_id: b"peerpeer",
+        };
+        let peer = ConnectionId::new(b"peerpeer").unwrap();
+        let ranges = [packet::AckRange {
+            smallest: 0,
+            largest: 2,
+        }];
+        let ack = Frame::Ack {
+            delay: 0,
+            ranges: packet::AckRanges::new(&ranges).unwrap(),
+            ecn: None,
+        };
+        let ordinary = PlainPacket::<1536>::new(config, &peer, Level::Initial, ack).unwrap();
+        let combined = PlainPacket::<1536>::with_extra(
+            config,
+            &peer,
+            Level::Initial,
+            ack,
+            Some(Frame::Crypto {
+                offset: 0,
+                data: b"retained server hello",
+            }),
+        )
+        .unwrap();
+        assert_eq!(ordinary.len(), 1200);
+        assert_eq!(combined.len(), ordinary.len());
+        let frames = packet::FrameIter::new(
+            &combined.bytes.data[combined.header_len..combined.header_len + combined.plaintext_len],
+            packet::EncryptionLevel::Initial,
+            packet::ParseLimits::default(),
+        )
+        .unwrap();
+        let mut saw_ack = false;
+        let mut saw_crypto = false;
+        for frame in frames {
+            match frame.unwrap() {
+                Frame::Ack { .. } => saw_ack = true,
+                Frame::Crypto { offset, data } => {
+                    assert_eq!(offset, 0);
+                    assert_eq!(data, b"retained server hello");
+                    saw_crypto = true;
+                }
+                Frame::Padding { .. } => {}
+                _ => panic!("unintended frame"),
+            }
+        }
+        assert!(saw_ack && saw_crypto);
+    }
 }

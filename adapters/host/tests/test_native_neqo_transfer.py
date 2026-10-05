@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import time
 
-from udp_impairment import UdpProxy, EarlyWireProbe
+from udp_impairment import UdpProxy, EarlyWireProbe, MultiEndpointProxy
 
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location('fixture', HERE / 'test_direct_handshake_localhost.py')
@@ -77,6 +77,8 @@ def main():
     parser.add_argument('--timeout-seconds', type=int, default=60)
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
     parser.add_argument('--client-keyupdate', action='store_true')
+    parser.add_argument('--expect-idle-expiry', action='store_true')
+    parser.add_argument('--multi-burst', type=int, choices=(1, 3), default=1)
     parser.add_argument('--multi-impairment', choices=('none', 'loss', 'corruption'), default='none')
     parser.add_argument('--client-early', action='store_true')
     parser.add_argument('--client-early-loss', action='store_true', help='drop the first real 0-RTT datagram; forward direction only')
@@ -89,6 +91,8 @@ def main():
         parser.error('select acceptance/loss or rejection separately')
     if args.client_keyupdate and args.scenario != 'keyupdate':
         parser.error('--client-keyupdate requires --scenario keyupdate')
+    if args.expect_idle_expiry and (args.scenario != 'multiconnect' or args.direction != 'reverse' or args.multi_impairment == 'none'):
+        parser.error('--expect-idle-expiry requires impaired reverse multiconnect')
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
     env = os.environ.copy()
     env['RUST_LOG'] = 'debug'
@@ -117,7 +121,8 @@ def main():
         if args.scenario != 'multiconnect':
             parser.error('--multi-impairment requires multiconnect')
         options = {'client_endpoints': 50, 'delay': 0.015,
-                   ('drop_every' if args.multi_impairment == 'loss' else 'corrupt_every'): 3}
+                   ('drop_every' if args.multi_impairment == 'loss' else 'corrupt_every'): 10 if args.multi_burst == 3 else 3,
+                   'burst': args.multi_burst}
     report = {
         'scope': 'native-peer-diagnostics', 'official_interop_pass': False,
         'scenario': args.scenario, 'impairment': options, 'ordinary_files': len(sizes),
@@ -197,7 +202,7 @@ def main():
                         # Native Neqo correctly rejects early data for ten seconds
                         # after startup. Unlike its QNS mode, do not shift its clock.
                         time.sleep(11)
-                    proxy_context = (EarlyWireProbe(('127.0.0.1', server_port), client_endpoints=2 if direction == 'forward' else 1, drop_first_early=args.client_early_loss) if args.scenario == 'zerortt' else UdpProxy(('127.0.0.1', server_port), **options) if options else nullcontext(None))
+                    proxy_context = (EarlyWireProbe(('127.0.0.1', server_port), client_endpoints=2 if direction == 'forward' else 1, drop_first_early=args.client_early_loss) if args.scenario == 'zerortt' else (MultiEndpointProxy if args.scenario == 'multiconnect' else UdpProxy)(('127.0.0.1', server_port), **options) if options else nullcontext(None))
                     with proxy_context as proxy:
                         client_port = proxy.address[1] if proxy else server_port
                         address = f'[::1]:{client_port}' if ipv6 else f'127.0.0.1:{client_port}'
@@ -225,12 +230,26 @@ def main():
                         except subprocess.TimeoutExpired as error:
                             result = error
                             returncode = 'timeout'
+                        # Retain verified transfer observations even when the
+                        # later clean-retirement assertion fails. Never turn
+                        # this diagnostic into an official/closed verdict.
+                        observed = [{'name': name,
+                                     'expected_sha256': sha(www / name),
+                                     'received_sha256': sha(destination / name) if (destination / name).is_file() else None}
+                                    for name in names]
+                        report.setdefault('transfer_observations', []).append({
+                            'direction': direction, 'client_exit': returncode,
+                            'expected_files': len(names),
+                            'matching_files': sum(item['expected_sha256'] == item['received_sha256'] for item in observed),
+                            'retirement_verified': False,
+                        })
+                        save()
                         resumed_report = None
                         if args.scenario in ('resumption', 'zerortt', 'multiconnect') and direction != 'baseline' and returncode == 0:
                             if direction == 'reverse':
                                 server.wait(timeout=args.timeout_seconds + 5)
                                 if server.returncode != 0:
-                                    raise AssertionError('resumption server did not complete')
+                                    raise AssertionError(f'{args.scenario} server did not complete')
                                 lines = log_path.read_text().splitlines()
                             else:
                                 lines = result.stdout.splitlines()
@@ -238,7 +257,14 @@ def main():
                             resumed_report = next((row for row in candidates if row.get('backend') == 'direct-hibana-roles'), None)
                             assert resumed_report and resumed_report['connections'] == (50 if args.scenario == 'multiconnect' else 2), resumed_report
                             assert resumed_report['resumed'] == (args.scenario != 'multiconnect'), resumed_report
-                            assert resumed_report['lifecycle_closed'], resumed_report
+                            if args.expect_idle_expiry:
+                                assert resumed_report['resources_retired'], resumed_report
+                                assert 0 < resumed_report['idle_expired_connections'] <= 50, resumed_report
+                                assert not resumed_report['lifecycle_closed'], resumed_report
+                                assert not resumed_report['http_transfer_complete'], resumed_report
+                            else:
+                                assert resumed_report['lifecycle_closed'], resumed_report
+                            report['transfer_observations'][-1]['retirement_verified'] = resumed_report.get('resources_retired', False)
                             if direction == 'forward':
                                 assert resumed_report['all_streams_acked'], resumed_report
                             if args.scenario == 'zerortt':
@@ -261,7 +287,7 @@ def main():
                             assert proxy.stats['zero_rtt_packets'] > 0, dict(proxy.stats)
                             assert proxy.stats['one_rtt_protected_payload_upper_bound'] <= 5000, dict(proxy.stats)
                         files = [{'name': name, 'bytes': (destination / name).stat().st_size if (destination / name).exists() else None, 'expected_sha256': sha(www / name), 'received_sha256': sha(destination / name) if (destination / name).exists() else None} for name in names]
-                        row = {'direction': direction, 'client_exit': returncode, 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'connections': resumed_report.get('connections') if resumed_report else None, 'resumed_two_connections': bool(resumed_report and resumed_report['resumed']), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
+                        row = {'direction': direction, 'client_exit': returncode, 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'connections': resumed_report.get('connections') if resumed_report else None, 'resources_retired': resumed_report.get('resources_retired') if resumed_report else None, 'idle_expired_connections': resumed_report.get('idle_expired_connections') if resumed_report else None, 'lifecycle_closed': resumed_report.get('lifecycle_closed') if resumed_report else None, 'resumed_two_connections': bool(resumed_report and resumed_report['resumed']), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
                         report['runs'].append(row)
                         save()
                         if args.client_early_loss:

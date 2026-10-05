@@ -505,12 +505,31 @@ async fn numerical<
                 ranges: packet::AckRanges::new(ack.ranges())?,
                 ecn: None,
             };
-            let plain = PlainPacket::<N>::new(config, &peer, level, frame)?;
+            // Initial ACK datagrams are already padded to 1200 bytes. Carry
+            // retained ServerHello CRYPTO in that padding budget while the peer
+            // is still missing it, rather than leaving key availability to an
+            // exponentially delayed standalone probe. No loss/acceptance is
+            // invented and this remains the existing Hibana ACK publication.
+            let flight = if level == Level::Initial {
+                book.initial_for_ack()
+            } else {
+                None
+            };
+            let data = flight.map(|id| book.flight_data(id)).transpose()?;
+            let extra = data.as_ref().map(|data| Frame::Crypto {
+                offset: data.offset(),
+                data: data.bytes(),
+            });
+            let (plain, flight) =
+                match PlainPacket::<N>::with_extra(config, &peer, level, frame, extra) {
+                    Ok(plain) if plain.len() <= 1200 || flight.is_none() => (plain, flight),
+                    _ => (PlainPacket::<N>::new(config, &peer, level, frame)?, None),
+                };
             let reservation = match book.reserve(
                 level,
                 plain.len() as u64,
-                None,
-                false,
+                flight,
+                flight.is_some(),
                 plain.padded(),
                 false,
                 clock.now(),

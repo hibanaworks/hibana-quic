@@ -81,6 +81,7 @@ pub type FilesComplete = g::Msg<48, u64>;
 pub type ApplicationFailed = g::Msg<49, u64>;
 pub type CompletionCancelled = g::Msg<50, u64>;
 pub type CompletionSeen = g::Msg<51, u64>;
+pub type IdleExpired = g::Msg<52, u64>;
 
 // Stream production has a finite terminal outside the rolled data fragment.
 // FIN is a choreography message, never a boolean hidden in a data slot.
@@ -367,7 +368,10 @@ pub type FilesTerminal = g::Seq<
         g::Send<FILES_EVENT, FILES_CLOSE, FilesComplete>,
         g::Route<
             g::Send<FILES_EVENT, FILES_CLOSE, ApplicationFailed>,
-            g::Send<FILES_EVENT, FILES_CLOSE, CompletionCancelled>,
+            g::Route<
+                g::Send<FILES_EVENT, FILES_CLOSE, IdleExpired>,
+                g::Send<FILES_EVENT, FILES_CLOSE, CompletionCancelled>,
+            >,
         >,
     >,
     g::Send<FILES_CLOSE, FILES_EVENT, CompletionSeen>,
@@ -710,7 +714,10 @@ pub fn choreography() -> g::Program<Flow> {
             g::send::<FILES_EVENT, FILES_CLOSE, FilesComplete>(),
             g::route(
                 g::send::<FILES_EVENT, FILES_CLOSE, ApplicationFailed>(),
-                g::send::<FILES_EVENT, FILES_CLOSE, CompletionCancelled>(),
+                g::route(
+                    g::send::<FILES_EVENT, FILES_CLOSE, IdleExpired>(),
+                    g::send::<FILES_EVENT, FILES_CLOSE, CompletionCancelled>(),
+                ),
             ),
         ),
         g::send::<FILES_CLOSE, FILES_EVENT, CompletionSeen>(),

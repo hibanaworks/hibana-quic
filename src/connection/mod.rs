@@ -8,6 +8,7 @@ pub mod application_stream;
 pub mod application_wire;
 pub mod early_client;
 pub mod early_wire;
+mod idle;
 mod initial;
 mod locals;
 pub mod parameters;

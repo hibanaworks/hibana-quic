@@ -63,6 +63,7 @@ impl<const RX: usize> Storage<RX> {
         config: Config<'a>,
     ) -> Result<application::Setup<'a, RX, CHUNK_BYTES>, String> {
         Ok(application::Setup {
+            local_idle_timeout_ms: 30_000,
             key_update_target: 0,
             early: None,
             config,

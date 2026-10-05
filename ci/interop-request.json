@@ -1,17 +1,17 @@
 {
-  "request": "Qualify finite server completion under repeated impaired handshakes",
-  "requested_at": "2026-10-05T08:08:00Z",
+  "request": "Qualify independent server ownership and actual retirement under handshake impairment",
+  "requested_at": "2026-10-05T11:55:00Z",
   "scope": [
     "unchanged Neqo fifty-connection controls",
     "handshakeloss and handshakecorruption as candidate server"
   ],
   "approval": "User requested implementation and qualification of all remaining interoperability cases.",
-  "local_evidence": "docs/early-data-integration.md",
+  "local_evidence": "docs/parallel-server-retirement.md",
   "cases": [
     "handshakeloss",
     "handshakecorruption"
   ],
-  "qualification": "Native fifty-connection server previously stalled after two files when peer retirement was lost. Finite workload now retires via actual SourceDone/SourceRetired and existing FilesComplete after EOF, FIN observations and settled ACK evidence. Same loss diagnostic now completes all fifty files in 110.899 s and corruption in 78.929 s. Full core/host tests, thumb check, host strict Clippy and native zero-RTT/keyupdate regressions passed. Require unchanged runner controls and actual server verdicts before counting.",
+  "qualification": "Bounded parallel admission runs each complete Hibana connection independently. Actual IdleExpired joins ordinary I/O and retires owned resources without pretending clean close. Initial ACKs carry retained ServerHello CRYPTO within the same 1200B padding budget, with ordinary congestion/amplification accounting and actual publication receipts. Handshake ACK buffering delay follows RFC9002 5.3. Corrected native per-client routing: three burst-loss runs and one burst-corruption run each matched all 50 file hashes and retired every owner (58.941/62.480/56.890/50.051 seconds). Isolated missing-feedback idle, client 0-RTT and key-update regressions pass. Core/host tests, thumb, host Clippy, limited Lean/Z3 pass. Earlier failed experiments remain unqualified. Require unchanged official controls and actual server verdicts before increasing the current 26/44 count.",
   "candidate_directions": [
     "server"
   ],

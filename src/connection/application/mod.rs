@@ -72,6 +72,8 @@ pub struct EarlyServer<'a, const RX: usize> {
     pub policy: crate::early_data::ServerPolicy,
 }
 pub struct Setup<'a, const RX: usize, const CHUNK: usize> {
+    /// Must match the local max_idle_timeout actually advertised in TLS.
+    pub local_idle_timeout_ms: u64,
     /// Optional target write generation, reached only after actual ACK and QUIC confirmation. Zero leaves initiation to the peer.
     pub key_update_target: u64,
     pub early: Option<EarlyServer<'a, RX>>,
@@ -102,8 +104,15 @@ impl Default for Outcomes {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Termination {
+    Closed,
+    IdleExpired,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Report {
+    /// Issued only after all ordinary I/O and key retirement has joined.
+    pub termination: Termination,
     /// Actual installed write generation observed before final key retirement.
     pub key_generation: u64,
     pub early_accepted_packets: usize,
@@ -212,6 +221,7 @@ impl From<keys::Error> for Error {
 pub(crate) enum CloseKind {
     Local { application: bool, code: u64 },
     Peer { code: u64 },
+    IdleExpired,
 }
 
 /// Readiness and publication cancellation only. Protocol phase ownership belongs

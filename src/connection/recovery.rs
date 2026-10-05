@@ -103,6 +103,15 @@ pub struct CompletionObserver<'book, 'scope, const B: usize> {
     book: &'book Recovery<'scope, B>,
 }
 impl<const B: usize> CompletionObserver<'_, '_, B> {
+    pub fn idle_deadline(&self, local_timeout_ms: u64) -> Result<Option<u64>, Error> {
+        let n = self.book.numbers.borrow();
+        n.ordinary()?;
+        let pto = n.rtt.pto_duration_us(n.max_ack_delay_us, 0)?;
+        n.idle_activity
+            .deadline(local_timeout_ms, n.peer_idle_timeout_ms, pto)
+            .transpose()
+            .map_err(|()| AccountingError::Overflow.into())
+    }
     /// The final receive ACK must have reached actual adapter acceptance before
     /// clean completion may revoke the ordinary publication role.
     pub fn ordinary_settled(&self) -> Result<bool, Error> {
@@ -442,6 +451,8 @@ struct Numbers<'scope, const B: usize> {
     largest_acked: [Option<u64>; 3],
     loss_time: [Option<u64>; 3],
     last_ack_eliciting: [Option<u64>; 3],
+    idle_activity: super::idle::Activity,
+    peer_idle_timeout_ms: u64,
     pending: [usize; 3],
     retired_space: [bool; 3],
     epochs: [Option<Epoch>; LEDGER_CAPACITY],
@@ -601,6 +612,8 @@ impl<'scope, const B: usize> Recovery<'scope, B> {
                 largest_acked: [None; 3],
                 loss_time: [None; 3],
                 last_ack_eliciting: [None; 3],
+                idle_activity: super::idle::Activity::default(),
+                peer_idle_timeout_ms: 0,
                 pending: [0; 3],
                 retired_space: [false; 3],
                 epochs: [None; LEDGER_CAPACITY],
@@ -986,6 +999,7 @@ fn bind_peer<'scope, const B: usize, const P: usize>(
     }
     n.ack_delay_exponent = peer.ack_delay_exponent();
     n.max_ack_delay_us = peer.max_ack_delay_us();
+    n.peer_idle_timeout_ms = peer.max_idle_timeout_ms();
     n.parameters_bound = true;
     n.changed()?;
     if n.side == Side::Server && !n.handshake_confirmed {
@@ -1435,6 +1449,20 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     pub fn has_outstanding_crypto(&self) -> bool {
         self.book.numbers.borrow().flights.active_flights() != 0
     }
+    /// Retained ServerHello bytes may share an already-required Initial ACK.
+    /// This selector supplies no PTO allowance or loss verdict. The ordinary
+    /// reservation still checks congestion, amplification, and real acceptance.
+    pub(super) fn initial_for_ack(&self) -> Option<FlightId> {
+        let n = self.book.numbers.borrow();
+        if n.side != Side::Server
+            || n.retired_next.is_some()
+            || n.closing.is_some()
+            || n.retired_space[0]
+        {
+            return None;
+        }
+        n.flights.probe(PacketNumberSpace::Initial)
+    }
     pub fn next_retransmit(&self) -> Option<(FlightId, bool)> {
         let n = self.book.numbers.borrow();
         if n.retired_next.is_some() || n.closing.is_some() {
@@ -1717,6 +1745,7 @@ fn settle<const B: usize>(
         }
         n.last_now = Some(observed_at);
         if reservation.ack_eliciting {
+            n.idle_activity.accepted_ack_eliciting(at);
             let latest = &mut n.last_ack_eliciting[index];
             *latest = Some(latest.map_or(at, |previous| previous.max(at)));
         }
@@ -1960,7 +1989,7 @@ fn process_packet<'scope, const B: usize>(
             Frame::Ack { ranges, delay, .. } => {
                 let (ranges, len) = ack_ranges(ranges)?;
                 n.ledger.validate_ack(space, &ranges[..len])?;
-                if index == 2 {
+                if index != 0 {
                     let factor = 1_u64
                         .checked_shl(u32::from(n.ack_delay_exponent))
                         .ok_or(AccountingError::Overflow)?;
@@ -2020,6 +2049,9 @@ fn process_packet<'scope, const B: usize>(
     // Even an incoming packet below a newly pruned cutoff commits that cutoff.
     // No frame effects are applied when the insertion reported it discarded.
     commit_received(n, index, received, ack_eliciting, now)?;
+    if !duplicate {
+        n.idle_activity.received(now);
+    }
     outcome.history_floor = n.floor[2];
     if space == PacketNumberSpace::ApplicationData && outcome.packets.iter().any(Option::is_some) {
         outcome.frame_acks = Some(FrameAcknowledgments {
@@ -2117,7 +2149,7 @@ fn apply_ack<'scope, const B: usize>(
         .iter()
         .flatten()
         .any(|packet| packet.ack_eliciting);
-    let ack_delay_us = if index == 2 {
+    let ack_delay_us = if index != 0 {
         let factor = 1_u64
             .checked_shl(u32::from(n.ack_delay_exponent))
             .ok_or(AccountingError::Overflow)?;

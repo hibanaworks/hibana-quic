@@ -14,6 +14,8 @@ mod direct_wire;
 mod files;
 #[path = "support/host_files.rs"]
 mod host_files;
+#[path = "support/parallel_server.rs"]
+mod parallel_server;
 #[path = "../pem.rs"]
 mod pem;
 use cli::{Options, USAGE, options};
@@ -69,6 +71,7 @@ fn parameters(
     if let Some(limits) = application_limits {
         // Advertise exactly the windows backed by application_storage.
         for (kind, value) in [
+            (1, 30_000),
             (3, direct_bootstrap::DATAGRAM as u64),
             (4, limits.max_data),
             (5, limits.stream_data_bidi_local),
@@ -127,6 +130,7 @@ fn signing_key(key: &PrivateKeyDer<'_>) -> Result<SigningKey> {
 }
 struct Report {
     connections: usize,
+    idle_expired_connections: usize,
     resumed: bool,
     side: Side,
     peer: SocketAddr,
@@ -143,6 +147,10 @@ impl Report {
         self.connections = self
             .connections
             .checked_add(previous.connections)
+            .ok_or("report counter overflow")?;
+        self.idle_expired_connections = self
+            .idle_expired_connections
+            .checked_add(previous.idle_expired_connections)
             .ok_or("report counter overflow")?;
         self.sent = self
             .sent
@@ -173,6 +181,9 @@ impl Report {
                 .early_finished_streams
                 .checked_add(old.early_finished_streams)
                 .ok_or("report counter overflow")?;
+            if old.termination == application::Termination::IdleExpired {
+                current.termination = old.termination;
+            }
             current.confirmed &= old.confirmed;
             current.all_streams_acked &= old.all_streams_acked;
             current.close_completed &= old.close_completed;
@@ -195,16 +206,23 @@ impl Report {
         }
         Ok(self)
     }
-    fn json(&self, reactor: &HostReactor) -> String {
+    fn json<const S: usize, const T: usize>(&self, reactor: &HostReactor<S, T>) -> String {
         let stats = reactor.statistics();
         let transfer = if let Some(report) = self.application {
             format!(
-                "\"scope\":\"authenticated-file-transfer\",\"key_generation\":{},\"early_accepted_packets\":{},\"early_stream_bytes\":{},\"early_finished_streams\":{},\"quic_handshake_confirmed\":{},\"http_transfer_complete\":true,\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{}",
+                "\"scope\":\"{}\",\"key_generation\":{},\"early_accepted_packets\":{},\"early_stream_bytes\":{},\"early_finished_streams\":{},\"quic_handshake_confirmed\":{},\"http_transfer_complete\":{},\"resources_retired\":true,\"idle_expired_connections\":{},\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{}",
+                if self.idle_expired_connections == 0 {
+                    "authenticated-file-transfer"
+                } else {
+                    "connection-retirement"
+                },
                 report.key_generation,
                 report.early_accepted_packets,
                 report.early_stream_bytes,
                 report.early_finished_streams,
                 report.confirmed,
+                report.termination == application::Termination::Closed,
+                self.idle_expired_connections,
                 report.close_completed,
                 report.all_streams_acked,
                 report.submitted_streams,
@@ -217,9 +235,14 @@ impl Report {
             "\"scope\":\"authenticated-handshake-prefix\",\"owned_application_continuations\":true,\"quic_handshake_confirmed\":false,\"http_transfer_complete\":false,\"lifecycle_closed\":false".to_owned()
         };
         format!(
-            "{{\"connections\":{},\"resumed\":{},\"backend\":\"direct-hibana-roles\",\"status\":\"success\",{transfer},\"role\":\"{}\",\"peer\":\"{}\",\"tls_finished_authenticated\":true,\"datagrams_sent\":{},\"datagrams_received\":{},\"foreign_datagrams_ignored\":{},\"last_os_acceptance_us\":{},\"duration_ms\":{},\"reactor_polls\":{},\"reactor_waits\":{},\"reactor_socket_events\":{},\"reactor_timer_events\":{}}}",
+            "{{\"connections\":{},\"resumed\":{},\"backend\":\"direct-hibana-roles\",\"status\":\"{}\",{transfer},\"role\":\"{}\",\"peer\":\"{}\",\"tls_finished_authenticated\":true,\"datagrams_sent\":{},\"datagrams_received\":{},\"foreign_datagrams_ignored\":{},\"last_os_acceptance_us\":{},\"duration_ms\":{},\"reactor_polls\":{},\"reactor_waits\":{},\"reactor_socket_events\":{},\"reactor_timer_events\":{}}}",
             self.connections,
             self.resumed,
+            if self.idle_expired_connections == 0 {
+                "success"
+            } else {
+                "idle-expired"
+            },
             if self.side == Side::Client {
                 "client"
             } else {
@@ -239,9 +262,9 @@ impl Report {
     }
 }
 #[allow(clippy::too_many_arguments)]
-async fn connected(
-    socket: &HostSocket<'_>,
-    clock: &HostClock<'_>,
+async fn connected<const S: usize, const T: usize>(
+    socket: &HostSocket<'_, S, T>,
+    clock: &HostClock<'_, S, T>,
     address: Address,
     config: Config<'_>,
     tls: BoundedTls<'_, '_>,
@@ -249,6 +272,7 @@ async fn connected(
     mut files: Option<direct_bootstrap::Files>,
     early: Option<application_storage::EarlyStorage>,
     key_update_target: u64,
+    routed: Option<&mut hibana_quic_host::receive_routes::Receiver<{ direct_bootstrap::DATAGRAM }>>,
 ) -> Result<Report> {
     let generation = u64::from_be_bytes(random::<8>()?);
     let mut scope = ApplicationKeyScope::new(generation);
@@ -277,6 +301,7 @@ async fn connected(
     .map_err(|e| format!("recovery: {e:?}"))?;
     let statistics = Statistics::default();
     let mut receive = Receive {
+        routed,
         socket,
         address,
         first,
@@ -327,7 +352,8 @@ async fn connected(
         if report.key_generation < key_update_target {
             return Err("requested key generation was not actually installed".into());
         }
-        if !report.confirmed
+        if report.termination == application::Termination::Closed
+            && (!report.confirmed
             // A real peer close retires the server's retained response even
             // when the peer did not include its final ACK. Keep that fact false
             // in the report; do not require or fabricate an acknowledgment.
@@ -337,7 +363,7 @@ async fn connected(
             || report.completed_streams != report.submitted_streams
             || report.completed_streams != observations.files_finished.get()
             || report.submitted_streams != observations.files_started.get()
-            || expected.is_some_and(|count| count != report.completed_streams)
+            || expected.is_some_and(|count| count != report.completed_streams))
         {
             return Err(format!("incomplete authenticated transfer: {report:?}"));
         }
@@ -371,6 +397,11 @@ async fn connected(
     }
     Ok(Report {
         connections: 1,
+        idle_expired_connections: usize::from(
+            application
+                .as_ref()
+                .is_some_and(|report| report.termination == application::Termination::IdleExpired),
+        ),
         resumed: source.resumed(),
         side: config.side,
         peer: address.remote,
@@ -386,8 +417,8 @@ async fn connected(
         body_bytes,
     })
 }
-async fn admit_initial(
-    socket: &HostSocket<'_>,
+async fn admit_initial<const S: usize, const T: usize>(
+    socket: &HostSocket<'_, S, T>,
     first: &mut [u8],
 ) -> Result<(Address, Vec<u8>, Vec<u8>, usize)> {
     loop {
@@ -482,9 +513,9 @@ impl TicketClock for WallTicketClock {
     }
 }
 
-async fn run_async(
-    reactor: &HostReactor,
-    clock: &HostClock<'_>,
+async fn run_async<const S: usize, const T: usize>(
+    reactor: &HostReactor<S, T>,
+    clock: &HostClock<'_, S, T>,
     options: Options,
 ) -> Result<Report> {
     match options {
@@ -654,6 +685,7 @@ async fn run_async(
                     files,
                     None,
                     key_update_target,
+                    None,
                 ))
                 .await?;
                 if resumption && previous.is_some() && !report.resumed {
@@ -706,6 +738,18 @@ async fn run_async(
             files,
             ..
         } => {
+            if !resumption && connections > 1 {
+                return parallel_server::run(
+                    reactor,
+                    clock,
+                    listen,
+                    (&cert, &key),
+                    files.as_ref().ok_or("parallel server requires files")?,
+                    cipher,
+                    connections,
+                )
+                .await;
+            }
             let certificates = pem::certificates(&cert)?;
             let key = signing_key(&pem::private_key(&key)?)?;
             let chain: Vec<&[u8]> = certificates.iter().map(|cert| cert.as_ref()).collect();
@@ -836,6 +880,7 @@ async fn run_async(
                     files,
                     early_storage,
                     0,
+                    None,
                 ))
                 .await?;
                 if resumption && previous.is_some() && !report.resumed {
@@ -851,7 +896,16 @@ async fn run_async(
     }
 }
 fn run(options: Options) -> Result<String> {
-    let reactor = HostReactor::new().map_err(|e| format!("host reactor: {e}"))?;
+    if matches!(&options, Options::Server { resumption: false, connections, .. } if *connections > 1)
+    {
+        run_sized::<65, 256>(options)
+    } else {
+        run_sized::<4, 8>(options)
+    }
+}
+fn run_sized<const S: usize, const T: usize>(options: Options) -> Result<String> {
+    let require_clean_client = matches!(&options, Options::Client { .. });
+    let reactor = HostReactor::<S, T>::new().map_err(|e| format!("host reactor: {e}"))?;
     let clock = HostClock::new(&reactor, Instant::now());
     let deadline = clock
         .start
@@ -863,9 +917,16 @@ fn run(options: Options) -> Result<String> {
         deadline,
         run_async(&reactor, &clock, options),
     ));
-    let report = reactor
+    let result = reactor
         .block_on(task)
-        .map_err(|e| format!("host reactor: {e}"))??;
+        .map_err(|e| format!("host reactor: {e}"))?;
+    if reactor.active_resources() != (0, 0) {
+        return Err("root returned with live native socket or timer owners".into());
+    }
+    let report = result?;
+    if require_clean_client && report.idle_expired_connections != 0 {
+        return Err("connection idle-expired after resource retirement".into());
+    }
     Ok(report.json(&reactor))
 }
 fn main() -> ExitCode {
@@ -900,7 +961,7 @@ mod admission_tests {
 
     #[test]
     fn unknown_version_probe_gets_reversed_cids_and_v1_without_initial_admission() {
-        let reactor = HostReactor::new().unwrap();
+        let reactor = HostReactor::<4, 8>::new().unwrap();
         let socket = reactor
             .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
             .unwrap();
@@ -949,7 +1010,7 @@ mod admission_tests {
             vec![0; 1200],
             vec![0; direct_bootstrap::DATAGRAM + 1],
         ] {
-            let reactor = HostReactor::new().unwrap();
+            let reactor = HostReactor::<4, 8>::new().unwrap();
             let socket = reactor
                 .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
                 .unwrap();

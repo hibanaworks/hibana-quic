@@ -16,11 +16,14 @@ class UdpProxy:
     MAX_QUEUED_BYTES = 16 * 1024 * 1024
 
     def __init__(self, server, *, delay=0.0, drop_every=0, corrupt_every=0,
-                 blackhole_after_bytes=0, blackhole_seconds=0.0, client_endpoints=1):
+                 blackhole_after_bytes=0, blackhole_seconds=0.0, client_endpoints=1, burst=1):
         if blackhole_after_bytes < 0 or blackhole_seconds < 0 or bool(blackhole_after_bytes) != bool(blackhole_seconds):
             raise ValueError('blackhole requires a positive byte threshold and duration')
         if not 1 <= client_endpoints <= 64:
             raise ValueError("fixture permits 1..64 bounded sequential endpoints")
+        if burst < 1 or any(period and burst > period for period in (drop_every, corrupt_every)):
+            raise ValueError("burst must fit its impairment period")
+        self.burst = burst
         self._client_endpoints = client_endpoints
         self._seen_clients = set()
         self.server = server
@@ -82,10 +85,10 @@ class UdpProxy:
             if now - self._blackhole_started < self.blackhole_seconds:
                 self.stats[direction + '_blackhole_dropped'] += 1
                 return
-        if self.drop_every and number % self.drop_every == 0:
+        if self.drop_every and number % self.drop_every < self.burst:
             self.stats[direction + '_dropped'] += 1
             return
-        if self.corrupt_every and number % self.corrupt_every == 0:
+        if self.corrupt_every and number % self.corrupt_every < self.burst:
             changed = bytearray(data)
             if changed:
                 changed[-1] ^= 1
@@ -141,6 +144,80 @@ class UdpProxy:
         except Exception as error:
             self._error = error
             self._stop.set()
+
+
+class MultiEndpointProxy(UdpProxy):
+    """Bounded opaque UDP routing that preserves every client's return path.
+
+    Old connections can deliver their final ACK/close while a later connection
+    is active. A delayed reply keeps its original destination, not the most
+    recently observed client. No QUIC packet parsing or outcome is involved.
+    """
+    def __init__(self, server, **options):
+        super().__init__(server, **options)
+        self._routes = {}
+        self._destinations = {}
+        self._incoming_route = None
+
+    def __exit__(self, *args):
+        try:
+            super().__exit__(*args)
+        finally:
+            for sock in self._routes.values():
+                sock.close()
+
+    def _enqueue(self, direction, data):
+        previous = self._sequence
+        super()._enqueue(direction, data)
+        if self._sequence != previous:
+            self._destinations[self._sequence] = self._incoming_route
+
+    def _flush(self):
+        now = time.monotonic()
+        while self._queue and self._queue[0][0] <= now:
+            _, sequence, direction, data = heapq.heappop(self._queue)
+            self._queued_bytes -= len(data)
+            client = self._destinations.pop(sequence)
+            if direction == 'to_server':
+                self._routes[client].send(data)
+            else:
+                self._front.sendto(data, client)
+            self.stats[direction + '_forwarded'] += 1
+
+    def _run(self):
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(self._front, selectors.EVENT_READ, ('to_server', None))
+                while not self._stop.is_set():
+                    self._flush()
+                    timeout = 0.02
+                    if self._queue:
+                        timeout = min(timeout, max(0, self._queue[0][0] - time.monotonic()))
+                    for key, _ in selector.select(timeout):
+                        direction, client = key.data
+                        try:
+                            data, sender = key.fileobj.recvfrom(65535)
+                        except ConnectionRefusedError:
+                            self.stats['destination_unavailable'] += 1
+                            continue
+                        if direction == 'to_server':
+                            client = sender
+                            if client not in self._routes:
+                                if client[0] != '127.0.0.1' or len(self._routes) >= self._client_endpoints:
+                                    self.stats['foreign_client_drops'] += 1
+                                    continue
+                                back = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                                back.bind(('127.0.0.1', 0))
+                                back.connect(self.server)
+                                self._routes[client] = back
+                                selector.register(back, selectors.EVENT_READ, ('to_client', client))
+                        self._incoming_route = client
+                        self._enqueue(direction, data)
+                    self._flush()
+        except Exception as error:
+            self._error = error
+            self._stop.set()
+
 
 class EarlyWireProbe(UdpProxy):
     """Conservative packet-byte upper bounds, never decrypted payload claims."""

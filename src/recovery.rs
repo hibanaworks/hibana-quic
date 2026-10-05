@@ -110,15 +110,22 @@ impl RttEstimator {
         let (smoothed, variation) = if self.first_sample_at.is_none() {
             (latest, latest / 2)
         } else {
-            // Initial/Handshake ACKs are not deliberately delayed. Application
-            // ACK delay is not capped by max_ack_delay before confirmation.
-            let delay = if sample.space != PacketNumberSpace::ApplicationData {
+            // RFC 9002 5.3 permits ignoring Initial ACK delay, not Handshake
+            // buffering delay. Before confirmation, unavailable peer keys can
+            // cause a large, non-repeating delay that is not path latency.
+            let delay = if sample.space == PacketNumberSpace::Initial {
                 0
             } else if sample.handshake_confirmed {
                 sample.ack_delay_us.min(sample.max_ack_delay_us)
             } else {
                 sample.ack_delay_us
             };
+            // RFC 9002 5.3 allows ignoring a pre-confirmation sample when
+            // delay adjustment would fall below the observed path minimum.
+            // Do not clamp an implausible peer claim into a fabricated RTT.
+            if !sample.handshake_confirmed && delay > latest - minimum {
+                return Ok(false);
+            }
             let adjusted = if latest - minimum >= delay {
                 latest - delay
             } else {
@@ -959,8 +966,8 @@ mod tests {
     }
 
     #[test]
-    fn initial_and_handshake_ack_delays_are_ignored() {
-        for space in [PacketNumberSpace::Initial, PacketNumberSpace::Handshake] {
+    fn initial_ack_delays_are_ignored() {
+        for space in [PacketNumberSpace::Initial] {
             let mut rtt = RttEstimator::default();
             rtt.on_ack(sample(100_000, 0)).unwrap();
             let mut ack = sample(240_000, 100_000);
@@ -969,6 +976,49 @@ mod tests {
             rtt.on_ack(ack).unwrap();
             assert_eq!(rtt.smoothed_us(), 105_000);
         }
+    }
+
+    #[test]
+    fn handshake_key_buffering_delay_does_not_inflate_path_rtt() {
+        let mut rtt = RttEstimator::default();
+        rtt.on_ack(sample(30_000, 0)).unwrap();
+        let mut ack = sample(75_030_000, 0);
+        ack.space = PacketNumberSpace::Handshake;
+        ack.handshake_confirmed = false;
+        ack.ack_delay_us = 75_000_000;
+        assert!(rtt.on_ack(ack).unwrap());
+        assert_eq!(rtt.smoothed_us(), 30_000);
+        assert_eq!(rtt.variation_us(), 11_250);
+        assert_eq!(rtt.pto_duration_us(25_000, 0), Ok(100_000));
+    }
+
+    #[test]
+    fn preconfirmation_delay_below_minimum_is_ignored_not_clamped() {
+        let mut rtt = RttEstimator::default();
+        rtt.on_ack(sample(31_000, 0)).unwrap();
+        let before = (
+            rtt.latest_us(),
+            rtt.min_us(),
+            rtt.smoothed_us(),
+            rtt.variation_us(),
+        );
+        let mut ack = sample(75_030_000, 0);
+        ack.space = PacketNumberSpace::Handshake;
+        ack.handshake_confirmed = false;
+        ack.ack_delay_us = 75_000_000;
+        assert!(!rtt.on_ack(ack).unwrap());
+        assert_eq!(
+            (
+                rtt.latest_us(),
+                rtt.min_us(),
+                rtt.smoothed_us(),
+                rtt.variation_us()
+            ),
+            before
+        );
+        ack.handshake_confirmed = true;
+        assert!(rtt.on_ack(ack).unwrap());
+        assert!(rtt.smoothed_us() > 31_000); // Confirmed delay is capped.
     }
 
     #[test]

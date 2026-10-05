@@ -136,7 +136,9 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
     book: &crate::connection::recovery::CompletionObserver<'_, '_, N>,
     side: Side,
+    idle: (u64, &impl crate::connection::Clock),
 ) -> Result<(), Error> {
+    let (local_idle_timeout_ms, clock) = idle;
     let sequence = exchange.sequence();
     loop {
         let revision = exchange.control.revision();
@@ -191,7 +193,34 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
                 return check(endpoint.recv::<p::CompletionSeen>().await?, sequence);
             }
         }
-        exchange.control.wait(7, revision).await;
+        if let Some(deadline) = book.idle_deadline(local_idle_timeout_ms)? {
+            if clock.now() >= deadline {
+                exchange
+                    .files
+                    .put(Permission {
+                        scope: exchange.scope,
+                        kind: CloseKind::IdleExpired,
+                    })
+                    .map_err(|_| Error::Binding)?;
+                // Claim the expiry boundary synchronously. No authenticated
+                // receive or publication may restart it while the terminal
+                // message awaits its peer's actual receipt.
+                exchange.control.revoke()?;
+                endpoint.send::<p::IdleExpired>(&sequence).await?;
+                return check(endpoint.recv::<p::CompletionSeen>().await?, sequence);
+            }
+            let mut changed = pin!(exchange.control.wait(7, revision));
+            let mut elapsed = pin!(clock.wait_until(deadline));
+            poll_fn(|cx| {
+                if changed.as_mut().poll(cx).is_ready() {
+                    return core::task::Poll::Ready(());
+                }
+                elapsed.as_mut().poll(cx)
+            })
+            .await;
+        } else {
+            exchange.control.wait(7, revision).await;
+        }
     }
 }
 
@@ -314,6 +343,15 @@ pub(crate) async fn receive<'scope>(
                                     code: 0x100
                                 }
                             ) {
+                                return Err(Error::Binding);
+                            }
+                            exchange.apply(&permission)?;
+                            Some(permission)
+                        }
+                        52 => {
+                            check(offered.recv::<p::IdleExpired>().await?, sequence)?;
+                            let permission = exchange.files.take().map_err(|_| Error::Binding)?;
+                            if !matches!(permission.kind, CloseKind::IdleExpired) {
                                 return Err(Error::Binding);
                             }
                             exchange.apply(&permission)?;

@@ -3,7 +3,7 @@ import socket
 import time
 import unittest
 from unittest.mock import patch
-from udp_impairment import UdpProxy, EarlyWireProbe
+from udp_impairment import UdpProxy, EarlyWireProbe, MultiEndpointProxy
 
 
 class ProxyTests(unittest.TestCase):
@@ -21,6 +21,29 @@ class ProxyTests(unittest.TestCase):
                     returned, _ = client.recvfrom(100)
                     elapsed = time.monotonic() - started
                 return data, returned, elapsed, dict(proxy.stats)
+
+    def test_multiconnect_keeps_old_return_path_and_delayed_destination(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server, \
+             socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as first, \
+             socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as second:
+            server.bind(('127.0.0.1', 0))
+            for sock in (server, first, second):
+                sock.settimeout(1)
+            with MultiEndpointProxy(server.getsockname(), client_endpoints=2, delay=0.01) as proxy:
+                first.sendto(b'first', proxy.address)
+                data, path1 = server.recvfrom(100)
+                self.assertEqual(data, b'first')
+                server.sendto(b'late-first', path1)
+                second.sendto(b'second', proxy.address)
+                data, path2 = server.recvfrom(100)
+                self.assertEqual(data, b'second')
+                self.assertNotEqual(path1, path2)
+                server.sendto(b'second-reply', path2)
+                self.assertEqual(first.recvfrom(100)[0], b'late-first')
+                self.assertEqual(second.recvfrom(100)[0], b'second-reply')
+                first.sendto(b'old-close', proxy.address)
+                data, path = server.recvfrom(100)
+                self.assertEqual((data, path), (b'old-close', path1))
 
     def test_resumption_endpoint_allowance_is_bounded_and_cannot_return_to_old_port(self):
         for maximum in (1, 2):

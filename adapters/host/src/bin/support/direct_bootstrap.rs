@@ -14,12 +14,12 @@ use hibana_quic::{
 pub const DATAGRAM: usize = 1536;
 pub const PARAMETERS: usize = 2048;
 #[allow(clippy::too_many_arguments)]
-pub async fn handshake<'scope>(
+pub async fn handshake<'scope, const S: usize, const T: usize>(
     source: &mut Transcript<'scope, '_, '_>,
     config: Config<'_>,
-    receive: &mut Receive<'_, '_>,
-    transmit: &mut Transmit<'_, '_>,
-    clock: &HostClock<'_>,
+    receive: &mut Receive<'_, '_, S, T>,
+    transmit: &mut Transmit<'_, '_, S, T>,
+    clock: &HostClock<'_, S, T>,
     issuer: &mut Issuer<'_, 'scope>,
     book: &mut Recovery<'scope, DATAGRAM>,
     generation: u64,
@@ -140,12 +140,12 @@ impl Files {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn files<'scope>(
+pub async fn files<'scope, const S: usize, const T: usize>(
     source: &mut Transcript<'scope, '_, '_>,
     config: Config<'_>,
-    receive: &mut Receive<'_, '_>,
-    transmit: &mut Transmit<'_, '_>,
-    clock: &HostClock<'_>,
+    receive: &mut Receive<'_, '_, S, T>,
+    transmit: &mut Transmit<'_, '_, S, T>,
+    clock: &HostClock<'_, S, T>,
     issuer: &mut Issuer<'_, 'scope>,
     stop: Stop<'_, 'scope>,
     book: &mut Recovery<'scope, DATAGRAM>,

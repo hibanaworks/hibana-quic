@@ -948,11 +948,17 @@ pub(crate) async fn close<
         .ok_or(Error::Capacity)?;
     let mut keys = owner.take_closing(&retired)?;
     book.discard_for_close(retired)?;
-    state.drain_deadline.set(Some(deadline));
+    state
+        .drain_deadline
+        .set(Some(if matches!(kind, CloseKind::IdleExpired) {
+            started_at
+        } else {
+            deadline
+        }));
     let mut sequence = 0u64;
     let mut close_accepted = matches!(kind, CloseKind::Peer { .. });
     match kind {
-        CloseKind::Peer { .. } => {
+        CloseKind::Peer { .. } | CloseKind::IdleExpired => {
             // Peer-initiated draining publishes no packets.
             endpoint.send::<p::Drain>(&sequence).await?;
             check(endpoint.recv::<p::Drained>().await?, sequence)?;
@@ -1002,6 +1008,9 @@ pub(crate) async fn close<
     keys.discard();
     endpoint.send::<p::Retire>(&sequence).await?;
     check(endpoint.recv::<p::Retired>().await?, sequence)?;
+    if matches!(kind, CloseKind::IdleExpired) {
+        return Ok(());
+    }
     if !close_accepted {
         return Err(Error::Incomplete);
     }

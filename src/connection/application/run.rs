@@ -212,6 +212,7 @@ async fn connected<
         return Err(Error::Binding);
     }
     let Setup {
+        local_idle_timeout_ms,
         key_update_target,
         config,
         local_limits,
@@ -490,7 +491,8 @@ async fn connected<
             &state,
             &app,
             &completion_book,
-            config.side
+            config.side,
+            (local_idle_timeout_ms, clock)
         ));
         let mut terminal_receive = pin!(async {
             permission = Some(
@@ -596,10 +598,12 @@ async fn connected<
             application: true,
             code: 0
         } | super::CloseKind::Peer { code: 0 }
+            | super::CloseKind::IdleExpired
     ) {
         return Err(Error::Application);
     }
     if config.side == Side::Client
+        && !matches!(close_kind, super::CloseKind::IdleExpired)
         && (!before_close.handshake_confirmed
             || !all_streams_acked
             || completed_streams == 0
@@ -608,6 +612,11 @@ async fn connected<
         return Err(Error::Incomplete);
     }
     Ok(Report {
+        termination: if matches!(close_kind, super::CloseKind::IdleExpired) {
+            super::Termination::IdleExpired
+        } else {
+            super::Termination::Closed
+        },
         key_generation,
         early_accepted_packets: early_received.packets + accepted_early,
         early_stream_bytes: early_received.stream_bytes
