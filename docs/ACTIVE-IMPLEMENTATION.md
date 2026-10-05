@@ -3,7 +3,7 @@
 ## Architecture
 
 The pinned Hibana branch is development/rolled-route-ownership at
-9fbb84cdc932cbd0a81ee995a8689393f322763e, with no local vendor patches.
+ee5727d80b49c2c5533f5f1d42d5cae7373b2a70, with no local vendor patches.
 The actual connection uses global choreography and explicit local endpoint
 send/recv/offer/resolver calls. RX, TX, key, timer, source/sink and retirement
 roles run on the bounded caller-owned async runtime; the host supplies an actual
@@ -60,14 +60,19 @@ not official runner qualification. The subsequent loss-projection refinement pas
 native deterministic-loss baseline and both candidate directions pass with matching
 2 MiB payload hashes. Its actual binary hash is recorded in the local evidence.
 
-Official unmodified runner qualification is 16/44 unique candidate cells.
+Official unmodified runner qualification is 17/44 unique candidate cells.
 The seven existing cases passed both directions at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723).
 Session resumption passed both directions at `622a17a4` in
 [run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222).
-Neqo/Neqo controls are counted separately. The remaining 28 cells and a full
-repeated matrix have not been qualified. Server-only 0-RTT is the next explicitly
-scoped runner request; it is not counted as passed before its verdict.
+Blackhole client passed with Neqo control in
+[run 37263917795](https://github.com/hibanaworks/hibana-quic/actions/runs/37263917795);
+the server direction timed out and is reproduced locally. Neqo controls are
+not counted. The remaining 27 Neqo cells and full repeated matrix are unqualified.
+Server 0-RTT passed against quiche with its control in
+[run 37261848054](https://github.com/hibanaworks/hibana-quic/actions/runs/37261848054),
+separately from the Neqo count. Client 0-RTT remains unconnected. The new Hibana
+dependency passed local consumer regressions; its official repeat is pending.
 
 Lean/Z3 models prove only the stated resource/payload arithmetic outside Hibana's
 order guarantee. They are not full Rust verification or a second QUIC FSM.

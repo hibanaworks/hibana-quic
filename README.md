@@ -42,16 +42,21 @@ alone. Passing interop does not complete this migration.
 ## Status
 
 This is **not production-ready** and is not yet a fully qualified QUIC stack.
-The pinned, unmodified quic-interop-runner has qualified **16 of 44 candidate
+The pinned, unmodified quic-interop-runner has qualified **17 of 44 candidate
 cells** against unmodified Neqo. `handshake`, `transfer`, `longrtt`,
 `transferloss`, `transfercorruption`, `ipv6` and `chacha20` passed both directions
 at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723).
 `resumption` passed both directions at `622a17a4` in
 [run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222).
-Neqo/Neqo controls are separate from candidate counts. Server-side 0-RTT is the
-next explicit qualification request, not a pass yet. The other 28 cells, a full
-repeated matrix and embedded hardware remain unqualified.
+Blackhole passed in the client direction at `7db1f72d` in
+[run 37263917795](https://github.com/hibanaworks/hibana-quic/actions/runs/37263917795);
+the server direction still times out. Neqo/Neqo controls are separate from
+candidate counts. Server-side 0-RTT also passed against quiche with its successful
+control in [run 37261848054](https://github.com/hibanaworks/hibana-quic/actions/runs/37261848054),
+recorded separately from the Neqo matrix. The other 27 Neqo cells, a full
+repeated matrix and embedded hardware remain unqualified. These links qualify
+the stated checkpoints; the new Hibana dependency's official repeat is pending.
 
 See [active implementation and evidence](docs/ACTIVE-IMPLEMENTATION.md).
 Lean and Z3 models cover explicitly scoped obligations; they are not proofs of
@@ -60,7 +65,7 @@ the complete Rust implementation, cryptography or interoperability.
 ## Build and test
 
 Rust 1.95.0 is pinned. Hibana is vendored from
-`development/route-metadata-performance` at `dafdf8a27198f73f3a6ce9e21c1de86e50008b43` without local patches.
+`development/rolled-route-ownership` at `ee5727d80b49c2c5533f5f1d42d5cae7373b2a70` without local patches.
 
 ```sh
 cargo test --locked

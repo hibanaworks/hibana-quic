@@ -1,6 +1,6 @@
 {
-  "request": "Run blackhole candidate directions after authoritative baseline success even when optional logs exceed diagnostic caps",
-  "requested_at": "2026-10-05T04:30:00Z",
+  "request": "Requalify existing bidirectional Neqo cases with exact Hibana ee5727d8 dependency",
+  "requested_at": "2026-10-05T04:55:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "blackhole in both candidate directions"
@@ -8,9 +8,16 @@
   "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
-    "blackhole"
+    "handshake",
+    "transfer",
+    "longrtt",
+    "transferloss",
+    "transfercorruption",
+    "ipv6",
+    "chacha20",
+    "resumption"
   ],
-  "qualification": "Previous blackhole control passed, but candidate was incorrectly skipped when optional logs exceeded caps. Trust validated runner success with cleanup and complete case results; retain stricter diagnostic preconditions for a negative control. Runner verdict and topology unchanged.",
+  "qualification": "Exact 1265-file upstream snapshot; local core/TLS/host/thumb/Python/native regressions pass. Repeat existing eight bidirectional cases with unchanged peers and runner. Known blackhole-server failure is separately reproduced on old and new dependencies and is not called a new regression.",
   "candidate_directions": [
     "client",
     "server"

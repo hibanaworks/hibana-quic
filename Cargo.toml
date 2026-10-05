@@ -45,8 +45,8 @@ connection-target-budget = "unavailable: legacy controller probes removed; recov
 
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"
-branch = "development/route-metadata-performance"
-revision = "dafdf8a27198f73f3a6ce9e21c1de86e50008b43"
+branch = "development/rolled-route-ownership"
+revision = "ee5727d80b49c2c5533f5f1d42d5cae7373b2a70"
 upstream-base = "5cd7a6a570886c592a88f0f35a01d5a7daa158d7"
 local-patches = false
 

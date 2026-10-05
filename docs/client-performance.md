@@ -4,6 +4,29 @@ This is an optimization checkpoint, not Neqo performance parity or an increase
 in official interoperability qualification. The later session-resumption
 qualification raises the separately tracked coverage to 16 of 44 cells.
 
+## Receive-lane census dependency, 2026-10-05
+
+The exact Hibana `ee5727d8` snapshot was locally checked against all 1,265
+upstream Git blobs. Core/integration/compile-fail, thumbv6m, real TLS, host and
+Python regressions passed. Native clean/resumption/0-RTT/loss/corruption and
+64-file transfers passed. The known blackhole-server timeout reproduced with
+both old and new dependencies; it is not fixed by the dependency change.
+The source-bound Lean five-theorem and Z3 five-UNSAT/one-SAT checks also passed.
+These are scoped proofs, not a proof of arbitrary Rust side effects.
+
+Two order-reversed seven-run 32 MiB release comparisons gave:
+
+- Old dependency: 0.290894725 s, then 0.300369943 s.
+- Receive-lane census: 0.312090102 s, then 0.299510746 s.
+- Corresponding Neqo medians: 0.042647565/0.047083502 s for old batches,
+  0.043748363/0.052505229 s for new batches.
+- New candidate RSS: 9,572/9,564 KiB; old: 9,624/9,640 KiB.
+
+All measured files matched their expected bytes. This workload did not show a
+reproducible speedup, nor a reproducible slowdown after reversing run order;
+retain the approximately 0.30 s characterization. No claim follows that the
+16-lane empty-poll microbenchmark gain applies to this full QUIC transfer.
+
 ## Request-backed receive windows, 2026-10-05
 
 A seven-run local release comparison of the request-backed host allocation gave

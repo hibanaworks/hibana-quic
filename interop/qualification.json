@@ -3,7 +3,7 @@
   "registered_quic_cases": 22,
   "directions": 2,
   "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
-  "current_cleanup_commit_qualification": "Seven cases passed both directions at 99943a86c72fdd495701a3779835c6bb127b37a9 (run 37255425723); resumption passed both directions at 622a17a48ce756f80034a8a62b61fbd838c467cb (run 37257163222). 16/44 unique candidate cells; Neqo baseline excluded.",
+  "current_cleanup_commit_qualification": "17/44 qualified Neqo candidate cells: seven cases both directions at 99943a86 (run37255425723), resumption both directions at 622a17a4 (run37257163222), blackhole client at 7db1f72d (run37263917795). Baselines excluded; blackhole server failed. New Hibana dependency official repetition pending.",
   "cases": [
     {
       "case": "handshake",
@@ -63,8 +63,10 @@
     {
       "case": "blackhole",
       "abbreviation": "B",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "failed-pilot",
+      "run": 37263917795,
+      "commit": "7db1f72d3f955b629095e713c9025ae7768d824d"
     },
     {
       "case": "keyupdate",
