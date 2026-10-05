@@ -388,7 +388,14 @@ async fn server_responses<'book, const CHUNK: usize, B: BodyReader, H: ServerHan
     if CHUNK == 0 {
         return Err(Error::Capacity);
     }
+    let limit = handler.request_limit().map(core::num::NonZeroUsize::get);
+    if limit.is_some_and(|count| count > MAX_REQUESTS) {
+        return Err(Error::Capacity);
+    }
     while !control.stopping() {
+        if limit == Some(state.submitted_count()) {
+            break;
+        }
         let request = match control.until_stop(0, requests.recv()).await {
             Some(Ok(request)) => request,
             Some(Err(_)) | None => break,

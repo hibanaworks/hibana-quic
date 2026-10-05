@@ -256,3 +256,21 @@ The official request therefore includes only the client direction for
 remains open. The completed amplification pilot also retains its failed Neqo
 self-control, despite both candidate directions passing; it adds no qualified
 cells until the control issue is resolved.
+
+### Finite server workload candidate
+
+The impaired serial-server stall was reproduced at the second connection's
+retirement. A finite server handler may now declare an immutable request quota
+through `ServerHandler::request_limit`; the default remains open-ended. The
+source samples this numerical application policy once and exits via the existing
+SourceDone/SourceRetired exchange after its actual body EOF/production handoff.
+The completion role requires the matching request FIN observations, finished
+bodies, zero queued chunks, actual handshake confirmation and settled recovery
+ACK evidence before issuing the existing FilesComplete permission. Failure and
+peer-close branches retain their existing separate authority. No new Hibana API,
+phase flag, timer shortcut or synthesized peer close is used.
+
+The multi-connection host workload declares one response per connection. Native
+reverse loss (one in three datagrams, 15 ms) improved from two files and a 300 s
+deadline to all 50 hashes and retirement in 110.899 s; corruption completed all
+50 in 78.929 s. These are local results only, not official runner qualification.

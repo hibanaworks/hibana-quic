@@ -19,16 +19,17 @@ pub struct Observations {
     pub files_finished: Cell<usize>,
     pub body_bytes: Cell<u64>,
 }
-pub struct FileServer { root: SafeRoot, admitted: BTreeSet<u64>, max_requests: usize, pub observations: Rc<Observations>, pub diagnostics: Diagnostics }
+pub struct FileServer { pub completion_limit: Option<core::num::NonZeroUsize>, root: SafeRoot, admitted: BTreeSet<u64>, max_requests: usize, pub observations: Rc<Observations>, pub diagnostics: Diagnostics }
 impl FileServer {
     pub fn new(root: &Path, max_requests: usize) -> Result<Self, String> {
         if max_requests == 0 || max_requests > MAX_REQUESTS { return Err("max requests must be 1..=64".into()); }
-        Ok(Self { root: SafeRoot::open(root, false)?, admitted: BTreeSet::new(), max_requests, observations: Rc::default(), diagnostics: Diagnostics::default() })
+        Ok(Self { completion_limit: None, root: SafeRoot::open(root, false)?, admitted: BTreeSet::new(), max_requests, observations: Rc::default(), diagnostics: Diagnostics::default() })
     }
 }
 pub struct FileBody { file: File, eof: bool, observations: Rc<Observations>, diagnostics: Diagnostics }
 impl ServerHandler for FileServer {
     type Body = FileBody;
+    fn request_limit(&self) -> Option<core::num::NonZeroUsize> { self.completion_limit }
     async fn open(&mut self, stream_id: u64, request: &[u8]) -> Result<FileBody, ()> {
         if !stream_id.is_multiple_of(4) || self.admitted.contains(&stream_id) || self.admitted.len() >= self.max_requests { return self.diagnostics.fail("duplicate, invalid, or over-limit request stream"); }
         let components = files::parse_get(request).map_err(|error| { let _ = self.diagnostics.fail::<()>(error); })?;

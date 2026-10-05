@@ -1,19 +1,19 @@
 {
-  "request": "Qualify amplification against the pinned quiche control",
-  "requested_at": "2026-10-05T07:59:00Z",
+  "request": "Qualify finite server completion under repeated impaired handshakes",
+  "requested_at": "2026-10-05T08:08:00Z",
   "scope": [
-    "unchanged pinned quiche amplificationlimit self-control",
-    "amplificationlimit in both candidate directions"
+    "unchanged Neqo fifty-connection controls",
+    "handshakeloss and handshakecorruption as candidate server"
   ],
-  "approval": "User explicitly instructed: when Neqo self-control fails, use another passing implementation and count passing candidate tests as qualified.",
+  "approval": "User requested implementation and qualification of all remaining interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
-    "amplificationlimit"
+    "handshakeloss",
+    "handshakecorruption"
   ],
-  "qualification": "The Neqo self-control in run37277497084 failed while both candidate directions passed. Preserve that failed result. Run the unchanged amplificationlimit certificate/trace test with the already pinned quiche image; count only if its self-control and the actual candidate directions pass. No runner thresholds or verdicts are changed.",
+  "qualification": "Native fifty-connection server previously stalled after two files when peer retirement was lost. Finite workload now retires via actual SourceDone/SourceRetired and existing FilesComplete after EOF, FIN observations and settled ACK evidence. Same loss diagnostic now completes all fifty files in 110.899 s and corruption in 78.929 s. Full core/host tests, thumb check, host strict Clippy and native zero-RTT/keyupdate regressions passed. Require unchanged runner controls and actual server verdicts before counting.",
   "candidate_directions": [
-    "client",
     "server"
   ],
-  "reference_implementation": "quiche"
+  "reference_implementation": "neqo"
 }

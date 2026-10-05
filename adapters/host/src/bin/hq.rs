@@ -753,7 +753,12 @@ async fn run_async(
                             &files.www,
                             files.max_requests.unwrap_or(host_files::MAX_REQUESTS),
                         )
-                        .map(direct_bootstrap::Files::Server)
+                        .map(|mut server| {
+                            if !resumption && connections > 1 {
+                                server.completion_limit = core::num::NonZeroUsize::new(1);
+                            }
+                            direct_bootstrap::Files::Server(server)
+                        })
                     })
                     .transpose()?;
                 let mut first = vec![0; direct_bootstrap::DATAGRAM];

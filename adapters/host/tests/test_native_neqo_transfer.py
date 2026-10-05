@@ -73,6 +73,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
+    parser.add_argument('--direction', choices=('all', 'baseline', 'forward', 'reverse'), default='all')
     parser.add_argument('--timeout-seconds', type=int, default=60)
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
     parser.add_argument('--client-keyupdate', action='store_true')
@@ -145,6 +146,10 @@ def main():
         directions = ('forward',) if args.client_early_reject or args.client_early_loss else (('baseline', 'reverse') if args.scenario == 'zerortt' and not args.client_early else ('baseline', 'forward', 'reverse'))
         if args.scenario == 'keyupdate':
             directions = ('baseline', 'forward', 'reverse') if args.client_keyupdate else ('baseline', 'reverse')
+        if args.direction != 'all':
+            directions = tuple(d for d in directions if d == args.direction)
+            if not directions:
+                parser.error('direction is incompatible with the selected scenario')
         for direction in directions:
             destination = root / direction
             destination.mkdir()

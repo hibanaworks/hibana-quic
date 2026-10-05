@@ -38,6 +38,12 @@ pub trait BodyReader {
 /// The request is the actual authenticated, FIN-complete HTTP/0.9 request.
 pub trait ServerHandler {
     type Body: BodyReader;
+    /// A finite application workload, sampled once before receiving requests.
+    /// None keeps serving until peer termination. Reaching this count retires
+    /// the source; completion still requires real FIN delivery and peer ACKs.
+    fn request_limit(&self) -> Option<core::num::NonZeroUsize> {
+        None
+    }
     fn open(
         &mut self,
         stream_id: u64,

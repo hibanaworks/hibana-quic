@@ -166,8 +166,8 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
             exchange.control.revoke()?;
             return check(endpoint.recv::<p::CompletionSeen>().await?, sequence);
         }
-        if side == Side::Client
-            && state.source_done()
+        if state.source_done()
+            && (side == Side::Client || state.bodies_finished() == state.submitted_count())
             && state.submitted_count() != 0
             && state.completed_count() == state.submitted_count()
         {
