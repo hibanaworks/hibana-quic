@@ -8,6 +8,7 @@ pub(super) async fn run<const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, { p::TIMER }>,
     stop: &mut Endpoint<'_, { p::TIMER_STOP }>,
     slots: &Storage<'_, '_, N, P>,
+    keys: &RefCell<wire::WriteKeys<'_, '_>>,
     book: &mut recovery::Clock<'_, '_, N>,
     clock: &impl Clock,
 ) -> Result<(), Error> {
@@ -16,7 +17,11 @@ pub(super) async fn run<const N: usize, const P: usize>(
         let mut stopping = pin!(stop.recv::<p::StopTimer>());
         loop {
             let revision = slots.schedule.revision.get();
-            let deadline = book.update(clock.now(), slots.schedule.keys.get())?;
+            let available = {
+                let owned = keys.borrow();
+                [owned.initial.available(), owned.handshake.is_some()]
+            };
+            let deadline = book.update(clock.now(), available)?;
             let event = {
                 let mut changed = pin!(slots.schedule.wait_changed(2, revision));
                 let mut wait = pin!(async {
@@ -173,12 +178,22 @@ mod tests {
             1200,
         )
         .unwrap();
+        let key_scope = book.scope();
         let (_, _, mut clock_book, _, _retirement) = book.split().unwrap();
         let storage = Storage::<1536, 64>::new(b"peer").unwrap();
+        let initial_pair = crypto::initial_keys(b"peer").unwrap();
+        let initial_keys =
+            initial::Keys::new(key_scope, initial_pair.server, initial_pair.client).unwrap();
+        let write_keys = RefCell::new(wire::WriteKeys {
+            initial: &initial_keys,
+            handshake: None,
+            application: None,
+        });
         let mut timer = pin!(run(
             &mut timer_endpoint,
             &mut stop_endpoint,
             &storage,
+            &write_keys,
             &mut clock_book,
             &QuietClock
         ));

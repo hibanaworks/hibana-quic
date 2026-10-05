@@ -242,14 +242,12 @@ pub struct Roles<'a> {
 struct Schedule {
     revision: Cell<u64>,
     wakers: [RefCell<Option<Waker>>; 4],
-    keys: Cell<[bool; 2]>,
 }
 impl Schedule {
     fn new() -> Self {
         Self {
             revision: Cell::new(0),
             wakers: core::array::from_fn(|_| RefCell::new(None)),
-            keys: Cell::new([true, false]),
         }
     }
     fn register(&self, lane: usize, waker: &Waker) {
@@ -379,7 +377,6 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
     issuer: &mut publication_gate::Issuer<'_, 'scope>,
     storage: &Storage<'scope, 'book, N, P>,
     book: &'book mut recovery::Recovery<'scope, N>,
-    tls_outcome: &Outcome,
     adapter_outcome: &Outcome,
 ) -> Result<(ReceiveContinuation<'scope, P>, TransmitContinuation<'scope>), Error> {
     handshake_with_early(
@@ -393,7 +390,6 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
         issuer,
         storage,
         book,
-        tls_outcome,
         adapter_outcome,
         None,
     )
@@ -412,7 +408,6 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     issuer: &mut publication_gate::Issuer<'_, 'scope>,
     storage: &Storage<'scope, 'book, N, P>,
     book: &'book mut recovery::Recovery<'scope, N>,
-    tls_outcome: &Outcome,
     adapter_outcome: &Outcome,
     early: Option<&mut early_client::Requests<'_, 'scope>>,
 ) -> Result<(ReceiveContinuation<'scope, P>, TransmitContinuation<'scope>), Error> {
@@ -443,6 +438,13 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     };
     let initial = initial::Keys::new(scope, read, write)?;
     let initial_exchange = initial::Exchange::new();
+    // These are the actual write keys, shared only for synchronous owner access.
+    // Timer readiness is derived from them, never a mirrored phase/availability flag.
+    let write_keys = RefCell::new(wire::WriteKeys {
+        initial: &initial,
+        handshake: None,
+        application: None,
+    });
     let message_buffer = source
         .material()
         .take_message_buffer()
@@ -465,7 +467,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     .await?;
     let numbers = transcript::Numbers::new(source);
     let mut initial_owner = tx.initial_retirement_owner();
-    let (mut receive_initial, mut publish_initial) = match config.side {
+    let (mut receive_initial, publish_initial) = match config.side {
         Side::Client => (None, Some(&mut roles.initial_event)),
         Side::Server => (Some(&mut roles.initial_event), None),
     };
@@ -502,6 +504,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
                     config,
                     scope,
                     &initial,
+                    &write_keys,
                     &mut tx,
                     clock,
                 )
@@ -513,7 +516,6 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
             &mut roles.tls_rx,
             &numbers,
             storage,
-            tls_outcome,
             &message_slot,
             config.side
         ));
@@ -533,6 +535,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
             &mut roles.timer,
             &mut roles.timer_stop,
             storage,
+            &write_keys,
             &mut clock_book,
             clock
         ));

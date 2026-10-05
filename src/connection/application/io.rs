@@ -140,6 +140,7 @@ enum Admission {
     Accepted,
     Stopped,
     Interrupted,
+    Failed,
 }
 
 pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>(
@@ -234,6 +235,10 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                                 check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
                                 Admission::Stopped
                             }
+                            215 => {
+                                check(reply.recv::<p::SourceDataFailed>().await?, *sequence)?;
+                                Admission::Failed
+                            }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
                         endpoint.send::<p::SourceTaken>(sequence).await?;
@@ -281,6 +286,10 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                         check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
                         Ok(Admission::Stopped)
                     }
+                    216 => {
+                        check(reply.recv::<p::SourceEndFailed>().await?, stream_id)?;
+                        Ok(Admission::Failed)
+                    }
                     label => Err(Error::UnexpectedLabel(label)),
                 }
             }
@@ -288,6 +297,7 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
             result?;
             match finished {
                 Admission::Interrupted => return Ok(()),
+                Admission::Failed => return Err(Error::Application),
                 Admission::Stopped => continue,
                 Admission::Accepted => {}
             }
@@ -295,13 +305,19 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
         Ok(())
     }
     .await;
-    if result.is_err() {
-        control.fail()?;
-    }
+    let result = if result.is_ok() && state.submitted_count() == 0 {
+        Err(Error::Application)
+    } else {
+        result
+    };
     {
         endpoint.send::<p::SourceDone>(&sequence).await?;
         check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
-        endpoint.send::<p::SourceJoined>(&sequence).await?;
+        if result.is_err() {
+            endpoint.send::<p::SourceFailed>(&sequence).await?;
+        } else {
+            endpoint.send::<p::SourceJoined>(&sequence).await?;
+        }
         control.changed()?;
     }
     result
@@ -407,6 +423,10 @@ pub(crate) async fn server_source<
                         check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
                         Admission::Stopped
                     }
+                    215 => {
+                        check(reply.recv::<p::SourceDataFailed>().await?, *sequence)?;
+                        Admission::Failed
+                    }
                     label => return Err(Error::UnexpectedLabel(label)),
                 };
                 endpoint.send::<p::SourceTaken>(sequence).await?;
@@ -441,6 +461,10 @@ pub(crate) async fn server_source<
                         check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
                         Ok(Admission::Stopped)
                     }
+                    216 => {
+                        check(reply.recv::<p::SourceEndFailed>().await?, stream_id)?;
+                        Ok(Admission::Failed)
+                    }
                     label => Err(Error::UnexpectedLabel(label)),
                 }
             }
@@ -448,6 +472,7 @@ pub(crate) async fn server_source<
             result?;
             match finished {
                 Admission::Interrupted => return Ok(()),
+                Admission::Failed => return Err(Error::Application),
                 Admission::Stopped => continue,
                 Admission::Accepted => {}
             }
@@ -463,14 +488,15 @@ pub(crate) async fn server_source<
         Ok(())
     }
     .await;
-    if result.is_err() {
-        control.fail()?;
-    }
     requests.close();
     {
         endpoint.send::<p::SourceDone>(&sequence).await?;
         check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
-        endpoint.send::<p::SourceJoined>(&sequence).await?;
+        if result.is_err() {
+            endpoint.send::<p::SourceFailed>(&sequence).await?;
+        } else {
+            endpoint.send::<p::SourceJoined>(&sequence).await?;
+        }
         control.changed()?;
     }
     result
@@ -507,10 +533,7 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                             };
                             let accepted = match result {
                                 Ok(accepted) => accepted,
-                                Err(_) => {
-                                    control.fail()?;
-                                    Admission::Interrupted
-                                }
+                                Err(_) => Admission::Failed,
                             };
                             match accepted {
                                 Admission::Accepted => {
@@ -521,6 +544,9 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                                 }
                                 Admission::Interrupted => {
                                     endpoint.send::<p::SourceRejected>(&sequence).await?
+                                }
+                                Admission::Failed => {
+                                    endpoint.send::<p::SourceDataFailed>(&sequence).await?
                                 }
                             }
                             check(endpoint.recv::<p::SourceTaken>().await?, sequence)?;
@@ -543,10 +569,7 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                         };
                         match admit(control, app, &mut production, &terminal, true).await {
                             Ok(outcome) => outcome,
-                            Err(_) => {
-                                control.fail()?;
-                                Admission::Interrupted
-                            }
+                            Err(_) => Admission::Failed,
                         }
                     }
                     170 => {
@@ -568,12 +591,13 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                     Admission::Interrupted => {
                         endpoint.send::<p::SourceEndRejected>(&stream_id).await?
                     }
+                    Admission::Failed => endpoint.send::<p::SourceEndFailed>(&stream_id).await?,
                 }
             }
             4 => {
                 check(offered.recv::<p::SourceDone>().await?, sequence)?;
                 if !state.data.is_empty() {
-                    control.fail()?;
+                    return Err(Error::Binding);
                 }
                 endpoint.send::<p::ProductionReclaimsDone>(&0).await?;
                 check(endpoint.recv::<p::ProductionReclaimsClosed>().await?, 0)?;
@@ -691,18 +715,12 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
         match offered.label() {
             6 => {
                 let stream_id = offered.recv::<p::ReceivedData>().await?;
-                let done = if control.stopping() || state.is_complete(stream_id) {
-                    true
+                let delivery = if control.stopping() || state.is_complete(stream_id) {
+                    Ok(true)
                 } else {
-                    match deliver(control, state, app, sink, stream_id).await {
-                        Ok(done) => done,
-                        Err(_) => {
-                            control.fail()?;
-                            true
-                        }
-                    }
+                    deliver(control, state, app, sink, stream_id).await
                 };
-                if done {
+                if !matches!(delivery, Ok(false)) {
                     let receipt = if state.is_complete(stream_id) {
                         app.try_borrow_mut()
                             .map_err(|_| Error::Binding)?
@@ -717,7 +735,10 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                         endpoint.send::<p::NoInputReclaim>(&stream_id).await?;
                     }
                     check(endpoint.recv::<p::InputStored>().await?, stream_id)?;
-                    endpoint.send::<p::ReceivedFin>(&stream_id).await?;
+                    match delivery {
+                        Ok(_) => endpoint.send::<p::ReceivedFin>(&stream_id).await?,
+                        Err(_) => endpoint.send::<p::ReceivedFailed>(&stream_id).await?,
+                    }
                 } else {
                     endpoint.send::<p::ReceivedMore>(&stream_id).await?;
                 }
@@ -788,20 +809,12 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
         match offered.label() {
             6 => {
                 let stream_id = offered.recv::<p::ReceivedData>().await?;
-                let done = if control.stopping() || state.is_complete(stream_id) {
-                    true
+                let delivery = if control.stopping() || state.is_complete(stream_id) {
+                    Ok(true)
                 } else {
-                    match receive_request(control, state, app, requests, &mut pending, stream_id)
-                        .await
-                    {
-                        Ok(done) => done,
-                        Err(_) => {
-                            control.fail()?;
-                            true
-                        }
-                    }
+                    receive_request(control, state, app, requests, &mut pending, stream_id).await
                 };
-                if done {
+                if !matches!(delivery, Ok(false)) {
                     let receipt = if state.is_complete(stream_id) {
                         app.try_borrow_mut()
                             .map_err(|_| Error::Binding)?
@@ -816,7 +829,10 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                         endpoint.send::<p::NoInputReclaim>(&stream_id).await?;
                     }
                     check(endpoint.recv::<p::InputStored>().await?, stream_id)?;
-                    endpoint.send::<p::ReceivedFin>(&stream_id).await?;
+                    match delivery {
+                        Ok(_) => endpoint.send::<p::ReceivedFin>(&stream_id).await?,
+                        Err(_) => endpoint.send::<p::ReceivedFailed>(&stream_id).await?,
+                    }
                 } else {
                     endpoint.send::<p::ReceivedMore>(&stream_id).await?;
                 }
@@ -1191,6 +1207,10 @@ mod stop_tests {
                                 check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
                                 Admission::Stopped
                             }
+                            215 => {
+                                check(reply.recv::<p::SourceDataFailed>().await?, *sequence)?;
+                                Admission::Failed
+                            }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
                         endpoint.send::<p::SourceTaken>(sequence).await?;
@@ -1228,13 +1248,16 @@ mod stop_tests {
                                 check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
                                 Ok(Admission::Stopped)
                             }
+                            216 => {
+                                check(reply.recv::<p::SourceEndFailed>().await?, stream_id)?;
+                                Ok(Admission::Failed)
+                            }
                             label => Err(Error::UnexpectedLabel(label)),
                         }
                     }
                     .await?
                         == Admission::Stopped
                 );
-                assert!(!control.failed());
                 assert!(!control.stopping());
                 {
                     let endpoint = &mut source;
@@ -1279,6 +1302,10 @@ mod stop_tests {
                             check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
                             Admission::Stopped
                         }
+                        215 => {
+                            check(reply.recv::<p::SourceDataFailed>().await?, *sequence)?;
+                            Admission::Failed
+                        }
                         label => return Err(Error::UnexpectedLabel(label)),
                     };
                     endpoint.send::<p::SourceTaken>(sequence).await?;
@@ -1287,7 +1314,7 @@ mod stop_tests {
                 }
                 .await?;
                 let expected = if fail_second {
-                    Admission::Interrupted
+                    Admission::Failed
                 } else {
                     Admission::Accepted
                 };
@@ -1320,21 +1347,26 @@ mod stop_tests {
                                 check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
                                 Ok(Admission::Stopped)
                             }
+                            216 => {
+                                check(reply.recv::<p::SourceEndFailed>().await?, stream_id)?;
+                                Ok(Admission::Failed)
+                            }
                             label => Err(Error::UnexpectedLabel(label)),
                         }
                     }
                     .await?
                         == expected
                 );
-                assert_eq!(control.failed(), fail_second);
                 {
                     let endpoint = &mut source;
                     let control = &control;
-                    let state = &state;
-
                     endpoint.send::<p::SourceDone>(&sequence).await?;
                     check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
-                    endpoint.send::<p::SourceJoined>(&sequence).await?;
+                    if second_outcome == Admission::Failed {
+                        endpoint.send::<p::SourceFailed>(&sequence).await?;
+                    } else {
+                        endpoint.send::<p::SourceJoined>(&sequence).await?;
+                    }
                     control.changed()?;
                 }
                 Ok::<_, Error>(())
@@ -1344,7 +1376,12 @@ mod stop_tests {
                 crate::runtime::join2(
                     super::super::reclaim::source(&mut collector, &reclaim, &control),
                     async {
-                        source_join.recv::<p::SourceJoined>().await?;
+                        let offered = source_join.offer().await?;
+                        if fail_second {
+                            offered.recv::<p::SourceFailed>().await?;
+                        } else {
+                            offered.recv::<p::SourceJoined>().await?;
+                        }
                         Ok::<(), Error>(())
                     }
                 )

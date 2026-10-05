@@ -22,69 +22,6 @@ fn check(value: u64, expected: u64) -> Result<(), Error> {
         Err(Error::Binding)
     }
 }
-async fn skip(roles: &mut Roles<'_>, generation: u64) -> Result<(), Error> {
-    let mut input = pin!(async {
-        roles.handshake.rx.send::<p::Skip>(&generation).await?;
-        check(roles.handshake.rx.recv::<p::SkipDone>().await?, generation)
-    });
-    let mut owner = pin!(async {
-        check(
-            roles
-                .handshake
-                .tls_rx
-                .offer()
-                .await?
-                .recv::<p::Skip>()
-                .await?,
-            generation,
-        )?;
-        roles
-            .handshake
-            .tls_rx
-            .send::<p::SkipOwner>(&generation)
-            .await?;
-        Ok(())
-    });
-    let mut tls = pin!(async {
-        check(
-            roles
-                .handshake
-                .tx
-                .offer()
-                .await?
-                .recv::<p::SkipOwner>()
-                .await?,
-            generation,
-        )?;
-        roles.handshake.tx.send::<p::SkipTls>(&generation).await?;
-        Ok(())
-    });
-    let mut application = pin!(async {
-        check(
-            roles
-                .handshake
-                .tls_tx
-                .offer()
-                .await?
-                .recv::<p::SkipTls>()
-                .await?,
-            generation,
-        )?;
-        roles
-            .handshake
-            .tls_tx
-            .send::<p::SkipDone>(&generation)
-            .await?;
-        Ok(())
-    });
-    crate::runtime::TaskSet::new([
-        input.as_mut(),
-        owner.as_mut(),
-        tls.as_mut(),
-        application.as_mut(),
-    ])
-    .await
-}
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK: usize>(
     roles: &mut Roles<'_>,
@@ -100,7 +37,70 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
     let generation = finished.scope().connection_generation();
     if config.side != Side::Server || finished.early_status() != EarlyStatus::Accepted {
         source.discard_pending_early_key();
-        skip(roles, generation).await?;
+        async {
+            let mut input = pin!(async {
+                roles.handshake.rx.send::<p::Skip>(&generation).await?;
+                check(roles.handshake.rx.recv::<p::SkipDone>().await?, generation)
+            });
+            let mut owner = pin!(async {
+                check(
+                    roles
+                        .handshake
+                        .tls_rx
+                        .offer()
+                        .await?
+                        .recv::<p::Skip>()
+                        .await?,
+                    generation,
+                )?;
+                roles
+                    .handshake
+                    .tls_rx
+                    .send::<p::SkipOwner>(&generation)
+                    .await?;
+                Ok(())
+            });
+            let mut tls = pin!(async {
+                check(
+                    roles
+                        .handshake
+                        .tx
+                        .offer()
+                        .await?
+                        .recv::<p::SkipOwner>()
+                        .await?,
+                    generation,
+                )?;
+                roles.handshake.tx.send::<p::SkipTls>(&generation).await?;
+                Ok(())
+            });
+            let mut application = pin!(async {
+                check(
+                    roles
+                        .handshake
+                        .tls_tx
+                        .offer()
+                        .await?
+                        .recv::<p::SkipTls>()
+                        .await?,
+                    generation,
+                )?;
+                roles
+                    .handshake
+                    .tls_tx
+                    .send::<p::SkipDone>(&generation)
+                    .await?;
+                Ok(())
+            });
+            crate::runtime::TaskSet::new([
+                input.as_mut(),
+                owner.as_mut(),
+                tls.as_mut(),
+                application.as_mut(),
+            ])
+            .await
+        }
+        .await?;
         return Ok(Received::default());
     }
     let early = early.ok_or(Error::Binding)?;

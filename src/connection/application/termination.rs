@@ -84,10 +84,23 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
     // Normal completion cannot even inspect the final numerical conditions
     // before consuming the source's actual projected retirement message.
     let mut normal = pin!(async {
-        let _consumed_chunks = source_join.recv::<p::SourceJoined>().await?;
+        let offered = source_join.offer().await?;
+        match offered.label() {
+            213 => {
+                offered.recv::<p::SourceJoined>().await?;
+            }
+            214 => {
+                offered.recv::<p::SourceFailed>().await?;
+                return Ok::<_, Error>(Some(CloseKind::Local {
+                    application: true,
+                    code: 0x100,
+                }));
+            }
+            label => return Err(Error::UnexpectedLabel(label)),
+        }
         loop {
             let revision = exchange.control.revision();
-            if exchange.control.stopping() || exchange.control.failed() {
+            if exchange.control.stopping() {
                 return Ok::<_, Error>(None);
             }
             if (side == Side::Client || state.bodies_finished() == state.submitted_count())
@@ -115,12 +128,6 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
             let revision = exchange.control.revision();
             if exchange.control.stopping() {
                 return Ok::<_, Error>(None);
-            }
-            if exchange.control.failed() {
-                return Ok(Some(CloseKind::Local {
-                    application: true,
-                    code: 0x100,
-                }));
             }
             if let Some(deadline) = book.idle_deadline(local_idle_timeout_ms)? {
                 if clock.now() >= deadline {
@@ -244,6 +251,21 @@ pub(crate) async fn receive<'scope>(
                         CloseKind::Local {
                             application: false,
                             ..
+                        }
+                    ) {
+                        return Err(Error::Binding);
+                    }
+                    exchange.apply(&permission)?;
+                    Some(permission)
+                }
+                218 => {
+                    check(offered.recv::<p::PeerApplicationFailed>().await?, sequence)?;
+                    let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
+                    if !matches!(
+                        permission.kind,
+                        CloseKind::Local {
+                            application: true,
+                            code: 0x100
                         }
                     ) {
                         return Err(Error::Binding);

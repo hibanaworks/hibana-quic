@@ -27,7 +27,6 @@ struct ReceiveWire<'keys, 'scope, 'buf, const N: usize> {
     len: usize,
     offset: usize,
     opened: [u8; N],
-    peer_learned: bool,
 }
 impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
     async fn packet<const P: usize>(
@@ -35,8 +34,6 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
         io: &mut impl DatagramRx,
         slots: &Storage<'scope, '_, N, P>,
         config: Config<'_>,
-        exchange: &initial::Exchange<'scope>,
-        initial_endpoint: &mut Option<&mut Endpoint<'_, { p::INITIAL_EVENT }>>,
         book: &mut recovery::Rx<'_, 'scope, N>,
         clock: &impl Clock,
     ) -> Result<bool, Error> {
@@ -137,13 +134,12 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             (authentication, pn_offset + pn_len, pn)
         };
         let plaintext = &self.opened[header_len..header_len + authentication.len()];
-        if self.peer_learned || config.side == Side::Server {
+        if self.largest.iter().any(Option::is_some) || config.side == Side::Server {
             if slots.peer.borrow().bytes() != source_id {
                 return Err(Error::Binding);
             }
         } else {
             *slots.peer.borrow_mut() = ConnectionId::new(source_id)?;
-            self.peer_learned = true;
         }
         self.largest[index] = Some(self.largest[index].map_or(pn, |last| last.max(pn)));
         let outcome = book.apply_packet(authentication, plaintext, clock.now())?;
@@ -166,11 +162,6 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                     _ => return Err(Error::UnsupportedFrame),
                 }
             }
-        }
-        if let Some(endpoint) = initial_endpoint.as_deref_mut()
-            && let Some(evidence) = book.take_initial_retirement()
-        {
-            initial::announce(endpoint, exchange, evidence).await?;
         }
         Ok(true)
     }
@@ -201,7 +192,6 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
         len: 0,
         offset: 0,
         opened: [0; N],
-        peer_learned: false,
     };
     use crate::bounded_tls::{locals as direct, protocol as tls};
     struct Input<F>(F);
@@ -258,17 +248,36 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
                     return Ok(used);
                 }
             } else {
-                wire.packet(
-                    io,
-                    slots,
-                    config,
-                    exchange,
-                    &mut initial_endpoint,
-                    book,
-                    clock,
-                )
-                .await
-                .map_err(|_| direct::Error::Binding)?;
+                wire.packet(io, slots, config, book, clock)
+                    .await
+                    .map_err(|_| direct::Error::Binding)?;
+                if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                    && let Some(evidence) = book.take_initial_retirement()
+                {
+                    async {
+                        let scope = evidence.scope();
+                        let event = evidence.event();
+                        exchange.event.put(evidence)?;
+                        match event {
+                            recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+                                endpoint.send::<p::ClientInitialRetire>(&0).await?
+                            }
+                            recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+                                endpoint.send::<p::ServerInitialRetire>(&0).await?
+                            }
+                        }
+                        if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                            return Err(Error::Binding);
+                        }
+                        let proof = exchange.retired.take()?;
+                        if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                            return Err(Error::Binding);
+                        }
+                        Ok::<(), Error>(())
+                    }
+                    .await
+                    .map_err(|_| direct::Error::Binding)?;
+                }
                 crate::runtime::yield_now().await;
             }
         }
@@ -356,16 +365,42 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
             core::ops::ControlFlow::Continue(()) => {
                 let mut draining = pin!(async {
                     loop {
-                        wire.packet(
-                            io,
-                            slots,
-                            config,
-                            exchange,
-                            &mut initial_endpoint,
-                            book,
-                            clock,
-                        )
-                        .await?;
+                        // TLS input has completed. Once the handoff slot owns
+                        // application ciphertext, stop taking more native input
+                        // merely to discard it. The independently polled
+                        // StopReceive still joins this finite role. Applying this
+                        // backpressure before TLS completion would be incorrect:
+                        // a reordered short packet must not block Finished.
+                        if slots.pending_application.borrow().is_some() {
+                            core::future::pending::<()>().await;
+                        }
+                        wire.packet(io, slots, config, book, clock).await?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
+                        }
                         crate::runtime::yield_now().await;
                     }
                     #[allow(unreachable_code)]
@@ -389,16 +424,33 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     // A received stop cancels the next native wait, not bytes already owned
     // by this role. Preserve coalesced application ciphertext before handoff.
     while wire.offset < wire.len {
-        wire.packet(
-            io,
-            slots,
-            config,
-            exchange,
-            &mut initial_endpoint,
-            book,
-            clock,
-        )
-        .await?;
+        wire.packet(io, slots, config, book, clock).await?;
+        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+            && let Some(evidence) = book.take_initial_retirement()
+        {
+            async {
+                let scope = evidence.scope();
+                let event = evidence.event();
+                exchange.event.put(evidence)?;
+                match event {
+                    recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+                        endpoint.send::<p::ClientInitialRetire>(&0).await?
+                    }
+                    recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+                        endpoint.send::<p::ServerInitialRetire>(&0).await?
+                    }
+                }
+                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                    return Err(Error::Binding);
+                }
+                let proof = exchange.retired.take()?;
+                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                    return Err(Error::Binding);
+                }
+                Ok::<(), Error>(())
+            }
+            .await?;
+        }
     }
     let id = 0;
     stop.send::<p::ReceiveStopped>(&stop_id).await?;
@@ -621,22 +673,19 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     config: Config<'_>,
     scope: &'scope ApplicationKeyScope,
     initial: &initial::Keys<'scope>,
+    keys: &RefCell<WriteKeys<'_, 'scope>>,
     book: &mut recovery::Tx<'book, 'scope, N>,
     clock: &impl Clock,
 ) -> Result<TransmitContinuation<'scope>, Error> {
-    let mut keys = WriteKeys {
-        initial,
-        handshake: None,
-        application: None,
-    };
     let mut id = 0;
 
     // InitialTransmit: the projected source and publication exchanges are explicit.
     'initial: {
         loop {
-            if let Some(packet) =
-                prepare_recovery_packet::<N, P>(slots, &mut keys, book, config, clock)?
-            {
+            if let Some(packet) = {
+                let mut owned = keys.borrow_mut();
+                prepare_recovery_packet::<N, P>(slots, &mut owned, book, config, clock)?
+            } {
                 match packet {
                     RecoveryPacket::Acknowledgment(space) => {
                         let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
@@ -659,7 +708,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         };
                         output.send::<p::InitialAckSettled>(&id).await?;
                         crate::runtime::yield_now().await;
-                        if !accepted && (!is_initial || keys.initial.available()) {
+                        if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
                         }
                     }
@@ -684,7 +733,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         };
                         output.send::<p::InitialProbeSettled>(&id).await?;
                         crate::runtime::yield_now().await;
-                        if !accepted && (!is_initial || keys.initial.available()) {
+                        if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
                         }
                     }
@@ -713,7 +762,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     endpoint.send::<p::InitialTaken>(&id).await?;
                     let mut offset = 0;
                     while offset < flight.bytes().len() {
-                        if flight.level() == Level::Initial && !keys.initial.available() {
+                        if flight.level() == Level::Initial && !initial.available() {
                             break;
                         }
                         let count = (flight.bytes().len() - offset).min(N - 128);
@@ -721,14 +770,14 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         let bytes = &flight.bytes()[offset..offset + count];
                         let retained = book.store_crypto(flight.level(), at, bytes)?;
                         loop {
-                            if flight.level() == Level::Initial && !keys.initial.available() {
+                            if flight.level() == Level::Initial && !initial.available() {
                                 break;
                             }
                             let revision = slots.schedule.revision.get();
                             let peer = *slots.peer.borrow();
                             let prepared_space = {
                                 match prepare(
-                                    &mut keys,
+                                    &mut keys.borrow_mut(),
                                     book,
                                     config,
                                     &peer,
@@ -781,15 +830,18 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     };
                                     output.send::<p::InitialDataSettled>(&id).await?;
                                     crate::runtime::yield_now().await;
-                                    if !accepted && (!is_initial || keys.initial.available()) {
+                                    if !accepted && (!is_initial || initial.available()) {
                                         return Err(Error::Io(IoError::Rejected));
                                     }
                                 }
                                 break;
                             }
-                            if let Some(packet) = prepare_recovery_packet::<N, P>(
-                                slots, &mut keys, book, config, clock,
-                            )? {
+                            if let Some(packet) = {
+                                let mut owned = keys.borrow_mut();
+                                prepare_recovery_packet::<N, P>(
+                                    slots, &mut owned, book, config, clock,
+                                )?
+                            } {
                                 match packet {
                                     RecoveryPacket::Acknowledgment(space) => {
                                         let is_initial =
@@ -828,7 +880,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                         };
                                         output.send::<p::InitialAckSettled>(&id).await?;
                                         crate::runtime::yield_now().await;
-                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                        if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
                                         }
                                     }
@@ -873,7 +925,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                         };
                                         output.send::<p::InitialProbeSettled>(&id).await?;
                                         crate::runtime::yield_now().await;
-                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                        if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
                                         }
                                     }
@@ -901,16 +953,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     if !core::ptr::eq(scope, handshake.scope()) {
         return Err(Error::Binding);
     }
-    keys.handshake = Some(handshake);
-    slots.schedule.keys.set([keys.initial.available(), true]);
+    keys.borrow_mut().handshake = Some(handshake);
     slots.schedule.changed()?;
 
     // HandshakeTransmit: the projected source and publication exchanges are explicit.
     'handshake: {
         loop {
-            if let Some(packet) =
-                prepare_recovery_packet::<N, P>(slots, &mut keys, book, config, clock)?
-            {
+            if let Some(packet) = {
+                let mut owned = keys.borrow_mut();
+                prepare_recovery_packet::<N, P>(slots, &mut owned, book, config, clock)?
+            } {
                 match packet {
                     RecoveryPacket::Acknowledgment(space) => {
                         let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
@@ -933,7 +985,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         };
                         output.send::<p::HandshakeAckSettled>(&id).await?;
                         crate::runtime::yield_now().await;
-                        if !accepted && (!is_initial || keys.initial.available()) {
+                        if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
                         }
                     }
@@ -958,7 +1010,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         };
                         output.send::<p::HandshakeProbeSettled>(&id).await?;
                         crate::runtime::yield_now().await;
-                        if !accepted && (!is_initial || keys.initial.available()) {
+                        if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
                         }
                     }
@@ -987,7 +1039,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     endpoint.send::<p::HandshakeTaken>(&id).await?;
                     let mut offset = 0;
                     while offset < flight.bytes().len() {
-                        if flight.level() == Level::Initial && !keys.initial.available() {
+                        if flight.level() == Level::Initial && !initial.available() {
                             break;
                         }
                         let count = (flight.bytes().len() - offset).min(N - 128);
@@ -995,14 +1047,14 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         let bytes = &flight.bytes()[offset..offset + count];
                         let retained = book.store_crypto(flight.level(), at, bytes)?;
                         loop {
-                            if flight.level() == Level::Initial && !keys.initial.available() {
+                            if flight.level() == Level::Initial && !initial.available() {
                                 break;
                             }
                             let revision = slots.schedule.revision.get();
                             let peer = *slots.peer.borrow();
                             let prepared_space = {
                                 match prepare(
-                                    &mut keys,
+                                    &mut keys.borrow_mut(),
                                     book,
                                     config,
                                     &peer,
@@ -1059,15 +1111,18 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     };
                                     output.send::<p::HandshakeDataSettled>(&id).await?;
                                     crate::runtime::yield_now().await;
-                                    if !accepted && (!is_initial || keys.initial.available()) {
+                                    if !accepted && (!is_initial || initial.available()) {
                                         return Err(Error::Io(IoError::Rejected));
                                     }
                                 }
                                 break;
                             }
-                            if let Some(packet) = prepare_recovery_packet::<N, P>(
-                                slots, &mut keys, book, config, clock,
-                            )? {
+                            if let Some(packet) = {
+                                let mut owned = keys.borrow_mut();
+                                prepare_recovery_packet::<N, P>(
+                                    slots, &mut owned, book, config, clock,
+                                )?
+                            } {
                                 match packet {
                                     RecoveryPacket::Acknowledgment(space) => {
                                         let is_initial =
@@ -1110,7 +1165,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                         };
                                         output.send::<p::HandshakeAckSettled>(&id).await?;
                                         crate::runtime::yield_now().await;
-                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                        if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
                                         }
                                     }
@@ -1155,7 +1210,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                         };
                                         output.send::<p::HandshakeProbeSettled>(&id).await?;
                                         crate::runtime::yield_now().await;
-                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                        if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
                                         }
                                     }
@@ -1183,14 +1238,15 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     if !core::ptr::eq(scope, application.scope()) {
         return Err(Error::Binding);
     }
-    keys.application = Some(application);
+    keys.borrow_mut().application = Some(application);
 
     // ApplicationTransmit: the projected source and publication exchanges are explicit.
     'application: {
         loop {
-            if let Some(packet) =
-                prepare_recovery_packet::<N, P>(slots, &mut keys, book, config, clock)?
-            {
+            if let Some(packet) = {
+                let mut owned = keys.borrow_mut();
+                prepare_recovery_packet::<N, P>(slots, &mut owned, book, config, clock)?
+            } {
                 match packet {
                     RecoveryPacket::Acknowledgment(space) => {
                         let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
@@ -1213,7 +1269,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         };
                         output.send::<p::ApplicationAckSettled>(&id).await?;
                         crate::runtime::yield_now().await;
-                        if !accepted && (!is_initial || keys.initial.available()) {
+                        if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
                         }
                     }
@@ -1238,7 +1294,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         };
                         output.send::<p::ApplicationProbeSettled>(&id).await?;
                         crate::runtime::yield_now().await;
-                        if !accepted && (!is_initial || keys.initial.available()) {
+                        if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
                         }
                     }
@@ -1267,7 +1323,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     endpoint.send::<p::ApplicationTaken>(&id).await?;
                     let mut offset = 0;
                     while offset < flight.bytes().len() {
-                        if flight.level() == Level::Initial && !keys.initial.available() {
+                        if flight.level() == Level::Initial && !initial.available() {
                             break;
                         }
                         let count = (flight.bytes().len() - offset).min(N - 128);
@@ -1275,14 +1331,14 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         let bytes = &flight.bytes()[offset..offset + count];
                         let retained = book.store_crypto(flight.level(), at, bytes)?;
                         loop {
-                            if flight.level() == Level::Initial && !keys.initial.available() {
+                            if flight.level() == Level::Initial && !initial.available() {
                                 break;
                             }
                             let revision = slots.schedule.revision.get();
                             let peer = *slots.peer.borrow();
                             let prepared_space = {
                                 match prepare(
-                                    &mut keys,
+                                    &mut keys.borrow_mut(),
                                     book,
                                     config,
                                     &peer,
@@ -1342,15 +1398,18 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     };
                                     output.send::<p::ApplicationDataSettled>(&id).await?;
                                     crate::runtime::yield_now().await;
-                                    if !accepted && (!is_initial || keys.initial.available()) {
+                                    if !accepted && (!is_initial || initial.available()) {
                                         return Err(Error::Io(IoError::Rejected));
                                     }
                                 }
                                 break;
                             }
-                            if let Some(packet) = prepare_recovery_packet::<N, P>(
-                                slots, &mut keys, book, config, clock,
-                            )? {
+                            if let Some(packet) = {
+                                let mut owned = keys.borrow_mut();
+                                prepare_recovery_packet::<N, P>(
+                                    slots, &mut owned, book, config, clock,
+                                )?
+                            } {
                                 match packet {
                                     RecoveryPacket::Acknowledgment(space) => {
                                         let is_initial =
@@ -1393,7 +1452,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                         };
                                         output.send::<p::ApplicationAckSettled>(&id).await?;
                                         crate::runtime::yield_now().await;
-                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                        if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
                                         }
                                     }
@@ -1422,7 +1481,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     };
                                         output.send::<p::ApplicationProbeSettled>(&id).await?;
                                         crate::runtime::yield_now().await;
-                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                        if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
                                         }
                                     }
@@ -1447,9 +1506,10 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     }
     loop {
         let revision = slots.schedule.revision.get();
-        if let Some(packet) =
-            prepare_recovery_packet::<N, P>(slots, &mut keys, book, config, clock)?
-        {
+        if let Some(packet) = {
+            let mut owned = keys.borrow_mut();
+            prepare_recovery_packet::<N, P>(slots, &mut owned, book, config, clock)?
+        } {
             match packet {
                 RecoveryPacket::Acknowledgment(space) => {
                     let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
@@ -1472,7 +1532,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     };
                     output.send::<p::DrainAckSettled>(&id).await?;
                     crate::runtime::yield_now().await;
-                    if !accepted && (!is_initial || keys.initial.available()) {
+                    if !accepted && (!is_initial || initial.available()) {
                         return Err(Error::Io(IoError::Rejected));
                     }
                 }
@@ -1497,7 +1557,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     };
                     output.send::<p::DrainProbeSettled>(&id).await?;
                     crate::runtime::yield_now().await;
-                    if !accepted && (!is_initial || keys.initial.available()) {
+                    if !accepted && (!is_initial || initial.available()) {
                         return Err(Error::Io(IoError::Rejected));
                     }
                 }
@@ -1521,10 +1581,17 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     check(endpoint.recv::<p::TransmitContinuation>().await?, id)?;
     output.send::<p::AdapterComplete>(&id).await?;
     check(output.recv::<p::AdapterRetired>().await?, id)?;
+    let (handshake, application) = {
+        let mut owned = keys.borrow_mut();
+        (
+            owned.handshake.take().ok_or(Error::Binding)?,
+            owned.application.take().ok_or(Error::Binding)?,
+        )
+    };
     Ok(TransmitContinuation {
         initial: None,
-        handshake: keys.handshake.ok_or(Error::Binding)?,
-        application: keys.application.ok_or(Error::Binding)?,
+        handshake,
+        application,
     })
 }
 
@@ -1589,7 +1656,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         if let Some(endpoint) = initial_endpoint.as_deref_mut()
                             && let Some(evidence) = book.take_initial_retirement()
                         {
-                            initial::announce(endpoint, exchange, evidence).await?;
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
                         }
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -1650,7 +1738,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         if let Some(endpoint) = initial_endpoint.as_deref_mut()
                             && let Some(evidence) = book.take_initial_retirement()
                         {
-                            initial::announce(endpoint, exchange, evidence).await?;
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
                         }
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -1711,7 +1820,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         if let Some(endpoint) = initial_endpoint.as_deref_mut()
                             && let Some(evidence) = book.take_initial_retirement()
                         {
-                            initial::announce(endpoint, exchange, evidence).await?;
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
                         }
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -1792,7 +1922,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         if let Some(endpoint) = initial_endpoint.as_deref_mut()
                             && let Some(evidence) = book.take_initial_retirement()
                         {
-                            initial::announce(endpoint, exchange, evidence).await?;
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
                         }
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -1853,7 +2004,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         if let Some(endpoint) = initial_endpoint.as_deref_mut()
                             && let Some(evidence) = book.take_initial_retirement()
                         {
-                            initial::announce(endpoint, exchange, evidence).await?;
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
                         }
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -1914,7 +2086,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         if let Some(endpoint) = initial_endpoint.as_deref_mut()
                             && let Some(evidence) = book.take_initial_retirement()
                         {
-                            initial::announce(endpoint, exchange, evidence).await?;
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
                         }
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -1995,7 +2188,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         if let Some(endpoint) = initial_endpoint.as_deref_mut()
                             && let Some(evidence) = book.take_initial_retirement()
                         {
-                            initial::announce(endpoint, exchange, evidence).await?;
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
                         }
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -2056,7 +2270,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         if let Some(endpoint) = initial_endpoint.as_deref_mut()
                             && let Some(evidence) = book.take_initial_retirement()
                         {
-                            initial::announce(endpoint, exchange, evidence).await?;
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
                         }
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -2117,7 +2352,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         if let Some(endpoint) = initial_endpoint.as_deref_mut()
                             && let Some(evidence) = book.take_initial_retirement()
                         {
-                            initial::announce(endpoint, exchange, evidence).await?;
+                            async {
+                                let scope = evidence.scope();
+                                let event = evidence.event();
+                                exchange.event.put(evidence)?;
+                                match event {
+        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+            endpoint.send::<p::ClientInitialRetire>(&0).await?
+        }
+        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+            endpoint.send::<p::ServerInitialRetire>(&0).await?
+        }
+    }
+                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                    return Err(Error::Binding);
+                                }
+                                let proof = exchange.retired.take()?;
+                                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                    return Err(Error::Binding);
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
                         }
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -2195,7 +2451,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     if let Some(endpoint) = initial_endpoint.as_deref_mut()
                         && let Some(evidence) = book.take_initial_retirement()
                     {
-                        initial::announce(endpoint, exchange, evidence).await?;
+                        async {
+                            let scope = evidence.scope();
+                            let event = evidence.event();
+                            exchange.event.put(evidence)?;
+                            match event {
+                                recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+                                    endpoint.send::<p::ClientInitialRetire>(&0).await?
+                                }
+                                recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+                                    endpoint.send::<p::ServerInitialRetire>(&0).await?
+                                }
+                            }
+                            if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                return Err(Error::Binding);
+                            }
+                            let proof = exchange.retired.take()?;
+                            if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                return Err(Error::Binding);
+                            }
+                            Ok::<(), Error>(())
+                        }
+                        .await?;
                     }
                     outcome.set(accepted_at.is_some())?;
                     match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -2252,7 +2529,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     if let Some(endpoint) = initial_endpoint.as_deref_mut()
                         && let Some(evidence) = book.take_initial_retirement()
                     {
-                        initial::announce(endpoint, exchange, evidence).await?;
+                        async {
+                            let scope = evidence.scope();
+                            let event = evidence.event();
+                            exchange.event.put(evidence)?;
+                            match event {
+                                recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+                                    endpoint.send::<p::ClientInitialRetire>(&0).await?
+                                }
+                                recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+                                    endpoint.send::<p::ServerInitialRetire>(&0).await?
+                                }
+                            }
+                            if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                                return Err(Error::Binding);
+                            }
+                            let proof = exchange.retired.take()?;
+                            if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                                return Err(Error::Binding);
+                            }
+                            Ok::<(), Error>(())
+                        }
+                        .await?;
                     }
                     outcome.set(accepted_at.is_some())?;
                     match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {

@@ -86,7 +86,6 @@ pub struct Setup<'a, const RX: usize, const CHUNK: usize> {
     pub application: Buffers<'a, RX, CHUNK>,
 }
 pub struct Outcomes {
-    pub tls: Outcome,
     pub handshake_adapter: Outcome,
     pub application_adapter: Outcome,
     pub application_reset: Outcome,
@@ -94,7 +93,6 @@ pub struct Outcomes {
 impl Outcomes {
     pub const fn new() -> Self {
         Self {
-            tls: Outcome::new(),
             handshake_adapter: Outcome::new(),
             application_adapter: Outcome::new(),
             application_reset: Outcome::new(),
@@ -233,7 +231,6 @@ pub(crate) enum CloseKind {
 pub(crate) struct Control<'gate, 'scope> {
     revision: Cell<u64>,
     wakers: [RefCell<Option<Waker>>; 8],
-    failed: Cell<bool>,
     protocol_error: RefCell<Option<Error>>,
     stop: RefCell<Option<publication_gate::Stop<'gate, 'scope>>>,
 }
@@ -242,7 +239,6 @@ impl<'gate, 'scope> Control<'gate, 'scope> {
         Self {
             revision: Cell::new(0),
             wakers: core::array::from_fn(|_| RefCell::new(None)),
-            failed: Cell::new(false),
             protocol_error: RefCell::new(None),
             stop: RefCell::new(Some(stop)),
         }
@@ -262,9 +258,6 @@ impl<'gate, 'scope> Control<'gate, 'scope> {
     }
     pub(crate) fn revision(&self) -> u64 {
         self.revision.get()
-    }
-    pub(crate) fn failed(&self) -> bool {
-        self.failed.get()
     }
     pub(crate) fn changed(&self) -> Result<(), Error> {
         self.revision
@@ -315,10 +308,6 @@ impl<'gate, 'scope> Control<'gate, 'scope> {
         if let Some(stop) = stop {
             stop.revoke();
         }
-        self.changed()
-    }
-    pub(crate) fn fail(&self) -> Result<(), Error> {
-        self.failed.set(true);
         self.changed()
     }
 }

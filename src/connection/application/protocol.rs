@@ -27,6 +27,11 @@ pub const INPUT_COLLECTOR: u8 = 28;
 pub const DELIVERY_COLLECTOR: u8 = 29;
 pub const SOURCE_JOIN: u8 = 30;
 pub type SourceJoined = g::Msg<213, u64>;
+pub type SourceFailed = g::Msg<214, u64>;
+pub type SourceDataFailed = g::Msg<215, u64>;
+pub type SourceEndFailed = g::Msg<216, u64>;
+pub type ReceivedFailed = g::Msg<217, u64>;
+pub type PeerApplicationFailed = g::Msg<218, u64>;
 pub const SUBMISSION_RESULT: u16 = 1100;
 pub const STOP_RESULT: u16 = 1101;
 
@@ -163,7 +168,10 @@ pub type SourceChunk = g::Seq<
             g::Send<INGRESS, SOURCE, SourceAccepted>,
             g::Route<
                 g::Send<INGRESS, SOURCE, SourceStopped>,
-                g::Send<INGRESS, SOURCE, SourceRejected>,
+                g::Route<
+                    g::Send<INGRESS, SOURCE, SourceRejected>,
+                    g::Send<INGRESS, SOURCE, SourceDataFailed>,
+                >,
             >,
         >,
         g::Send<SOURCE, INGRESS, SourceTaken>,
@@ -179,7 +187,10 @@ pub type StreamProduction = g::Seq<
                 g::Send<INGRESS, SOURCE, SourceEnded>,
                 g::Route<
                     g::Send<INGRESS, SOURCE, SourceEndStopped>,
-                    g::Send<INGRESS, SOURCE, SourceEndRejected>,
+                    g::Route<
+                        g::Send<INGRESS, SOURCE, SourceEndRejected>,
+                        g::Send<INGRESS, SOURCE, SourceEndFailed>,
+                    >,
                 >,
             >,
         >,
@@ -187,14 +198,26 @@ pub type StreamProduction = g::Seq<
 >;
 pub type SourceBase = g::Seq<
     g::Roll<g::Route<StreamProduction, g::Send<SOURCE, INGRESS, SourceDone>>>,
-    g::Seq<g::Send<INGRESS, SOURCE, SourceRetired>, g::Send<SOURCE, SOURCE_JOIN, SourceJoined>>,
+    g::Seq<
+        g::Send<INGRESS, SOURCE, SourceRetired>,
+        g::Route<
+            g::Send<SOURCE, SOURCE_JOIN, SourceJoined>,
+            g::Send<SOURCE, SOURCE_JOIN, SourceFailed>,
+        >,
+    >,
 >;
 pub type ReceiveBase = g::Seq<
     g::Roll<
         g::Route<
             g::Seq<
                 g::Send<RECEIVE, SINK, ReceivedData>,
-                g::Route<g::Send<SINK, RECEIVE, ReceivedMore>, g::Send<SINK, RECEIVE, ReceivedFin>>,
+                g::Route<
+                    g::Send<SINK, RECEIVE, ReceivedMore>,
+                    g::Route<
+                        g::Send<SINK, RECEIVE, ReceivedFin>,
+                        g::Send<SINK, RECEIVE, ReceivedFailed>,
+                    >,
+                >,
             >,
             g::Send<RECEIVE, SINK, ReceiveRetire>,
         >,
@@ -360,7 +383,10 @@ pub type PeerTerminal = g::Seq<
         g::Send<PEER_EVENT, PEER_CLOSE, PeerClose>,
         g::Route<
             g::Send<PEER_EVENT, PEER_CLOSE, PeerFailed>,
-            g::Send<PEER_EVENT, PEER_CLOSE, PeerCancelled>,
+            g::Route<
+                g::Send<PEER_EVENT, PEER_CLOSE, PeerApplicationFailed>,
+                g::Send<PEER_EVENT, PEER_CLOSE, PeerCancelled>,
+            >,
         >,
     >,
     g::Send<PEER_CLOSE, PEER_EVENT, PeerSeen>,
@@ -470,7 +496,10 @@ fn source_base() -> g::Program<SourceBase> {
                     g::send::<INGRESS, SOURCE, SourceAccepted>(),
                     g::route(
                         g::send::<INGRESS, SOURCE, SourceStopped>(),
-                        g::send::<INGRESS, SOURCE, SourceRejected>(),
+                        g::route(
+                            g::send::<INGRESS, SOURCE, SourceRejected>(),
+                            g::send::<INGRESS, SOURCE, SourceDataFailed>(),
+                        ),
                     ),
                 ),
                 g::send::<SOURCE, INGRESS, SourceTaken>(),
@@ -492,7 +521,10 @@ fn source_base() -> g::Program<SourceBase> {
                     g::send::<INGRESS, SOURCE, SourceEnded>(),
                     g::route(
                         g::send::<INGRESS, SOURCE, SourceEndStopped>(),
-                        g::send::<INGRESS, SOURCE, SourceEndRejected>(),
+                        g::route(
+                            g::send::<INGRESS, SOURCE, SourceEndRejected>(),
+                            g::send::<INGRESS, SOURCE, SourceEndFailed>(),
+                        ),
                     ),
                 ),
             ),
@@ -502,7 +534,10 @@ fn source_base() -> g::Program<SourceBase> {
         g::route(stream, g::send::<SOURCE, INGRESS, SourceDone>()).roll(),
         g::seq(
             g::send::<INGRESS, SOURCE, SourceRetired>(),
-            g::send::<SOURCE, SOURCE_JOIN, SourceJoined>(),
+            g::route(
+                g::send::<SOURCE, SOURCE_JOIN, SourceJoined>(),
+                g::send::<SOURCE, SOURCE_JOIN, SourceFailed>(),
+            ),
         ),
     )
 }
@@ -528,7 +563,10 @@ pub fn receive_choreography() -> g::Program<ReceiveFlow> {
                 g::send::<RECEIVE, SINK, ReceivedData>(),
                 g::route(
                     g::send::<SINK, RECEIVE, ReceivedMore>(),
-                    g::send::<SINK, RECEIVE, ReceivedFin>(),
+                    g::route(
+                        g::send::<SINK, RECEIVE, ReceivedFin>(),
+                        g::send::<SINK, RECEIVE, ReceivedFailed>(),
+                    ),
                 ),
             ),
             g::send::<RECEIVE, SINK, ReceiveRetire>(),
@@ -709,7 +747,10 @@ pub fn choreography() -> g::Program<Flow> {
             g::send::<PEER_EVENT, PEER_CLOSE, PeerClose>(),
             g::route(
                 g::send::<PEER_EVENT, PEER_CLOSE, PeerFailed>(),
-                g::send::<PEER_EVENT, PEER_CLOSE, PeerCancelled>(),
+                g::route(
+                    g::send::<PEER_EVENT, PEER_CLOSE, PeerApplicationFailed>(),
+                    g::send::<PEER_EVENT, PEER_CLOSE, PeerCancelled>(),
+                ),
             ),
         ),
         g::send::<PEER_CLOSE, PEER_EVENT, PeerSeen>(),

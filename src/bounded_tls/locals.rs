@@ -279,39 +279,32 @@ pub async fn server_owner(
     Ok(())
 }
 
-async fn hello_input(
-    endpoint: &mut Endpoint<'_, { p::INPUT }>,
-    slot: &MessageSlot<'_>,
-    io: &mut impl MessageInput,
-    id: &mut u64,
-) -> Result<(), Error> {
-    check(endpoint.recv::<p::NeedHello>().await?, *id)?;
-    fill(slot, io, Level::Initial).await?;
-    endpoint.send::<p::Hello>(id).await?;
-    check(endpoint.recv::<p::Applied>().await?, *id)?;
-    *id += 1;
-    let route = endpoint.offer().await?;
-    match route.label() {
-        183 => {
-            check(route.recv::<p::Retry>().await?, *id)?;
-            check(endpoint.recv::<p::NeedRetryHello>().await?, *id)?;
-            fill(slot, io, Level::Initial).await?;
-            endpoint.send::<p::RetryHello>(id).await?;
-            check(endpoint.recv::<p::Applied>().await?, *id)?;
-            *id += 1;
-        }
-        184 => check(route.recv::<p::HelloReady>().await?, *id)?,
-        _ => return Err(Error::Binding),
-    }
-    Ok(())
-}
 pub async fn client_input(
     endpoint: &mut Endpoint<'_, { p::INPUT }>,
     slot: &MessageSlot<'_>,
     io: &mut impl MessageInput,
 ) -> Result<(), Error> {
     let mut id = 0;
-    hello_input(endpoint, slot, io, &mut id).await?;
+
+    check(endpoint.recv::<p::NeedHello>().await?, id)?;
+    fill(slot, io, Level::Initial).await?;
+    endpoint.send::<p::Hello>(&id).await?;
+    check(endpoint.recv::<p::Applied>().await?, id)?;
+    id += 1;
+    let route = endpoint.offer().await?;
+    match route.label() {
+        183 => {
+            check(route.recv::<p::Retry>().await?, id)?;
+            check(endpoint.recv::<p::NeedRetryHello>().await?, id)?;
+            fill(slot, io, Level::Initial).await?;
+            endpoint.send::<p::RetryHello>(&id).await?;
+            check(endpoint.recv::<p::Applied>().await?, id)?;
+            id += 1;
+        }
+        184 => check(route.recv::<p::HelloReady>().await?, id)?,
+        _ => return Err(Error::Binding),
+    }
+
     check(endpoint.recv::<p::NeedExtensions>().await?, id)?;
     fill(slot, io, Level::Handshake).await?;
     endpoint.send::<p::Extensions>(&id).await?;
@@ -348,7 +341,26 @@ pub async fn server_input(
     io: &mut impl MessageInput,
 ) -> Result<(), Error> {
     let mut id = 0;
-    hello_input(endpoint, slot, io, &mut id).await?;
+
+    check(endpoint.recv::<p::NeedHello>().await?, id)?;
+    fill(slot, io, Level::Initial).await?;
+    endpoint.send::<p::Hello>(&id).await?;
+    check(endpoint.recv::<p::Applied>().await?, id)?;
+    id += 1;
+    let route = endpoint.offer().await?;
+    match route.label() {
+        183 => {
+            check(route.recv::<p::Retry>().await?, id)?;
+            check(endpoint.recv::<p::NeedRetryHello>().await?, id)?;
+            fill(slot, io, Level::Initial).await?;
+            endpoint.send::<p::RetryHello>(&id).await?;
+            check(endpoint.recv::<p::Applied>().await?, id)?;
+            id += 1;
+        }
+        184 => check(route.recv::<p::HelloReady>().await?, id)?,
+        _ => return Err(Error::Binding),
+    }
+
     check(endpoint.recv::<p::NeedFinished>().await?, id)?;
     fill(slot, io, Level::Handshake).await?;
     endpoint.send::<p::Finished>(&id).await?;

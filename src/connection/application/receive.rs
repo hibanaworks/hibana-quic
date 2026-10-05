@@ -70,186 +70,758 @@ pub(crate) async fn run<
     {
         return Err(Error::Binding);
     }
-    let mut confirmed = false;
     if let Some(confirmation) = initial_confirmation {
-        confirm(
-            rx_keys,
-            &mut keys,
-            &mut material,
-            book,
-            control,
-            confirmation,
-        )
+        async {
+            let endpoint = &mut *rx_keys;
+            let keys = &mut keys;
+            let material = &mut material;
+            let book = &mut *book;
+
+            loop {
+                let revision = control.revision();
+                match book.retire_handshake(&confirmation) {
+                    Ok(_) => break,
+                    Err(recovery::Error::Accounting(AccountingError::OutstandingPackets)) => {
+                        control.wait(3, revision).await;
+                        // A concurrent terminal permission makes wait immediately
+                        // ready. The old-space adapter still has to settle its
+                        // cancellation before recovery and key retirement can finish.
+                        crate::runtime::yield_now().await;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            async {
+                let endpoint = &mut *endpoint;
+                let confirmation = ScopedHandshakeConfirmation::from_connection(confirmation);
+
+                let sequence = keys.sequence;
+                keys.exchange.confirmation.put(confirmation)?;
+                endpoint.send::<p::Confirmed>(&sequence).await?;
+                let response = endpoint.offer().await?;
+                let accepted = match response.label() {
+                    18 => {
+                        keys::check(response.recv::<p::ConfirmationApplied>().await?, sequence)?;
+                        true
+                    }
+                    19 => {
+                        keys::check(response.recv::<p::ConfirmationFailed>().await?, sequence)?;
+                        false
+                    }
+                    label => {
+                        return Err(keys::Error::UnexpectedLabel(label));
+                    }
+                };
+                let result = keys.exchange.confirmation_applied.take()?;
+                keys::check_result(&result, accepted)?;
+                keys.advance()?;
+                result
+            }
+            .await?;
+            if let Some(mut initial) = material.initial.take() {
+                initial.discard();
+            }
+            material.handshake.discard();
+            control.changed()?;
+            Ok::<(), Error>(())
+        }
         .await?;
-        confirmed = true;
     }
     let mut datagram = [0; N];
     let mut largest = None;
-    // A Finished-gated early bridge may already have retained request bytes.
-    notify_ready(receive, control, state, app).await?;
-    // Bounded opportunistic batching: flush ready streams before actually
-    // waiting for input. At datagram boundaries, flush after a window-backed
-    // burst (at least sixty-four datagrams) or a one-millisecond work budget
-    // (not a hard real-time guarantee).
-    // Pending receive IO stays pinned/owned during delivery; no batching cancel.
-    let burst_limit = (RX / N.max(1)).max(64);
-    let mut burst = 0usize;
-    let mut burst_started = 0u64;
-    async {
-        while !control.stopping() {
-            let retained = pending_application.take();
-            let already_accounted = retained.is_some();
-            let result = if let Some((bytes, len)) = retained {
-                datagram = bytes;
-                Some(Ok(len))
-            } else {
-                let mut input = pin!(control.until_stop(3, socket.receive(&mut datagram)));
-                match poll_fn(|cx| Poll::Ready(input.as_mut().poll(cx))).await {
-                    Poll::Ready(result) => result,
-                    Poll::Pending => {
-                        notify_ready(receive, control, state, app).await?;
-                        burst = 0;
-                        input.await
-                    }
-                }
-            };
-            let Some(result) = result else {
-                break;
-            };
-            if burst == 0 {
-                burst_started = clock.now();
-            }
-            burst += 1;
-            let len = result.map_err(connection::Error::from)?;
-            if len > N {
-                return Err(Error::Capacity);
-            }
-            // The prefix counted the complete UDP datagram before retaining this
-            // short packet, including any coalesced Handshake bytes.
-            if !already_accounted {
-                book.received_datagram(len as u64)?;
-            }
-            control.changed()?;
-            let mut offset = 0;
-            while offset < len && !control.stopping() {
-                // Parse one bounded packet at a time; all pre-AEAD syntax errors
-                // discard the remainder because its next boundary is untrusted.
-                let packet = match PacketIter::new(
-                    &datagram[offset..len],
-                    config.local_connection_id.len(),
-                    1,
-                )
-                .ok()
-                .and_then(|mut packets| packets.next())
-                {
-                    Some(Ok(packet)) => packet,
-                    _ => break,
-                };
-                if packet.bytes.is_empty() {
+    let delivery_result = async {
+        // A Finished-gated early bridge may already have retained request bytes.
+        async {
+            let endpoint = &mut *receive;
+
+            // A sink error asks the independent completion lane to close. Do not keep
+            // redispatching that same ready stream while that lane is being scheduled.
+            while !control.stopping() {
+                let ready = app
+                    .try_borrow()
+                    .map_err(|_| Error::Binding)?
+                    .ready_streams()?;
+                let Some(stream) = ready
+                    .into_iter()
+                    .flatten()
+                    .find(|stream| !state.is_complete(stream.id()))
+                else {
                     break;
-                }
-                offset += packet.bytes.len();
-                let result = match packet.header {
-                    Header::Short { .. } => {
-                        application::<N, RX, CHUNK>(
-                            rx_keys,
-                            &mut keys,
-                            &mut material,
-                            packet.bytes,
-                            config,
-                            transcript,
-                            &mut crypto,
-                            book,
-                            streams,
-                            reset,
-                            acknowledgments,
-                            control,
-                            clock,
-                            &mut largest,
-                            &mut confirmed,
-                            key_update_target,
-                        )
-                        .await
-                    }
-                    Header::Long { .. } if !confirmed => old::<N>(
-                        &mut material,
-                        packet,
-                        len,
-                        config,
-                        transcript,
-                        book,
-                        clock.now(),
-                    ),
-                    _ => Ok(None),
                 };
-                match result {
-                    Ok(Some(code)) => {
-                        // Preserve delivery of already authenticated buffered FINs
-                        // before publishing the actual peer-close observation.
-                        notify_ready(receive, control, state, app).await?;
-
-                        termination.check_scope(scope)?;
-                        termination
-                            .peer
-                            .put(termination::Permission {
-                                scope,
-                                kind: CloseKind::Peer { code },
-                            })
-                            .map_err(|_| Error::Binding)?;
-                        let sequence = termination.sequence();
-                        peer_event.send::<p::PeerClose>(&sequence).await?;
-                        control.revoke()?;
-                        check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
-                        return Ok::<(), Error>(());
+                let id = stream.id();
+                endpoint.send::<p::ReceivedData>(&id).await?;
+                let result = endpoint.offer().await?;
+                match result.label() {
+                    7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
+                    8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                    217 => {
+                        check(result.recv::<p::ReceivedFailed>().await?, id)?;
+                        return Err(Error::Application);
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let code = protocol_code(&error);
-                        control.record_protocol_error(error);
+                    label => return Err(Error::UnexpectedLabel(label)),
+                }
+                crate::runtime::yield_now().await;
+            }
+            Ok::<(), Error>(())
+        }
+        .await?;
+        // Bounded opportunistic batching: flush ready streams before actually
+        // waiting for input. At datagram boundaries, flush after a window-backed
+        // burst (at least sixty-four datagrams) or a one-millisecond work budget
+        // (not a hard real-time guarantee).
+        // Pending receive IO stays pinned/owned during delivery; no batching cancel.
+        let burst_limit = (RX / N.max(1)).max(64);
+        let mut burst = 0usize;
+        let mut burst_started = 0u64;
+        async {
+            while !control.stopping() {
+                let retained = pending_application.take();
+                let already_accounted = retained.is_some();
+                let result = if let Some((bytes, len)) = retained {
+                    datagram = bytes;
+                    Some(Ok(len))
+                } else {
+                    let mut input = pin!(control.until_stop(3, socket.receive(&mut datagram)));
+                    match poll_fn(|cx| Poll::Ready(input.as_mut().poll(cx))).await {
+                        Poll::Ready(result) => result,
+                        Poll::Pending => {
+                            async {
+                                let endpoint = &mut *receive;
 
-                        termination.check_scope(scope)?;
-                        termination
-                            .peer
-                            .put(termination::Permission {
-                                scope,
-                                kind: CloseKind::Local {
-                                    application: false,
-                                    code,
-                                },
-                            })
-                            .map_err(|_| Error::Binding)?;
-                        let sequence = termination.sequence();
-                        peer_event.send::<p::PeerFailed>(&sequence).await?;
-                        control.revoke()?;
-                        check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
-                        return Ok::<(), Error>(());
+                                // A sink error asks the independent completion lane to close. Do not keep
+                                // redispatching that same ready stream while that lane is being scheduled.
+                                while !control.stopping() {
+                                    let ready = app
+                                        .try_borrow()
+                                        .map_err(|_| Error::Binding)?
+                                        .ready_streams()?;
+                                    let Some(stream) = ready
+                                        .into_iter()
+                                        .flatten()
+                                        .find(|stream| !state.is_complete(stream.id()))
+                                    else {
+                                        break;
+                                    };
+                                    let id = stream.id();
+                                    endpoint.send::<p::ReceivedData>(&id).await?;
+                                    let result = endpoint.offer().await?;
+                                    match result.label() {
+                                        7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
+                                        8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                                        217 => {
+                                            check(result.recv::<p::ReceivedFailed>().await?, id)?;
+                                            return Err(Error::Application);
+                                        }
+                                        label => return Err(Error::UnexpectedLabel(label)),
+                                    }
+                                    crate::runtime::yield_now().await;
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
+                            burst = 0;
+                            input.await
+                        }
                     }
+                };
+                let Some(result) = result else {
+                    break;
+                };
+                if burst == 0 {
+                    burst_started = clock.now();
+                }
+                burst += 1;
+                let len = result.map_err(connection::Error::from)?;
+                if len > N {
+                    return Err(Error::Capacity);
+                }
+                // The prefix counted the complete UDP datagram before retaining this
+                // short packet, including any coalesced Handshake bytes.
+                if !already_accounted {
+                    book.received_datagram(len as u64)?;
                 }
                 control.changed()?;
-                // Let the adapter consume retained ACK grants before another
-                // packet can add more evidence to the bounded receipt slot.
-                if !acknowledgments.pending.is_empty() {
-                    notify_ready(receive, control, state, app).await?;
+                let mut offset = 0;
+                while offset < len && !control.stopping() {
+                    // Parse one bounded packet at a time; all pre-AEAD syntax errors
+                    // discard the remainder because its next boundary is untrusted.
+                    let packet = match PacketIter::new(
+                        &datagram[offset..len],
+                        config.local_connection_id.len(),
+                        1,
+                    )
+                    .ok()
+                    .and_then(|mut packets| packets.next())
+                    {
+                        Some(Ok(packet)) => packet,
+                        _ => break,
+                    };
+                    if packet.bytes.is_empty() {
+                        break;
+                    }
+                    offset += packet.bytes.len();
+                    let result = match packet.header {
+                        Header::Short { .. } => {
+                            async {
+                                let endpoint = &mut *rx_keys;
+                                let keys = &mut keys;
+                                let material = &mut material;
+                                let packet = packet.bytes;
+                                let transcript = &mut *transcript;
+                                let reassembly = &mut crypto;
+                                let book = &mut *book;
+                                let streams = &mut *streams;
+                                let largest = &mut largest;
+
+                                let now = clock.now();
+                                let pto = book.pto_duration_us()?;
+                                material.application.maintain(now, pto)?;
+                                let mut opened = match application_wire::open::<N>(
+                                    &mut material.application,
+                                    &mut material.integrity,
+                                    packet,
+                                    config.local_connection_id,
+                                    *largest,
+                                    now,
+                                    pto,
+                                ) {
+                                    Ok(opened) => opened,
+                                    Err(error) if discard_before_authentication(&error) => {
+                                        return Ok(None);
+                                    }
+                                    Err(error) => return Err(error.into()),
+                                };
+                                let receipt = match opened.take_receipt().ok_or(Error::Binding)? {
+                                    AuthenticatedRead::Ready(receipt) => receipt,
+                                    AuthenticatedRead::PeerUpdate(authenticated) => {
+                                        let installed = async {
+                                            let endpoint = &mut *endpoint;
+
+                                            let sequence = keys.sequence;
+                                            keys.exchange.peer_update.put(keys::PeerUpdate {
+                                                authenticated,
+                                                now,
+                                                pto,
+                                            })?;
+                                            endpoint.send::<p::PeerUpdate>(&sequence).await?;
+                                            let response = endpoint.offer().await?;
+                                            let accepted = match response.label() {
+                                                12 => {
+                                                    keys::check(
+                                                        response
+                                                            .recv::<p::WriteInstalled>()
+                                                            .await?,
+                                                        sequence,
+                                                    )?;
+                                                    true
+                                                }
+                                                13 => {
+                                                    keys::check(
+                                                        response.recv::<p::UpdateFailed>().await?,
+                                                        sequence,
+                                                    )?;
+                                                    false
+                                                }
+                                                label => {
+                                                    return Err(keys::Error::UnexpectedLabel(
+                                                        label,
+                                                    ));
+                                                }
+                                            };
+                                            let result = keys.exchange.write_installed.take()?;
+                                            keys::check_result(&result, accepted)?;
+                                            keys.advance()?;
+                                            result
+                                        }
+                                        .await?;
+                                        material.application.accept_write_epoch(installed)?
+                                    }
+                                };
+                                *largest = Some(largest.map_or(opened.packet_number(), |last| {
+                                    last.max(opened.packet_number())
+                                }));
+                                // Installing a peer key epoch crosses a real choreography await. TX and
+                                // timer roles may have advanced the shared recovery clock meanwhile. Read
+                                // the actual clock again at this synchronous commit; the earlier timestamp
+                                // belongs to packet authentication, not to a later recovery mutation.
+                                let outcome = match book.apply_application_packet(
+                                    receipt,
+                                    opened.plaintext(),
+                                    clock.now(),
+                                ) {
+                                    Ok(outcome) => outcome,
+                                    // Expired sent history is not evidence that the peer ACKed an unsent
+                                    // packet. Discard this packet without manufacturing any frame grant.
+                                    Err(recovery::Error::Accounting(
+                                        AccountingError::HistoryUnavailable,
+                                    )) => return Ok(None),
+                                    Err(error) => return Err(error.into()),
+                                };
+                                if let Some(grant) = outcome.frame_acks {
+                                    acknowledgments.deliver(grant, control)?;
+                                }
+                                for grant in outcome.key_acks.into_iter().flatten() {
+                                    async {
+                                        let endpoint = &mut *endpoint;
+                                        let validated =
+                                            ValidatedKeyAck::from_connection_ack(grant)?;
+
+                                        let sequence = keys.sequence;
+                                        keys.exchange.key_ack.put(keys::KeyAck {
+                                            validated,
+                                            now,
+                                            pto,
+                                        })?;
+                                        endpoint.send::<p::KeyAck>(&sequence).await?;
+                                        let response = endpoint.offer().await?;
+                                        let accepted = match response.label() {
+                                            15 => {
+                                                keys::check(
+                                                    response.recv::<p::KeyAckApplied>().await?,
+                                                    sequence,
+                                                )?;
+                                                true
+                                            }
+                                            16 => {
+                                                keys::check(
+                                                    response.recv::<p::KeyAckFailed>().await?,
+                                                    sequence,
+                                                )?;
+                                                false
+                                            }
+                                            label => {
+                                                return Err(keys::Error::UnexpectedLabel(label));
+                                            }
+                                        };
+                                        let result = keys.exchange.key_ack_applied.take()?;
+                                        keys::check_result(&result, accepted)?;
+                                        keys.advance()?;
+                                        result
+                                    }
+                                    .await?;
+                                }
+                                if let Some(confirmation) = outcome.confirmation {
+                                    async {
+                                        let endpoint = &mut *endpoint;
+                                        let keys = &mut *keys;
+                                        let material = &mut *material;
+                                        let book = &mut *book;
+
+                                        loop {
+                                            let revision = control.revision();
+                                            match book.retire_handshake(&confirmation) {
+                                                Ok(_) => break,
+                                                Err(recovery::Error::Accounting(
+                                                    AccountingError::OutstandingPackets,
+                                                )) => {
+                                                    control.wait(3, revision).await;
+                                                    // A concurrent terminal permission makes wait immediately
+                                                    // ready. The old-space adapter still has to settle its
+                                                    // cancellation before recovery and key retirement can finish.
+                                                    crate::runtime::yield_now().await;
+                                                }
+                                                Err(error) => return Err(error.into()),
+                                            }
+                                        }
+                                        async {
+                                            let endpoint = &mut *endpoint;
+                                            let confirmation =
+                                                ScopedHandshakeConfirmation::from_connection(
+                                                    confirmation,
+                                                );
+
+                                            let sequence = keys.sequence;
+                                            keys.exchange.confirmation.put(confirmation)?;
+                                            endpoint.send::<p::Confirmed>(&sequence).await?;
+                                            let response = endpoint.offer().await?;
+                                            let accepted = match response.label() {
+                                                18 => {
+                                                    keys::check(
+                                                        response
+                                                            .recv::<p::ConfirmationApplied>()
+                                                            .await?,
+                                                        sequence,
+                                                    )?;
+                                                    true
+                                                }
+                                                19 => {
+                                                    keys::check(
+                                                        response
+                                                            .recv::<p::ConfirmationFailed>()
+                                                            .await?,
+                                                        sequence,
+                                                    )?;
+                                                    false
+                                                }
+                                                label => {
+                                                    return Err(keys::Error::UnexpectedLabel(
+                                                        label,
+                                                    ));
+                                                }
+                                            };
+                                            let result =
+                                                keys.exchange.confirmation_applied.take()?;
+                                            keys::check_result(&result, accepted)?;
+                                            keys.advance()?;
+                                            result
+                                        }
+                                        .await?;
+                                        if let Some(mut initial) = material.initial.take() {
+                                            initial.discard();
+                                        }
+                                        material.handshake.discard();
+                                        control.changed()?;
+                                        Ok::<(), Error>(())
+                                    }
+                                    .await?;
+                                }
+                                if outcome.duplicate {
+                                    return Ok(None);
+                                }
+                                for frame in received_frames(
+                                    opened.plaintext(),
+                                    packet::EncryptionLevel::OneRtt,
+                                )? {
+                                    let frame = frame?;
+                                    match frame {
+                                        Frame::Stream { .. }
+                                        | Frame::ResetStream { .. }
+                                        | Frame::MaxData { .. }
+                                        | Frame::MaxStreamData { .. }
+                                        | Frame::MaxStreams { .. }
+                                        | Frame::DataBlocked { .. }
+                                        | Frame::StreamDataBlocked { .. }
+                                        | Frame::StreamsBlocked { .. } => streams.apply(&frame)?,
+                                        Frame::StopSending { id, error_code } => {
+                                            match streams.stop_intent(id, error_code) {
+                                                Ok(intent) => {
+                                                    reset.observe(intent)?;
+                                                    control.changed()?;
+                                                }
+                                                Err(application_stream::Error::Streams(
+                                                    streams::Error::Retired,
+                                                )) => {}
+                                                Err(error) => return Err(error.into()),
+                                            }
+                                        }
+                                        Frame::Crypto { offset, data } => {
+                                            reassembly
+                                                .insert(offset, data)
+                                                .map_err(connection::Error::from)?;
+                                            loop {
+                                                let (first, _) = reassembly.ready();
+                                                if first.is_empty() {
+                                                    break;
+                                                }
+                                                let count = first.len().min(N);
+                                                let input = CryptoInput::<N>::new(
+                                                    material.application.scope(),
+                                                    Level::OneRtt,
+                                                    reassembly.consumed(),
+                                                    &first[..count],
+                                                )
+                                                .map_err(connection::Error::from)?;
+                                                transcript
+                                                    .receive(input)
+                                                    .map_err(connection::Error::from)?;
+                                                reassembly
+                                                    .consume(count)
+                                                    .map_err(connection::Error::from)?;
+                                            }
+                                        }
+                                        Frame::ConnectionClose { error_code, .. } => {
+                                            return Ok(Some(error_code));
+                                        }
+                                        Frame::NewToken { .. } if config.side == Side::Client => {
+                                            // This fixed-path request session does not save resumption or
+                                            // address-validation tokens for a future connection.
+                                        }
+                                        Frame::NewConnectionId {
+                                            retire_prior_to: 0, ..
+                                        } => {
+                                            // Additional peer CIDs are optional on this fixed path. The
+                                            // current handshake-selected CID remains valid at sequence 0.
+                                        }
+                                        Frame::Padding { .. }
+                                        | Frame::Ping
+                                        | Frame::Ack { .. }
+                                        | Frame::HandshakeDone
+                                        | Frame::PathResponse { .. } => {}
+                                        Frame::NewToken { .. }
+                                        | Frame::NewConnectionId { .. }
+                                        | Frame::RetireConnectionId { .. }
+                                        | Frame::PathChallenge { .. } => {
+                                            return Err(connection::Error::UnsupportedFrame.into());
+                                        }
+                                    }
+                                }
+                                if key_update_target != 0
+                                    && keys.local_update_due(key_update_target, clock.now())?
+                                {
+                                    let update_pto = book.pto_duration_us()?;
+                                    async {
+                                        let endpoint = &mut *endpoint;
+                                        let read = &mut material.application;
+                                        let now = clock.now();
+                                        let pto = update_pto;
+
+                                        let sequence = keys.sequence;
+                                        read.maintain(now, pto)?;
+                                        let ready = read.prepare_local_update()?;
+                                        keys.exchange
+                                            .local_update
+                                            .put(keys::LocalUpdateRequest { ready, now, pto })?;
+                                        endpoint.send::<p::LocalUpdate>(&sequence).await?;
+                                        let offered = endpoint.offer().await?;
+                                        let accepted = match offered.label() {
+                                            206 => {
+                                                keys::check(
+                                                    offered.recv::<p::LocalInstalled>().await?,
+                                                    sequence,
+                                                )?;
+                                                true
+                                            }
+                                            207 => {
+                                                keys::check(
+                                                    offered.recv::<p::LocalRejected>().await?,
+                                                    sequence,
+                                                )?;
+                                                false
+                                            }
+                                            label => {
+                                                return Err(keys::Error::UnexpectedLabel(label));
+                                            }
+                                        };
+                                        let result = keys.exchange.local_result.take()?;
+                                        if result.is_ok() != accepted {
+                                            return Err(keys::Error::Binding);
+                                        }
+                                        let result = match result {
+                                            Ok(installed) => read
+                                                .accept_local_write_epoch(installed)
+                                                .map_err(keys::Error::Crypto),
+                                            Err(rejected) => {
+                                                read.cancel_local_update(rejected.ready)?;
+                                                Err(keys::Error::Crypto(rejected.error))
+                                            }
+                                        };
+                                        endpoint.send::<p::LocalSettled>(&sequence).await?;
+                                        keys.advance()?;
+                                        result
+                                    }
+                                    .await?;
+                                    control.changed()?;
+                                }
+                                Ok(None)
+                            }
+                            .await
+                        }
+                        Header::Long { .. } if !book.snapshot().handshake_confirmed => old::<N>(
+                            &mut material,
+                            packet,
+                            len,
+                            config,
+                            transcript,
+                            book,
+                            clock.now(),
+                        ),
+                        _ => Ok(None),
+                    };
+                    match result {
+                        Ok(Some(code)) => {
+                            // Preserve delivery of already authenticated buffered FINs
+                            // before publishing the actual peer-close observation.
+                            async {
+                                let endpoint = &mut *receive;
+
+                                // A sink error asks the independent completion lane to close. Do not keep
+                                // redispatching that same ready stream while that lane is being scheduled.
+                                while !control.stopping() {
+                                    let ready = app
+                                        .try_borrow()
+                                        .map_err(|_| Error::Binding)?
+                                        .ready_streams()?;
+                                    let Some(stream) = ready
+                                        .into_iter()
+                                        .flatten()
+                                        .find(|stream| !state.is_complete(stream.id()))
+                                    else {
+                                        break;
+                                    };
+                                    let id = stream.id();
+                                    endpoint.send::<p::ReceivedData>(&id).await?;
+                                    let result = endpoint.offer().await?;
+                                    match result.label() {
+                                        7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
+                                        8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                                        217 => {
+                                            check(result.recv::<p::ReceivedFailed>().await?, id)?;
+                                            return Err(Error::Application);
+                                        }
+                                        label => return Err(Error::UnexpectedLabel(label)),
+                                    }
+                                    crate::runtime::yield_now().await;
+                                }
+                                Ok::<(), Error>(())
+                            }
+                            .await?;
+
+                            termination.check_scope(scope)?;
+                            termination
+                                .peer
+                                .put(termination::Permission {
+                                    scope,
+                                    kind: CloseKind::Peer { code },
+                                })
+                                .map_err(|_| Error::Binding)?;
+                            let sequence = termination.sequence();
+                            peer_event.send::<p::PeerClose>(&sequence).await?;
+                            control.revoke()?;
+                            check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+                            return Ok::<(), Error>(());
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            let code = protocol_code(&error);
+                            control.record_protocol_error(error);
+
+                            termination.check_scope(scope)?;
+                            termination
+                                .peer
+                                .put(termination::Permission {
+                                    scope,
+                                    kind: CloseKind::Local {
+                                        application: false,
+                                        code,
+                                    },
+                                })
+                                .map_err(|_| Error::Binding)?;
+                            let sequence = termination.sequence();
+                            peer_event.send::<p::PeerFailed>(&sequence).await?;
+                            control.revoke()?;
+                            check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+                            return Ok::<(), Error>(());
+                        }
+                    }
+                    control.changed()?;
+                    // Let the adapter consume retained ACK grants before another
+                    // packet can add more evidence to the bounded receipt slot.
+                    if !acknowledgments.pending.is_empty() {
+                        async {
+                            let endpoint = &mut *receive;
+
+                            // A sink error asks the independent completion lane to close. Do not keep
+                            // redispatching that same ready stream while that lane is being scheduled.
+                            while !control.stopping() {
+                                let ready = app
+                                    .try_borrow()
+                                    .map_err(|_| Error::Binding)?
+                                    .ready_streams()?;
+                                let Some(stream) = ready
+                                    .into_iter()
+                                    .flatten()
+                                    .find(|stream| !state.is_complete(stream.id()))
+                                else {
+                                    break;
+                                };
+                                let id = stream.id();
+                                endpoint.send::<p::ReceivedData>(&id).await?;
+                                let result = endpoint.offer().await?;
+                                match result.label() {
+                                    7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
+                                    8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                                    217 => {
+                                        check(result.recv::<p::ReceivedFailed>().await?, id)?;
+                                        return Err(Error::Application);
+                                    }
+                                    label => return Err(Error::UnexpectedLabel(label)),
+                                }
+                                crate::runtime::yield_now().await;
+                            }
+                            Ok::<(), Error>(())
+                        }
+                        .await?;
+                        burst = 0;
+                        crate::runtime::yield_now().await;
+                    }
+                }
+                if burst >= burst_limit || clock.now().saturating_sub(burst_started) >= 1_000 {
+                    async {
+                        let endpoint = &mut *receive;
+
+                        // A sink error asks the independent completion lane to close. Do not keep
+                        // redispatching that same ready stream while that lane is being scheduled.
+                        while !control.stopping() {
+                            let ready = app
+                                .try_borrow()
+                                .map_err(|_| Error::Binding)?
+                                .ready_streams()?;
+                            let Some(stream) = ready
+                                .into_iter()
+                                .flatten()
+                                .find(|stream| !state.is_complete(stream.id()))
+                            else {
+                                break;
+                            };
+                            let id = stream.id();
+                            endpoint.send::<p::ReceivedData>(&id).await?;
+                            let result = endpoint.offer().await?;
+                            match result.label() {
+                                7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
+                                8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                                217 => {
+                                    check(result.recv::<p::ReceivedFailed>().await?, id)?;
+                                    return Err(Error::Application);
+                                }
+                                label => return Err(Error::UnexpectedLabel(label)),
+                            }
+                            crate::runtime::yield_now().await;
+                        }
+                        Ok::<(), Error>(())
+                    }
+                    .await?;
                     burst = 0;
                     crate::runtime::yield_now().await;
                 }
             }
-            if burst >= burst_limit || clock.now().saturating_sub(burst_started) >= 1_000 {
-                notify_ready(receive, control, state, app).await?;
-                burst = 0;
-                crate::runtime::yield_now().await;
-            }
-        }
 
-        if !termination.peer.is_empty() {
-            return Err(Error::Binding);
+            if !termination.peer.is_empty() {
+                return Err(Error::Binding);
+            }
+            let sequence = termination.sequence();
+            peer_event.send::<p::PeerCancelled>(&sequence).await?;
+            check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+            Ok::<(), Error>(())
         }
-        let sequence = termination.sequence();
-        peer_event.send::<p::PeerCancelled>(&sequence).await?;
-        check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+        .await?;
         Ok::<(), Error>(())
     }
-    .await?;
+    .await;
+    match delivery_result {
+        Ok(()) => {}
+        Err(Error::Application) => {
+            // Only a consumed ReceivedFailed branch reaches this application
+            // close permission. The sink does not fabricate successful FIN.
+            termination.check_scope(scope)?;
+            termination
+                .peer
+                .put(termination::Permission {
+                    scope,
+                    kind: CloseKind::Local {
+                        application: true,
+                        code: 0x100,
+                    },
+                })
+                .map_err(|_| Error::Binding)?;
+            let sequence = termination.sequence();
+            peer_event
+                .send::<p::PeerApplicationFailed>(&sequence)
+                .await?;
+            control.revoke()?;
+            check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+        }
+        Err(error) => return Err(error),
+    }
     receive.send::<p::ReceiveRetire>(&0).await?;
     check(receive.recv::<p::ReceiveRetired>().await?, 0)?;
     material.application.discard();
@@ -257,159 +829,15 @@ pub(crate) async fn run<
         initial.discard();
     }
     material.handshake.discard();
-    Ok(keys.retire(rx_keys).await?)
-}
+    Ok(async {
+        let endpoint = rx_keys;
 
-#[allow(clippy::too_many_arguments)]
-async fn application<'streams, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(
-    endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
-    keys: &mut keys::RxControl<'_, '_, 'scope>,
-    material: &mut ReceiveMaterial<'scope>,
-    packet: &[u8],
-    config: Config<'_>,
-    transcript: &mut Transcript<'scope, '_, '_>,
-    reassembly: &mut CryptoBuffer<'_>,
-    book: &mut recovery::Rx<'_, 'scope, N>,
-    streams: &mut application_stream::Rx<'streams, '_, 'scope, RX, CHUNK>,
-    reset: &reset::Exchange<'streams>,
-    acknowledgments: &super::acknowledgments::Exchange<'scope>,
-    control: &Control<'_, 'scope>,
-    clock: &impl Clock,
-    largest: &mut Option<u64>,
-    confirmed: &mut bool,
-    key_update_target: u64,
-) -> Result<Option<u64>, Error> {
-    let now = clock.now();
-    let pto = book.pto_duration_us()?;
-    material.application.maintain(now, pto)?;
-    let mut opened = match application_wire::open::<N>(
-        &mut material.application,
-        &mut material.integrity,
-        packet,
-        config.local_connection_id,
-        *largest,
-        now,
-        pto,
-    ) {
-        Ok(opened) => opened,
-        Err(error) if discard_before_authentication(&error) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let receipt = match opened.take_receipt().ok_or(Error::Binding)? {
-        AuthenticatedRead::Ready(receipt) => receipt,
-        AuthenticatedRead::PeerUpdate(authenticated) => {
-            let installed = keys.peer_update(endpoint, authenticated, now, pto).await?;
-            material.application.accept_write_epoch(installed)?
-        }
-    };
-    *largest = Some(largest.map_or(opened.packet_number(), |last| {
-        last.max(opened.packet_number())
-    }));
-    // Installing a peer key epoch crosses a real choreography await. TX and
-    // timer roles may have advanced the shared recovery clock meanwhile. Read
-    // the actual clock again at this synchronous commit; the earlier timestamp
-    // belongs to packet authentication, not to a later recovery mutation.
-    let outcome = match book.apply_application_packet(receipt, opened.plaintext(), clock.now()) {
-        Ok(outcome) => outcome,
-        // Expired sent history is not evidence that the peer ACKed an unsent
-        // packet. Discard this packet without manufacturing any frame grant.
-        Err(recovery::Error::Accounting(AccountingError::HistoryUnavailable)) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if let Some(grant) = outcome.frame_acks {
-        acknowledgments.deliver(grant, control)?;
+        let sequence = keys.sequence;
+        endpoint.send::<p::KeysRetire>(&sequence).await?;
+        keys::check(endpoint.recv::<p::KeysRetired>().await?, sequence)?;
+        Ok::<(), keys::Error>(())
     }
-    for grant in outcome.key_acks.into_iter().flatten() {
-        keys.acknowledge(
-            endpoint,
-            ValidatedKeyAck::from_connection_ack(grant)?,
-            now,
-            pto,
-        )
-        .await?;
-    }
-    if let Some(confirmation) = outcome.confirmation {
-        confirm(endpoint, keys, material, book, control, confirmation).await?;
-        *confirmed = true;
-    }
-    if outcome.duplicate {
-        return Ok(None);
-    }
-    for frame in received_frames(opened.plaintext(), packet::EncryptionLevel::OneRtt)? {
-        let frame = frame?;
-        match frame {
-            Frame::Stream { .. }
-            | Frame::ResetStream { .. }
-            | Frame::MaxData { .. }
-            | Frame::MaxStreamData { .. }
-            | Frame::MaxStreams { .. }
-            | Frame::DataBlocked { .. }
-            | Frame::StreamDataBlocked { .. }
-            | Frame::StreamsBlocked { .. } => streams.apply(&frame)?,
-            Frame::StopSending { id, error_code } => match streams.stop_intent(id, error_code) {
-                Ok(intent) => {
-                    reset.observe(intent)?;
-                    control.changed()?;
-                }
-                Err(application_stream::Error::Streams(streams::Error::Retired)) => {}
-                Err(error) => return Err(error.into()),
-            },
-            Frame::Crypto { offset, data } => {
-                reassembly
-                    .insert(offset, data)
-                    .map_err(connection::Error::from)?;
-                loop {
-                    let (first, _) = reassembly.ready();
-                    if first.is_empty() {
-                        break;
-                    }
-                    let count = first.len().min(N);
-                    let input = CryptoInput::<N>::new(
-                        material.application.scope(),
-                        Level::OneRtt,
-                        reassembly.consumed(),
-                        &first[..count],
-                    )
-                    .map_err(connection::Error::from)?;
-                    transcript.receive(input).map_err(connection::Error::from)?;
-                    reassembly.consume(count).map_err(connection::Error::from)?;
-                }
-            }
-            Frame::ConnectionClose { error_code, .. } => return Ok(Some(error_code)),
-            Frame::NewToken { .. } if config.side == Side::Client => {
-                // This fixed-path request session does not save resumption or
-                // address-validation tokens for a future connection.
-            }
-            Frame::NewConnectionId {
-                retire_prior_to: 0, ..
-            } => {
-                // Additional peer CIDs are optional on this fixed path. The
-                // current handshake-selected CID remains valid at sequence 0.
-            }
-            Frame::Padding { .. }
-            | Frame::Ping
-            | Frame::Ack { .. }
-            | Frame::HandshakeDone
-            | Frame::PathResponse { .. } => {}
-            Frame::NewToken { .. }
-            | Frame::NewConnectionId { .. }
-            | Frame::RetireConnectionId { .. }
-            | Frame::PathChallenge { .. } => {
-                return Err(connection::Error::UnsupportedFrame.into());
-            }
-        }
-    }
-    if key_update_target != 0 && keys.local_update_due(key_update_target, clock.now())? {
-        keys.local_update(
-            endpoint,
-            &mut material.application,
-            clock.now(),
-            book.pto_duration_us()?,
-        )
-        .await?;
-        control.changed()?;
-    }
-    Ok(None)
+    .await?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -538,74 +966,6 @@ fn received_frames(
             max_ack_ranges: recovery::ACK_CAPACITY,
         },
     )?)
-}
-
-async fn confirm<'scope, const N: usize>(
-    endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
-    keys: &mut keys::RxControl<'_, '_, 'scope>,
-    material: &mut ReceiveMaterial<'scope>,
-    book: &mut recovery::Rx<'_, 'scope, N>,
-    control: &Control<'_, 'scope>,
-    confirmation: recovery::HandshakeConfirmed<'scope>,
-) -> Result<(), Error> {
-    loop {
-        let revision = control.revision();
-        match book.retire_handshake(&confirmation) {
-            Ok(_) => break,
-            Err(recovery::Error::Accounting(AccountingError::OutstandingPackets)) => {
-                control.wait(3, revision).await;
-                // A concurrent terminal permission makes wait immediately
-                // ready. The old-space adapter still has to settle its
-                // cancellation before recovery and key retirement can finish.
-                crate::runtime::yield_now().await;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    keys.confirm(
-        endpoint,
-        ScopedHandshakeConfirmation::from_connection(confirmation),
-    )
-    .await?;
-    if let Some(mut initial) = material.initial.take() {
-        initial.discard();
-    }
-    material.handshake.discard();
-    control.changed()?;
-    Ok(())
-}
-
-async fn notify_ready<const RX: usize, const CHUNK: usize, B>(
-    endpoint: &mut Endpoint<'_, { p::RECEIVE }>,
-    control: &Control<'_, '_>,
-    state: &io::State<'_, CHUNK, B>,
-    app: &RefCell<application_stream::App<'_, '_, '_, RX, CHUNK>>,
-) -> Result<(), Error> {
-    // A sink error asks the independent completion lane to close. Do not keep
-    // redispatching that same ready stream while that lane is being scheduled.
-    while !control.stopping() && !control.failed() {
-        let ready = app
-            .try_borrow()
-            .map_err(|_| Error::Binding)?
-            .ready_streams()?;
-        let Some(stream) = ready
-            .into_iter()
-            .flatten()
-            .find(|stream| !state.is_complete(stream.id()))
-        else {
-            break;
-        };
-        let id = stream.id();
-        endpoint.send::<p::ReceivedData>(&id).await?;
-        let result = endpoint.offer().await?;
-        match result.label() {
-            7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
-            8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
-            label => return Err(Error::UnexpectedLabel(label)),
-        }
-        crate::runtime::yield_now().await;
-    }
-    Ok(())
 }
 
 fn discard_before_authentication(error: &connection::Error) -> bool {

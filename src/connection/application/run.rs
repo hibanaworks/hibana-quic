@@ -254,7 +254,6 @@ async fn connected<
             issuer,
             &storage,
             book,
-            &outcomes.tls,
             &outcomes.handshake_adapter,
             client_early.as_deref_mut(),
         )
@@ -381,13 +380,9 @@ async fn connected<
                 // ApplicationFailed carry its authority before final return.
                 if matches!(error, Error::Application | Error::Capacity) {
                     *first_io_error.borrow_mut() = Some(error);
-                    control.fail()?;
                 } else {
                     return Err(error);
                 }
-            } else if config.side == Side::Client && state.submitted_count() == 0 {
-                *first_io_error.borrow_mut() = Some(Error::Application);
-                control.fail()?;
             }
             Ok::<(), Error>(())
         });
@@ -595,9 +590,6 @@ async fn connected<
     }
     if let Some(error) = control.take_protocol_error() {
         return Err(error);
-    }
-    if control.failed() {
-        return Err(Error::Application);
     }
     if !matches!(
         close_kind,

@@ -259,130 +259,139 @@ pub(crate) async fn run<
 ) -> Result<(), Error> {
     let mut sequence = 0u64;
     let mut history_floor = book.application_history_floor();
-    while !control.stopping() || !acknowledgments.pending.is_empty() {
-        let revision = control.revision();
-        if !acknowledgments.pending.is_empty() {
-            endpoint.send::<p::ApplyAcknowledgments>(&sequence).await?;
-            check(
-                endpoint.recv::<p::AcknowledgmentsApplied>().await?,
-                sequence,
-            )?;
-            loop {
-                let offered = endpoint.offer().await?;
-                match offered.label() {
-                    181 => {
-                        let id = offered.recv::<p::StreamDelivered>().await?;
-                        let receipt = state.delivery.take().map_err(|_| Error::Binding)?;
-                        check(receipt.id(), id)?;
-                        let released = streams.record_delivery(receipt)?;
-                        reclaim.delivery.put(released).map_err(|_| Error::Binding)?;
-                        endpoint.send::<p::DeliveryReclaim>(&id).await?;
-                        check(endpoint.recv::<p::DeliveryStored>().await?, id)?;
-                        endpoint.send::<p::StreamDeliverySeen>(&id).await?;
+    let publication_result = async {
+        while !control.stopping() || !acknowledgments.pending.is_empty() {
+            let revision = control.revision();
+            if !acknowledgments.pending.is_empty() {
+                endpoint.send::<p::ApplyAcknowledgments>(&sequence).await?;
+                check(
+                    endpoint.recv::<p::AcknowledgmentsApplied>().await?,
+                    sequence,
+                )?;
+                loop {
+                    let offered = endpoint.offer().await?;
+                    match offered.label() {
+                        181 => {
+                            let id = offered.recv::<p::StreamDelivered>().await?;
+                            let receipt = state.delivery.take().map_err(|_| Error::Binding)?;
+                            check(receipt.id(), id)?;
+                            let released = streams.record_delivery(receipt)?;
+                            reclaim.delivery.put(released).map_err(|_| Error::Binding)?;
+                            endpoint.send::<p::DeliveryReclaim>(&id).await?;
+                            check(endpoint.recv::<p::DeliveryStored>().await?, id)?;
+                            endpoint.send::<p::StreamDeliverySeen>(&id).await?;
+                        }
+                        183 => {
+                            check(offered.recv::<p::DeliveriesDone>().await?, sequence)?;
+                            break;
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
                     }
-                    183 => {
-                        check(offered.recv::<p::DeliveriesDone>().await?, sequence)?;
-                        break;
+                }
+                endpoint
+                    .send::<p::AcknowledgmentsSettled>(&sequence)
+                    .await?;
+            }
+            if control.stopping() {
+                break;
+            }
+            if let Some(id) =
+                reclaim.stage(|origin| streams.reclaimable(origin).map_err(Error::from))?
+            {
+                endpoint.send::<p::ReclaimStream>(&id).await?;
+                check(endpoint.recv::<p::StreamReclaimed>().await?, id)?;
+                endpoint.send::<p::ReclaimSettled>(&id).await?;
+            }
+            // This branch is outside the complete Datagram/Accepted-or-Rejected/
+            // Settled fragment. The global forbids resetting an unresolved send.
+            if let Some(id) = reset.stage()? {
+                endpoint.send::<p::ApplyStop>(&id).await?;
+                let reply = endpoint.offer().await?;
+                let applied = match reply.label() {
+                    175 => {
+                        check(reply.recv::<p::StopApplied>().await?, id)?;
+                        true
+                    }
+                    176 => {
+                        check(reply.recv::<p::StopFailed>().await?, id)?;
+                        false
                     }
                     label => return Err(Error::UnexpectedLabel(label)),
+                };
+                endpoint.send::<p::StopSettled>(&id).await?;
+                if !applied {
+                    return Err(Error::Application);
                 }
+                // Bound stop work to one observation per publication iteration;
+                // repeated peer requests must not starve ACK/retransmission output.
+                crate::runtime::yield_now().await;
             }
-            endpoint
-                .send::<p::AcknowledgmentsSettled>(&sequence)
-                .await?;
-        }
-        if control.stopping() {
-            break;
-        }
-        if let Some(id) =
-            reclaim.stage(|origin| streams.reclaimable(origin).map_err(Error::from))?
-        {
-            endpoint.send::<p::ReclaimStream>(&id).await?;
-            check(endpoint.recv::<p::StreamReclaimed>().await?, id)?;
-            endpoint.send::<p::ReclaimSettled>(&id).await?;
-        }
-        // This branch is outside the complete Datagram/Accepted-or-Rejected/
-        // Settled fragment. The global forbids resetting an unresolved send.
-        if let Some(id) = reset.stage()? {
-            endpoint.send::<p::ApplyStop>(&id).await?;
-            let reply = endpoint.offer().await?;
-            let applied = match reply.label() {
-                175 => {
-                    check(reply.recv::<p::StopApplied>().await?, id)?;
-                    true
+            while let Some(grant) = book.take_lost_application() {
+                let packet = grant.packet().value;
+                acknowledgments
+                    .loss
+                    .put(grant)
+                    .map_err(|_| Error::Binding)?;
+                endpoint.send::<p::ApplyLoss>(&packet).await?;
+                check(endpoint.recv::<p::LossApplied>().await?, packet)?;
+                endpoint.send::<p::LossSettled>(&packet).await?;
+            }
+            let floor = book.application_history_floor();
+            while history_floor < floor {
+                streams.forget_lost(history_floor)?;
+                history_floor += 1;
+            }
+            let pending = prepare(
+                keys,
+                book,
+                streams,
+                handshake_done,
+                config,
+                peer,
+                clock.now(),
+            )?;
+            let Some(pending) = pending else {
+                control.wait(4, revision).await;
+                continue;
+            };
+            let sent_handshake_done = pending.initial_handshake_done;
+            if let Err((error, pending)) = state.put(pending) {
+                cancel_prepared(pending, book, streams)?;
+                return Err(error);
+            }
+            endpoint.send::<p::Datagram>(&sequence).await?;
+            let offered = endpoint.offer().await?;
+            match offered.label() {
+                27 => {
+                    check(offered.recv::<p::Accepted>().await?, sequence)?;
+                    if sent_handshake_done {
+                        handshake_done = None;
+                    }
                 }
-                176 => {
-                    check(reply.recv::<p::StopFailed>().await?, id)?;
-                    false
+                28 => {
+                    check(offered.recv::<p::Rejected>().await?, sequence)?;
+                    if !control.stopping() {
+                        endpoint.send::<p::Settled>(&sequence).await?;
+                        control.revoke()?;
+                        return Err(Error::Connection(connection::Error::Io(
+                            connection::IoError::Rejected,
+                        )));
+                    }
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
-            };
-            endpoint.send::<p::StopSettled>(&id).await?;
-            if !applied {
-                return Err(Error::Application);
             }
-            // Bound stop work to one observation per publication iteration;
-            // repeated peer requests must not starve ACK/retransmission output.
+            endpoint.send::<p::Settled>(&sequence).await?;
+            sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
             crate::runtime::yield_now().await;
         }
-        while let Some(grant) = book.take_lost_application() {
-            let packet = grant.packet().value;
-            acknowledgments
-                .loss
-                .put(grant)
-                .map_err(|_| Error::Binding)?;
-            endpoint.send::<p::ApplyLoss>(&packet).await?;
-            check(endpoint.recv::<p::LossApplied>().await?, packet)?;
-            endpoint.send::<p::LossSettled>(&packet).await?;
-        }
-        let floor = book.application_history_floor();
-        while history_floor < floor {
-            streams.forget_lost(history_floor)?;
-            history_floor += 1;
-        }
-        let pending = prepare(
-            keys,
-            book,
-            streams,
-            handshake_done,
-            config,
-            peer,
-            clock.now(),
-        )?;
-        let Some(pending) = pending else {
-            control.wait(4, revision).await;
-            continue;
-        };
-        let sent_handshake_done = pending.initial_handshake_done;
-        if let Err((error, pending)) = state.put(pending) {
-            cancel_prepared(pending, book, streams)?;
-            return Err(error);
-        }
-        endpoint.send::<p::Datagram>(&sequence).await?;
-        let offered = endpoint.offer().await?;
-        match offered.label() {
-            27 => {
-                check(offered.recv::<p::Accepted>().await?, sequence)?;
-                if sent_handshake_done {
-                    handshake_done = None;
-                }
-            }
-            28 => {
-                check(offered.recv::<p::Rejected>().await?, sequence)?;
-                if !control.stopping() {
-                    control.fail()?;
-                }
-            }
-            label => return Err(Error::UnexpectedLabel(label)),
-        }
-        endpoint.send::<p::Settled>(&sequence).await?;
-        sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
-        crate::runtime::yield_now().await;
+        Ok::<(), Error>(())
     }
+    .await;
     endpoint.send::<p::StopPublication>(&sequence).await?;
     check(endpoint.recv::<p::PublicationStopped>().await?, sequence)?;
     endpoint.send::<p::DeliveryReclaimsDone>(&0).await?;
-    check(endpoint.recv::<p::DeliveryReclaimsClosed>().await?, 0)
+    check(endpoint.recv::<p::DeliveryReclaimsClosed>().await?, 0)?;
+    publication_result
 }
 
 fn cancel_prepared<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK: usize>(

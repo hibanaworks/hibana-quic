@@ -355,6 +355,14 @@ pub type EarlyDone = g::Msg<151, u64>;
 pub type EarlyContinue = g::Msg<160, u64>;
 pub type EarlyInitial = Emission<152, 153, 154, 155>;
 pub type EarlyPacket = Emission<156, 157, 158, 159>;
+pub type EarlyInitialDatagram = <EarlyInitial as Publication>::Datagram;
+pub type EarlyInitialAccepted = <EarlyInitial as Publication>::Accepted;
+pub type EarlyInitialRejected = <EarlyInitial as Publication>::Rejected;
+pub type EarlyInitialSettled = <EarlyInitial as Publication>::Settled;
+pub type EarlyPacketDatagram = <EarlyPacket as Publication>::Datagram;
+pub type EarlyPacketAccepted = <EarlyPacket as Publication>::Accepted;
+pub type EarlyPacketRejected = <EarlyPacket as Publication>::Rejected;
+pub type EarlyPacketSettled = <EarlyPacket as Publication>::Settled;
 pub type EarlyFlow = g::Route<
     g::Seq<
         g::Send<TLS_TX, TX_WIRE, EarlyStart>,

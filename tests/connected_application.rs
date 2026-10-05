@@ -633,13 +633,27 @@ impl DatagramTx for Tx<'_, '_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileFailure {
+    None,
+    Request,
+    Open,
+    Read,
+    Write,
+    Finish,
+}
+
 struct Requests {
+    failure: FileFailure,
     count: usize,
     next: usize,
     started: Vec<u64>,
 }
 impl ClientRequests for Requests {
     async fn next(&mut self, output: &mut [u8]) -> Result<Option<usize>, ()> {
+        if self.failure == FileFailure::Request {
+            return Err(());
+        }
         if self.next == self.count {
             return Ok(None);
         }
@@ -658,11 +672,15 @@ fn body_byte(request: usize, offset: usize) -> u8 {
     ((request * 53 + offset * 17 + 11) % 251) as u8
 }
 struct Body {
+    failure: FileFailure,
     request: usize,
     offset: usize,
 }
 impl BodyReader for Body {
     async fn read(&mut self, output: &mut [u8]) -> Result<usize, ()> {
+        if self.failure == FileFailure::Read {
+            return Err(());
+        }
         let len = output.len().min(BODY_SIZES[self.request] - self.offset);
         for (i, byte) in output[..len].iter_mut().enumerate() {
             *byte = body_byte(self.request, self.offset + i);
@@ -672,11 +690,15 @@ impl BodyReader for Body {
     }
 }
 struct Handler {
+    failure: FileFailure,
     opened: Vec<(u64, usize)>,
 }
 impl ServerHandler for Handler {
     type Body = Body;
     async fn open(&mut self, stream_id: u64, request: &[u8]) -> Result<Body, ()> {
+        if self.failure == FileFailure::Open {
+            return Err(());
+        }
         let request = REQUESTS
             .iter()
             .position(|expected| *expected == request)
@@ -686,15 +708,23 @@ impl ServerHandler for Handler {
             "request delivered twice"
         );
         self.opened.push((stream_id, request));
-        Ok(Body { request, offset: 0 })
+        Ok(Body {
+            request,
+            offset: 0,
+            failure: self.failure,
+        })
     }
 }
 struct Sink {
+    failure: FileFailure,
     bytes: [Vec<u8>; STREAMS],
     finished: [usize; STREAMS],
 }
 impl StreamSink for Sink {
     async fn write(&mut self, stream_id: u64, bytes: &[u8]) -> Result<(), ()> {
+        if self.failure == FileFailure::Write {
+            return Err(());
+        }
         assert_eq!(stream_id % 4, 0);
         let stream = (stream_id / 4) as usize;
         assert_eq!(self.finished[stream], 0, "body bytes arrived after FIN");
@@ -703,6 +733,9 @@ impl StreamSink for Sink {
         Ok(())
     }
     async fn finish(&mut self, stream_id: u64) -> Result<(), ()> {
+        if self.failure == FileFailure::Finish {
+            return Err(());
+        }
         let stream = (stream_id / 4) as usize;
         self.finished[stream] += 1;
         assert_eq!(self.finished[stream], 1, "FIN delivered twice");
@@ -872,6 +905,36 @@ fn slot_reuse_preserves_loss_recovery_and_late_packet_accounting() {
 }
 
 fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
+    connection_case_with_failure(count, loss, client_slots, FileFailure::None);
+}
+
+#[test]
+fn actual_request_failure_closes_without_successful_source_completion() {
+    connection_case_with_failure(1, Loss::None, STREAMS, FileFailure::Request);
+}
+#[test]
+fn actual_open_failure_closes_without_successful_source_completion() {
+    connection_case_with_failure(1, Loss::None, STREAMS, FileFailure::Open);
+}
+#[test]
+fn actual_body_failure_closes_without_fabricated_fin() {
+    connection_case_with_failure(1, Loss::None, STREAMS, FileFailure::Read);
+}
+#[test]
+fn actual_sink_write_failure_uses_explicit_failure_reply() {
+    connection_case_with_failure(1, Loss::None, STREAMS, FileFailure::Write);
+}
+#[test]
+fn actual_sink_finish_failure_uses_explicit_failure_reply() {
+    connection_case_with_failure(1, Loss::None, STREAMS, FileFailure::Finish);
+}
+
+fn connection_case_with_failure(
+    count: usize,
+    loss: Loss,
+    client_slots: usize,
+    failure: FileFailure,
+) {
     let client_limits = Limits {
         max_data: (client_slots * RECEIVE_WINDOW) as u64,
         ..limits(Side::Client)
@@ -1071,12 +1134,17 @@ fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
         inspector: Some(&mut inspector),
     };
     let mut requests = Requests {
+        failure,
         count,
         next: 0,
         started: Vec::new(),
     };
-    let mut handler = Handler { opened: Vec::new() };
+    let mut handler = Handler {
+        opened: Vec::new(),
+        failure,
+    };
     let mut sink = Sink {
+        failure,
         bytes: core::array::from_fn(|_| Vec::new()),
         finished: [0; STREAMS],
     };
@@ -1119,11 +1187,11 @@ fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
         &clock,
         hibana_quic::runtime::join2(
             async {
-                client_report = Some(client.await?);
+                client_report = Some(client.await);
                 Ok::<(), application::Error>(())
             },
             async {
-                server_report = Some(server.await?);
+                server_report = Some(server.await);
                 Ok::<(), application::Error>(())
             },
         ),
@@ -1149,6 +1217,23 @@ fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
     );
     let client = client_report.unwrap();
     let server = server_report.unwrap();
+    if failure != FileFailure::None {
+        assert!(
+            matches!(client, Err(application::Error::Application)),
+            "client result: {client:?}"
+        );
+        assert!(
+            matches!(server, Err(application::Error::Application)),
+            "server result: {server:?}"
+        );
+        assert_eq!(
+            sink.finished[0], 0,
+            "failed IO fabricated successful FIN delivery"
+        );
+        return;
+    }
+    let client = client.unwrap();
+    let server = server.unwrap();
     assert_eq!(client_transcript.state(), State::Connected);
     assert_eq!(server_transcript.state(), State::Connected);
     for transcript in [&client_transcript, &server_transcript] {

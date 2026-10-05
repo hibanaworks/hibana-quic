@@ -95,7 +95,6 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, { p::TLS_RX }>,
     source: &Numbers<'_, 'scope, '_, '_>,
     slots: &Storage<'scope, '_, N, P>,
-    _outcome: &Outcome,
     message: &crate::bounded_tls::locals::MessageSlot<'_>,
     side: Side,
 ) -> Result<(), Error> {

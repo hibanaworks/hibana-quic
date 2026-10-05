@@ -30,6 +30,17 @@ Path('ci-safe-results/environment.json').write_text(json.dumps({
  'machine':platform.machine(),'public_repository':True,'scope':'one explicitly requested pilot; baseline plus explicitly selected registered cases',
  'not_claimed':['full 40-cell matrix','three release repetitions','Pico hardware','whole-host zero allocation']},indent=2)+'\n')
 PY
+# Model checks run only when the qualification request explicitly asks for them.
+MODELS_REQUESTED=$(python3 - <<'MODELS'
+import json
+value = json.load(open('ci/interop-request.json')).get('formal_models', False)
+assert isinstance(value, bool), 'formal_models must be boolean'
+print('yes' if value else 'no')
+MODELS
+)
+if [[ $MODELS_REQUESTED == yes ]]; then
+  bash ci/check-local-models.sh
+fi
 # Upstream Compose uses interface_name, which requires daemon API >= 1.49.
 # Upgrade only the existing Docker CE/CLI packages from Docker's official source.
 # The user approved direct routing on this disposable GitHub runner only.

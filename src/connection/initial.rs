@@ -89,8 +89,8 @@ impl<'scope> Keys<'scope> {
 }
 
 pub(super) struct Exchange<'scope> {
-    event: Inbox<recovery::InitialRetirement<'scope>>,
-    retired: Inbox<recovery::InitialRetired<'scope>>,
+    pub(super) event: Inbox<recovery::InitialRetirement<'scope>>,
+    pub(super) retired: Inbox<recovery::InitialRetired<'scope>>,
 }
 impl<'scope> Exchange<'scope> {
     pub fn new() -> Self {
@@ -99,32 +99,6 @@ impl<'scope> Exchange<'scope> {
             retired: Inbox::new(),
         }
     }
-}
-/// Called in the actual server RX/client publication future at its event site.
-pub(super) async fn announce<'scope>(
-    endpoint: &mut Endpoint<'_, { p::INITIAL_EVENT }>,
-    exchange: &Exchange<'scope>,
-    evidence: recovery::InitialRetirement<'scope>,
-) -> Result<(), Error> {
-    let scope = evidence.scope();
-    let event = evidence.event();
-    exchange.event.put(evidence)?;
-    match event {
-        recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
-        }
-        recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
-        }
-    }
-    if endpoint.recv::<p::InitialRetired>().await? != 0 {
-        return Err(Error::Binding);
-    }
-    let proof = exchange.retired.take()?;
-    if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
-        return Err(Error::Binding);
-    }
-    Ok(())
 }
 pub(super) async fn retire<'scope, const N: usize>(
     endpoint: &mut Endpoint<'_, { p::INITIAL_OWNER }>,
@@ -162,9 +136,6 @@ pub(super) async fn retire<'scope, const N: usize>(
         return Err(Error::Binding);
     }
     keys.revoke(&evidence)?;
-    let mut available = schedule.keys.get();
-    available[0] = false;
-    schedule.keys.set(available);
     schedule.changed()?;
     let proof = loop {
         let revision = schedule.revision.get();
@@ -398,7 +369,30 @@ mod tests {
                 dropped: &dropped
             }));
             assert!(submission.as_mut().poll(&mut cx).is_pending());
-            let mut event = pin!(announce(&mut event_endpoint, &exchange, evidence));
+            let mut event = pin!(async {
+                let endpoint = &mut event_endpoint;
+                let exchange = &exchange;
+
+                let scope = evidence.scope();
+                let event = evidence.event();
+                exchange.event.put(evidence)?;
+                match event {
+                    recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
+                        endpoint.send::<p::ClientInitialRetire>(&0).await?
+                    }
+                    recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
+                        endpoint.send::<p::ServerInitialRetire>(&0).await?
+                    }
+                }
+                if endpoint.recv::<p::InitialRetired>().await? != 0 {
+                    return Err(Error::Binding);
+                }
+                let proof = exchange.retired.take()?;
+                if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
+                    return Err(Error::Binding);
+                }
+                Ok::<(), Error>(())
+            });
             let mut retiring = pin!(retire(
                 &mut owner_endpoint,
                 &keys,

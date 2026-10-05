@@ -12,9 +12,9 @@ use crate::{
     crypto::{
         self, PacketKey,
         directional::{
-            ApplicationKeyScope, ApplicationReadKeys, ApplicationWriteKeys, LocalUpdateReady,
-            LocalUpdateRejected, LocalWriteEpochInstalled, PeerUpdateAuthenticated,
-            ScopedHandshakeConfirmation, ValidatedKeyAck, WriteEpochInstalled,
+            ApplicationKeyScope, ApplicationWriteKeys, LocalUpdateReady, LocalUpdateRejected,
+            LocalWriteEpochInstalled, PeerUpdateAuthenticated, ScopedHandshakeConfirmation,
+            ValidatedKeyAck, WriteEpochInstalled,
         },
     },
 };
@@ -241,34 +241,35 @@ impl<'scope> KeyOwner<'scope> {
     }
 }
 
-struct PeerUpdate<'scope> {
-    authenticated: PeerUpdateAuthenticated<'scope>,
-    now: u64,
-    pto: u64,
+pub(super) struct PeerUpdate<'scope> {
+    pub(super) authenticated: PeerUpdateAuthenticated<'scope>,
+    pub(super) now: u64,
+    pub(super) pto: u64,
 }
-struct LocalUpdateRequest<'scope> {
-    ready: LocalUpdateReady<'scope>,
-    now: u64,
-    pto: u64,
+pub(super) struct LocalUpdateRequest<'scope> {
+    pub(super) ready: LocalUpdateReady<'scope>,
+    pub(super) now: u64,
+    pub(super) pto: u64,
 }
-struct KeyAck<'scope> {
-    validated: ValidatedKeyAck<'scope>,
-    now: u64,
-    pto: u64,
+pub(super) struct KeyAck<'scope> {
+    pub(super) validated: ValidatedKeyAck<'scope>,
+    pub(super) now: u64,
+    pub(super) pto: u64,
 }
 
 /// Each lane carries its actual affine object, beside its corresponding
 /// projected wire edge. Numeric wire sequence values are correlation only.
 pub(crate) struct Exchange<'owner, 'scope> {
-    owner: &'owner KeyOwner<'scope>,
-    peer_update: Inbox<PeerUpdate<'scope>>,
-    write_installed: Inbox<Result<WriteEpochInstalled<'scope>, Error>>,
-    local_update: Inbox<LocalUpdateRequest<'scope>>,
-    local_result: Inbox<Result<LocalWriteEpochInstalled<'scope>, LocalUpdateRejected<'scope>>>,
-    key_ack: Inbox<KeyAck<'scope>>,
-    key_ack_applied: Inbox<Result<(), Error>>,
-    confirmation: Inbox<ScopedHandshakeConfirmation<'scope>>,
-    confirmation_applied: Inbox<Result<(), Error>>,
+    pub(super) owner: &'owner KeyOwner<'scope>,
+    pub(super) peer_update: Inbox<PeerUpdate<'scope>>,
+    pub(super) write_installed: Inbox<Result<WriteEpochInstalled<'scope>, Error>>,
+    pub(super) local_update: Inbox<LocalUpdateRequest<'scope>>,
+    pub(super) local_result:
+        Inbox<Result<LocalWriteEpochInstalled<'scope>, LocalUpdateRejected<'scope>>>,
+    pub(super) key_ack: Inbox<KeyAck<'scope>>,
+    pub(super) key_ack_applied: Inbox<Result<(), Error>>,
+    pub(super) confirmation: Inbox<ScopedHandshakeConfirmation<'scope>>,
+    pub(super) confirmation_applied: Inbox<Result<(), Error>>,
 }
 
 impl<'owner, 'scope> Exchange<'owner, 'scope> {
@@ -291,8 +292,8 @@ impl<'owner, 'scope> Exchange<'owner, 'scope> {
 /// Only ApplicationReadKeys::accept_write_epoch can turn peer_update's result
 /// into ACK eligibility; neither this client nor the write owner can mint it.
 pub(crate) struct RxControl<'lane, 'owner, 'scope> {
-    exchange: &'lane Exchange<'owner, 'scope>,
-    sequence: u64,
+    pub(super) exchange: &'lane Exchange<'owner, 'scope>,
+    pub(super) sequence: u64,
 }
 
 impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
@@ -303,41 +304,9 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
         }
     }
 
-    fn advance(&mut self) -> Result<(), Error> {
+    pub(super) fn advance(&mut self) -> Result<(), Error> {
         self.sequence = self.sequence.checked_add(1).ok_or(Error::Binding)?;
         Ok(())
-    }
-
-    pub(crate) async fn peer_update(
-        &mut self,
-        endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
-        authenticated: PeerUpdateAuthenticated<'scope>,
-        now: u64,
-        pto: u64,
-    ) -> Result<WriteEpochInstalled<'scope>, Error> {
-        let sequence = self.sequence;
-        self.exchange.peer_update.put(PeerUpdate {
-            authenticated,
-            now,
-            pto,
-        })?;
-        endpoint.send::<p::PeerUpdate>(&sequence).await?;
-        let response = endpoint.offer().await?;
-        let accepted = match response.label() {
-            12 => {
-                check(response.recv::<p::WriteInstalled>().await?, sequence)?;
-                true
-            }
-            13 => {
-                check(response.recv::<p::UpdateFailed>().await?, sequence)?;
-                false
-            }
-            label => return Err(Error::UnexpectedLabel(label)),
-        };
-        let result = self.exchange.write_installed.take()?;
-        check_result(&result, accepted)?;
-        self.advance()?;
-        result
     }
 
     pub(crate) fn local_update_due(&self, target: u64, now: u64) -> Result<bool, Error> {
@@ -352,120 +321,6 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
             .as_ref()
             .ok_or(Error::Retired)?
             .local_update_due(target, now)?)
-    }
-
-    /// The parked object owns the actual receive key until the projected
-    /// write-owner response returns it. No local-update phase flag is stored.
-    pub(crate) async fn local_update(
-        &mut self,
-        endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
-        read: &mut ApplicationReadKeys<'scope>,
-        now: u64,
-        pto: u64,
-    ) -> Result<(), Error> {
-        let sequence = self.sequence;
-        read.maintain(now, pto)?;
-        let ready = read.prepare_local_update()?;
-        self.exchange
-            .local_update
-            .put(LocalUpdateRequest { ready, now, pto })?;
-        endpoint.send::<p::LocalUpdate>(&sequence).await?;
-        let offered = endpoint.offer().await?;
-        let accepted = match offered.label() {
-            206 => {
-                check(offered.recv::<p::LocalInstalled>().await?, sequence)?;
-                true
-            }
-            207 => {
-                check(offered.recv::<p::LocalRejected>().await?, sequence)?;
-                false
-            }
-            label => return Err(Error::UnexpectedLabel(label)),
-        };
-        let result = self.exchange.local_result.take()?;
-        if result.is_ok() != accepted {
-            return Err(Error::Binding);
-        }
-        let result = match result {
-            Ok(installed) => read
-                .accept_local_write_epoch(installed)
-                .map_err(Error::Crypto),
-            Err(rejected) => {
-                read.cancel_local_update(rejected.ready)?;
-                Err(Error::Crypto(rejected.error))
-            }
-        };
-        endpoint.send::<p::LocalSettled>(&sequence).await?;
-        self.advance()?;
-        result
-    }
-
-    pub(crate) async fn acknowledge(
-        &mut self,
-        endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
-        validated: ValidatedKeyAck<'scope>,
-        now: u64,
-        pto: u64,
-    ) -> Result<(), Error> {
-        let sequence = self.sequence;
-        self.exchange.key_ack.put(KeyAck {
-            validated,
-            now,
-            pto,
-        })?;
-        endpoint.send::<p::KeyAck>(&sequence).await?;
-        let response = endpoint.offer().await?;
-        let accepted = match response.label() {
-            15 => {
-                check(response.recv::<p::KeyAckApplied>().await?, sequence)?;
-                true
-            }
-            16 => {
-                check(response.recv::<p::KeyAckFailed>().await?, sequence)?;
-                false
-            }
-            label => return Err(Error::UnexpectedLabel(label)),
-        };
-        let result = self.exchange.key_ack_applied.take()?;
-        check_result(&result, accepted)?;
-        self.advance()?;
-        result
-    }
-
-    pub(crate) async fn confirm(
-        &mut self,
-        endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
-        confirmation: ScopedHandshakeConfirmation<'scope>,
-    ) -> Result<(), Error> {
-        let sequence = self.sequence;
-        self.exchange.confirmation.put(confirmation)?;
-        endpoint.send::<p::Confirmed>(&sequence).await?;
-        let response = endpoint.offer().await?;
-        let accepted = match response.label() {
-            18 => {
-                check(response.recv::<p::ConfirmationApplied>().await?, sequence)?;
-                true
-            }
-            19 => {
-                check(response.recv::<p::ConfirmationFailed>().await?, sequence)?;
-                false
-            }
-            label => return Err(Error::UnexpectedLabel(label)),
-        };
-        let result = self.exchange.confirmation_applied.take()?;
-        check_result(&result, accepted)?;
-        self.advance()?;
-        result
-    }
-
-    pub(crate) async fn retire(
-        self,
-        endpoint: &mut Endpoint<'_, { p::RX_KEYS }>,
-    ) -> Result<(), Error> {
-        let sequence = self.sequence;
-        endpoint.send::<p::KeysRetire>(&sequence).await?;
-        check(endpoint.recv::<p::KeysRetired>().await?, sequence)?;
-        Ok(())
     }
 }
 
@@ -542,7 +397,7 @@ pub(crate) async fn run<'owner, 'scope>(
     }
 }
 
-fn check(received: u64, expected: u64) -> Result<(), Error> {
+pub(super) fn check(received: u64, expected: u64) -> Result<(), Error> {
     if received == expected {
         Ok(())
     } else {
@@ -550,7 +405,7 @@ fn check(received: u64, expected: u64) -> Result<(), Error> {
     }
 }
 
-fn check_result<T>(result: &Result<T, Error>, accepted: bool) -> Result<(), Error> {
+pub(super) fn check_result<T>(result: &Result<T, Error>, accepted: bool) -> Result<(), Error> {
     if result.is_ok() == accepted {
         Ok(())
     } else {
@@ -626,7 +481,52 @@ mod tests {
             let mut receiving = pin!(async {
                 assert!(!control.local_update_due(0, 0).unwrap());
                 assert_eq!(control.local_update_due(1, 0).unwrap(), authorized_fixture);
-                let result = control.local_update(&mut rx, &mut read, 0, 10).await;
+                let result = async {
+                    let endpoint = &mut rx;
+                    let read = &mut read;
+                    let now = 0;
+                    let pto = 10;
+
+                    let sequence = control.sequence;
+                    read.maintain(now, pto)?;
+                    let ready = read.prepare_local_update()?;
+                    control
+                        .exchange
+                        .local_update
+                        .put(LocalUpdateRequest { ready, now, pto })?;
+                    endpoint.send::<p::LocalUpdate>(&sequence).await?;
+                    let offered = endpoint.offer().await?;
+                    let accepted = match offered.label() {
+                        206 => {
+                            check(offered.recv::<p::LocalInstalled>().await?, sequence)?;
+                            true
+                        }
+                        207 => {
+                            check(offered.recv::<p::LocalRejected>().await?, sequence)?;
+                            false
+                        }
+                        label => {
+                            return Err(Error::UnexpectedLabel(label));
+                        }
+                    };
+                    let result = control.exchange.local_result.take()?;
+                    if result.is_ok() != accepted {
+                        return Err(Error::Binding);
+                    }
+                    let result = match result {
+                        Ok(installed) => read
+                            .accept_local_write_epoch(installed)
+                            .map_err(Error::Crypto),
+                        Err(rejected) => {
+                            read.cancel_local_update(rejected.ready)?;
+                            Err(Error::Crypto(rejected.error))
+                        }
+                    };
+                    endpoint.send::<p::LocalSettled>(&sequence).await?;
+                    control.advance()?;
+                    result
+                }
+                .await;
                 if authorized_fixture {
                     result.unwrap();
                     assert_eq!(owner.generation().unwrap(), 1);
@@ -639,7 +539,15 @@ mod tests {
                     assert_eq!(owner.generation().unwrap(), 0);
                 }
                 assert_eq!(read.header_mask(&[0; 16]).unwrap(), expected);
-                control.retire(&mut rx).await?;
+                async {
+                    let endpoint = &mut rx;
+
+                    let sequence = control.sequence;
+                    endpoint.send::<p::KeysRetire>(&sequence).await?;
+                    check(endpoint.recv::<p::KeysRetired>().await?, sequence)?;
+                    Ok::<(), Error>(())
+                }
+                .await?;
                 assert!(
                     owner.generation().is_ok(),
                     "key-control retirement must preserve independent TX ownership"

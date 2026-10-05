@@ -41,7 +41,6 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
             .map_err(|e| format!("Handshake storage: {e:?}"))?,
     ];
     let programs = protocol::programs();
-    let tls_result = Outcome::new();
     let adapter_result = Outcome::new();
     let queues = Box::new(CarrierStorage::<1, 16, 64>::new());
     let mut slab = vec![0; 64 * 1024];
@@ -99,7 +98,6 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
         issuer,
         &storage,
         book,
-        &tls_result,
         &adapter_result,
     ))
     .await
