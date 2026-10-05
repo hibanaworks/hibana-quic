@@ -51,7 +51,8 @@
       "case": "zerortt",
       "abbreviation": "Z",
       "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "server_vs_neqo": "passed-diagnostic-control-failed",
+      "server_vs_neqo_run": 37260959576
     },
     {
       "case": "http3",
@@ -138,5 +139,18 @@
       "server_vs_neqo": "not-run"
     }
   ],
-  "network_impairment_qualification": "longrtt, transferloss, transfercorruption and ipv6 passed both directions in run 37255425723; remaining impairment cases are not qualified."
+  "network_impairment_qualification": "longrtt, transferloss, transfercorruption and ipv6 passed both directions in run 37255425723; remaining impairment cases are not qualified.",
+  "additional_peer_results": [
+    {
+      "peer": "quiche",
+      "case": "zerortt",
+      "direction": "server",
+      "status": "passed-pilot",
+      "baseline": "passed",
+      "run": 37261848054,
+      "commit": "4ba95dd25212cc80b2706240ed51faaf9320649e",
+      "image": "cloudflare/quiche-qns@sha256:6cbde3c4767c8894917d6c88e62890a4e663188a36bb606907afc48ffd7fd7fc",
+      "counts_toward_neqo_matrix": false
+    }
+  ]
 }

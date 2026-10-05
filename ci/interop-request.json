@@ -1,18 +1,19 @@
 {
-  "request": "Qualify server 0-RTT against official Cloudflare quiche QNS image after its same-image control",
-  "requested_at": "2026-10-05T03:58:00Z",
+  "request": "Exercise existing recovery under runner blackhole while client early-data integration proceeds",
+  "requested_at": "2026-10-05T04:16:00Z",
   "scope": [
-    "unchanged quiche baseline",
-    "quiche client versus hibana-quic server"
+    "unchanged Neqo baseline",
+    "blackhole in both candidate directions"
   ],
   "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
-    "zerortt"
+    "blackhole"
   ],
-  "qualification": "User requested a different 0-RTT-qualified peer. Keep runner unchanged and record immutable quiche image digest. Require same-image control plus candidate success. Results are separate from the Neqo 16/44 matrix.",
+  "qualification": "Keep exact runner 5s-on/2s-off blackhole and 10 MB file, reference and all verdicts unchanged. New qualification requires baseline plus both candidate directions. Prior Neqo16/44 and separate quiche server Z retained.",
   "candidate_directions": [
+    "client",
     "server"
   ],
-  "reference_implementation": "quiche"
+  "reference_implementation": "neqo"
 }
