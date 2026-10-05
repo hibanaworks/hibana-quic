@@ -3,31 +3,95 @@
   "registered_quic_cases": 22,
   "directions": 2,
   "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
-  "current_cleanup_commit_qualification": "18/44 unique observed Neqo case/direction passes: seven cases both directions at 99943a86 (run37255425723), resumption both directions at 622a17a4 (run37257163222), blackhole client at 7db1f72d (run37263917795), server zerortt at 4e01231f (run37260959576), independently confirmed against quiche with successful quiche control at 4ba95dd2 (run37261848054). The failed Neqo/Neqo zerortt control is retained; this does not turn that combined run green. Peer duplicates are not additional matrix cells.",
+  "current_cleanup_commit_qualification": "28/44 unique historical case/direction passes across the exact revisions below. This is a cumulative inventory, not a complete rerun of 44 cells on the latest commit. Passing alternate-peer controls qualify a cell under the user-approved policy; duplicate peers do not add cells. Failed Neqo controls remain failed.",
   "cases": [
     {
       "case": "handshake",
       "abbreviation": "H",
       "client_vs_neqo": "passed-pilot",
-      "server_vs_neqo": "passed-pilot"
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
     },
     {
       "case": "transfer",
       "abbreviation": "DC",
       "client_vs_neqo": "passed-pilot",
-      "server_vs_neqo": "passed-pilot"
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
     },
     {
       "case": "longrtt",
       "abbreviation": "LR",
       "client_vs_neqo": "passed-pilot",
-      "server_vs_neqo": "passed-pilot"
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
     },
     {
       "case": "chacha20",
       "abbreviation": "C20",
       "client_vs_neqo": "passed-pilot",
-      "server_vs_neqo": "passed-pilot"
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
     },
     {
       "case": "multiplexing",
@@ -45,7 +109,23 @@
       "case": "resumption",
       "abbreviation": "R",
       "client_vs_neqo": "passed-pilot",
-      "server_vs_neqo": "passed-pilot"
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37257163222,
+        "commit": "622a17a48ce756f80034a8a62b61fbd838c467cb",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37257163222,
+        "commit": "622a17a48ce756f80034a8a62b61fbd838c467cb",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222"
+      }
     },
     {
       "case": "zerortt",
@@ -53,7 +133,25 @@
       "client_vs_neqo": "not-run",
       "server_vs_neqo": "passed-pilot",
       "server_vs_neqo_run": 37260959576,
-      "server_vs_neqo_control": "failed; independently checked by quiche control and candidate run37261848054"
+      "server_vs_neqo_control": "failed; independently checked by quiche control and candidate run37261848054",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "quiche",
+        "run": 37272347426,
+        "commit": "6c20cf86b8ba23fc3e832854c2e81ae4c2ee09e7",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37272347426"
+      },
+      "client_vs_quiche": "passed-pilot",
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "quiche",
+        "run": 37272347426,
+        "commit": "6c20cf86b8ba23fc3e832854c2e81ae4c2ee09e7",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37272347426"
+      },
+      "server_vs_quiche": "passed-pilot"
     },
     {
       "case": "http3",
@@ -65,15 +163,53 @@
       "case": "blackhole",
       "abbreviation": "B",
       "client_vs_neqo": "passed-pilot",
-      "server_vs_neqo": "failed-pilot",
-      "run": 37263917795,
-      "commit": "7db1f72d3f955b629095e713c9025ae7768d824d"
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37269130471,
+        "commit": "e33e9df187b864e3526471b0e9d8f349aad7e990",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37269130471"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37269130471,
+        "commit": "e33e9df187b864e3526471b0e9d8f349aad7e990",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37269130471"
+      },
+      "earlier_results": [
+        {
+          "run": 37263917795,
+          "commit": "7db1f72d3f955b629095e713c9025ae7768d824d",
+          "client": "passed-pilot",
+          "server": "failed-pilot"
+        }
+      ]
     },
     {
       "case": "keyupdate",
       "abbreviation": "U",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37274077941,
+        "commit": "6bfdf43f944c0d5421ecffbb8a9246083171b372",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37274077941"
+      },
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37276321318,
+        "commit": "17b29fc909ea3e6818a1e3caf305662a3d96cc2b",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37276321318"
+      }
     },
     {
       "case": "ecn",
@@ -85,37 +221,147 @@
       "case": "amplificationlimit",
       "abbreviation": "A",
       "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "server_vs_neqo": "not-run",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "quiche",
+        "run": 37280980829,
+        "commit": "60e6f24c4d0719d5b8383a95d4f7f87207b8c269",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37280980829"
+      },
+      "client_vs_quiche": "passed-pilot",
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "quiche",
+        "run": 37280980829,
+        "commit": "60e6f24c4d0719d5b8383a95d4f7f87207b8c269",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37280980829"
+      },
+      "server_vs_quiche": "passed-pilot"
     },
     {
       "case": "handshakeloss",
       "abbreviation": "L1",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37280394666,
+        "commit": "0e266f2a2e9e3ee44adcddf15e253875998b8aae",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37280394666"
+      },
+      "latest_server_failure": {
+        "run": 37309538333,
+        "reason": "simulator exited before capture; parallel listener omitted reserved-version readiness response",
+        "repair_run": 37312379718,
+        "repair_verdict": "passed"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37312379718,
+        "commit": "7ab97351b4a7f6ea22f8f2113b2ff226db9092ab",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37312379718"
+      }
     },
     {
       "case": "transferloss",
       "abbreviation": "L2",
       "client_vs_neqo": "passed-pilot",
-      "server_vs_neqo": "passed-pilot"
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
     },
     {
       "case": "handshakecorruption",
       "abbreviation": "C1",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37280394666,
+        "commit": "0e266f2a2e9e3ee44adcddf15e253875998b8aae",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37280394666"
+      },
+      "latest_server_failure": {
+        "run": 37309538333,
+        "reason": "simulator exited before capture; parallel listener omitted reserved-version readiness response",
+        "repair_run": 37312379718,
+        "repair_verdict": "passed"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37312379718,
+        "commit": "7ab97351b4a7f6ea22f8f2113b2ff226db9092ab",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37312379718"
+      }
     },
     {
       "case": "transfercorruption",
       "abbreviation": "C2",
       "client_vs_neqo": "passed-pilot",
-      "server_vs_neqo": "passed-pilot"
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
     },
     {
       "case": "ipv6",
       "abbreviation": "6",
       "client_vs_neqo": "passed-pilot",
-      "server_vs_neqo": "passed-pilot"
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
     },
     {
       "case": "v2",
@@ -142,7 +388,7 @@
       "server_vs_neqo": "not-run"
     }
   ],
-  "network_impairment_qualification": "longrtt, transferloss, transfercorruption and ipv6 passed both directions in run 37255425723; remaining impairment cases are not qualified.",
+  "network_impairment_qualification": "Historical passes include longrtt, transferloss, transfercorruption, IPv6, blackhole, handshakeloss and handshakecorruption both directions. Server impaired-handshake run37312379718 passed both unchanged controls and both candidate cells.",
   "additional_peer_results": [
     {
       "peer": "quiche",
@@ -155,5 +401,8 @@
       "image": "cloudflare/quiche-qns@sha256:6cbde3c4767c8894917d6c88e62890a4e663188a36bb606907afc48ffd7fd7fc",
       "counts_toward_neqo_matrix": false
     }
-  ]
+  ],
+  "historical_unique_passes": 28,
+  "full_latest_commit_matrix_passed": false,
+  "inventory_updated_through_commit": "7ab97351b4a7f6ea22f8f2113b2ff226db9092ab"
 }

@@ -5,11 +5,12 @@ implementation, not features once exercised by a removed driver.
 
 ## Verified scope
 
-The pinned unchanged runner passed seven registered cases in both candidate
-roles at `ff3c3d0f71e27d7db2b69e085b46cfada9adbbad`: handshake, transfer,
-longrtt, transferloss, transfercorruption, IPv6 and ChaCha20. This is 14/44 candidate
-cells. Separate unchanged-Neqo baseline results are not included. Later source
-changes require a new runner result on their own commit.
+The cumulative verified inventory is 28/44 unique case/direction cells across
+recorded revisions: seven original cases both directions, resumption, blackhole,
+0-RTT, key update and amplification limit both directions, and handshake loss
+and handshake corruption both directions. Passing quiche controls are accepted where
+Neqo self-controls failed; the failed controls remain recorded. This inventory
+is not a complete rerun of all 44 cells on the latest commit.
 
 See [the exact case inventory](../interop/qualification.json) and
 [implementation/evidence](ACTIVE-IMPLEMENTATION.md). Missing, unsupported,
@@ -29,8 +30,8 @@ matrix has not run.
 
 ## Unqualified capabilities
 
-- The other 30 runner cells, including multiplexing, Retry, resumption, 0-RTT,
-  HTTP/3, QUIC v2, key update, ECN and path migration, lack current official
+- The other 16 runner cells, including multiplexing, Retry, HTTP/3, QUIC v2,
+  ECN and path migration, lack historical official
   qualification. TLS-only or numerical-kernel tests do not qualify the endpoint.
 - Request production still has a fixed total request count; two-slot reuse for four requests is locally verified, but the runner's
   larger multiplexing workload and ongoing credit refill remain unqualified.
