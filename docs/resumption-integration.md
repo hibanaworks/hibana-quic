@@ -75,9 +75,10 @@ required. Native Neqo tests cover both directions using the runner's 5 KiB and
 10 KiB response sizes.
 
 The QNS adapter now maps the registered `resumption` testcase to this existing
-mode on both roles. Official qualification is pending the unmodified runner's
-verdict, including exactly two handshakes, certificate presence only on the
-first, and all transferred files. The Neqo peer's real key log is available to
+mode on both roles. Both directions passed the unmodified official runner at `622a17a4` in
+[run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222),
+including exactly two handshakes, certificate presence only on the first, and
+all transferred files. The Neqo peer's real key log is available to
 the runner; the candidate does not fabricate one or export secrets in artifacts.
 
 This mode does not enable client 0-RTT. The separate explicit server early-data

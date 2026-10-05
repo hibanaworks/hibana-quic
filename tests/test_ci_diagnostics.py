@@ -250,9 +250,45 @@ class Diagnostics(unittest.TestCase):
         result = self.module.collect_case_diagnostics(self.logs, '../SECRET', 'neqo')
         self.assertEqual(result, {'state': 'invalid-matrix-identifiers'})
 
+    def test_main_runs_only_selected_candidate_directions_and_requires_baseline(self):
+        def checked_output(command, **kwargs):
+            if command[0] == 'tshark':
+                return 'TShark 4.6.0\n'
+            if 'rev-parse' in command:
+                return 'pinned\n'
+            return ''
+        self.module.RAW.parent.mkdir(parents=True, exist_ok=True)
+        request = self.root / 'ci/interop-request.json'
+        request.parent.mkdir(parents=True, exist_ok=True)
+        for directions, baseline_ok in [(['server'], True), (['client', 'server'], True), (['server'], False)]:
+            request.write_text(json.dumps({'cases':['zerortt'], 'candidate_directions':directions}))
+            calls = []
+            def phase(name, client, server, candidate):
+                calls.append(name)
+                status = 'PASSED' if baseline_ok or candidate else 'NOT_PASSED'
+                return {'phase':name, 'status':status, 'results':[{}]}
+            with patch.dict(os.environ, {'RUNNER_REVISION':'pinned'}), \
+                 patch.object(self.module.subprocess, 'check_output', side_effect=checked_output), \
+                 patch.object(self.module, 'docker_metadata'), \
+                 patch.object(self.module, 'phase', side_effect=phase):
+                self.assertEqual(self.module.main(), 0 if baseline_ok else 1)
+            expected = ['neqo-baseline'] + (['bounded-' + direction for direction in directions] if baseline_ok else [])
+            self.assertEqual(calls, expected)
+            summary = json.loads((self.module.SAFE / 'summary.json').read_text())
+            self.assertEqual(summary['candidate_directions'], sorted(directions))
+            self.assertFalse(summary['full_runner_gate_passed'])
+
+    def test_candidate_directions_are_explicit_and_fail_closed(self):
+        self.assertEqual(self.module.requested_directions(['client', 'server']), {'client', 'server'})
+        self.assertEqual(self.module.requested_directions(['server']), {'server'})
+        for invalid in ([], ['client', 'client'], ['unknown'], ['../secret'], 'server', [None]):
+            with self.assertRaises(RuntimeError):
+                self.module.requested_directions(invalid)
+
     def test_requested_case_scope_is_explicit_and_fail_closed(self):
         self.assertEqual(self.module.requested_cases(['chacha20']), {'chacha20'})
         self.assertEqual(self.module.requested_cases(['resumption']), {'resumption'})
+        self.assertEqual(self.module.requested_cases(['zerortt']), {'zerortt'})
         self.assertEqual(self.module.requested_cases(['longrtt', 'transferloss', 'transfercorruption', 'ipv6']), {'longrtt', 'transferloss', 'transfercorruption', 'ipv6'})
         for invalid in ([], ['transfer', 'transfer'], ['unknown'], ['../secret'], ['http3'], 'transfer', [None]):
             with self.assertRaises(RuntimeError):

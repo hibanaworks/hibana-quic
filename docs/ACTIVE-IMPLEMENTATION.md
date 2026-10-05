@@ -60,12 +60,14 @@ not official runner qualification. The subsequent loss-projection refinement pas
 native deterministic-loss baseline and both candidate directions pass with matching
 2 MiB payload hashes. Its actual binary hash is recorded in the local evidence.
 
-Official unmodified runner qualification remains 14/44 unique candidate cells,
-seven cases in both directions, at f88249d6139e5c71408ddeec7d53a5ee3c78d48c in
-[run37189910980](https://github.com/hibanaworks/hibana-quic/actions/runs/37189910980).
-Seven Neqo/Neqo controls are separate. Remaining 30 cells and the full repeated
-matrix have not been qualified. No additional interop cases are being added while
-this control migration is incomplete.
+Official unmodified runner qualification is 16/44 unique candidate cells.
+The seven existing cases passed both directions at `99943a86` in
+[run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723).
+Session resumption passed both directions at `622a17a4` in
+[run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222).
+Neqo/Neqo controls are counted separately. The remaining 28 cells and a full
+repeated matrix have not been qualified. Server-only 0-RTT is the next explicitly
+scoped runner request; it is not counted as passed before its verdict.
 
 Lean/Z3 models prove only the stated resource/payload arithmetic outside Hibana's
 order guarantee. They are not full Rust verification or a second QUIC FSM.

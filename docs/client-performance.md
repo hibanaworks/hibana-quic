@@ -1,7 +1,8 @@
 # Measured client performance checkpoint
 
 This is an optimization checkpoint, not Neqo performance parity or an increase
-in official interoperability qualification (still 14 of 44 cells).
+in official interoperability qualification. The later session-resumption
+qualification raises the separately tracked coverage to 16 of 44 cells.
 
 ## Request-backed receive windows, 2026-10-05
 

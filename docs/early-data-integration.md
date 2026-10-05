@@ -2,12 +2,12 @@
 
 This is an implementation ledger, not an official interop result.
 
-The published control-migration checkpoint `aae9f1f176ba49f124e9764d929c2ed4aee2d382`
-passed runtime run [37201207456](https://github.com/hibanaworks/hibana-quic/actions/runs/37201207456).
-The metadata-only request at `a680b2e77efb357ed94ab49db5bd0411c73fe86c` passed the seven
-existing cases in both directions in official run
-[37201556694](https://github.com/hibanaworks/hibana-quic/actions/runs/37201556694).
-The qualified scope remains **14/44**. Neither resumption nor 0-RTT adds a cell yet.
+Current official qualification is **16/44** unique candidate cells: the seven
+existing cases in both directions passed at `99943a86` in
+[run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723),
+and real session resumption passed both directions at `622a17a4` in
+[run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222).
+Server-only 0-RTT is the next explicit runner request, not an added pass yet.
 
 ## Implemented and locally exercised prerequisites
 
@@ -39,10 +39,12 @@ stored-packet proof exists. Only an accepted, same-generation server Finished
 can turn that proof into ACK history. Delivery and consumer acknowledgment run
 through the existing early owner, before the ordinary file handler starts.
 
-The forty-request bound is independent of the eight-entry complete-request work
-queue. Queue backpressure is handled by the concurrent source; it does not reduce
-stream admission to eight. Large caller-owned host allocations are explicit;
-no Pico RAM-fit or performance claim follows from this host configuration.
+The complete-request queue has one slot per admitted stream (64). A response
+source can wait for network ACKs, so an eight-entry queue was insufficient:
+backpressuring RX there could prevent those ACKs from being consumed. The exact
+capacity regression is documented in `proofs/request-admission-capacity/`.
+Large caller-owned host allocations are explicit; no Pico RAM-fit or performance
+claim follows from this host configuration.
 
 Native 0-RTT testing exposed an ordinary-close race: RX key-control retirement
 could remove the write key while the parallel transmitter still had work to
@@ -55,25 +57,28 @@ A real peer close need not carry the server's final response ACK. The report
 preserves `all_streams_acked=false` in that case; peer-authorized retirement is
 not reported as acknowledgment. Client completion still requires actual ACKs.
 
-Native server receive now passed unmodified Neqo's early-data mode with two
-files (3 accepted early packets), then forty 250-byte-name/32-byte files
-(11 accepted early packets, all content hashes equal, actual resumption and
-completed close). This is a native diagnostic, not the official runner's packet
-trace verdict. Per-stream early-delivery counters are being added to distinguish
-whole-request early delivery from ordinary retransmission fallback.
+Native server receive passed unmodified Neqo's forty-file early-data workload
+with 250-byte names and 32-byte files. The latest run retained 12 accepted early
+packets, 10,023 early stream bytes and 39 fully early-delivered requests after
+the warmup request. All file hashes matched, true resumption and close completed,
+and the measured client 1-RTT protected-payload upper bound was 1,609 bytes,
+below the runner's 5,000-byte limit. This remains a native diagnostic, not the
+official runner's packet-trace verdict.
 
 ## Remaining qualification gates
 
-- Demonstrate accepted 0-RTT bytes against native Neqo, then the exact forty-file
-  workload; keep negative/replay/capacity/close behavior fail-closed.
+- Preserve the locally passing forty-file early receive behavior in the pinned
+  official server-direction test, including its packet-trace verdict.
 - Connect the client's early source/transmit ownership and rejection/recovery
   continuation to the same ordinary stream and packet-number ledgers.
 - Run the pinned official `zerortt` case in both directions. Two connections and
   file delivery alone are insufficient: the runner requires early packets and
   bounds the client's 1-RTT payload volume.
 
-The QNS adapter continues to reject unsupported cases until their actual endpoint
-path and qualification are ready. No raw environment logs, generated keys or
+The QNS adapter selects `--session resume --early buffered` only for server
+0-RTT reception. Client 0-RTT remains explicitly unsupported. The runner request
+names its candidate direction, and still requires the unchanged Neqo baseline
+and the actual verdict; unselected directions are never counted as passes. No raw environment logs, generated keys or
 session tickets belong in this source ledger.
 
 ## Preserved early-owner contract

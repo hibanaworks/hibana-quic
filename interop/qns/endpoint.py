@@ -14,7 +14,7 @@ class Unsupported(ValueError):
 
 def command(env, resolve=socket.getaddrinfo):
     case, role = env.get('TESTCASE', ''), env.get('ROLE', '')
-    if case not in SUPPORTED:
+    if case not in SUPPORTED and not (case == 'zerortt' and role == 'server'):
         raise Unsupported(f'unsupported endpoint testcase: {case!r}')
     if role not in ('client', 'server'):
         raise ValueError('ROLE must be client or server')
@@ -23,8 +23,10 @@ def command(env, resolve=socket.getaddrinfo):
     args = ['/usr/local/bin/hibana-quic-hq', role]
     if case == 'chacha20':
         args += ['--cipher', 'chacha20']
-    if case == 'resumption':
+    if case in ('resumption', 'zerortt'):
         args += ['--session', 'resume']
+    if case == 'zerortt':
+        args += ['--early', 'buffered']
     if role == 'server':
         return args + ['--listen', '[::]:443', '--cert', '/certs/cert.pem',
                        '--key', '/certs/priv.key', '--www', '/www',

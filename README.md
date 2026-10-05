@@ -42,14 +42,16 @@ alone. Passing interop does not complete this migration.
 ## Status
 
 This is **not production-ready** and is not yet a fully qualified QUIC stack.
-The pinned, unmodified quic-interop-runner passed `handshake`, `transfer`,
-`longrtt`, `transferloss`, `transfercorruption`, `ipv6` and `chacha20` against unmodified Neqo
-in both directions: **14 of 44 candidate cells**, with seven separate passing
-Neqo/Neqo controls in
-[run 37183144899](https://github.com/hibanaworks/hibana-quic/actions/runs/37183144899).
-That result applies to commit `27065079e0d778bf7d238dec7c92f493817548e3`.
-The subsequent independent reset-resolver refinement requires fresh runner qualification.
-The other 30 candidate cells, repeat runs and embedded hardware remain unqualified.
+The pinned, unmodified quic-interop-runner has qualified **16 of 44 candidate
+cells** against unmodified Neqo. `handshake`, `transfer`, `longrtt`,
+`transferloss`, `transfercorruption`, `ipv6` and `chacha20` passed both directions
+at `99943a86` in
+[run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723).
+`resumption` passed both directions at `622a17a4` in
+[run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222).
+Neqo/Neqo controls are separate from candidate counts. Server-side 0-RTT is the
+next explicit qualification request, not a pass yet. The other 28 cells, a full
+repeated matrix and embedded hardware remain unqualified.
 
 See [active implementation and evidence](docs/ACTIVE-IMPLEMENTATION.md).
 Lean and Z3 models cover explicitly scoped obligations; they are not proofs of
@@ -58,7 +60,7 @@ the complete Rust implementation, cryptography or interoperability.
 ## Build and test
 
 Rust 1.95.0 is pinned. Hibana is vendored from
-`development/rolled-route-ownership` at `9fbb84c` without local patches.
+`development/route-metadata-performance` at `dafdf8a27198f73f3a6ce9e21c1de86e50008b43` without local patches.
 
 ```sh
 cargo test --locked

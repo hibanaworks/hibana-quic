@@ -17,7 +17,7 @@ RUNNER = ROOT / '.ci-work/runner'
 SAFE = ROOT / 'ci-safe-results'
 RAW = ROOT / '.ci-work/raw'
 EXPECTED = {'handshake', 'transfer'}
-CASE_ABBREVIATIONS = {'handshake': 'H', 'transfer': 'DC', 'longrtt': 'LR', 'transferloss': 'L2', 'transfercorruption': 'C2', 'ipv6': '6', 'chacha20': 'C20', 'resumption': 'R'}
+CASE_ABBREVIATIONS = {'handshake': 'H', 'transfer': 'DC', 'longrtt': 'LR', 'transferloss': 'L2', 'transfercorruption': 'C2', 'ipv6': '6', 'chacha20': 'C20', 'resumption': 'R', 'zerortt': 'Z'}
 IMPLEMENTATIONS = {'neqo', 'hibana-quic'}
 # Diagnostics are untrusted input, including logs produced by the peer. Nothing
 # below copies a message, pathname, JSON key, or unknown enum into the artifact.
@@ -523,10 +523,17 @@ def requested_cases(value):
     require(set(value) <= set(CASE_ABBREVIATIONS), 'unqualified requested case')
     return set(value)
 
+def requested_directions(value):
+    require(isinstance(value, list) and value and all(isinstance(x, str) for x in value), 'invalid candidate directions')
+    require(len(value) == len(set(value)), 'duplicate candidate direction')
+    require(set(value) <= {'client', 'server'}, 'unknown candidate direction')
+    return set(value)
+
 def main():
     global EXPECTED
     request=json.loads((ROOT / 'ci/interop-request.json').read_text())
     EXPECTED=requested_cases(request.get('cases', ['handshake', 'transfer']))
+    directions=requested_directions(request.get('candidate_directions', ['client', 'server']))
     SAFE.mkdir(exist_ok=True)
     RAW.mkdir(exist_ok=True)
     version = subprocess.check_output(['tshark', '--version'], text=True).splitlines()[0]
@@ -542,12 +549,15 @@ def main():
     baseline = phase('neqo-baseline', 'neqo', 'neqo', False)
     records.append(baseline)
     if baseline['status'] == 'PASSED':
-        records.append(phase('bounded-client', 'hibana-quic', 'neqo', True))
-        records.append(phase('bounded-server', 'neqo', 'hibana-quic', True))
+        if 'client' in directions:
+            records.append(phase('bounded-client', 'hibana-quic', 'neqo', True))
+        if 'server' in directions:
+            records.append(phase('bounded-server', 'neqo', 'hibana-quic', True))
     clean = not subprocess.check_output(['git', '-C', str(RUNNER), 'status', '--porcelain'], text=True).strip()
-    passed = len(records) == 3 and all(r['status'] == 'PASSED' for r in records) and clean
+    passed = len(records) == 1 + len(directions) and all(r['status'] == 'PASSED' for r in records) and clean
     write('summary.json', {'status': 'PASSED' if passed else 'NOT_PASSED',
-        'scope': 'one unmodified runner pilot: Neqo baseline plus explicitly selected cases each direction',
+        'scope': 'one unmodified runner pilot: Neqo baseline plus explicitly selected cases and candidate directions',
+        'candidate_directions': sorted(directions),
         'selected_cases': sorted(EXPECTED),
         'runner_source_unchanged': clean, 'phases': [r['phase'] for r in records],
         'case_results': sum(len(r.get('results', [])) for r in records),

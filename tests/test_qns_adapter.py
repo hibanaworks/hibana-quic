@@ -52,6 +52,13 @@ class EndpointCommand(unittest.TestCase):
             module.command(env, resolve)
         self.assertNotIn('--session', module.command(self.env(), resolve))
 
+    def test_zerortt_is_explicit_server_reception_only(self):
+        args = module.command({'ROLE':'server', 'TESTCASE':'zerortt'}, resolve)
+        self.assertEqual(args[args.index('--session') + 1], 'resume')
+        self.assertEqual(args[args.index('--early') + 1], 'buffered')
+        with self.assertRaises(module.Unsupported):
+            module.command({'ROLE':'client', 'TESTCASE':'zerortt'}, resolve)
+
     def test_unsupported_is_explicit(self):
         for case in ('keyupdate', 'retry', 'zerortt', 'http3', 'unknown'):
             with self.assertRaises(module.Unsupported):
