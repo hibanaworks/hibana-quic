@@ -66,6 +66,12 @@ class WireProbeTests(unittest.TestCase):
     def test_short_packet_counts_all_remaining_bytes(self):
         self.assertEqual(EarlyWireProbe.packet_lengths(b"\x43" + bytes(30)), [('one_rtt', 31)])
 
+    def test_greased_fixed_bit_preserves_packet_lengths(self):
+        self.assertEqual(EarlyWireProbe.packet_lengths(b"\x03server01" + bytes(31)),
+                         [('one_rtt', 40)])
+        early = b"\x90\x00\x00\x00\x01\x00\x00\x04" + b"efgh"
+        self.assertEqual(EarlyWireProbe.packet_lengths(early), [('zero_rtt', len(early))])
+
     def test_nonzero_unclassified_suffix_is_not_silently_ignored(self):
         initial = b"\xc0\x00\x00\x00\x01\x00\x00\x00\x04" + b"abcd"
         with self.assertRaises(ValueError):

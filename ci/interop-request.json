@@ -1,17 +1,18 @@
 {
-  "request": "Inspect server-only 0-RTT candidate after completed negative Neqo control, retaining mandatory baseline qualification",
-  "requested_at": "2026-10-05T03:46:00Z",
+  "request": "Qualify server 0-RTT against official Cloudflare quiche QNS image after its same-image control",
+  "requested_at": "2026-10-05T03:58:00Z",
   "scope": [
-    "unchanged Neqo baseline",
-    "selected cases in server candidate direction"
+    "unchanged quiche baseline",
+    "quiche client versus hibana-quic server"
   ],
   "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
     "zerortt"
   ],
-  "qualification": "Negative control exceeds the unchanged 5000-byte 1-RTT bound. Run candidate only as diagnostic after valid control completion and cleanup. Overall pass still requires baseline and candidate success; qualified count remains 16/44.",
+  "qualification": "User requested a different 0-RTT-qualified peer. Keep runner unchanged and record immutable quiche image digest. Require same-image control plus candidate success. Results are separate from the Neqo 16/44 matrix.",
   "candidate_directions": [
     "server"
-  ]
+  ],
+  "reference_implementation": "quiche"
 }

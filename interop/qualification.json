@@ -3,7 +3,7 @@
   "registered_quic_cases": 22,
   "directions": 2,
   "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
-  "current_cleanup_commit_qualification": "owned parallel stream reclamation ff3c3d0f71e27d7db2b69e085b46cfada9adbbad: seven registered cases passed both directions in run37197056168; 14/44 candidate cells; baseline excluded",
+  "current_cleanup_commit_qualification": "Seven cases passed both directions at 99943a86c72fdd495701a3779835c6bb127b37a9 (run 37255425723); resumption passed both directions at 622a17a48ce756f80034a8a62b61fbd838c467cb (run 37257163222). 16/44 unique candidate cells; Neqo baseline excluded.",
   "cases": [
     {
       "case": "handshake",
@@ -44,8 +44,8 @@
     {
       "case": "resumption",
       "abbreviation": "R",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot"
     },
     {
       "case": "zerortt",
@@ -138,5 +138,5 @@
       "server_vs_neqo": "not-run"
     }
   ],
-  "network_impairment_qualification": "official seven-case pilot succeeded on27065079; later independent reset-resolver refinement requires new qualification"
+  "network_impairment_qualification": "longrtt, transferloss, transfercorruption and ipv6 passed both directions in run 37255425723; remaining impairment cases are not qualified."
 }

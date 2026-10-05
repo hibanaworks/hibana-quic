@@ -101,6 +101,11 @@ def main():
         'runs': [],
     }
 
+    if args.scenario == 'zerortt' and args.early_files == 40:
+        report['coverage_gaps'].append(
+            'native forty-file early baseline uses numeric names and 32..71-byte generated bodies'
+        )
+
     def save():
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + '\n')
@@ -120,9 +125,17 @@ def main():
             www.mkdir()
             case_sizes = sizes
             names = [str(size) for size in sizes]
-            if args.scenario == 'zerortt' and direction == 'reverse' and args.early_files == 40:
-                names = [f'{index:03d}' + 'x' * 247 for index in range(40)]
-                case_sizes = [32] * 40
+            if args.scenario == 'zerortt' and args.early_files == 40:
+                if direction == 'reverse':
+                    names = [f'{index:03d}' + 'x' * 247 for index in range(40)]
+                    case_sizes = [32] * 40
+                else:
+                    # Native Neqo generates numeric response sizes. Preserve
+                    # forty 250-byte request names without patching its source
+                    # or requiring the QNS-only /www mount. Bodies are 32..71
+                    # bytes, so this remains a diagnostic, not the exact runner.
+                    case_sizes = list(range(32, 72))
+                    names = [str(size).zfill(250) for size in case_sizes]
             for size, name in zip(case_sizes, names):
                 (www / name).write_bytes(bytes([37 if direction == 'reverse' else 0]) * size)
             server_port = unused_port(ipv6)
@@ -131,6 +144,9 @@ def main():
                 server_command = [str(hq), 'server', '--listen', server_address, '--cert', str(root / 'server.pem'), '--key', str(root / 'server.key'), '--www', str(www), '--max-requests', str(64 if args.scenario in ('resumption', 'zerortt') else len(names)), '--timeout-seconds', str(args.timeout_seconds)]
             else:
                 server_command = [str(ns), '-a', 'hq-interop', '-Q', '1', '-d', str(db), '-k', 'native-peer', '--idle', str(args.timeout_seconds), server_address]
+            if args.scenario == 'zerortt' and direction == 'baseline':
+                # Match the reference's QNS zerortt stream-credit configuration.
+                server_command += ['--max-streams-bidi', '100']
             if args.scenario in ('resumption', 'zerortt') and direction == 'reverse':
                 server_command += ['--session', 'resume']
                 if args.scenario == 'zerortt':
@@ -143,6 +159,10 @@ def main():
                 result = None
                 try:
                     wait_ready(server, log_path)
+                    if args.scenario == 'zerortt' and direction == 'baseline':
+                        # Native Neqo correctly rejects early data for ten seconds
+                        # after startup. Unlike its QNS mode, do not shift its clock.
+                        time.sleep(11)
                     proxy_context = (EarlyWireProbe(('127.0.0.1', server_port)) if args.scenario == 'zerortt' else UdpProxy(('127.0.0.1', server_port), **options) if options else nullcontext(None))
                     with proxy_context as proxy:
                         client_port = proxy.address[1] if proxy else server_port
@@ -189,6 +209,10 @@ def main():
                                     # Match the runner's protected-payload bound conservatively,
                                     # retaining protected PN/tag/padding and all retransmissions.
                                     assert proxy.stats['one_rtt_protected_payload_upper_bound'] <= 5000, dict(proxy.stats)
+                        if args.scenario == 'zerortt' and direction == 'baseline' and args.early_files == 40:
+                            assert proxy.stats['unclassified_client_datagrams'] == 0, dict(proxy.stats)
+                            assert proxy.stats['zero_rtt_packets'] > 0, dict(proxy.stats)
+                            assert proxy.stats['one_rtt_protected_payload_upper_bound'] <= 5000, dict(proxy.stats)
                         files = [{'name': name, 'bytes': (destination / name).stat().st_size if (destination / name).exists() else None, 'expected_sha256': sha(www / name), 'received_sha256': sha(destination / name) if (destination / name).exists() else None} for name in names]
                         row = {'direction': direction, 'client_exit': returncode, 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'resumed_two_connections': bool(resumed_report), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
                         report['runs'].append(row)

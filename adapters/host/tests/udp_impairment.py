@@ -165,14 +165,17 @@ class EarlyWireProbe(UdpProxy):
         packets = []
         while offset < len(data):
             first = data[offset]
-            if not first & 0x40:
-                if offset and not any(data[offset:]):
-                    # Neqo's datagram-level zero suffix is outside the encoded
-                    # packet Length. Preserve it separately, not as a QUIC packet.
-                    packets.append(('trailing_zero_bytes', len(data) - offset))
-                    break
-                raise ValueError('fixed bit')
+            if offset and not any(data[offset:]):
+                # Neqo's datagram-level zero suffix is outside the encoded
+                # packet Length. Preserve it separately, not as a QUIC packet.
+                packets.append(('trailing_zero_bytes', len(data) - offset))
+                break
+            # The reference can grease the fixed bit after negotiation. Header
+            # form still identifies short packets; the caller additionally
+            # requires an actually observed server CID before counting payload.
             if not first & 0x80:
+                if len(data) - offset < 18:  # first byte + PN + AEAD tag
+                    raise ValueError('short packet length')
                 packets.append(('one_rtt', len(data) - offset))
                 break
             if offset + 6 > len(data) or data[offset + 1:offset + 5] != b'\x00\x00\x00\x01':

@@ -18,7 +18,8 @@ SAFE = ROOT / 'ci-safe-results'
 RAW = ROOT / '.ci-work/raw'
 EXPECTED = {'handshake', 'transfer'}
 CASE_ABBREVIATIONS = {'handshake': 'H', 'transfer': 'DC', 'longrtt': 'LR', 'transferloss': 'L2', 'transfercorruption': 'C2', 'ipv6': '6', 'chacha20': 'C20', 'resumption': 'R', 'zerortt': 'Z'}
-IMPLEMENTATIONS = {'neqo', 'hibana-quic'}
+REFERENCE = 'neqo'
+IMPLEMENTATIONS = {'neqo', 'quiche', 'hibana-quic'}
 # Diagnostics are untrusted input, including logs produced by the peer. Nothing
 # below copies a message, pathname, JSON key, or unknown enum into the artifact.
 MAX_LOG_BYTES = 8 * 1024 * 1024
@@ -410,7 +411,7 @@ def docker_metadata():
         data = json.loads(proc.stdout)
         record['server'] = {key: data.get(key) for key in ('Version', 'ApiVersion', 'MinAPIVersion', 'GitCommit')}
     record['images'] = {}
-    for key in ('NEQO_IMAGE', 'BOUNDED_IMAGE', 'SIM_IMAGE'):
+    for key in ('REFERENCE_IMAGE', 'BOUNDED_IMAGE', 'SIM_IMAGE'):
         image = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', os.environ[key]],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
         value = image.stdout.strip()
@@ -460,7 +461,7 @@ def setup_workdir(name, candidate):
         if path.name not in ('.git', 'implementations_quic.json'):
             (work / path.name).symlink_to(path)
     config = json.loads((RUNNER / 'implementations_quic.json').read_text())
-    config['neqo']['image'] = os.environ['NEQO_IMAGE']
+    config[REFERENCE]['image'] = os.environ['REFERENCE_IMAGE']
     if candidate:
         config['hibana-quic'] = {'image': os.environ['BOUNDED_IMAGE'],
             'url': 'https://github.com/hibanaworks/hibana-quic', 'role': 'both'}
@@ -543,9 +544,14 @@ def requested_directions(value):
     require(set(value) <= {'client', 'server'}, 'unknown candidate direction')
     return set(value)
 
+def requested_reference(value):
+    require(isinstance(value, str) and value in {'neqo', 'quiche'}, 'unknown reference implementation')
+    return value
+
 def main():
-    global EXPECTED
+    global EXPECTED, REFERENCE
     request=json.loads((ROOT / 'ci/interop-request.json').read_text())
+    REFERENCE=requested_reference(request.get('reference_implementation', 'neqo'))
     EXPECTED=requested_cases(request.get('cases', ['handshake', 'transfer']))
     directions=requested_directions(request.get('candidate_directions', ['client', 'server']))
     SAFE.mkdir(exist_ok=True)
@@ -560,7 +566,7 @@ def main():
     require(not subprocess.check_output(['git', '-C', str(RUNNER), 'status', '--porcelain'], text=True).strip(), 'runner checkout changed')
     docker_metadata()
     records = []
-    baseline = phase('neqo-baseline', 'neqo', 'neqo', False)
+    baseline = phase(REFERENCE + '-baseline', REFERENCE, REFERENCE, False)
     records.append(baseline)
     # A completed negative control is diagnostic evidence, not an infrastructure
     # failure. Inspect the candidate too, but retain the control in the mandatory
@@ -573,13 +579,14 @@ def main():
             ('client_compliance_passed', 'server_compliance_passed')))
     if control_completed:
         if 'client' in directions:
-            records.append(phase('bounded-client', 'hibana-quic', 'neqo', True))
+            records.append(phase('bounded-client', 'hibana-quic', REFERENCE, True))
         if 'server' in directions:
-            records.append(phase('bounded-server', 'neqo', 'hibana-quic', True))
+            records.append(phase('bounded-server', REFERENCE, 'hibana-quic', True))
     clean = not subprocess.check_output(['git', '-C', str(RUNNER), 'status', '--porcelain'], text=True).strip()
     passed = len(records) == 1 + len(directions) and all(r['status'] == 'PASSED' for r in records) and clean
     write('summary.json', {'status': 'PASSED' if passed else 'NOT_PASSED',
-        'scope': 'one unmodified runner pilot: Neqo baseline plus explicitly selected cases and candidate directions',
+        'scope': 'one unmodified runner pilot: selected reference baseline plus explicitly selected cases and candidate directions',
+        'reference_implementation': REFERENCE,
         'candidate_directions': sorted(directions),
         'baseline_passed': baseline['status'] == 'PASSED',
         'candidate_diagnostic_after_failed_control': control_completed and baseline['status'] != 'PASSED',

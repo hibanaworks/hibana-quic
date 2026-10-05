@@ -7,7 +7,30 @@ existing cases in both directions passed at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723),
 and real session resumption passed both directions at `622a17a4` in
 [run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222).
-Server-only 0-RTT is the next explicit runner request, not an added pass yet.
+Server-only 0-RTT is under diagnosis, not an added pass yet.
+
+The unchanged Neqo/Neqo control in [run 37259858685](https://github.com/hibanaworks/hibana-quic/actions/runs/37259858685)
+transferred all files, but the unchanged trace verdict measured 22,726 bytes of
+0-RTT payload and 7,626 bytes of client 1-RTT payload, exceeding its 5,000-byte
+limit. The candidate was not executed in that run. In the subsequent
+[run 37260959576](https://github.com/hibanaworks/hibana-quic/actions/runs/37260959576),
+the unchanged runner passed Neqo client to hibana-quic server: forty files,
+10,698 bytes of 0-RTT and 1,834 bytes of client 1-RTT payload. The Neqo control
+still failed, so the combined gate remains NOT_PASSED and this extra candidate
+cell is not yet included in the qualified 16/44. The next control/candidate pair
+uses the official quiche image, recorded separately from the Neqo matrix. A completed negative control
+may now be followed by candidate diagnostics, only after valid case results,
+compliance and cleanup. Overall qualification still requires the control and
+all selected candidate directions to pass; setup/cleanup failures stop execution.
+
+Native control diagnostics need two additional precautions: Neqo's normal
+server rejects early data for its first ten seconds, so the fixture waits eleven
+real seconds without changing its clock or anti-replay implementation. Its
+negotiated greased fixed bit must also remain in the packet-byte accounting;
+unknown client datagrams invalidate the bound. Three repeated forty-file native
+runs passed after these corrections. These controls use numeric 250-byte names
+and generated bodies of 32..71 bytes, rather than the runner's exact random
+32-byte files, and cannot replace its trace verdict or explain its failure alone.
 
 ## Implemented and locally exercised prerequisites
 

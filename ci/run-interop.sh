@@ -7,6 +7,14 @@ set -euo pipefail
 ROOT=$(pwd)
 export ROOT
 source ci/pins.env
+REFERENCE_IMPLEMENTATION=$(python3 - <<'REFERENCE'
+import json
+value=json.load(open('ci/interop-request.json')).get('reference_implementation', 'neqo')
+assert isinstance(value,str) and value in {'neqo','quiche'}, 'unknown reference implementation'
+print(value)
+REFERENCE
+)
+export REFERENCE_IMPLEMENTATION
 mkdir -p ci-safe-results .ci-work/raw
 python3 ci/audit_source.py --check
 if [[ -f ci/recovery-diagnostics ]]; then
@@ -90,10 +98,7 @@ docker compose version
 # capabilities/topology come from the unchanged reference Compose file.
 git clone --quiet https://github.com/quic-interop/quic-interop-runner.git .ci-work/runner
 git -C .ci-work/runner checkout --detach "$RUNNER_REVISION"
-git clone --quiet https://github.com/mozilla/neqo.git .ci-work/neqo
-git -C .ci-work/neqo checkout --detach "$NEQO_REVISION"
 [[ $(git -C .ci-work/runner rev-parse HEAD) == "$RUNNER_REVISION" ]]
-[[ $(git -C .ci-work/neqo rev-parse HEAD) == "$NEQO_REVISION" ]]
 # Resolve the upstream simulator once, then use its immutable digest for every
 # baseline/candidate execution. Never re-resolve a moving tag between cases.
 docker pull --platform linux/amd64 "$SIMULATOR_TAG"
@@ -106,19 +111,34 @@ docker pull --platform linux/amd64 "$UBUNTU_IMAGE"
 docker pull --platform linux/amd64 "$PYTHON_IMAGE"
 echo 'Building and smoke-testing analysis tools before endpoint compilation'
 docker build --platform linux/amd64 --build-arg UBUNTU_IMAGE="$UBUNTU_IMAGE" --build-arg PYTHON_IMAGE="$PYTHON_IMAGE" -f ci/runner-tools.Dockerfile -t hibana-pilot-tools .ci-work/runner
-echo 'Building unchanged pinned Neqo QNS endpoint'
-docker build --platform linux/amd64 --build-arg CARGO_BUILD_JOBS=2 -f .ci-work/neqo/qns/Dockerfile -t hibana-pilot-neqo .ci-work/neqo
+if [[ $REFERENCE_IMPLEMENTATION == neqo ]]; then
+  git clone --quiet https://github.com/mozilla/neqo.git .ci-work/neqo
+  git -C .ci-work/neqo checkout --detach "$NEQO_REVISION"
+  [[ $(git -C .ci-work/neqo rev-parse HEAD) == "$NEQO_REVISION" ]]
+  echo 'Building unchanged pinned Neqo QNS endpoint'
+  docker build --platform linux/amd64 --build-arg CARGO_BUILD_JOBS=2 -f .ci-work/neqo/qns/Dockerfile -t hibana-pilot-neqo .ci-work/neqo
+  REFERENCE_IMAGE=$(docker image inspect hibana-pilot-neqo --format '{{.Id}}')
+else
+  # The unchanged runner registers this official Cloudflare QNS image. Resolve
+  # its digest once; the control and every candidate phase use that exact image.
+  [[ $(python3 -c 'import json; print(json.load(open(".ci-work/runner/implementations_quic.json"))["quiche"]["image"])') == cloudflare/quiche-qns:latest ]]
+  docker pull --platform linux/amd64 cloudflare/quiche-qns:latest
+  REFERENCE_IMAGE=$(docker image inspect cloudflare/quiche-qns:latest --format '{{index .RepoDigests 0}}')
+  [[ $REFERENCE_IMAGE =~ ^cloudflare/quiche-qns@sha256:[a-f0-9]{64}$ ]]
+fi
 echo 'Building bounded endpoint from audited source'
 docker build --platform linux/amd64 --build-arg RUST_IMAGE="$RUST_IMAGE" --build-arg ENDPOINT_IMAGE="$ENDPOINT_IMAGE" -f interop/qns/Dockerfile -t hibana-pilot-bounded .
-NEQO_IMAGE=$(docker image inspect hibana-pilot-neqo --format '{{.Id}}')
 BOUNDED_IMAGE=$(docker image inspect hibana-pilot-bounded --format '{{.Id}}')
 TOOLS_IMAGE=$(docker image inspect hibana-pilot-tools --format '{{.Id}}')
-export NEQO_IMAGE BOUNDED_IMAGE TOOLS_IMAGE RUNNER_REVISION NEQO_REVISION HIBANA_REVISION RUST_IMAGE ENDPOINT_IMAGE UBUNTU_IMAGE PYTHON_IMAGE
+export REFERENCE_IMAGE BOUNDED_IMAGE TOOLS_IMAGE RUNNER_REVISION NEQO_REVISION HIBANA_REVISION RUST_IMAGE ENDPOINT_IMAGE UBUNTU_IMAGE PYTHON_IMAGE
 python3 - <<'PY'
 import json,os
 from pathlib import Path
-keys=['RUNNER_REVISION','NEQO_REVISION','HIBANA_REVISION','SIM_IMAGE','NEQO_IMAGE','BOUNDED_IMAGE','TOOLS_IMAGE','RUST_IMAGE','ENDPOINT_IMAGE','UBUNTU_IMAGE','PYTHON_IMAGE','DOCKER_ENGINE_VERSION','DOCKER_CLI_DEB_SHA256','DOCKER_ENGINE_DEB_SHA256']
-Path('ci-safe-results/pins.json').write_text(json.dumps({k:os.environ[k] for k in keys},indent=2)+'\n')
+keys=['RUNNER_REVISION','NEQO_REVISION','HIBANA_REVISION','SIM_IMAGE','REFERENCE_IMPLEMENTATION','REFERENCE_IMAGE','BOUNDED_IMAGE','TOOLS_IMAGE','RUST_IMAGE','ENDPOINT_IMAGE','UBUNTU_IMAGE','PYTHON_IMAGE','DOCKER_ENGINE_VERSION','DOCKER_CLI_DEB_SHA256','DOCKER_ENGINE_DEB_SHA256']
+pins={k:os.environ[k] for k in keys}
+if os.environ['REFERENCE_IMPLEMENTATION'] != 'neqo':
+    del pins['NEQO_REVISION']
+Path('ci-safe-results/pins.json').write_text(json.dumps(pins,indent=2)+'\n')
 PY
 # Keep /tmp at the identical path: upstream explicitly creates Docker bind
 # mount sources there. The reference source and its verdicts are not patched.
@@ -132,6 +152,6 @@ docker run --rm --cpus=2 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /tmp:/tmp -v "$ROOT:$ROOT" -w "$ROOT" \
   -e "HOME=$ROOT/.ci-work/tools-home" \
-  -e ROOT -e SIM_IMAGE -e NEQO_IMAGE -e BOUNDED_IMAGE \
+  -e ROOT -e SIM_IMAGE -e REFERENCE_IMAGE -e BOUNDED_IMAGE \
   -e RUNNER_REVISION -e NEQO_REVISION \
   "$TOOLS_IMAGE" python3 ci/run_in_tools.py

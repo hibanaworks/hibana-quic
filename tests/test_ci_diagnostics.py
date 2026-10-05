@@ -278,11 +278,15 @@ class Diagnostics(unittest.TestCase):
                  (['server'], False, {'non_null_case_results':0}, False),
                  (['server'], False, {'unexecuted_case_results':1}, False),
                  (['server'], False, {'runner_progress':{}}, False)]
-        for directions, baseline_ok, overrides, run_candidate in cases:
-            request.write_text(json.dumps({'cases':['zerortt'], 'candidate_directions':directions}))
+        for reference, directions, baseline_ok, overrides, run_candidate in [
+                (reference, *case) for reference in ('neqo', 'quiche') for case in cases]:
+            request.write_text(json.dumps({'cases':['zerortt'], 'candidate_directions':directions, 'reference_implementation':reference}))
             calls = []
             def phase(name, client, server, candidate):
                 calls.append(name)
+                self.assertEqual((client, server),
+                    ('hibana-quic', reference) if name == 'bounded-client' else
+                    (reference, 'hibana-quic') if name == 'bounded-server' else (reference, reference))
                 status = 'PASSED' if baseline_ok or candidate else 'FAILED'
                 record = {'phase':name, 'status':status, 'results':[{}],
                         'cleanup_exit_code':0, 'non_null_case_results':1, 'unexecuted_case_results':0,
@@ -295,14 +299,22 @@ class Diagnostics(unittest.TestCase):
                  patch.object(self.module, 'docker_metadata'), \
                  patch.object(self.module, 'phase', side_effect=phase):
                 self.assertEqual(self.module.main(), 0 if baseline_ok else 1)
-            expected = ['neqo-baseline'] + (['bounded-' + direction for direction in directions] if run_candidate else [])
+            expected = [reference + '-baseline'] + (['bounded-' + direction for direction in directions] if run_candidate else [])
             self.assertEqual(calls, expected)
             summary = json.loads((self.module.SAFE / 'summary.json').read_text())
             self.assertEqual(summary['candidate_directions'], sorted(directions))
+            self.assertEqual(summary['reference_implementation'], reference)
             self.assertFalse(summary['full_runner_gate_passed'])
             self.assertEqual(summary['baseline_passed'], baseline_ok)
             self.assertEqual(summary['candidate_diagnostic_after_failed_control'], run_candidate and not baseline_ok)
             self.assertEqual(summary['status'], 'PASSED' if baseline_ok else 'NOT_PASSED')
+
+    def test_reference_selection_is_explicit_and_fail_closed(self):
+        for name in ('neqo', 'quiche'):
+            self.assertEqual(self.module.requested_reference(name), name)
+        for invalid in (None, [], {}, 'unknown', '../neqo', 'neqo;echo'):
+            with self.assertRaises(RuntimeError):
+                self.module.requested_reference(invalid)
 
     def test_candidate_directions_are_explicit_and_fail_closed(self):
         self.assertEqual(self.module.requested_directions(['client', 'server']), {'client', 'server'})
