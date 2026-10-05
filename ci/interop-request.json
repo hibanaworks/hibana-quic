@@ -1,19 +1,19 @@
 {
-  "request": "Qualify independent client handshakes under loss and corruption",
-  "requested_at": "2026-10-05T07:49:00Z",
+  "request": "Qualify amplification against the pinned quiche control",
+  "requested_at": "2026-10-05T07:59:00Z",
   "scope": [
-    "unchanged Neqo fifty-connection controls",
-    "handshakeloss and handshakecorruption as candidate client"
+    "unchanged pinned quiche amplificationlimit self-control",
+    "amplificationlimit in both candidate directions"
   ],
-  "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
+  "approval": "User explicitly instructed: when Neqo self-control fails, use another passing implementation and count passing candidate tests as qualified.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
-    "handshakeloss",
-    "handshakecorruption"
+    "amplificationlimit"
   ],
-  "qualification": "Native fifty independent connections completed all file hashes and actual projected retirement in all clean directions. With deterministic one-in-three loss or corruption and 15 ms delay, candidate-client and Neqo control completed fifty connections. These are diagnostics, not ns3 verdicts. Native candidate-server remained blocked after a lost close and is explicitly not requested for qualification; its admission/retirement overlap needs separate work.",
+  "qualification": "The Neqo self-control in run37277497084 failed while both candidate directions passed. Preserve that failed result. Run the unchanged amplificationlimit certificate/trace test with the already pinned quiche image; count only if its self-control and the actual candidate directions pass. No runner thresholds or verdicts are changed.",
   "candidate_directions": [
-    "client"
+    "client",
+    "server"
   ],
-  "reference_implementation": "neqo"
+  "reference_implementation": "quiche"
 }
