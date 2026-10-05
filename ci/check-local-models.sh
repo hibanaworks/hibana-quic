@@ -19,7 +19,8 @@ python3 -m venv .ci-work/model-tools/python
 import json, subprocess
 from pathlib import Path
 lean = str(Path('.ci-work/model-tools/lean/bin/lean').resolve())
-python = str(Path('.ci-work/model-tools/python/bin/python').resolve())
+# Preserve the venv executable path; resolving its symlink selects system Python.
+python = str(Path('.ci-work/model-tools/python/bin/python').absolute())
 models = [
     ('owned-body-input/Body.lean', 'owned-body-input/check_body.py'),
     ('stream-slot-binding/Binding.lean', 'stream-slot-binding/binding.py'),

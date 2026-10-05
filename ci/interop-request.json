@@ -1,6 +1,6 @@
 {
   "request": "Qualify direct locals and explicit IO failure branches against quiche controls",
-  "requested_at": "2026-10-05T21:20:00Z",
+  "requested_at": "2026-10-05T21:47:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions"
@@ -18,6 +18,6 @@
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Keep the pinned runner and success criteria unchanged. Recheck the explicit receive-stop and timer-stop joins, default bounded capacities, post-handshake ticket handoff and real retirement. Do not increment the historical 30/44 count for repeated cells. Application source completion now consumes SourceJoined; cancellation/expiry must join that actual receive without reporting success. Terminal receiver and peer-close progression flags and communication wrappers were removed. Run 37370273764 attempt 2 had an unchanged Neqo control pass C1/L1/M but fail Z; no candidate phase ran. Use quiche as previously authorized for failed Neqo self-controls. Keep all runner criteria unchanged.",
+  "qualification": "Keep the pinned runner and success criteria unchanged. Recheck the explicit receive-stop and timer-stop joins, default bounded capacities, post-handshake ticket handoff and real retirement. Do not increment the historical 30/44 count for repeated cells. Application source completion now consumes SourceJoined; cancellation/expiry must join that actual receive without reporting success. Terminal receiver and peer-close progression flags and communication wrappers were removed. Run 37370273764 attempt 2 had an unchanged Neqo control pass C1/L1/M but fail Z; no candidate phase ran. Use quiche as previously authorized for failed Neqo self-controls. Keep all runner criteria unchanged. Run 37377897526 stopped before model or interop execution because resolving the venv Python symlink selected system Python without Z3. Preserve the venv executable path.",
   "formal_models": true
 }
