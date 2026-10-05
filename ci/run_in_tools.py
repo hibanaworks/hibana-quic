@@ -562,7 +562,16 @@ def main():
     records = []
     baseline = phase('neqo-baseline', 'neqo', 'neqo', False)
     records.append(baseline)
-    if baseline['status'] == 'PASSED':
+    # A completed negative control is diagnostic evidence, not an infrastructure
+    # failure. Inspect the candidate too, but retain the control in the mandatory
+    # all-passed gate below. Never continue after broken setup or failed cleanup.
+    control_completed = (baseline['status'] in {'PASSED', 'FAILED'}
+        and baseline.get('cleanup_exit_code') == 0
+        and baseline.get('non_null_case_results') == len(EXPECTED)
+        and baseline.get('unexecuted_case_results') == 0
+        and all(baseline.get('runner_progress', {}).get(key) is True for key in
+            ('client_compliance_passed', 'server_compliance_passed')))
+    if control_completed:
         if 'client' in directions:
             records.append(phase('bounded-client', 'hibana-quic', 'neqo', True))
         if 'server' in directions:
@@ -572,6 +581,8 @@ def main():
     write('summary.json', {'status': 'PASSED' if passed else 'NOT_PASSED',
         'scope': 'one unmodified runner pilot: Neqo baseline plus explicitly selected cases and candidate directions',
         'candidate_directions': sorted(directions),
+        'baseline_passed': baseline['status'] == 'PASSED',
+        'candidate_diagnostic_after_failed_control': control_completed and baseline['status'] != 'PASSED',
         'selected_cases': sorted(EXPECTED),
         'runner_source_unchanged': clean, 'phases': [r['phase'] for r in records],
         'case_results': sum(len(r.get('results', [])) for r in records),

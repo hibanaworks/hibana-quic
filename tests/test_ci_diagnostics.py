@@ -271,23 +271,38 @@ class Diagnostics(unittest.TestCase):
         self.module.RAW.parent.mkdir(parents=True, exist_ok=True)
         request = self.root / 'ci/interop-request.json'
         request.parent.mkdir(parents=True, exist_ok=True)
-        for directions, baseline_ok in [(['server'], True), (['client', 'server'], True), (['server'], False)]:
+        cases = [(['server'], True, {}, True), (['client', 'server'], True, {}, True),
+                 (['server'], False, {}, True),
+                 (['server'], False, {'status':'TIMEOUT'}, False),
+                 (['server'], False, {'cleanup_exit_code':1}, False),
+                 (['server'], False, {'non_null_case_results':0}, False),
+                 (['server'], False, {'unexecuted_case_results':1}, False),
+                 (['server'], False, {'runner_progress':{}}, False)]
+        for directions, baseline_ok, overrides, run_candidate in cases:
             request.write_text(json.dumps({'cases':['zerortt'], 'candidate_directions':directions}))
             calls = []
             def phase(name, client, server, candidate):
                 calls.append(name)
-                status = 'PASSED' if baseline_ok or candidate else 'NOT_PASSED'
-                return {'phase':name, 'status':status, 'results':[{}]}
+                status = 'PASSED' if baseline_ok or candidate else 'FAILED'
+                record = {'phase':name, 'status':status, 'results':[{}],
+                        'cleanup_exit_code':0, 'non_null_case_results':1, 'unexecuted_case_results':0,
+                        'runner_progress':{'client_compliance_passed':True, 'server_compliance_passed':True}}
+                if not candidate:
+                    record.update(overrides)
+                return record
             with patch.dict(os.environ, {'RUNNER_REVISION':'pinned'}), \
                  patch.object(self.module.subprocess, 'check_output', side_effect=checked_output), \
                  patch.object(self.module, 'docker_metadata'), \
                  patch.object(self.module, 'phase', side_effect=phase):
                 self.assertEqual(self.module.main(), 0 if baseline_ok else 1)
-            expected = ['neqo-baseline'] + (['bounded-' + direction for direction in directions] if baseline_ok else [])
+            expected = ['neqo-baseline'] + (['bounded-' + direction for direction in directions] if run_candidate else [])
             self.assertEqual(calls, expected)
             summary = json.loads((self.module.SAFE / 'summary.json').read_text())
             self.assertEqual(summary['candidate_directions'], sorted(directions))
             self.assertFalse(summary['full_runner_gate_passed'])
+            self.assertEqual(summary['baseline_passed'], baseline_ok)
+            self.assertEqual(summary['candidate_diagnostic_after_failed_control'], run_candidate and not baseline_ok)
+            self.assertEqual(summary['status'], 'PASSED' if baseline_ok else 'NOT_PASSED')
 
     def test_candidate_directions_are_explicit_and_fail_closed(self):
         self.assertEqual(self.module.requested_directions(['client', 'server']), {'client', 'server'})
