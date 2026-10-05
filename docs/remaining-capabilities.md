@@ -17,6 +17,12 @@ See [the exact case inventory](../interop/qualification.json) and
 failed and skipped cells are never counted as passes. The full three-attempt
 matrix has not run.
 
+## Current priority
+
+Continue remaining interoperability cases, starting with multiplexing. The
+[15-second performance requirement and evidence](performance-follow-up.md)
+remain open, with further optimization experiments deferred.
+
 ## Architecture work
 
 - Finish the remaining control audit and projected CID/key-update integration;
