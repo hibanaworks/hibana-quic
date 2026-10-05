@@ -60,7 +60,7 @@ not official runner qualification. The subsequent loss-projection refinement pas
 native deterministic-loss baseline and both candidate directions pass with matching
 2 MiB payload hashes. Its actual binary hash is recorded in the local evidence.
 
-Official unmodified runner qualification is 19/44 unique candidate cells.
+Official unmodified runner qualification is 20/44 unique candidate cells.
 The seven existing cases passed both directions at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723).
 Session resumption passed both directions at `622a17a4` in
@@ -69,7 +69,7 @@ Blackhole client passed with Neqo control in
 [run 37263917795](https://github.com/hibanaworks/hibana-quic/actions/runs/37263917795);
 the initially failing server direction subsequently passed with the same Neqo
 control at e33e9df1 in run37269130471. Reference controls are not counted.
-The remaining 25 aggregate cells and full repeated matrix are unqualified.
+The remaining 24 aggregate cells and full repeated matrix are unqualified.
 Server 0-RTT passed against quiche with its control in
 [run 37261848054](https://github.com/hibanaworks/hibana-quic/actions/runs/37261848054),
 separately from the Neqo count. Client 0-RTT remains unconnected. The new Hibana
@@ -196,5 +196,24 @@ The new exact replacement tree still requires official regression qualification.
 Client 0-RTT now has a bounded projected transmission/admission prefix, with
 actual accepted-publication receipts and authenticated rejection replay.
 Native forty-file accepted, rejected and first-early-packet-loss cases pass;
-official client Z remains pending. Blackhole both directions and Neqo control
-passed at e33e9df1 in run37269130471, taking the unique aggregate to 19/44.
+official client Z passed in run37272347426. Blackhole both directions and Neqo control
+passed at e33e9df1 in run37269130471, taking the unique aggregate to 19/44 at that stage.
+
+## Official client 0-RTT and next key-update check
+
+At commit 6c20cf86, [run37272347426](https://github.com/hibanaworks/hibana-quic/actions/runs/37272347426)
+passed the unchanged quiche control and both candidate Z directions. The unique
+aggregate is 20/44 (24 remaining), without counting server Z twice. The actual
+candidate-client trace measured 10,826 bytes of 0-RTT and 769 bytes of 1-RTT;
+the reverse direction measured 11,125 and 4,981 respectively, so that latter
+pass is not a claim of repeated margin under the 5,000-byte threshold. Runtime
+run37272347413 also passed. Remaining cases and three repeated release attempts
+are not claimed.
+
+The next server keyupdate native attempt exposed an actual stale timestamp:
+RX observed a packet, awaited the projected peer-key installation while other
+roles progressed, then submitted the old observation time to shared recovery.
+The monotonicity guard correctly rejected it. Recovery now reads the actual
+clock at its synchronous commit after that await; it does not clamp time or
+relax the rollback check. The failed-before native evidence and fixed 3 MiB
+byte-exact transfer are separate from the pending official key-phase verdict.

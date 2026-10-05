@@ -329,6 +329,7 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(self.module.requested_cases(['resumption']), {'resumption'})
         self.assertEqual(self.module.requested_cases(['zerortt']), {'zerortt'})
         self.assertEqual(self.module.requested_cases(['blackhole']), {'blackhole'})
+        self.assertEqual(self.module.requested_cases(['keyupdate']), {'keyupdate'})
         self.assertEqual(self.module.requested_cases(['longrtt', 'transferloss', 'transfercorruption', 'ipv6']), {'longrtt', 'transferloss', 'transfercorruption', 'ipv6'})
         for invalid in ([], ['transfer', 'transfer'], ['unknown'], ['../secret'], ['http3'], 'transfer', [None]):
             with self.assertRaises(RuntimeError):

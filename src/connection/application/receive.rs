@@ -150,7 +150,7 @@ pub(crate) async fn run<
                         reset,
                         acknowledgments,
                         control,
-                        clock.now(),
+                        clock,
                         &mut largest,
                         &mut confirmed,
                     )
@@ -227,10 +227,11 @@ async fn application<'streams, 'scope, const N: usize, const RX: usize, const CH
     reset: &reset::Exchange<'streams>,
     acknowledgments: &super::acknowledgments::Exchange<'scope>,
     control: &Control<'_, 'scope>,
-    now: u64,
+    clock: &impl Clock,
     largest: &mut Option<u64>,
     confirmed: &mut bool,
 ) -> Result<Option<u64>, Error> {
+    let now = clock.now();
     let pto = book.pto_duration_us()?;
     material.application.maintain(now, pto)?;
     let mut opened = match application_wire::open::<N>(
@@ -256,7 +257,11 @@ async fn application<'streams, 'scope, const N: usize, const RX: usize, const CH
     *largest = Some(largest.map_or(opened.packet_number(), |last| {
         last.max(opened.packet_number())
     }));
-    let outcome = match book.apply_application_packet(receipt, opened.plaintext(), now) {
+    // Installing a peer key epoch crosses a real choreography await. TX and
+    // timer roles may have advanced the shared recovery clock meanwhile. Read
+    // the actual clock again at this synchronous commit; the earlier timestamp
+    // belongs to packet authentication, not to a later recovery mutation.
+    let outcome = match book.apply_application_packet(receipt, opened.plaintext(), clock.now()) {
         Ok(outcome) => outcome,
         // Expired sent history is not evidence that the peer ACKed an unsent
         // packet. Discard this packet without manufacturing any frame grant.

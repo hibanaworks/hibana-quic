@@ -71,7 +71,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('hq', 'neqo-client', 'neqo-server', 'nss', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole'), default='clean')
+    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--timeout-seconds', type=int, default=60)
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
@@ -87,12 +87,12 @@ def main():
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
     env = os.environ.copy()
     env['RUST_LOG'] = 'debug'
-    if args.scenario == 'blackhole':
+    if args.scenario in ('blackhole', 'keyupdate'):
         env['HIBANA_QUIC_DIAGNOSTICS'] = '1'
     env['LD_LIBRARY_PATH'] = str(nss / 'lib')
     env.pop('SSLKEYLOGFILE', None)
     ipv6 = args.scenario == 'ipv6'
-    sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario == 'chacha20' else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
+    sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario in ('chacha20', 'keyupdate') else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
     if args.scenario == 'blackhole':
         sizes = [10 << 20]
     if args.ordinary_files != 3:
@@ -132,6 +132,8 @@ def main():
         checked(['openssl', 'pkcs12', '-export', '-inkey', str(root / 'server.key'), '-in', str(root / 'server.pem'), '-certfile', str(root / 'ca.pem'), '-name', 'native-peer', '-passout', 'pass:', '-out', str(root / 'fixture.p12')], env)
         checked([str(nss / 'bin/pk12util'), '-i', str(root / 'fixture.p12'), '-d', str(db), '-W', '', '-K', ''], env)
         directions = ('forward',) if args.client_early_reject or args.client_early_loss else (('baseline', 'reverse') if args.scenario == 'zerortt' and not args.client_early else ('baseline', 'forward', 'reverse'))
+        if args.scenario == 'keyupdate':
+            directions = ('baseline', 'reverse')
         for direction in directions:
             destination = root / direction
             destination.mkdir()
@@ -191,7 +193,7 @@ def main():
                             for url in urls:
                                 command += ['--request', url]
                         else:
-                            command = [str(nc), '--qns-test', args.scenario if args.scenario in ('resumption', 'zerortt') else 'transfer', '-Q', '1', '--ipv6-only' if ipv6 else '--ipv4-only', '--output-dir', str(destination), '--idle', str(args.timeout_seconds)] + urls
+                            command = [str(nc), '--qns-test', args.scenario if args.scenario in ('resumption', 'zerortt', 'keyupdate') else 'transfer', '-Q', '1', '--ipv6-only' if ipv6 else '--ipv4-only', '--output-dir', str(destination), '--idle', str(args.timeout_seconds)] + urls
                         if args.scenario == 'chacha20':
                             command += ['--cipher', 'chacha20'] if direction == 'forward' else ['-c', 'TLS_CHACHA20_POLY1305_SHA256']
                         started = time.monotonic()
@@ -243,7 +245,14 @@ def main():
                             assert proxy.stats['first_early_dropped'] == 1, dict(proxy.stats)
                         if args.scenario == 'blackhole':
                             assert sum(v for k, v in proxy.stats.items() if k.endswith('_blackhole_dropped')) > 0, dict(proxy.stats)
+                        if args.scenario == 'keyupdate' and returncode == 0:
+                            assert 'Initiating key update' in result.stderr, 'reference never actually initiated key update'
                         if returncode != 0 or any(x['expected_sha256'] != x['received_sha256'] for x in files):
+                            if args.scenario == 'keyupdate':
+                                try:
+                                    server.wait(timeout=1)
+                                except subprocess.TimeoutExpired:
+                                    pass
                             raise AssertionError(f'{args.scenario}/{direction}: exit={returncode}, received byte hashes did not all qualify')
                 finally:
                     stop(server)

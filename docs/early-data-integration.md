@@ -2,7 +2,7 @@
 
 This is an implementation ledger, not an official interop result.
 
-Current observed qualification is **19/44** unique candidate case/direction cells.
+Current observed qualification is **20/44** unique candidate case/direction cells.
 The first sixteen came from seven
 existing cases in both directions at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723),
@@ -14,7 +14,7 @@ at `4ba95dd2`, together with the same-image quiche/quiche control. The fixed ima
 was `cloudflare/quiche-qns@sha256:6cbde3c4767c8894917d6c88e62890a4e663188a36bb606907afc48ffd7fd7fc`.
 Candidate client 1-RTT payload was 3,857 bytes (limit 5,000); 0-RTT payload was
 11,125 bytes. This quiche result corroborates the same server Z cell; it does not add a
-duplicate matrix cell. Client-side early transmission now passes the native diagnostics below; official client Z qualification remains pending.
+duplicate matrix cell. Client-side early transmission now passes the native diagnostics below; official client Z passed as described below.
 Blackhole passed both candidate directions and its unchanged Neqo control at
 `e33e9df1` in [run 37269130471](https://github.com/hibanaworks/hibana-quic/actions/runs/37269130471).
 This adds the server B cell to the previously qualified client B cell (run37263917795).
@@ -192,3 +192,22 @@ requests and delivered all forty files through 1-RTT replay. A separate test
 lost the first actual early datagram, then recovered every file under fresh
 1-RTT publication (940-byte conservative upper bound). These are native
 observations, not official runner passes or exactly-once application guarantees.
+
+## Official client 0-RTT and next key-update check
+
+At commit 6c20cf86, [run37272347426](https://github.com/hibanaworks/hibana-quic/actions/runs/37272347426)
+passed the unchanged quiche control and both candidate Z directions. The unique
+aggregate is 20/44 (24 remaining), without counting server Z twice. The actual
+candidate-client trace measured 10,826 bytes of 0-RTT and 769 bytes of 1-RTT;
+the reverse direction measured 11,125 and 4,981 respectively, so that latter
+pass is not a claim of repeated margin under the 5,000-byte threshold. Runtime
+run37272347413 also passed. Remaining cases and three repeated release attempts
+are not claimed.
+
+The next server keyupdate native attempt exposed an actual stale timestamp:
+RX observed a packet, awaited the projected peer-key installation while other
+roles progressed, then submitted the old observation time to shared recovery.
+The monotonicity guard correctly rejected it. Recovery now reads the actual
+clock at its synchronous commit after that await; it does not clamp time or
+relax the rollback check. The failed-before native evidence and fixed 3 MiB
+byte-exact transfer are separate from the pending official key-phase verdict.

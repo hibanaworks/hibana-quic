@@ -1,19 +1,18 @@
 {
-  "request": "Qualify projected replay-safe client 0-RTT and preserve server 0-RTT",
-  "requested_at": "2026-10-05T06:13:00Z",
+  "request": "Qualify peer-initiated key update after fixing stale recovery commit time",
+  "requested_at": "2026-10-05T06:40:00Z",
   "scope": [
-    "unchanged quiche baseline",
-    "zerortt in both candidate directions"
+    "unchanged Neqo keyupdate baseline",
+    "server keyupdate candidate"
   ],
   "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
-    "zerortt"
+    "keyupdate"
   ],
-  "qualification": "Native unchanged Neqo forty-file client early transmission passes with all file hashes, authenticated close, 39 accepted early requests and 754-byte conservative 1-RTT upper bound. Actual Neqo startup rejection replays all requests over 1-RTT; dropping the first early datagram recovers all files. The official runner and verdict are unchanged; require the same pinned quiche image baseline and both candidate verdicts.",
+  "qualification": "Native unchanged Neqo initiated key update, then candidate failed with actual Recovery(TimeWentBackwards). Refresh the real clock after projected peer-key installation before committing shared recovery state; retain monotonicity rejection. Fixed native Neqo baseline and server-direction 3 MiB transfer pass exact byte hashes. Client initiation remains unqualified. Require unchanged runner baseline and actual server-direction key-phase trace verdict.",
   "candidate_directions": [
-    "client",
     "server"
   ],
-  "reference_implementation": "quiche"
+  "reference_implementation": "neqo"
 }
