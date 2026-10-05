@@ -1,6 +1,6 @@
 {
-  "request": "Requalify existing 14 cells after bulk circular receive spans; original 64 KiB receive storage retained",
-  "requested_at": "2026-10-04T22:48:00Z",
+  "request": "Requalify existing 14 cells after request-backed receive windows and bounded request/ACK-history capacity fixes",
+  "requested_at": "2026-10-05T02:17:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "selected cases in both candidate directions"

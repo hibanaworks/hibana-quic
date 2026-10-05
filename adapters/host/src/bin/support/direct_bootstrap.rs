@@ -6,7 +6,7 @@ use hibana_quic::{
     carrier::CarrierStorage,
     connection::publication_gate::{Issuer, Stop},
     connection::{
-        self, Config, Outcome, Roles, Storage, application, protocol, recovery::Recovery,
+        self, Config, Outcome, Roles, Side, Storage, application, protocol, recovery::Recovery,
         tls::Transcript,
     },
     handshake::CryptoBuffer,
@@ -116,6 +116,29 @@ pub enum Files {
     Server(host_files::FileServer),
 }
 
+impl Files {
+    pub fn local_limits(&self) -> hibana_quic::streams::Limits {
+        match self {
+            Self::Client(client) => {
+                if application_storage::client_uses_large_window(client.count) {
+                    application_storage::local_limits::<{ application_storage::CLIENT_RECEIVE_BYTES }>(
+                        Side::Client,
+                        client.count,
+                    )
+                } else {
+                    application_storage::local_limits::<{ application_storage::RECEIVE_BYTES }>(
+                        Side::Client,
+                        client.count,
+                    )
+                }
+            }
+            Self::Server(_) => application_storage::local_limits::<
+                { application_storage::RECEIVE_BYTES },
+            >(Side::Server, application_storage::STREAMS),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn files<'scope>(
     source: &mut Transcript<'scope, '_, '_>,
@@ -210,35 +233,49 @@ pub async fn files<'scope>(
         input_collector: enter!(programs.input_collector),
         delivery_collector: enter!(programs.delivery_collector),
     };
-    let mut storage = application_storage::Storage::new();
-    let mut setup = storage.setup(config)?;
-    setup.early = early
-        .as_mut()
-        .map(application_storage::EarlyStorage::borrow);
     let result = match files {
         Files::Client(client) => {
-            Box::pin(application::client::<
-                DATAGRAM,
-                PARAMETERS,
-                { application_storage::RECEIVE_BYTES },
-                { application_storage::CHUNK_BYTES },
-            >(
-                &mut roles,
-                source,
-                setup,
-                receive,
-                transmit,
-                clock,
-                issuer,
-                stop,
-                book,
-                &outcomes,
-                &mut client.requests,
-                &mut client.downloads,
-            ))
-            .await
+            macro_rules! run_client {
+                ($rx:expr) => {{
+                    let mut storage = application_storage::Storage::<$rx>::new(client.count)?;
+                    let setup = storage.setup(config)?;
+                    Box::pin(application::client::<
+                        DATAGRAM,
+                        PARAMETERS,
+                        $rx,
+                        { application_storage::CHUNK_BYTES },
+                    >(
+                        &mut roles,
+                        source,
+                        setup,
+                        receive,
+                        transmit,
+                        clock,
+                        issuer,
+                        stop,
+                        book,
+                        &outcomes,
+                        &mut client.requests,
+                        &mut client.downloads,
+                    ))
+                    .await
+                }};
+            }
+            if application_storage::client_uses_large_window(client.count) {
+                run_client!({ application_storage::CLIENT_RECEIVE_BYTES })
+            } else {
+                run_client!({ application_storage::RECEIVE_BYTES })
+            }
         }
         Files::Server(server) => {
+            let mut storage =
+                application_storage::Storage::<{ application_storage::RECEIVE_BYTES }>::new(
+                    application_storage::STREAMS,
+                )?;
+            let mut setup = storage.setup(config)?;
+            setup.early = early
+                .as_mut()
+                .map(application_storage::EarlyStorage::borrow);
             Box::pin(application::server::<
                 DATAGRAM,
                 PARAMETERS,

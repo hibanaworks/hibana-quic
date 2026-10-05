@@ -52,7 +52,7 @@ fn random<const N: usize>() -> Result<[u8; N]> {
 fn parameters(
     local: &[u8],
     original: Option<&[u8]>,
-    application_side: Option<Side>,
+    application_limits: Option<hibana_quic::streams::Limits>,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut encoded = [0; 8];
@@ -66,9 +66,8 @@ fn parameters(
             bytes.extend_from_slice(value);
         }
     }
-    if let Some(side) = application_side {
+    if let Some(limits) = application_limits {
         // Advertise exactly the windows backed by application_storage.
-        let limits = application_storage::local_limits(side);
         for (kind, value) in [
             (3, direct_bootstrap::DATAGRAM as u64),
             (4, limits.max_data),
@@ -558,7 +557,11 @@ async fn run_async(
                 };
                 let local = random::<8>()?;
                 let original = random::<8>()?;
-                let parameters = parameters(&local, None, files.as_ref().map(|_| Side::Client))?;
+                let parameters = parameters(
+                    &local,
+                    None,
+                    files.as_ref().map(direct_bootstrap::Files::local_limits),
+                )?;
                 let mut buffers = TlsBuffers::new();
                 let now = UnixTime::since_unix_epoch(
                     SystemTime::now()
@@ -713,7 +716,7 @@ async fn run_async(
                 let parameters = parameters(
                     &local,
                     Some(&original),
-                    files.as_ref().map(|_| Side::Server),
+                    files.as_ref().map(direct_bootstrap::Files::local_limits),
                 )?;
                 let mut buffers = TlsBuffers::new();
                 let config = ServerConfig {

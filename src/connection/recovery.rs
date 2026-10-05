@@ -766,6 +766,17 @@ impl<const B: usize> Numbers<'_, B> {
             }
             self.changed()?;
         }
+        if self.ledger.remaining_capacity() == 0 {
+            let compacted = self.ledger.compact_ack_history()?;
+            for epoch in &mut self.epochs {
+                if epoch.is_some_and(|e| compacted.iter().flatten().any(|pn| *pn == e.packet)) {
+                    *epoch = None;
+                }
+            }
+            if compacted.iter().any(Option::is_some) {
+                self.changed()?;
+            }
+        }
         Ok(())
     }
     fn mint_initial_event(&mut self, event: InitialRetirementEvent) {
@@ -2842,6 +2853,47 @@ mod tests {
             Err(Error::Recovery(kernel::RecoveryError::InvalidConfiguration))
         ));
         assert!(installation.take_recovery().is_err());
+    }
+
+    #[test]
+    fn outstanding_packet_does_not_let_ack_only_history_exhaust_recovery() {
+        book!(book, scope, installation, arena, Side::Client, 177);
+        // Numerical recovery fixture after handshake confirmation. Actual TLS
+        // authorization is covered by the scoped-handshake integration below.
+        book.numbers.borrow_mut().handshake_confirmed = true;
+        let (mut tx, _, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let guard = NoAlloc::start();
+        // A real eliciting packet whose peer ACK was lost stays outstanding.
+        let first = tx.reserve_application(&[1], 0, 32, false, 0).unwrap();
+        publication
+            .settle(Completion::from_adapter(first, Some(0)))
+            .unwrap();
+        let mut bytes = [0; 128];
+        let len = ack(0, &mut bytes);
+        for now in 1..=256 {
+            let sent = tx
+                .reserve_application(&bytes[..len], 0, 32, false, now)
+                .expect("non-eliciting ACK history must leave publication capacity");
+            publication
+                .settle(Completion::from_adapter(sent, Some(now)))
+                .unwrap();
+        }
+        let deadline = clock
+            .update_application(257, [false, false, true])
+            .unwrap()
+            .unwrap();
+        let at = deadline.at();
+        assert!(matches!(
+            clock.expire(deadline, at).unwrap(),
+            Some(TimeoutAction::Probe {
+                space: PacketNumberSpace::ApplicationData,
+                ..
+            })
+        ));
+        let probe = tx.reserve_application(&[1], 0, 1200, true, at).unwrap();
+        tx.cancel(probe).unwrap();
+        retirement.disarm();
+        drop(guard);
     }
 
     #[test]

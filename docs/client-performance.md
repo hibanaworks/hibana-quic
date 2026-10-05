@@ -3,6 +3,44 @@
 This is an optimization checkpoint, not Neqo performance parity or an increase
 in official interoperability qualification (still 14 of 44 cells).
 
+## Request-backed receive windows, 2026-10-05
+
+A seven-run local release comparison of the request-backed host allocation gave
+32 MiB medians of **0.304193395 s** for hibana-quic and **0.057745106 s** for
+Neqo (5.27x). Client RSS was 9,624 KiB. A preceding same-code candidate run
+measured 0.287804381 s versus 0.042692504 s (6.74x), with 9,480 KiB RSS. The preceding published 64 KiB-window
+checkpoint measured 0.562214590 s and 10,812 KiB. Host timing varies, but the
+roughly halved transfer time reproduced across the initial and final candidates.
+This remains far from both near-Neqo throughput and the sub-0.1 s target.
+
+The client now allocates only its known request count of receive slots. At most
+four requests use 1 MiB per stream; larger request sets retain 64 KiB per stream.
+The total receive payload pool therefore stays within the prior 4 MiB budget,
+with the same additional presence arrays. Server allocation is unchanged.
+See `proofs/receive-window-budget/` for the scoped budget checks. Receive batch
+count follows the backed window while the existing 1 ms work limit remains.
+
+A 2 MiB single-stream experiment measured 0.270634638 s but used 12,592 KiB RSS,
+so it was not selected. Small changes to publication acknowledgments, route
+completion scans, binary search and file buffering did not demonstrate enough
+benefit and were reverted. None of those experiments is in this checkpoint.
+
+The expanded multi-file test also exposed an existing server-side request-queue
+stall: an eight-entry GET queue could block RX while the response source needed
+RX to receive transport ACKs. The request queue now has one owned entry per
+admitted stream slot. This adds bounded request storage; it is separate from the
+stream receive-payload budget above. See `proofs/request-admission-capacity/`.
+
+Repeated loss testing exposed a second capacity issue: a lost peer ACK pinned
+an eliciting packet ahead of completed ACK-only history, exhausting the ledger
+and blocking PTO publication. Exact bounded ACK-only PN runs now preserve
+sent/unsent validation without keeping one live record per ACK-only packet.
+See `proofs/ack-history/` for the failing-before/passing-after regression,
+exhaustive validation comparisons and scoped Lean/Z3 checks. Fifty native loss
+runs passed both directions after this fix; clean 3/5/40/64-file transfers,
+corruption, resumption, 40-file early-data reception, IPv6, ChaCha20 and long-RTT
+native diagnostics also passed. These are not additional official matrix cells.
+
 ## Bulk receive spans, 2026-10-04
 
 With the original 64 KiB backed window and 64-datagram budget, splitting
@@ -22,7 +60,7 @@ A separate exact-match search hint was rejected: seven-run comparisons gave
 0.517780069 s with it and 0.520965310 s without it, not a demonstrated benefit.
 The gap to Neqo and the sub-0.1 s target remains substantial.
 
-## Latest candidate, adopted 2026-10-04
+## Earlier adopted checkpoint, 2026-10-04
 
 The selected Hibana revision is `56d405671931eaac615edeb59b6562337f9edbb4`.
 With its certified raw-column lookup, a 64 KiB backed host receive window and
@@ -44,10 +82,14 @@ The earlier checkpoint below is retained as measurement history.
 `adapters/host/tests/compare_release_clients.py` compares release clients against
 one unchanged Neqo release server. Both clients download the same generated
 zero file, write it to disk and pass its SHA-256 check. Settings are loopback,
-one stream, QUIC v1, AES128, PMTUD disabled. Three measured runs follow warmup;
+one stream, QUIC v1, AES128, PMTUD disabled. The repeat count is stated per checkpoint; measured runs follow warmup;
 client order alternates. Download latency includes process startup and handshake,
 but excludes final connection draining. CPU and RSS come from the child process.
-Profiling samples are kept separate from benchmark results.
+Profiling samples are kept separate from benchmark results. The timed endpoint
+is the actual output file's final write time; independent monotonic process
+lifetime is also recorded. This is buffered OS file I/O on loopback, not durable
+storage or WAN throughput. Client transport defaults, including receive credit,
+are implementation choices, not a claim that every transport parameter matches.
 
 The 2026-10-04 measurements used Hibana `be02c869b75d62b6e99b19f1bc9d34c16a9c345e`
 and Neqo `ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95`.
@@ -61,7 +103,7 @@ not the measured production runtime.
 
 The original 1 MiB candidate took 3.323310267 s in a single baseline run.
 Its 32 MiB download did not complete within 60 seconds. This historical single
-baseline is not a repeated-sample estimate. Current 32 MiB throughput is only
+baseline is not a repeated-sample estimate. That checkpoint's 32 MiB throughput was
 14.61 MiB/s versus Neqo's 663.61 MiB/s. The bulk-transfer gap is still large;
 the small-file ratio must not be presented as general performance parity.
 
@@ -76,7 +118,7 @@ the small-file ratio must not be presented as general performance parity.
   handling for tiny windows and the maximum offset. Credit is still backed by
   real released receive capacity and recovery owns retransmission evidence.
 - The receiver processes only already-ready datagrams opportunistically. It
-  flushes ready streams before waiting for input, after 64 datagrams or a 1 ms budget of
+  flushes ready streams before waiting for input, after a window-backed burst (at least 64 datagrams) or a 1 ms budget of
   work, before peer close, and when an ACK receipt requires consumption. A
   pending receive remains pinned and owned during delivery; it is not cancelled
   and reissued to obtain batching. The loop yields at bounded batch boundaries.

@@ -75,6 +75,7 @@ def main():
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--timeout-seconds', type=int, default=60)
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
+    parser.add_argument('--ordinary-files', type=int, choices=[3, 5, 40, 64], default=3)
     args = parser.parse_args()
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
     env = os.environ.copy()
@@ -83,6 +84,10 @@ def main():
     env.pop('SSLKEYLOGFILE', None)
     ipv6 = args.scenario == 'ipv6'
     sizes = [32, 33] if args.scenario in ('resumption', 'zerortt') else [3 << 20] if args.scenario == 'chacha20' else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
+    if args.ordinary_files != 3:
+        if args.scenario != 'clean':
+            parser.error('--ordinary-files requires the clean scenario')
+        sizes = [131072 + index for index in range(args.ordinary_files)]
     options = {'delay': 0.75} if args.scenario == 'longrtt' else (
         {'drop_every': 50} if args.scenario == 'loss' else (
             {'corrupt_every': 50} if args.scenario == 'corruption' else None
@@ -90,7 +95,7 @@ def main():
     )
     report = {
         'scope': 'native-peer-diagnostics', 'official_interop_pass': False,
-        'scenario': args.scenario, 'impairment': options,
+        'scenario': args.scenario, 'impairment': options, 'ordinary_files': len(sizes),
         'coverage_gaps': ['not ns-3 topology or exact stochastic impairment', 'no packet-trace verdicts', 'forward ordinary-Neqo generated-zero payloads'],
         'binaries': {name: sha(path) for name, path in [('hq', hq), ('neqo-client', nc), ('neqo-server', ns)]},
         'runs': [],

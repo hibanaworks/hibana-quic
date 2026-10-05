@@ -21,9 +21,10 @@ use crate::{
 };
 
 pub(crate) const REQUEST_BYTES: usize = MAX_REQUEST_BYTES;
-// Independent bounded work queue. The source consumes it concurrently, so
-// forty admitted streams do not require forty inline copies of complete GETs.
-pub(crate) const REQUEST_CAPACITY: usize = 8;
+// One retained complete request per admitted stream slot. A response body may
+// be blocked on transport ACKs, so RX must be able to hand off every admitted
+// request without waiting for that body's source to drain this queue.
+pub(crate) const REQUEST_CAPACITY: usize = MAX_LIVE_STREAMS;
 
 pub(crate) struct Chunk<const CHUNK: usize> {
     pub bytes: [u8; CHUNK],
@@ -334,7 +335,7 @@ async fn client_requests<'book, const RX: usize, const CHUNK: usize, B>(
 }
 
 /// `next` must still be called at the limit so exactly MAX_REQUESTS requests
-/// can end normally. A seventeenth pending request is rejected before opening
+/// can end normally. An excess pending request is rejected before opening
 /// an impossible stream or consuming the caller's pending request via started.
 async fn next_request<const CHUNK: usize, B>(
     state: &State<'_, CHUNK, B>,
@@ -869,6 +870,21 @@ mod tests {
         pin::pin,
         task::{Context, Poll, Waker},
     };
+
+    #[test]
+    fn all_admitted_requests_enqueue_while_response_source_is_paused() {
+        let mut slots = [None; REQUEST_CAPACITY];
+        let mailbox = crate::mailbox::Mailbox::new(&mut slots).unwrap();
+        let (mut sender, mut receiver) = mailbox.split().unwrap();
+        // No consumer poll occurs until all admitted stream requests arrive.
+        // An eight-entry queue parks here before RX can receive transport ACKs.
+        for stream in 0..MAX_LIVE_STREAMS {
+            ready(sender.send(stream)).unwrap();
+        }
+        for stream in 0..MAX_LIVE_STREAMS {
+            assert_eq!(ready(receiver.recv()).unwrap(), stream);
+        }
+    }
 
     struct Requests {
         remaining: usize,

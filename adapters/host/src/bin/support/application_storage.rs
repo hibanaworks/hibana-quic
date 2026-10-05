@@ -7,56 +7,65 @@ use hibana_quic::{
 };
 pub const STREAMS: usize = hibana_quic::connection::application_stream::MAX_LIVE_STREAMS;
 pub const RECEIVE_BYTES: usize = 64 * 1024;
+pub const CLIENT_RECEIVE_BYTES: usize = 1024 * 1024;
+// Keep the original total receive-storage budget. A small known request set
+// gets a larger per-stream window without allocating sixty-four such windows.
+pub fn client_uses_large_window(requests: usize) -> bool {
+    requests != 0 && requests <= STREAMS * RECEIVE_BYTES / CLIENT_RECEIVE_BYTES
+}
 pub const CHUNK_BYTES: usize = 1024;
 pub const SEND_CHUNKS: usize = 64;
 pub const PACKET_REFERENCES: usize = 128;
-pub fn local_limits(side: Side) -> Limits {
+pub fn local_limits<const RX: usize>(side: Side, stream_capacity: usize) -> Limits {
     Limits {
-        max_data: (STREAMS * RECEIVE_BYTES) as u64,
-        stream_data_bidi_local: RECEIVE_BYTES as u64,
-        stream_data_bidi_remote: RECEIVE_BYTES as u64,
+        max_data: (stream_capacity * RX) as u64,
+        stream_data_bidi_local: RX as u64,
+        stream_data_bidi_remote: RX as u64,
         stream_data_uni: 0,
         max_streams_bidi: if side == Side::Server {
-            STREAMS as u64
+            stream_capacity as u64
         } else {
             0
         },
         max_streams_uni: 0,
     }
 }
-pub struct Storage {
+pub struct Storage<const RX: usize> {
     initial: Vec<u8>,
     handshake: Vec<u8>,
     application: Vec<u8>,
     initial_bitmap: Vec<u8>,
     handshake_bitmap: Vec<u8>,
     application_bitmap: Vec<u8>,
-    streams: Vec<StreamSlot<RECEIVE_BYTES>>,
+    streams: Vec<StreamSlot<RX>>,
     chunks: Vec<SendChunk<CHUNK_BYTES>>,
     references: Vec<PacketReference>,
 }
-impl Storage {
-    pub fn new() -> Self {
-        Self {
+impl<const RX: usize> Storage<RX> {
+    pub fn new(stream_capacity: usize) -> Result<Self, String> {
+        if stream_capacity == 0 || stream_capacity > STREAMS {
+            return Err("stream storage capacity must be 1..=64".into());
+        }
+        Ok(Self {
             initial: vec![0; 8192],
             handshake: vec![0; 16384],
             application: vec![0; 8192],
             initial_bitmap: vec![0; 1024],
             handshake_bitmap: vec![0; 2048],
             application_bitmap: vec![0; 1024],
-            streams: (0..STREAMS).map(|_| StreamSlot::EMPTY).collect(),
+            streams: (0..stream_capacity).map(|_| StreamSlot::EMPTY).collect(),
             chunks: (0..SEND_CHUNKS).map(|_| SendChunk::EMPTY).collect(),
             references: vec![PacketReference::EMPTY; PACKET_REFERENCES],
-        }
+        })
     }
     pub fn setup<'a>(
         &'a mut self,
         config: Config<'a>,
-    ) -> Result<application::Setup<'a, RECEIVE_BYTES, CHUNK_BYTES>, String> {
+    ) -> Result<application::Setup<'a, RX, CHUNK_BYTES>, String> {
         Ok(application::Setup {
             early: None,
             config,
-            local_limits: local_limits(config.side),
+            local_limits: local_limits::<RX>(config.side, self.streams.len()),
             handshake_crypto: [
                 CryptoBuffer::new(&mut self.initial, &mut self.initial_bitmap)
                     .map_err(|e| format!("Initial CRYPTO storage: {e:?}"))?,
@@ -106,5 +115,53 @@ impl EarlyStorage {
             slots: &mut self.slots,
             policy: Self::policy(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_limits_are_backed_by_exact_requested_slot_count() {
+        for count in [1, 2, 40, STREAMS] {
+            let storage = Storage::<1024>::new(count).unwrap();
+            assert_eq!(storage.streams.len(), count);
+            let limits = local_limits::<1024>(Side::Client, storage.streams.len());
+            assert_eq!(limits.max_data, (count * 1024) as u64);
+            assert_eq!(limits.stream_data_bidi_local, 1024);
+            assert_eq!(limits.max_streams_bidi, 0);
+            assert_eq!(limits.max_streams_uni, 0);
+        }
+    }
+
+    #[test]
+    fn server_keeps_its_actual_full_stream_capacity() {
+        let storage = Storage::<1024>::new(STREAMS).unwrap();
+        let limits = local_limits::<1024>(Side::Server, storage.streams.len());
+        assert_eq!(limits.max_streams_bidi, STREAMS as u64);
+        assert_eq!(limits.max_data, (STREAMS * 1024) as u64);
+    }
+
+    #[test]
+    fn selected_client_windows_never_exceed_the_original_pool() {
+        for count in 1..=STREAMS {
+            let bytes = if client_uses_large_window(count) {
+                CLIENT_RECEIVE_BYTES
+            } else {
+                RECEIVE_BYTES
+            };
+            assert!(count * bytes <= STREAMS * RECEIVE_BYTES);
+        }
+        assert!(client_uses_large_window(1));
+        assert!(client_uses_large_window(4));
+        assert!(!client_uses_large_window(5));
+        assert!(!client_uses_large_window(0));
+    }
+
+    #[test]
+    fn invalid_slot_counts_are_rejected_before_allocation() {
+        assert!(Storage::<1024>::new(0).is_err());
+        assert!(Storage::<1024>::new(STREAMS + 1).is_err());
     }
 }

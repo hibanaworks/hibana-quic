@@ -195,11 +195,16 @@ pub enum LossOutcome {
 /// `reclaim_completed_prefix` is called. This explicit backpressure avoids
 /// silently forgetting an unsent/cancelled PN and later accepting a forged ACK
 /// for it. ACK portions below the retained floor are ignored; retained portions
-/// are still validated and applied atomically.
+/// are still validated and applied atomically. Under pressure, accepted
+/// non-in-flight records can be compressed into exact PN runs; those runs
+/// validate historical ACKs without minting new delivery or key receipts.
 pub struct SentLedger<const CAPACITY: usize> {
     connection_generation: u64,
     allocator: PacketNumberAllocator,
     records: [Option<SentRecord>; CAPACITY],
+    // Exact accepted, non-in-flight PN runs. These retain validation evidence,
+    // not delivery, RTT, congestion or key-update authority.
+    ack_history: [Option<(PacketNumberSpace, AckRange)>; CAPACITY],
     floor: [u64; 3],
     bytes_in_flight: u64,
     reserved_in_flight: u64,
@@ -214,12 +219,80 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
             connection_generation,
             allocator: PacketNumberAllocator::new(),
             records: [None; CAPACITY],
+            ack_history: [None; CAPACITY],
             floor: [0; 3],
             bytes_in_flight: 0,
             reserved_in_flight: 0,
             ecn_accepted: [MarkedPackets { ect0: 0, ect1: 0 }; 3],
             retired_sent_upper_bound: [None; 3],
             retired: false,
+        }
+    }
+
+    /// Compress only actually accepted ACK-only records. Outstanding eliciting
+    /// packets and reservations remain owned records. A lost peer ACK must not
+    /// pin a growing tail of ACK-only records and consume all recovery slots.
+    /// Run insertion is transactional: a fragmented history that cannot fit
+    /// leaves the ledger unchanged. Returned identities have no live receipt.
+    pub(crate) fn compact_ack_history(
+        &mut self,
+    ) -> Result<[Option<PacketNumber>; CAPACITY], AccountingError> {
+        self.ensure_active()?;
+        let mut history = self.ack_history;
+        let mut removed = [None; CAPACITY];
+        for (index, record) in self.records.iter().enumerate() {
+            let Some(record) = record else { continue };
+            if record.in_flight || record.state != PacketState::Sent {
+                continue;
+            }
+            let space = record.packet.space;
+            let mut range = AckRange {
+                start: record.packet.value,
+                end: record.packet.value,
+            };
+            // Existing runs are disjoint and non-adjacent. The singleton can
+            // join at most its left and right neighbors, without filling gaps.
+            for entry in &mut history {
+                if let Some((other_space, other)) = *entry
+                    && other_space == space
+                    && range.start <= other.end.saturating_add(1)
+                    && other.start <= range.end.saturating_add(1)
+                {
+                    range.start = range.start.min(other.start);
+                    range.end = range.end.max(other.end);
+                    *entry = None;
+                }
+            }
+            let slot = history
+                .iter_mut()
+                .find(|entry| entry.is_none())
+                .ok_or(AccountingError::Full)?;
+            *slot = Some((space, range));
+            removed[index] = Some(record.packet);
+        }
+        self.ack_history = history;
+        for (index, packet) in removed.iter().enumerate() {
+            if packet.is_some() {
+                let record = self.records[index]
+                    .take()
+                    .expect("selected retained record");
+                remember_retired_sent_time(&mut self.retired_sent_upper_bound, record);
+            }
+        }
+        Ok(removed)
+    }
+
+    fn forget_ack_history_before(&mut self, space: PacketNumberSpace, exclusive: u64) {
+        for entry in &mut self.ack_history {
+            if let Some((other_space, range)) = entry
+                && *other_space == space
+            {
+                if range.end < exclusive {
+                    *entry = None;
+                } else {
+                    range.start = range.start.max(exclusive);
+                }
+            }
         }
     }
 
@@ -455,6 +528,15 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
                 end: range.end,
             };
             let mut matched = 0_u64;
+            for (other_space, history) in self.ack_history.iter().flatten() {
+                if *other_space == space {
+                    let start = retained.start.max(history.start);
+                    let end = retained.end.min(history.end);
+                    if start <= end {
+                        matched += end - start + 1;
+                    }
+                }
+            }
             for record in self.records.iter().flatten() {
                 if record.packet.space == space && contains(retained, record.packet.value) {
                     if matches!(record.state, PacketState::Reserved | PacketState::Cancelled) {
@@ -748,6 +830,7 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
         }
         self.bytes_in_flight -= removed;
         self.floor[space as usize] = self.allocator.next[space as usize];
+        self.forget_ack_history_before(space, self.floor[space as usize]);
         Ok(removed)
     }
 
@@ -782,6 +865,7 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
             }
         }
         self.floor[index] = exclusive;
+        self.forget_ack_history_before(space, exclusive);
         Ok(())
     }
 
@@ -806,7 +890,13 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
     ) -> Result<u64, AccountingError> {
         self.ensure_active()?;
         let mut exclusive = self.floor[space as usize];
-        for _ in 0..CAPACITY {
+        for _ in 0..CAPACITY.saturating_mul(2) {
+            if let Some((_, range)) = self.ack_history.iter().flatten().find(|(other, range)| {
+                *other == space && range.start <= exclusive && exclusive <= range.end
+            }) {
+                exclusive = range.end + 1;
+                continue;
+            }
             let Some(record) =
                 self.records.iter().flatten().find(|record| {
                     record.packet.space == space && record.packet.value == exclusive
@@ -833,6 +923,7 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
             }
         }
         self.floor[space as usize] = exclusive;
+        self.forget_ack_history_before(space, exclusive);
         Ok(exclusive)
     }
 
@@ -1090,6 +1181,118 @@ mod tests {
     use super::*;
 
     const APP: PacketNumberSpace = PacketNumberSpace::ApplicationData;
+
+    #[test]
+    fn compact_ack_history_preserves_exact_validation_for_all_small_histories() {
+        // Exhaustive five-packet histories: accepted ACK-only, accepted data,
+        // cancelled, or still reserved. Compare every bounded wire ACK interval.
+        for pattern in 0..1024u32 {
+            let mut original = SentLedger::<5>::new(1);
+            let mut compact = SentLedger::<5>::new(1);
+            for index in 0..5 {
+                let state = (pattern >> (index * 2)) & 3;
+                for ledger in [&mut original, &mut compact] {
+                    let r = ledger.reserve(PacketKind::OneRtt, 10, state == 1).unwrap();
+                    match state {
+                        0 | 1 => ledger.adapter_accepted(r, index as u64).unwrap(),
+                        2 => ledger.cancel(r).unwrap(),
+                        _ => {}
+                    }
+                }
+            }
+            compact.compact_ack_history().unwrap();
+            assert_eq!(original.bytes_in_flight(), compact.bytes_in_flight());
+            assert_eq!(original.reserved_in_flight(), compact.reserved_in_flight());
+            for start in 0..7 {
+                for end in start..7 {
+                    let range = [AckRange { start, end }];
+                    assert_eq!(
+                        original.validate_ack(APP, &range),
+                        compact.validate_ack(APP, &range),
+                        "pattern={pattern} ACK={start}..={end}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_ack_history_does_not_pin_an_outstanding_packet_or_invent_receipts() {
+        let mut ledger = SentLedger::<4>::new(1);
+        let outstanding = ledger.reserve(PacketKind::OneRtt, 50, true).unwrap();
+        ledger.adapter_accepted(outstanding, 1).unwrap();
+        for pn in 1..=256 {
+            if ledger.remaining_capacity() == 0 {
+                ledger.compact_ack_history().unwrap();
+            }
+            let ack = ledger.reserve(PacketKind::OneRtt, 10, false).unwrap();
+            assert_eq!(ack.packet().value, pn);
+            ledger.adapter_accepted(ack, pn + 1).unwrap();
+            assert_eq!(ledger.reclaim_completed_prefix(APP).unwrap(), 0);
+        }
+        ledger.compact_ack_history().unwrap();
+        assert_eq!(ledger.ack_history.iter().flatten().count(), 1);
+        assert_eq!(ledger.bytes_in_flight(), 50);
+        let historical = ledger
+            .acknowledge(APP, &[AckRange { start: 1, end: 256 }])
+            .unwrap();
+        assert_eq!(historical.newly_acknowledged, 0);
+        assert_eq!(historical.bytes_removed_from_flight, 0);
+        assert!(
+            ledger
+                .sent_at(PacketNumber {
+                    space: APP,
+                    value: 200
+                })
+                .is_none()
+        );
+        assert_eq!(
+            ledger
+                .acknowledge(APP, &[AckRange { start: 0, end: 256 }])
+                .unwrap()
+                .bytes_removed_from_flight,
+            50
+        );
+        assert_eq!(ledger.reclaim_completed_prefix(APP).unwrap(), 257);
+        assert!(ledger.ack_history.iter().all(Option::is_none));
+        assert!(
+            ledger
+                .validate_ack(
+                    APP,
+                    &[AckRange {
+                        start: 257,
+                        end: 257
+                    }]
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn compact_ack_history_is_space_local_and_discarded_only_at_retirement() {
+        let mut ledger = SentLedger::<4>::new(1);
+        let sent = ledger.reserve(PacketKind::OneRtt, 10, false).unwrap();
+        ledger.adapter_accepted(sent, 3).unwrap();
+        ledger.compact_ack_history().unwrap();
+        let range = [AckRange { start: 0, end: 0 }];
+        assert!(ledger.validate_ack(APP, &range).is_ok());
+        assert_eq!(
+            ledger.validate_ack(PacketNumberSpace::Initial, &range),
+            Err(AccountingError::UnsentPacket)
+        );
+        assert_eq!(ledger.discard_space(APP).unwrap(), 0);
+        assert!(ledger.ack_history.iter().all(Option::is_none));
+        assert!(ledger.validate_ack(APP, &range).is_ok()); // old prefix, no grant
+        assert_eq!(
+            ledger.acknowledge(APP, &range).unwrap().newly_acknowledged,
+            0
+        );
+        ledger.retire();
+        assert!(matches!(
+            ledger.compact_ack_history(),
+            Err(AccountingError::Retired)
+        ));
+    }
 
     fn ack<const N: usize>(
         ledger: &mut SentLedger<N>,

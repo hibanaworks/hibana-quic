@@ -87,9 +87,11 @@ pub(crate) async fn run<
     // A Finished-gated early bridge may already have retained request bytes.
     notify_ready(receive, control, state, app).await?;
     // Bounded opportunistic batching: flush ready streams before actually
-    // waiting for input. At datagram boundaries, flush after sixty-four items
-    // or a one-millisecond work budget (not a hard real-time guarantee).
+    // waiting for input. At datagram boundaries, flush after a window-backed
+    // burst (at least sixty-four datagrams) or a one-millisecond work budget
+    // (not a hard real-time guarantee).
     // Pending receive IO stays pinned/owned during delivery; no batching cancel.
+    let burst_limit = (RX / N.max(1)).max(64);
     let mut burst = 0usize;
     let mut burst_started = 0u64;
     'receive: while !control.stopping() {
@@ -192,7 +194,7 @@ pub(crate) async fn run<
                 crate::runtime::yield_now().await;
             }
         }
-        if burst >= 64 || clock.now().saturating_sub(burst_started) >= 1_000 {
+        if burst >= burst_limit || clock.now().saturating_sub(burst_started) >= 1_000 {
             notify_ready(receive, control, state, app).await?;
             burst = 0;
             crate::runtime::yield_now().await;
