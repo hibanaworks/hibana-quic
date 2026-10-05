@@ -5,10 +5,9 @@ implementation, not features once exercised by a removed driver.
 
 ## Verified scope
 
-The cumulative verified inventory is 28/44 unique case/direction cells across
+The cumulative verified inventory is 30/44 unique case/direction cells across
 recorded revisions: seven original cases both directions, resumption, blackhole,
-0-RTT, key update and amplification limit both directions, and handshake loss
-and handshake corruption both directions. Passing quiche controls are accepted where
+0-RTT, key update and amplification limit both directions, handshake loss, handshake corruption and multiplexing both directions. Passing quiche controls are accepted where
 Neqo self-controls failed; the failed controls remain recorded. This inventory
 is not a complete rerun of all 44 cells on the latest commit.
 
@@ -36,12 +35,12 @@ remain open, with further optimization experiments deferred.
 
 ## Unqualified capabilities
 
-- The other 16 runner cells, including multiplexing, Retry, HTTP/3, QUIC v2,
+- The other 14 runner cells, including Retry, HTTP/3, QUIC v2,
   ECN and path migration, lack historical official
   qualification. TLS-only or numerical-kernel tests do not qualify the endpoint.
 - [Multiplexing](multiplexing.md) now reuses at most 64 live slots for a finite
   4,096-request admission bound. Native 1,999-file transfer and credit refill
-  are verified; the exact official runner verdict is still pending.
+  are verified. Both official directions passed at 4fdc24a7 with a passing Neqo control.
 - Legacy standalone idle, close, migration, path validation, ECN marking, client
   Retry, version-negotiation and early-data
   controllers have been deleted. Their old component tests do not demonstrate

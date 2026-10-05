@@ -872,6 +872,8 @@ pub fn programs() -> Programs {
             tx_wire: project(&global),
             initial_event: project(&global),
             initial_owner: project(&global),
+            timer_stop: project(&global),
+            receive_stop: project(&global),
         },
         source: project(&global),
         ingress: project(&global),

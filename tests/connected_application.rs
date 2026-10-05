@@ -503,13 +503,16 @@ impl Wake for Ready {
         self.0.store(true, Ordering::SeqCst);
     }
 }
-fn execute<F: Future>(clock: &TestClock, future: F) -> F::Output {
+fn execute<F: Future>(clock: &TestClock, future: F, trace: impl Fn()) -> F::Output {
     let ready = Arc::new(Ready(AtomicBool::new(true)));
     let waker = Waker::from(ready.clone());
     let mut cx = Context::from_waker(&waker);
     let mut future = core::pin::pin!(future);
     for _ in 0..200_000 {
         if !ready.0.swap(false, Ordering::SeqCst) {
+            if clock.alarms.borrow().iter().all(Option::is_none) {
+                trace();
+            }
             clock.advance();
         }
         if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
@@ -724,6 +727,8 @@ macro_rules! roles {
                 tx_wire: $rv.enter($sid, &$program.handshake.tx_wire).unwrap(),
                 initial_event: $rv.enter($sid, &$program.handshake.initial_event).unwrap(),
                 initial_owner: $rv.enter($sid, &$program.handshake.initial_owner).unwrap(),
+                timer_stop: $rv.enter($sid, &$program.handshake.timer_stop).unwrap(),
+                receive_stop: $rv.enter($sid, &$program.handshake.receive_stop).unwrap(),
             },
             source: $rv.enter($sid, &$program.source).unwrap(),
             ingress: $rv.enter($sid, &$program.ingress).unwrap(),
@@ -1121,8 +1126,26 @@ fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
                 Ok::<(), application::Error>(())
             },
         ),
+        || {
+            for event in client_rv.tap() {
+                eprintln!("client role: {event:?}");
+            }
+            for event in server_rv.tap() {
+                eprintln!("server role: {event:?}");
+            }
+        },
     )
     .unwrap();
+    assert_eq!(
+        client_carrier.queued(),
+        0,
+        "client left internal messages retained"
+    );
+    assert_eq!(
+        server_carrier.queued(),
+        0,
+        "server left internal messages retained"
+    );
     let client = client_report.unwrap();
     let server = server_report.unwrap();
     assert_eq!(client_transcript.state(), State::Connected);

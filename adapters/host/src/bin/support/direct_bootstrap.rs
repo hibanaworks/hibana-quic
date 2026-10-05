@@ -81,6 +81,8 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
         timer_tx: enter!(timer_tx),
         initial_event: enter!(initial_event),
         initial_owner: enter!(initial_owner),
+        timer_stop: enter!(timer_stop),
+        receive_stop: enter!(receive_stop),
     };
     let storage = Box::new(
         Storage::<DATAGRAM, PARAMETERS>::new(config.peer_connection_id)
@@ -218,6 +220,8 @@ pub async fn files<'scope, const S: usize, const T: usize>(
             timer_tx: enter!(programs.handshake.timer_tx),
             initial_event: enter!(programs.handshake.initial_event),
             initial_owner: enter!(programs.handshake.initial_owner),
+            timer_stop: enter!(programs.handshake.timer_stop),
+            receive_stop: enter!(programs.handshake.receive_stop),
         },
         source: enter!(programs.source),
         ingress: enter!(programs.ingress),

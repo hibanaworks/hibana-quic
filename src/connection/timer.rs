@@ -6,51 +6,68 @@ use hibana::g::Message;
 
 pub(super) async fn run<const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, { p::TIMER }>,
+    stop: &mut Endpoint<'_, { p::TIMER_STOP }>,
     slots: &Storage<'_, '_, N, P>,
     book: &mut recovery::Clock<'_, '_, N>,
     clock: &impl Clock,
 ) -> Result<(), Error> {
     let mut sequence = 0u64;
-    loop {
-        if slots.schedule.stop_timer.get() {
-            endpoint.send::<p::TimerRetired>(&sequence).await?;
-            if endpoint.recv::<p::TimerAcknowledged>().await? != sequence {
-                return Err(Error::Binding);
+    let stop_id = {
+        let mut stopping = pin!(stop.recv::<p::StopTimer>());
+        loop {
+            let revision = slots.schedule.revision.get();
+            let deadline = book.update(clock.now(), slots.schedule.keys.get())?;
+            let event = {
+                let mut changed = pin!(slots.schedule.wait_changed(2, revision));
+                let mut wait = pin!(async {
+                    match deadline.as_ref() {
+                        Some(deadline) => clock.wait_until(deadline.at()).await,
+                        None => core::future::pending::<()>().await,
+                    }
+                });
+                poll_fn(|cx| {
+                    if let Poll::Ready(result) = stopping.as_mut().poll(cx) {
+                        return Poll::Ready(
+                            result
+                                .map(core::ops::ControlFlow::Break)
+                                .map_err(Error::from),
+                        );
+                    }
+                    if changed.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(Ok(core::ops::ControlFlow::Continue(false)));
+                    }
+                    wait.as_mut()
+                        .poll(cx)
+                        .map(|()| Ok(core::ops::ControlFlow::Continue(true)))
+                })
+                .await?
+            };
+            match event {
+                core::ops::ControlFlow::Break(id) => break id,
+                core::ops::ControlFlow::Continue(false) => continue,
+                core::ops::ControlFlow::Continue(true) => {}
             }
-            return Ok(());
-        }
-        let revision = slots.schedule.revision.get();
-        let Some(deadline) = book.update(clock.now(), slots.schedule.keys.get())? else {
-            slots.schedule.wait_changed(2, revision).await;
-            continue;
-        };
-        let expired = {
-            let mut wait = pin!(clock.wait_until(deadline.at()));
-            let mut changed = pin!(slots.schedule.wait_changed(2, revision));
-            poll_fn(|cx| {
-                if changed.as_mut().poll(cx).is_ready() {
-                    return Poll::Ready(false);
+            match book.expire(deadline.ok_or(Error::Binding)?, clock.now()) {
+                Ok(Some(_)) => {
+                    // A stop cannot interrupt this projected exchange halfway.
+                    endpoint.send::<p::TimerExpired>(&sequence).await?;
+                    if endpoint.recv::<p::TimerTaken>().await? != sequence {
+                        return Err(Error::Binding);
+                    }
+                    sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
                 }
-                wait.as_mut().poll(cx).map(|()| true)
-            })
-            .await
-        };
-        if !expired {
-            continue;
-        }
-        match book.expire(deadline, clock.now()) {
-            Ok(Some(_)) => {
-                endpoint.send::<p::TimerExpired>(&sequence).await?;
-                if endpoint.recv::<p::TimerTaken>().await? != sequence {
-                    return Err(Error::Binding);
-                }
-                sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                Ok(None) | Err(recovery::Error::StaleDeadline) => {}
+                Err(error) => return Err(error.into()),
             }
-            Ok(None) | Err(recovery::Error::StaleDeadline) => {}
-            Err(error) => return Err(error.into()),
+            crate::runtime::yield_now().await;
         }
-        crate::runtime::yield_now().await;
+    };
+    endpoint.send::<p::TimerRetired>(&sequence).await?;
+    if endpoint.recv::<p::TimerAcknowledged>().await? != sequence {
+        return Err(Error::Binding);
     }
+    stop.send::<p::TimerStopped>(&stop_id).await?;
+    Ok(())
 }
 
 /// Keep the timer facet runnable while TX waits for UDP settlement. The
@@ -101,6 +118,95 @@ mod tests {
         async fn send(&mut self, _bytes: &[u8]) -> Result<u64, IoError> {
             pending().await
         }
+    }
+
+    #[test]
+    fn real_timer_consumes_projected_stop_while_clock_and_udp_are_pending() {
+        struct QuietClock;
+        impl Clock for QuietClock {
+            fn now(&self) -> u64 {
+                0
+            }
+            async fn wait_until(&self, _: u64) {
+                pending::<()>().await
+            }
+        }
+        let global = g::par(
+            g::route(
+                g::seq(
+                    g::send::<{ p::TIMER }, { p::TIMER_TX }, p::TimerExpired>(),
+                    g::send::<{ p::TIMER_TX }, { p::TIMER }, p::TimerTaken>(),
+                ),
+                g::seq(
+                    g::send::<{ p::TIMER }, { p::TIMER_TX }, p::TimerRetired>(),
+                    g::send::<{ p::TIMER_TX }, { p::TIMER }, p::TimerAcknowledged>(),
+                ),
+            )
+            .roll(),
+            g::seq(
+                g::send::<{ p::TX_WIRE }, { p::TIMER_STOP }, p::StopTimer>(),
+                g::send::<{ p::TIMER_STOP }, { p::TX_WIRE }, p::TimerStopped>(),
+            ),
+        );
+        let timer_program: RoleProgram<{ p::TIMER }> = project(&global);
+        let receiver_program: RoleProgram<{ p::TIMER_TX }> = project(&global);
+        let stop_program: RoleProgram<{ p::TIMER_STOP }> = project(&global);
+        let sender_program: RoleProgram<{ p::TX_WIRE }> = project(&global);
+        let carrier = CarrierStorage::<1, 16, 64>::new();
+        let mut slab = [0; 65536];
+        let mut kit = SessionKitStorage::uninit();
+        let sid = SessionId::new(2);
+        let rv = kit
+            .init()
+            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+            .unwrap();
+        let mut timer_endpoint = rv.enter(sid, &timer_program).unwrap();
+        let mut receiver_endpoint = rv.enter(sid, &receiver_program).unwrap();
+        let mut stop_endpoint = rv.enter(sid, &stop_program).unwrap();
+        let mut sender_endpoint = rv.enter(sid, &sender_program).unwrap();
+        let mut scope = ApplicationKeyScope::new(200);
+        let mut installation = scope.claim().unwrap();
+        let mut book = recovery::Recovery::<1536>::new(
+            installation.take_recovery().unwrap(),
+            Side::Client,
+            333_000,
+            1200,
+        )
+        .unwrap();
+        let (_, _, mut clock_book, _, _retirement) = book.split().unwrap();
+        let storage = Storage::<1536, 64>::new(b"peer").unwrap();
+        let mut timer = pin!(run(
+            &mut timer_endpoint,
+            &mut stop_endpoint,
+            &storage,
+            &mut clock_book,
+            &QuietClock
+        ));
+        let mut receiver = pin!(receive(&mut receiver_endpoint, &storage.schedule));
+        let mut sender = pin!(async {
+            sender_endpoint.send::<p::StopTimer>(&91).await?;
+            if sender_endpoint.recv::<p::TimerStopped>().await? != 91 {
+                return Err(Error::Binding);
+            }
+            Ok::<(), Error>(())
+        });
+        let mut udp = PendingUdp;
+        let mut publication = pin!(udp.send(&[0]));
+        let mut tasks = pin!(crate::runtime::TaskSet::new([
+            timer.as_mut(),
+            receiver.as_mut(),
+            sender.as_mut()
+        ]));
+        let mut cx = Context::from_waker(Waker::noop());
+        for _ in 0..128 {
+            assert!(publication.as_mut().poll(&mut cx).is_pending());
+            if let Poll::Ready(result) = tasks.as_mut().poll(&mut cx) {
+                result.unwrap();
+                assert_eq!(carrier.queued(), 0);
+                return;
+            }
+        }
+        panic!("projected timer stop did not complete independently");
     }
 
     #[test]

@@ -74,6 +74,101 @@ pub type WriteHandshake = g::Msg<61, u64>;
 pub type WriteApplication = g::Msg<93, u64>;
 pub type DrainAck = Emission<128, 129, 130, 131>;
 pub type DrainProbe = Emission<132, 133, 134, 135>;
+// Concrete message names keep each written local continuation directly readable.
+pub type InitialAckDatagram = <<InitialTransmit as TransmitPhase>::Ack as Publication>::Datagram;
+pub type InitialAckAccepted = <<InitialTransmit as TransmitPhase>::Ack as Publication>::Accepted;
+pub type InitialAckRejected = <<InitialTransmit as TransmitPhase>::Ack as Publication>::Rejected;
+pub type InitialAckSettled = <<InitialTransmit as TransmitPhase>::Ack as Publication>::Settled;
+pub type InitialProbeDatagram =
+    <<InitialTransmit as TransmitPhase>::Probe as Publication>::Datagram;
+pub type InitialProbeAccepted =
+    <<InitialTransmit as TransmitPhase>::Probe as Publication>::Accepted;
+pub type InitialProbeRejected =
+    <<InitialTransmit as TransmitPhase>::Probe as Publication>::Rejected;
+pub type InitialProbeSettled = <<InitialTransmit as TransmitPhase>::Probe as Publication>::Settled;
+pub type InitialDataDatagram = <<InitialTransmit as TransmitPhase>::Data as Publication>::Datagram;
+pub type InitialDataAccepted = <<InitialTransmit as TransmitPhase>::Data as Publication>::Accepted;
+pub type InitialDataRejected = <<InitialTransmit as TransmitPhase>::Data as Publication>::Rejected;
+pub type InitialDataSettled = <<InitialTransmit as TransmitPhase>::Data as Publication>::Settled;
+pub type InitialRequest = <InitialTransmit as TransmitPhase>::Request;
+pub type InitialFlight = <InitialTransmit as TransmitPhase>::Flight;
+pub type InitialIdle = <InitialTransmit as TransmitPhase>::Idle;
+pub type InitialBoundary = <InitialTransmit as TransmitPhase>::Boundary;
+pub type InitialTaken = <InitialTransmit as TransmitPhase>::Taken;
+pub type InitialPhaseSettled = <InitialTransmit as TransmitPhase>::PhaseSettled;
+pub type InitialWireBoundary = <InitialTransmit as TransmitPhase>::WireBoundary;
+pub type HandshakeAckDatagram =
+    <<HandshakeTransmit as TransmitPhase>::Ack as Publication>::Datagram;
+pub type HandshakeAckAccepted =
+    <<HandshakeTransmit as TransmitPhase>::Ack as Publication>::Accepted;
+pub type HandshakeAckRejected =
+    <<HandshakeTransmit as TransmitPhase>::Ack as Publication>::Rejected;
+pub type HandshakeAckSettled = <<HandshakeTransmit as TransmitPhase>::Ack as Publication>::Settled;
+pub type HandshakeProbeDatagram =
+    <<HandshakeTransmit as TransmitPhase>::Probe as Publication>::Datagram;
+pub type HandshakeProbeAccepted =
+    <<HandshakeTransmit as TransmitPhase>::Probe as Publication>::Accepted;
+pub type HandshakeProbeRejected =
+    <<HandshakeTransmit as TransmitPhase>::Probe as Publication>::Rejected;
+pub type HandshakeProbeSettled =
+    <<HandshakeTransmit as TransmitPhase>::Probe as Publication>::Settled;
+pub type HandshakeDataDatagram =
+    <<HandshakeTransmit as TransmitPhase>::Data as Publication>::Datagram;
+pub type HandshakeDataAccepted =
+    <<HandshakeTransmit as TransmitPhase>::Data as Publication>::Accepted;
+pub type HandshakeDataRejected =
+    <<HandshakeTransmit as TransmitPhase>::Data as Publication>::Rejected;
+pub type HandshakeDataSettled =
+    <<HandshakeTransmit as TransmitPhase>::Data as Publication>::Settled;
+pub type HandshakeRequest = <HandshakeTransmit as TransmitPhase>::Request;
+pub type HandshakeFlight = <HandshakeTransmit as TransmitPhase>::Flight;
+pub type HandshakeIdle = <HandshakeTransmit as TransmitPhase>::Idle;
+pub type HandshakeBoundary = <HandshakeTransmit as TransmitPhase>::Boundary;
+pub type HandshakeTaken = <HandshakeTransmit as TransmitPhase>::Taken;
+pub type HandshakePhaseSettled = <HandshakeTransmit as TransmitPhase>::PhaseSettled;
+pub type HandshakeWireBoundary = <HandshakeTransmit as TransmitPhase>::WireBoundary;
+pub type ApplicationAckDatagram =
+    <<ApplicationTransmit as TransmitPhase>::Ack as Publication>::Datagram;
+pub type ApplicationAckAccepted =
+    <<ApplicationTransmit as TransmitPhase>::Ack as Publication>::Accepted;
+pub type ApplicationAckRejected =
+    <<ApplicationTransmit as TransmitPhase>::Ack as Publication>::Rejected;
+pub type ApplicationAckSettled =
+    <<ApplicationTransmit as TransmitPhase>::Ack as Publication>::Settled;
+pub type ApplicationProbeDatagram =
+    <<ApplicationTransmit as TransmitPhase>::Probe as Publication>::Datagram;
+pub type ApplicationProbeAccepted =
+    <<ApplicationTransmit as TransmitPhase>::Probe as Publication>::Accepted;
+pub type ApplicationProbeRejected =
+    <<ApplicationTransmit as TransmitPhase>::Probe as Publication>::Rejected;
+pub type ApplicationProbeSettled =
+    <<ApplicationTransmit as TransmitPhase>::Probe as Publication>::Settled;
+pub type ApplicationDataDatagram =
+    <<ApplicationTransmit as TransmitPhase>::Data as Publication>::Datagram;
+pub type ApplicationDataAccepted =
+    <<ApplicationTransmit as TransmitPhase>::Data as Publication>::Accepted;
+pub type ApplicationDataRejected =
+    <<ApplicationTransmit as TransmitPhase>::Data as Publication>::Rejected;
+pub type ApplicationDataSettled =
+    <<ApplicationTransmit as TransmitPhase>::Data as Publication>::Settled;
+pub type ApplicationRequest = <ApplicationTransmit as TransmitPhase>::Request;
+pub type ApplicationFlight = <ApplicationTransmit as TransmitPhase>::Flight;
+pub type ApplicationIdle = <ApplicationTransmit as TransmitPhase>::Idle;
+pub type ApplicationBoundary = <ApplicationTransmit as TransmitPhase>::Boundary;
+pub type ApplicationTaken = <ApplicationTransmit as TransmitPhase>::Taken;
+pub type ApplicationPhaseSettled = <ApplicationTransmit as TransmitPhase>::PhaseSettled;
+pub type ApplicationWireBoundary = <ApplicationTransmit as TransmitPhase>::WireBoundary;
+pub type DrainAckDatagram = <DrainAck as Publication>::Datagram;
+pub type DrainAckAccepted = <DrainAck as Publication>::Accepted;
+pub type DrainAckRejected = <DrainAck as Publication>::Rejected;
+pub type DrainAckSettled = <DrainAck as Publication>::Settled;
+pub type DrainProbeDatagram = <DrainProbe as Publication>::Datagram;
+pub type DrainProbeAccepted = <DrainProbe as Publication>::Accepted;
+pub type DrainProbeRejected = <DrainProbe as Publication>::Rejected;
+pub type DrainProbeSettled = <DrainProbe as Publication>::Settled;
+pub type InitialWireBoundarySeen = <InitialTransmit as TransmitPhase>::WireBoundarySeen;
+pub type HandshakeWireBoundarySeen = <HandshakeTransmit as TransmitPhase>::WireBoundarySeen;
+pub type ApplicationWireBoundarySeen = <ApplicationTransmit as TransmitPhase>::WireBoundarySeen;
 pub type HandshakeRecoveryTransferred = g::Msg<136, u64>;
 pub type TransmitComplete = g::Msg<137, u64>;
 pub type TransmitContinuation = g::Msg<138, u64>;
@@ -206,11 +301,32 @@ pub type DrainFlow = g::Roll<
         g::Route<Publish<DrainProbe>, g::Send<TX_WIRE, UDP, HandshakeRecoveryTransferred>>,
     >,
 >;
+pub const TIMER_STOP: u8 = 20;
+pub const RECEIVE_STOP: u8 = 21;
+pub type StopTimer = g::Msg<222, u64>;
+pub type TimerStopped = g::Msg<223, u64>;
+pub type StopReceive = g::Msg<225, u64>;
+pub type ReceiveStopped = g::Msg<226, u64>;
 pub type CompleteFlow = g::Seq<
-    g::Send<TX, TLS_TX, TransmitComplete>,
+    g::Send<TX_WIRE, RECEIVE_STOP, StopReceive>,
     g::Seq<
-        g::Send<TLS_TX, TX, TransmitContinuation>,
-        g::Seq<g::Send<TX_WIRE, UDP, AdapterComplete>, g::Send<UDP, TX_WIRE, AdapterRetired>>,
+        g::Send<RECEIVE_STOP, TX_WIRE, ReceiveStopped>,
+        g::Seq<
+            g::Send<TX_WIRE, TIMER_STOP, StopTimer>,
+            g::Seq<
+                g::Send<TIMER_STOP, TX_WIRE, TimerStopped>,
+                g::Seq<
+                    g::Send<TX, TLS_TX, TransmitComplete>,
+                    g::Seq<
+                        g::Send<TLS_TX, TX, TransmitContinuation>,
+                        g::Seq<
+                            g::Send<TX_WIRE, UDP, AdapterComplete>,
+                            g::Send<UDP, TX_WIRE, AdapterRetired>,
+                        >,
+                    >,
+                >,
+            >,
+        >,
     >,
 >;
 pub type TransmitFlow = g::Seq<
@@ -301,12 +417,24 @@ pub fn choreography() -> g::Program<Flow> {
     )
     .roll();
     let complete = g::seq(
-        g::send::<TX, TLS_TX, TransmitComplete>(),
+        g::send::<TX_WIRE, RECEIVE_STOP, StopReceive>(),
         g::seq(
-            g::send::<TLS_TX, TX, TransmitContinuation>(),
+            g::send::<RECEIVE_STOP, TX_WIRE, ReceiveStopped>(),
             g::seq(
-                g::send::<TX_WIRE, UDP, AdapterComplete>(),
-                g::send::<UDP, TX_WIRE, AdapterRetired>(),
+                g::send::<TX_WIRE, TIMER_STOP, StopTimer>(),
+                g::seq(
+                    g::send::<TIMER_STOP, TX_WIRE, TimerStopped>(),
+                    g::seq(
+                        g::send::<TX, TLS_TX, TransmitComplete>(),
+                        g::seq(
+                            g::send::<TLS_TX, TX, TransmitContinuation>(),
+                            g::seq(
+                                g::send::<TX_WIRE, UDP, AdapterComplete>(),
+                                g::send::<UDP, TX_WIRE, AdapterRetired>(),
+                            ),
+                        ),
+                    ),
+                ),
             ),
         ),
     );
@@ -360,6 +488,8 @@ pub struct Programs {
     pub tx_wire: RoleProgram<TX_WIRE>,
     pub initial_event: RoleProgram<INITIAL_EVENT>,
     pub initial_owner: RoleProgram<INITIAL_OWNER>,
+    pub timer_stop: RoleProgram<TIMER_STOP>,
+    pub receive_stop: RoleProgram<RECEIVE_STOP>,
 }
 pub fn programs() -> Programs {
     let global = choreography();
@@ -374,5 +504,7 @@ pub fn programs() -> Programs {
         tx_wire: project(&global),
         initial_event: project(&global),
         initial_owner: project(&global),
+        timer_stop: project(&global),
+        receive_stop: project(&global),
     }
 }

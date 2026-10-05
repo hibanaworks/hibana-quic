@@ -3,7 +3,7 @@
   "registered_quic_cases": 22,
   "directions": 2,
   "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
-  "current_cleanup_commit_qualification": "28/44 unique historical case/direction passes across the exact revisions below. This is a cumulative inventory, not a complete rerun of 44 cells on the latest commit. Passing alternate-peer controls qualify a cell under the user-approved policy; duplicate peers do not add cells. Failed Neqo controls remain failed.",
+  "current_cleanup_commit_qualification": "30/44 unique historical case/direction passes across the exact revisions below. This is a cumulative inventory, not a complete rerun of 44 cells on the latest commit. Passing alternate-peer controls qualify a cell under the user-approved policy; duplicate peers do not add cells. Failed Neqo controls remain failed.",
   "cases": [
     {
       "case": "handshake",
@@ -96,8 +96,24 @@
     {
       "case": "multiplexing",
       "abbreviation": "M",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37359435433,
+        "commit": "4fdc24a716f5e854f7df603f8c312f789984cf57",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37359435433"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37359435433,
+        "commit": "4fdc24a716f5e854f7df603f8c312f789984cf57",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37359435433"
+      }
     },
     {
       "case": "retry",
@@ -402,7 +418,7 @@
       "counts_toward_neqo_matrix": false
     }
   ],
-  "historical_unique_passes": 28,
+  "historical_unique_passes": 30,
   "full_latest_commit_matrix_passed": false,
-  "inventory_updated_through_commit": "7ab97351b4a7f6ea22f8f2113b2ff226db9092ab"
+  "inventory_updated_through_commit": "4fdc24a716f5e854f7df603f8c312f789984cf57"
 }

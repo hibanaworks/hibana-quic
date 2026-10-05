@@ -8,6 +8,16 @@ The core is `no_std`, does not allocate, and forbids unsafe Rust. Callers provid
 fixed storage and pinned tasks. The Linux host adapter supplies a real
 `epoll`/`eventfd` reactor, UDP I/O and file handling; it is a separate `std` boundary.
 
+## Design criterion
+
+Hibana owns protocol control. Each local writes the corresponding `send`,
+`recv`, `offer` and resolver operations directly, with its real processing
+between them. Independent progress flags, replacement state machines, and
+helpers hiding those protocol exchanges are not the intended architecture.
+Numerical kernels, cryptography, parsing and physical I/O remain ordinary Rust.
+The migration is not complete merely because a test passes or endpoints appear
+in a wrapper; see [the direct-local checkpoint](docs/direct-locals.md).
+
 ## Read the implementation
 
 - [Connection choreography](src/connection/protocol.rs): parallel receive,
@@ -42,23 +52,17 @@ alone. Passing interop does not complete this migration.
 ## Status
 
 This is **not production-ready** and is not yet a fully qualified QUIC stack.
-The pinned, unmodified quic-interop-runner has qualified **18 of 44 candidate
-cells** against unmodified Neqo. `handshake`, `transfer`, `longrtt`,
-`transferloss`, `transfercorruption`, `ipv6` and `chacha20` passed both directions
-at `99943a86` in
-[run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723).
-`resumption` passed both directions at `622a17a4` in
-[run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222).
-Blackhole passed in the client direction at `7db1f72d` in
-[run 37263917795](https://github.com/hibanaworks/hibana-quic/actions/runs/37263917795);
-the server direction still times out. Neqo/Neqo controls are separate from
-candidate counts. Server-side 0-RTT passed the runner against Neqo in
-[run 37260959576](https://github.com/hibanaworks/hibana-quic/actions/runs/37260959576),
-whose Neqo self-control failed. It also passed against quiche with its successful
-control in [run 37261848054](https://github.com/hibanaworks/hibana-quic/actions/runs/37261848054),
-corroborating the same server Z cell without counting the second peer twice. The other 26 Neqo cells, a full
-repeated matrix and embedded hardware remain unqualified. These links qualify
-the stated checkpoints; the new Hibana dependency's official repeat is pending.
+The pinned, unmodified quic-interop-runner has qualified **30 of 44 unique
+candidate cells** across the exact revisions in [the inventory](interop/qualification.json).
+Multiplexing passed both directions at `4fdc24a7` with a passing unchanged Neqo
+control in [run 37359435433](https://github.com/hibanaworks/hibana-quic/actions/runs/37359435433).
+Earlier passes include blackhole, 0-RTT, key update, amplification limit and
+handshake loss/corruption both directions. Alternate-peer controls are recorded;
+reference controls and duplicate peers do not add candidate cells.
+
+This is a historical inventory, not a complete latest-commit matrix. The other
+14 cells, the repeated release matrix and embedded hardware remain unqualified.
+The direct-local rewrite requires fresh regressions and interoperability tests.
 
 See [active implementation and evidence](docs/ACTIVE-IMPLEMENTATION.md).
 Lean and Z3 models cover explicitly scoped obligations; they are not proofs of

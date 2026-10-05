@@ -39,28 +39,9 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
         initial_endpoint: &mut Option<&mut Endpoint<'_, { p::INITIAL_EVENT }>>,
         book: &mut recovery::Rx<'_, 'scope, N>,
         clock: &impl Clock,
-        may_finish: bool,
     ) -> Result<bool, Error> {
         if self.offset >= self.len {
-            if may_finish && slots.schedule.transmit_done.get() {
-                return Ok(false);
-            }
-            let received = {
-                let mut read = pin!(io.receive(&mut self.datagram));
-                poll_fn(|cx| {
-                    if may_finish {
-                        slots.schedule.register(0, cx.waker());
-                        if slots.schedule.transmit_done.get() {
-                            return Poll::Ready(Ok(None));
-                        }
-                    }
-                    read.as_mut().poll(cx).map(|result| result.map(Some))
-                })
-                .await?
-            };
-            let Some(len) = received else {
-                return Ok(false);
-            };
+            let len = io.receive(&mut self.datagram).await?;
             if len > N {
                 return Err(Error::Capacity);
             }
@@ -197,6 +178,7 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, { p::RX }>,
+    stop: &mut Endpoint<'_, { p::RECEIVE_STOP }>,
     io: &mut impl DatagramRx,
     message: &crate::bounded_tls::locals::MessageSlot<'_>,
     slots: &Storage<'scope, '_, N, P>,
@@ -284,7 +266,6 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
                     &mut initial_endpoint,
                     book,
                     clock,
-                    false,
                 )
                 .await
                 .map_err(|_| direct::Error::Binding)?;
@@ -292,55 +273,123 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
             }
         }
     });
-    let selected = endpoint.offer().await?;
-    match config.side {
-        Side::Client => {
-            check(selected.recv::<tls::ClientStart>().await?, 0)?;
-            direct::client_input(endpoint, message, &mut input)
-                .await
-                .map_err(Error::Transcript)?;
+    let (stop_id, application, finished, peer) = {
+        // The stop role is independent and must receive from the beginning.
+        // Otherwise its queued message can block the TLS completion message
+        // needed by RX on a bounded carrier.
+        let mut stopping = pin!(stop.recv::<p::StopReceive>());
+        let first = {
+            let mut tls_input = pin!(async {
+                let selected = endpoint.offer().await?;
+                match config.side {
+                    Side::Client => {
+                        check(selected.recv::<tls::ClientStart>().await?, 0)?;
+                        direct::client_input(endpoint, message, &mut input)
+                            .await
+                            .map_err(Error::Transcript)?;
+                    }
+                    Side::Server => {
+                        check(selected.recv::<tls::ServerStart>().await?, 0)?;
+                        direct::server_input(endpoint, message, &mut input)
+                            .await
+                            .map_err(Error::Transcript)?;
+                    }
+                }
+                Ok::<(), Error>(())
+            });
+            let first = poll_fn(|cx| {
+                if let Poll::Ready(result) = stopping.as_mut().poll(cx) {
+                    return Poll::Ready(
+                        result
+                            .map(core::ops::ControlFlow::Break)
+                            .map_err(Error::from),
+                    );
+                }
+                tls_input
+                    .as_mut()
+                    .poll(cx)
+                    .map(|result| result.map(core::ops::ControlFlow::Continue))
+            })
+            .await?;
+            // Receiving the stop does not abandon an in-flight TLS exchange.
+            // Consume its actual completion before returning owned keys.
+            if let core::ops::ControlFlow::Break(_) = first {
+                tls_input.await?;
+            }
+            first
+        };
+        drop(input);
+        let application = slots.read_application.take()?;
+        let finished = slots.finished.take()?;
+        let peer = *slots.peer.borrow();
+        if !finished
+            .receipt()
+            .authenticates_peer_parameters(finished.parameters())
+        {
+            return Err(Error::Binding);
         }
-        Side::Server => {
-            check(selected.recv::<tls::ServerStart>().await?, 0)?;
-            direct::server_input(endpoint, message, &mut input)
-                .await
-                .map_err(Error::Transcript)?;
-        }
-    }
-    drop(input);
-    let id = 0;
-    let application = slots.read_application.take()?;
-    let finished = slots.finished.take()?;
-    let peer = *slots.peer.borrow();
-    if !finished
-        .receipt()
-        .authenticates_peer_parameters(finished.parameters())
-    {
-        return Err(Error::Binding);
-    }
-    let parameters = Parameters::parse(
-        finished.parameters(),
-        if config.side == Side::Client {
-            Peer::Server
-        } else {
-            Peer::Client
-        },
-        &mut [0; 64],
-    )
-    .map_err(|_| Error::Binding)?;
-    parameters
-        .verify_connection_ids(
-            peer.bytes(),
+        let parameters = Parameters::parse(
+            finished.parameters(),
             if config.side == Side::Client {
-                Some(config.original_destination_id)
+                Peer::Server
             } else {
-                None
+                Peer::Client
             },
-            None,
+            &mut [0; 64],
         )
         .map_err(|_| Error::Binding)?;
-    while wire
-        .packet(
+        parameters
+            .verify_connection_ids(
+                peer.bytes(),
+                if config.side == Side::Client {
+                    Some(config.original_destination_id)
+                } else {
+                    None
+                },
+                None,
+            )
+            .map_err(|_| Error::Binding)?;
+        // Keep the projected stop receive alive across every packet poll. A
+        // pending native receive is cancelled only after that message is read.
+        let stop_id = match first {
+            core::ops::ControlFlow::Break(id) => id,
+            core::ops::ControlFlow::Continue(()) => {
+                let mut draining = pin!(async {
+                    loop {
+                        wire.packet(
+                            io,
+                            slots,
+                            config,
+                            exchange,
+                            &mut initial_endpoint,
+                            book,
+                            clock,
+                        )
+                        .await?;
+                        crate::runtime::yield_now().await;
+                    }
+                    #[allow(unreachable_code)]
+                    Ok::<(), Error>(())
+                });
+                poll_fn(|cx| {
+                    if let Poll::Ready(result) = stopping.as_mut().poll(cx) {
+                        return Poll::Ready(result.map_err(Error::from));
+                    }
+                    match draining.as_mut().poll(cx) {
+                        Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                        Poll::Ready(Ok(())) => Poll::Ready(Err(Error::Binding)),
+                        Poll::Pending => Poll::Pending,
+                    }
+                })
+                .await?
+            }
+        };
+        (stop_id, application, finished, peer)
+    };
+    // A received stop cancels the next native wait, not bytes already owned
+    // by this role. Preserve coalesced application ciphertext before handoff.
+    while wire.offset < wire.len {
+        wire.packet(
             io,
             slots,
             config,
@@ -348,12 +397,11 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
             &mut initial_endpoint,
             book,
             clock,
-            true,
         )
-        .await?
-    {
-        crate::runtime::yield_now().await;
+        .await?;
     }
+    let id = 0;
+    stop.send::<p::ReceiveStopped>(&stop_id).await?;
     endpoint.send::<p::ReceiveComplete>(&id).await?;
     check(endpoint.recv::<p::ReceiveContinuation>().await?, id)?;
     // Recovery reconciliation: the last pre-loss peer field is now initialized.
@@ -448,58 +496,17 @@ fn prepare<'book, 'scope, const N: usize>(
         }
     }
 }
-async fn send<'scope, 'book, Pub: p::Publication, const N: usize, const P: usize>(
-    endpoint: &mut Endpoint<'_, { p::TX_WIRE }>,
-    initial: &initial::Keys<'_>,
-    slots: &Storage<'scope, 'book, N, P>,
-    datagram: wire::Datagram<'book, N>,
-    id: u64,
-) -> Result<(), Error> {
-    let is_initial =
-        datagram.reservation.packet().space == crate::accounting::PacketNumberSpace::Initial;
-    slots.datagram.put(datagram)?;
-    endpoint.send::<Pub::Datagram>(&id).await?;
-    let result = endpoint.offer().await.map_err(|error| Error::EndpointAt {
-        role: p::TX_WIRE,
-        expected_label: Pub::Accepted::LOGICAL_LABEL,
-        error,
-    })?;
-    let accepted = match result.label() {
-        label if label == Pub::Accepted::LOGICAL_LABEL => {
-            check(result.recv::<Pub::Accepted>().await?, id)?;
-            true
-        }
-        label if label == Pub::Rejected::LOGICAL_LABEL => {
-            check(result.recv::<Pub::Rejected>().await?, id)?;
-            false
-        }
-        label => return Err(Error::UnexpectedLabel(label)),
-    };
-    endpoint.send::<Pub::Settled>(&id).await?;
-    crate::runtime::yield_now().await;
-    if accepted || (is_initial && !initial.available()) {
-        Ok(())
-    } else {
-        Err(Error::Io(IoError::Rejected))
-    }
+enum RecoveryPacket {
+    Acknowledgment(crate::accounting::PacketNumberSpace),
+    Probe(crate::accounting::PacketNumberSpace),
 }
-#[allow(clippy::too_many_arguments)]
-async fn numerical<
-    'scope,
-    'book,
-    Ack: p::Publication,
-    Probe: p::Publication,
-    const N: usize,
-    const P: usize,
->(
-    endpoint: &mut Endpoint<'_, { p::TX_WIRE }>,
+fn prepare_recovery_packet<'scope, 'book, const N: usize, const P: usize>(
     slots: &Storage<'scope, 'book, N, P>,
     keys: &mut WriteKeys<'_, 'scope>,
     book: &mut recovery::Tx<'book, 'scope, N>,
     config: Config<'_>,
     clock: &impl Clock,
-    id: u64,
-) -> Result<bool, Error> {
+) -> Result<Option<RecoveryPacket>, Error> {
     let peer = *slots.peer.borrow();
     if let Some(ack) = book.pending_ack() {
         let level = ack.level();
@@ -552,15 +559,16 @@ async fn numerical<
                         return Err(e);
                     }
                 };
-                send::<Ack, N, P>(endpoint, keys.initial, slots, d, id).await?;
-                return Ok(true);
+                let space = d.reservation.packet().space;
+                slots.datagram.put(d)?;
+                return Ok(Some(RecoveryPacket::Acknowledgment(space)));
             }
         }
     }
     if let Some((flight, probe)) = book.next_retransmit() {
         let data = book.flight_data(flight)?;
         if data.level() == Level::Initial && !keys.initial.available() {
-            return Ok(false);
+            return Ok(None);
         }
         if let Some(d) = prepare(
             keys,
@@ -577,12 +585,13 @@ async fn numerical<
             None,
             clock.now(),
         )? {
-            send::<Probe, N, P>(endpoint, keys.initial, slots, d, id).await?;
-            return Ok(true);
+            let space = d.reservation.packet().space;
+            slots.datagram.put(d)?;
+            return Ok(Some(RecoveryPacket::Probe(space)));
         }
     } else if let Some(level) = book.pending_probe() {
         if level == Level::Initial && !keys.initial.available() {
-            return Ok(false);
+            return Ok(None);
         }
         if let Some(d) = prepare(
             keys,
@@ -596,130 +605,14 @@ async fn numerical<
             None,
             clock.now(),
         )? {
-            send::<Probe, N, P>(endpoint, keys.initial, slots, d, id).await?;
-            return Ok(true);
+            let space = d.reservation.packet().space;
+            slots.datagram.put(d)?;
+            return Ok(Some(RecoveryPacket::Probe(space)));
         }
     }
-    Ok(false)
+    Ok(None)
 }
-struct PublicationPhaseSettled<Stage> {
-    id: u64,
-    phase: core::marker::PhantomData<Stage>,
-}
-impl<Stage> PublicationPhaseSettled<Stage> {
-    fn into_id(self) -> u64 {
-        self.id
-    }
-}
-async fn settle_phase<Stage: p::TransmitPhase>(
-    output: &mut Endpoint<'_, { p::TX_WIRE }>,
-    id: u64,
-) -> Result<PublicationPhaseSettled<Stage>, Error> {
-    output.send::<Stage::WireBoundary>(&id).await?;
-    check(output.recv::<Stage::WireBoundarySeen>().await?, id)?;
-    Ok(PublicationPhaseSettled {
-        id,
-        phase: core::marker::PhantomData,
-    })
-}
-#[allow(clippy::too_many_arguments)]
-async fn transmit_phase<'scope, 'book, Stage, const N: usize, const P: usize>(
-    endpoint: &mut Endpoint<'_, { p::TX }>,
-    output: &mut Endpoint<'_, { p::TX_WIRE }>,
-    slots: &Storage<'scope, 'book, N, P>,
-    config: Config<'_>,
-    keys: &mut WriteKeys<'_, 'scope>,
-    book: &mut recovery::Tx<'book, 'scope, N>,
-    clock: &impl Clock,
-    id: &mut u64,
-) -> Result<(), Error>
-where
-    Stage: p::TransmitPhase,
-{
-    loop {
-        if numerical::<Stage::Ack, Stage::Probe, N, P>(
-            output, slots, keys, book, config, clock, *id,
-        )
-        .await?
-        {
-            continue;
-        }
-        let revision = slots.schedule.revision.get();
-        endpoint.send::<Stage::Request>(id).await?;
-        let response = endpoint.offer().await.map_err(|error| Error::EndpointAt {
-            role: p::TX,
-            expected_label: Stage::Flight::LOGICAL_LABEL,
-            error,
-        })?;
-        if response.label() == Stage::Boundary::LOGICAL_LABEL {
-            check(response.recv::<Stage::Boundary>().await?, *id)?;
-            let settled = settle_phase::<Stage>(output, *id).await?;
-            endpoint
-                .send::<Stage::PhaseSettled>(&settled.into_id())
-                .await?;
-            *id = id.checked_add(1).ok_or(Error::Binding)?;
-            return Ok(());
-        }
-        match response.label() {
-            label if label == Stage::Flight::LOGICAL_LABEL => {
-                check(response.recv::<Stage::Flight>().await?, *id)?;
-                let flight = slots.flight.take()?;
-                endpoint.send::<Stage::Taken>(id).await?;
-                let mut offset = 0;
-                while offset < flight.bytes().len() {
-                    if flight.level() == Level::Initial && !keys.initial.available() {
-                        break;
-                    }
-                    let count = (flight.bytes().len() - offset).min(N - 128);
-                    let at = flight.offset() + offset as u64;
-                    let bytes = &flight.bytes()[offset..offset + count];
-                    let retained = book.store_crypto(flight.level(), at, bytes)?;
-                    loop {
-                        if flight.level() == Level::Initial && !keys.initial.available() {
-                            break;
-                        }
-                        let revision = slots.schedule.revision.get();
-                        let peer = *slots.peer.borrow();
-                        if let Some(d) = prepare(
-                            keys,
-                            book,
-                            config,
-                            &peer,
-                            flight.level(),
-                            Frame::Crypto {
-                                offset: at,
-                                data: bytes,
-                            },
-                            Some(retained),
-                            false,
-                            None,
-                            clock.now(),
-                        )? {
-                            send::<Stage::Data, N, P>(output, keys.initial, slots, d, *id).await?;
-                            break;
-                        }
-                        if !numerical::<Stage::Ack, Stage::Probe, N, P>(
-                            output, slots, keys, book, config, clock, *id,
-                        )
-                        .await?
-                        {
-                            slots.schedule.wait_changed(1, revision).await;
-                        }
-                    }
-                    offset += count;
-                }
-            }
-            label if label == Stage::Idle::LOGICAL_LABEL => {
-                response.recv::<Stage::Idle>().await?;
-                endpoint.send::<Stage::Taken>(id).await?;
-                slots.schedule.wait_changed(1, revision).await;
-            }
-            label => return Err(Error::UnexpectedLabel(label)),
-        }
-        *id = id.checked_add(1).ok_or(Error::Binding)?;
-        crate::runtime::yield_now().await;
-    }
-}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, { p::TX }>,
@@ -737,10 +630,272 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
         application: None,
     };
     let mut id = 0;
-    transmit_phase::<p::InitialTransmit, N, P>(
-        endpoint, output, slots, config, &mut keys, book, clock, &mut id,
-    )
-    .await?;
+
+    // InitialTransmit: the projected source and publication exchanges are explicit.
+    'initial: {
+        loop {
+            if let Some(packet) =
+                prepare_recovery_packet::<N, P>(slots, &mut keys, book, config, clock)?
+            {
+                match packet {
+                    RecoveryPacket::Acknowledgment(space) => {
+                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        output.send::<p::InitialAckDatagram>(&id).await?;
+                        let result = output.offer().await.map_err(|error| Error::EndpointAt {
+                            role: p::TX_WIRE,
+                            expected_label: p::InitialAckAccepted::LOGICAL_LABEL,
+                            error,
+                        })?;
+                        let accepted = match result.label() {
+                            label if label == p::InitialAckAccepted::LOGICAL_LABEL => {
+                                check(result.recv::<p::InitialAckAccepted>().await?, id)?;
+                                true
+                            }
+                            label if label == p::InitialAckRejected::LOGICAL_LABEL => {
+                                check(result.recv::<p::InitialAckRejected>().await?, id)?;
+                                false
+                            }
+                            label => return Err(Error::UnexpectedLabel(label)),
+                        };
+                        output.send::<p::InitialAckSettled>(&id).await?;
+                        crate::runtime::yield_now().await;
+                        if !accepted && (!is_initial || keys.initial.available()) {
+                            return Err(Error::Io(IoError::Rejected));
+                        }
+                    }
+                    RecoveryPacket::Probe(space) => {
+                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        output.send::<p::InitialProbeDatagram>(&id).await?;
+                        let result = output.offer().await.map_err(|error| Error::EndpointAt {
+                            role: p::TX_WIRE,
+                            expected_label: p::InitialProbeAccepted::LOGICAL_LABEL,
+                            error,
+                        })?;
+                        let accepted = match result.label() {
+                            label if label == p::InitialProbeAccepted::LOGICAL_LABEL => {
+                                check(result.recv::<p::InitialProbeAccepted>().await?, id)?;
+                                true
+                            }
+                            label if label == p::InitialProbeRejected::LOGICAL_LABEL => {
+                                check(result.recv::<p::InitialProbeRejected>().await?, id)?;
+                                false
+                            }
+                            label => return Err(Error::UnexpectedLabel(label)),
+                        };
+                        output.send::<p::InitialProbeSettled>(&id).await?;
+                        crate::runtime::yield_now().await;
+                        if !accepted && (!is_initial || keys.initial.available()) {
+                            return Err(Error::Io(IoError::Rejected));
+                        }
+                    }
+                };
+                continue;
+            }
+            let revision = slots.schedule.revision.get();
+            endpoint.send::<p::InitialRequest>(&id).await?;
+            let response = endpoint.offer().await.map_err(|error| Error::EndpointAt {
+                role: p::TX,
+                expected_label: p::InitialFlight::LOGICAL_LABEL,
+                error,
+            })?;
+            if response.label() == p::InitialBoundary::LOGICAL_LABEL {
+                check(response.recv::<p::InitialBoundary>().await?, id)?;
+                output.send::<p::InitialWireBoundary>(&id).await?;
+                check(output.recv::<p::InitialWireBoundarySeen>().await?, id)?;
+                endpoint.send::<p::InitialPhaseSettled>(&id).await?;
+                id = id.checked_add(1).ok_or(Error::Binding)?;
+                break 'initial;
+            }
+            match response.label() {
+                label if label == p::InitialFlight::LOGICAL_LABEL => {
+                    check(response.recv::<p::InitialFlight>().await?, id)?;
+                    let flight = slots.flight.take()?;
+                    endpoint.send::<p::InitialTaken>(&id).await?;
+                    let mut offset = 0;
+                    while offset < flight.bytes().len() {
+                        if flight.level() == Level::Initial && !keys.initial.available() {
+                            break;
+                        }
+                        let count = (flight.bytes().len() - offset).min(N - 128);
+                        let at = flight.offset() + offset as u64;
+                        let bytes = &flight.bytes()[offset..offset + count];
+                        let retained = book.store_crypto(flight.level(), at, bytes)?;
+                        loop {
+                            if flight.level() == Level::Initial && !keys.initial.available() {
+                                break;
+                            }
+                            let revision = slots.schedule.revision.get();
+                            let peer = *slots.peer.borrow();
+                            let prepared_space = {
+                                match prepare(
+                                    &mut keys,
+                                    book,
+                                    config,
+                                    &peer,
+                                    flight.level(),
+                                    Frame::Crypto {
+                                        offset: at,
+                                        data: bytes,
+                                    },
+                                    Some(retained),
+                                    false,
+                                    None,
+                                    clock.now(),
+                                )? {
+                                    Some(d) => {
+                                        let space = d.reservation.packet().space;
+                                        slots.datagram.put(d)?;
+                                        Some(space)
+                                    }
+                                    None => None,
+                                }
+                            };
+                            if let Some(space) = prepared_space {
+                                {
+                                    let is_initial =
+                                        space == crate::accounting::PacketNumberSpace::Initial;
+                                    output.send::<p::InitialDataDatagram>(&id).await?;
+                                    let result = output.offer().await.map_err(|error| {
+                                        Error::EndpointAt {
+                                            role: p::TX_WIRE,
+                                            expected_label: p::InitialDataAccepted::LOGICAL_LABEL,
+                                            error,
+                                        }
+                                    })?;
+                                    let accepted = match result.label() {
+                                        label if label == p::InitialDataAccepted::LOGICAL_LABEL => {
+                                            check(
+                                                result.recv::<p::InitialDataAccepted>().await?,
+                                                id,
+                                            )?;
+                                            true
+                                        }
+                                        label if label == p::InitialDataRejected::LOGICAL_LABEL => {
+                                            check(
+                                                result.recv::<p::InitialDataRejected>().await?,
+                                                id,
+                                            )?;
+                                            false
+                                        }
+                                        label => return Err(Error::UnexpectedLabel(label)),
+                                    };
+                                    output.send::<p::InitialDataSettled>(&id).await?;
+                                    crate::runtime::yield_now().await;
+                                    if !accepted && (!is_initial || keys.initial.available()) {
+                                        return Err(Error::Io(IoError::Rejected));
+                                    }
+                                }
+                                break;
+                            }
+                            if let Some(packet) = prepare_recovery_packet::<N, P>(
+                                slots, &mut keys, book, config, clock,
+                            )? {
+                                match packet {
+                                    RecoveryPacket::Acknowledgment(space) => {
+                                        let is_initial =
+                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                        output.send::<p::InitialAckDatagram>(&id).await?;
+                                        let result = output.offer().await.map_err(|error| {
+                                            Error::EndpointAt {
+                                                role: p::TX_WIRE,
+                                                expected_label:
+                                                    p::InitialAckAccepted::LOGICAL_LABEL,
+                                                error,
+                                            }
+                                        })?;
+                                        let accepted = match result.label() {
+                                            label
+                                                if label
+                                                    == p::InitialAckAccepted::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result.recv::<p::InitialAckAccepted>().await?,
+                                                    id,
+                                                )?;
+                                                true
+                                            }
+                                            label
+                                                if label
+                                                    == p::InitialAckRejected::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result.recv::<p::InitialAckRejected>().await?,
+                                                    id,
+                                                )?;
+                                                false
+                                            }
+                                            label => return Err(Error::UnexpectedLabel(label)),
+                                        };
+                                        output.send::<p::InitialAckSettled>(&id).await?;
+                                        crate::runtime::yield_now().await;
+                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                            return Err(Error::Io(IoError::Rejected));
+                                        }
+                                    }
+                                    RecoveryPacket::Probe(space) => {
+                                        let is_initial =
+                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                        output.send::<p::InitialProbeDatagram>(&id).await?;
+                                        let result = output.offer().await.map_err(|error| {
+                                            Error::EndpointAt {
+                                                role: p::TX_WIRE,
+                                                expected_label:
+                                                    p::InitialProbeAccepted::LOGICAL_LABEL,
+                                                error,
+                                            }
+                                        })?;
+                                        let accepted = match result.label() {
+                                            label
+                                                if label
+                                                    == p::InitialProbeAccepted::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result
+                                                        .recv::<p::InitialProbeAccepted>()
+                                                        .await?,
+                                                    id,
+                                                )?;
+                                                true
+                                            }
+                                            label
+                                                if label
+                                                    == p::InitialProbeRejected::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result
+                                                        .recv::<p::InitialProbeRejected>()
+                                                        .await?,
+                                                    id,
+                                                )?;
+                                                false
+                                            }
+                                            label => return Err(Error::UnexpectedLabel(label)),
+                                        };
+                                        output.send::<p::InitialProbeSettled>(&id).await?;
+                                        crate::runtime::yield_now().await;
+                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                            return Err(Error::Io(IoError::Rejected));
+                                        }
+                                    }
+                                }
+                            } else {
+                                slots.schedule.wait_changed(1, revision).await;
+                            }
+                        }
+                        offset += count;
+                    }
+                }
+                label if label == p::InitialIdle::LOGICAL_LABEL => {
+                    response.recv::<p::InitialIdle>().await?;
+                    endpoint.send::<p::InitialTaken>(&id).await?;
+                    slots.schedule.wait_changed(1, revision).await;
+                }
+                label => return Err(Error::UnexpectedLabel(label)),
+            }
+            id = id.checked_add(1).ok_or(Error::Binding)?;
+            crate::runtime::yield_now().await;
+        }
+    }
     check(endpoint.recv::<p::WriteHandshake>().await?, id)?;
     let handshake = slots.write_handshake.take()?;
     if !core::ptr::eq(scope, handshake.scope()) {
@@ -749,27 +904,604 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     keys.handshake = Some(handshake);
     slots.schedule.keys.set([keys.initial.available(), true]);
     slots.schedule.changed()?;
-    transmit_phase::<p::HandshakeTransmit, N, P>(
-        endpoint, output, slots, config, &mut keys, book, clock, &mut id,
-    )
-    .await?;
+
+    // HandshakeTransmit: the projected source and publication exchanges are explicit.
+    'handshake: {
+        loop {
+            if let Some(packet) =
+                prepare_recovery_packet::<N, P>(slots, &mut keys, book, config, clock)?
+            {
+                match packet {
+                    RecoveryPacket::Acknowledgment(space) => {
+                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        output.send::<p::HandshakeAckDatagram>(&id).await?;
+                        let result = output.offer().await.map_err(|error| Error::EndpointAt {
+                            role: p::TX_WIRE,
+                            expected_label: p::HandshakeAckAccepted::LOGICAL_LABEL,
+                            error,
+                        })?;
+                        let accepted = match result.label() {
+                            label if label == p::HandshakeAckAccepted::LOGICAL_LABEL => {
+                                check(result.recv::<p::HandshakeAckAccepted>().await?, id)?;
+                                true
+                            }
+                            label if label == p::HandshakeAckRejected::LOGICAL_LABEL => {
+                                check(result.recv::<p::HandshakeAckRejected>().await?, id)?;
+                                false
+                            }
+                            label => return Err(Error::UnexpectedLabel(label)),
+                        };
+                        output.send::<p::HandshakeAckSettled>(&id).await?;
+                        crate::runtime::yield_now().await;
+                        if !accepted && (!is_initial || keys.initial.available()) {
+                            return Err(Error::Io(IoError::Rejected));
+                        }
+                    }
+                    RecoveryPacket::Probe(space) => {
+                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        output.send::<p::HandshakeProbeDatagram>(&id).await?;
+                        let result = output.offer().await.map_err(|error| Error::EndpointAt {
+                            role: p::TX_WIRE,
+                            expected_label: p::HandshakeProbeAccepted::LOGICAL_LABEL,
+                            error,
+                        })?;
+                        let accepted = match result.label() {
+                            label if label == p::HandshakeProbeAccepted::LOGICAL_LABEL => {
+                                check(result.recv::<p::HandshakeProbeAccepted>().await?, id)?;
+                                true
+                            }
+                            label if label == p::HandshakeProbeRejected::LOGICAL_LABEL => {
+                                check(result.recv::<p::HandshakeProbeRejected>().await?, id)?;
+                                false
+                            }
+                            label => return Err(Error::UnexpectedLabel(label)),
+                        };
+                        output.send::<p::HandshakeProbeSettled>(&id).await?;
+                        crate::runtime::yield_now().await;
+                        if !accepted && (!is_initial || keys.initial.available()) {
+                            return Err(Error::Io(IoError::Rejected));
+                        }
+                    }
+                };
+                continue;
+            }
+            let revision = slots.schedule.revision.get();
+            endpoint.send::<p::HandshakeRequest>(&id).await?;
+            let response = endpoint.offer().await.map_err(|error| Error::EndpointAt {
+                role: p::TX,
+                expected_label: p::HandshakeFlight::LOGICAL_LABEL,
+                error,
+            })?;
+            if response.label() == p::HandshakeBoundary::LOGICAL_LABEL {
+                check(response.recv::<p::HandshakeBoundary>().await?, id)?;
+                output.send::<p::HandshakeWireBoundary>(&id).await?;
+                check(output.recv::<p::HandshakeWireBoundarySeen>().await?, id)?;
+                endpoint.send::<p::HandshakePhaseSettled>(&id).await?;
+                id = id.checked_add(1).ok_or(Error::Binding)?;
+                break 'handshake;
+            }
+            match response.label() {
+                label if label == p::HandshakeFlight::LOGICAL_LABEL => {
+                    check(response.recv::<p::HandshakeFlight>().await?, id)?;
+                    let flight = slots.flight.take()?;
+                    endpoint.send::<p::HandshakeTaken>(&id).await?;
+                    let mut offset = 0;
+                    while offset < flight.bytes().len() {
+                        if flight.level() == Level::Initial && !keys.initial.available() {
+                            break;
+                        }
+                        let count = (flight.bytes().len() - offset).min(N - 128);
+                        let at = flight.offset() + offset as u64;
+                        let bytes = &flight.bytes()[offset..offset + count];
+                        let retained = book.store_crypto(flight.level(), at, bytes)?;
+                        loop {
+                            if flight.level() == Level::Initial && !keys.initial.available() {
+                                break;
+                            }
+                            let revision = slots.schedule.revision.get();
+                            let peer = *slots.peer.borrow();
+                            let prepared_space = {
+                                match prepare(
+                                    &mut keys,
+                                    book,
+                                    config,
+                                    &peer,
+                                    flight.level(),
+                                    Frame::Crypto {
+                                        offset: at,
+                                        data: bytes,
+                                    },
+                                    Some(retained),
+                                    false,
+                                    None,
+                                    clock.now(),
+                                )? {
+                                    Some(d) => {
+                                        let space = d.reservation.packet().space;
+                                        slots.datagram.put(d)?;
+                                        Some(space)
+                                    }
+                                    None => None,
+                                }
+                            };
+                            if let Some(space) = prepared_space {
+                                {
+                                    let is_initial =
+                                        space == crate::accounting::PacketNumberSpace::Initial;
+                                    output.send::<p::HandshakeDataDatagram>(&id).await?;
+                                    let result = output.offer().await.map_err(|error| {
+                                        Error::EndpointAt {
+                                            role: p::TX_WIRE,
+                                            expected_label: p::HandshakeDataAccepted::LOGICAL_LABEL,
+                                            error,
+                                        }
+                                    })?;
+                                    let accepted = match result.label() {
+                                        label
+                                            if label == p::HandshakeDataAccepted::LOGICAL_LABEL =>
+                                        {
+                                            check(
+                                                result.recv::<p::HandshakeDataAccepted>().await?,
+                                                id,
+                                            )?;
+                                            true
+                                        }
+                                        label
+                                            if label == p::HandshakeDataRejected::LOGICAL_LABEL =>
+                                        {
+                                            check(
+                                                result.recv::<p::HandshakeDataRejected>().await?,
+                                                id,
+                                            )?;
+                                            false
+                                        }
+                                        label => return Err(Error::UnexpectedLabel(label)),
+                                    };
+                                    output.send::<p::HandshakeDataSettled>(&id).await?;
+                                    crate::runtime::yield_now().await;
+                                    if !accepted && (!is_initial || keys.initial.available()) {
+                                        return Err(Error::Io(IoError::Rejected));
+                                    }
+                                }
+                                break;
+                            }
+                            if let Some(packet) = prepare_recovery_packet::<N, P>(
+                                slots, &mut keys, book, config, clock,
+                            )? {
+                                match packet {
+                                    RecoveryPacket::Acknowledgment(space) => {
+                                        let is_initial =
+                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                        output.send::<p::HandshakeAckDatagram>(&id).await?;
+                                        let result = output.offer().await.map_err(|error| {
+                                            Error::EndpointAt {
+                                                role: p::TX_WIRE,
+                                                expected_label:
+                                                    p::HandshakeAckAccepted::LOGICAL_LABEL,
+                                                error,
+                                            }
+                                        })?;
+                                        let accepted = match result.label() {
+                                            label
+                                                if label
+                                                    == p::HandshakeAckAccepted::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result
+                                                        .recv::<p::HandshakeAckAccepted>()
+                                                        .await?,
+                                                    id,
+                                                )?;
+                                                true
+                                            }
+                                            label
+                                                if label
+                                                    == p::HandshakeAckRejected::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result
+                                                        .recv::<p::HandshakeAckRejected>()
+                                                        .await?,
+                                                    id,
+                                                )?;
+                                                false
+                                            }
+                                            label => return Err(Error::UnexpectedLabel(label)),
+                                        };
+                                        output.send::<p::HandshakeAckSettled>(&id).await?;
+                                        crate::runtime::yield_now().await;
+                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                            return Err(Error::Io(IoError::Rejected));
+                                        }
+                                    }
+                                    RecoveryPacket::Probe(space) => {
+                                        let is_initial =
+                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                        output.send::<p::HandshakeProbeDatagram>(&id).await?;
+                                        let result = output.offer().await.map_err(|error| {
+                                            Error::EndpointAt {
+                                                role: p::TX_WIRE,
+                                                expected_label:
+                                                    p::HandshakeProbeAccepted::LOGICAL_LABEL,
+                                                error,
+                                            }
+                                        })?;
+                                        let accepted = match result.label() {
+                                            label
+                                                if label
+                                                    == p::HandshakeProbeAccepted::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result
+                                                        .recv::<p::HandshakeProbeAccepted>()
+                                                        .await?,
+                                                    id,
+                                                )?;
+                                                true
+                                            }
+                                            label
+                                                if label
+                                                    == p::HandshakeProbeRejected::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result
+                                                        .recv::<p::HandshakeProbeRejected>()
+                                                        .await?,
+                                                    id,
+                                                )?;
+                                                false
+                                            }
+                                            label => return Err(Error::UnexpectedLabel(label)),
+                                        };
+                                        output.send::<p::HandshakeProbeSettled>(&id).await?;
+                                        crate::runtime::yield_now().await;
+                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                            return Err(Error::Io(IoError::Rejected));
+                                        }
+                                    }
+                                }
+                            } else {
+                                slots.schedule.wait_changed(1, revision).await;
+                            }
+                        }
+                        offset += count;
+                    }
+                }
+                label if label == p::HandshakeIdle::LOGICAL_LABEL => {
+                    response.recv::<p::HandshakeIdle>().await?;
+                    endpoint.send::<p::HandshakeTaken>(&id).await?;
+                    slots.schedule.wait_changed(1, revision).await;
+                }
+                label => return Err(Error::UnexpectedLabel(label)),
+            }
+            id = id.checked_add(1).ok_or(Error::Binding)?;
+            crate::runtime::yield_now().await;
+        }
+    }
     check(endpoint.recv::<p::WriteApplication>().await?, id)?;
     let application = slots.write_application.take()?;
     if !core::ptr::eq(scope, application.scope()) {
         return Err(Error::Binding);
     }
     keys.application = Some(application);
-    transmit_phase::<p::ApplicationTransmit, N, P>(
-        endpoint, output, slots, config, &mut keys, book, clock, &mut id,
-    )
-    .await?;
+
+    // ApplicationTransmit: the projected source and publication exchanges are explicit.
+    'application: {
+        loop {
+            if let Some(packet) =
+                prepare_recovery_packet::<N, P>(slots, &mut keys, book, config, clock)?
+            {
+                match packet {
+                    RecoveryPacket::Acknowledgment(space) => {
+                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        output.send::<p::ApplicationAckDatagram>(&id).await?;
+                        let result = output.offer().await.map_err(|error| Error::EndpointAt {
+                            role: p::TX_WIRE,
+                            expected_label: p::ApplicationAckAccepted::LOGICAL_LABEL,
+                            error,
+                        })?;
+                        let accepted = match result.label() {
+                            label if label == p::ApplicationAckAccepted::LOGICAL_LABEL => {
+                                check(result.recv::<p::ApplicationAckAccepted>().await?, id)?;
+                                true
+                            }
+                            label if label == p::ApplicationAckRejected::LOGICAL_LABEL => {
+                                check(result.recv::<p::ApplicationAckRejected>().await?, id)?;
+                                false
+                            }
+                            label => return Err(Error::UnexpectedLabel(label)),
+                        };
+                        output.send::<p::ApplicationAckSettled>(&id).await?;
+                        crate::runtime::yield_now().await;
+                        if !accepted && (!is_initial || keys.initial.available()) {
+                            return Err(Error::Io(IoError::Rejected));
+                        }
+                    }
+                    RecoveryPacket::Probe(space) => {
+                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        output.send::<p::ApplicationProbeDatagram>(&id).await?;
+                        let result = output.offer().await.map_err(|error| Error::EndpointAt {
+                            role: p::TX_WIRE,
+                            expected_label: p::ApplicationProbeAccepted::LOGICAL_LABEL,
+                            error,
+                        })?;
+                        let accepted = match result.label() {
+                            label if label == p::ApplicationProbeAccepted::LOGICAL_LABEL => {
+                                check(result.recv::<p::ApplicationProbeAccepted>().await?, id)?;
+                                true
+                            }
+                            label if label == p::ApplicationProbeRejected::LOGICAL_LABEL => {
+                                check(result.recv::<p::ApplicationProbeRejected>().await?, id)?;
+                                false
+                            }
+                            label => return Err(Error::UnexpectedLabel(label)),
+                        };
+                        output.send::<p::ApplicationProbeSettled>(&id).await?;
+                        crate::runtime::yield_now().await;
+                        if !accepted && (!is_initial || keys.initial.available()) {
+                            return Err(Error::Io(IoError::Rejected));
+                        }
+                    }
+                };
+                continue;
+            }
+            let revision = slots.schedule.revision.get();
+            endpoint.send::<p::ApplicationRequest>(&id).await?;
+            let response = endpoint.offer().await.map_err(|error| Error::EndpointAt {
+                role: p::TX,
+                expected_label: p::ApplicationFlight::LOGICAL_LABEL,
+                error,
+            })?;
+            if response.label() == p::ApplicationBoundary::LOGICAL_LABEL {
+                check(response.recv::<p::ApplicationBoundary>().await?, id)?;
+                output.send::<p::ApplicationWireBoundary>(&id).await?;
+                check(output.recv::<p::ApplicationWireBoundarySeen>().await?, id)?;
+                endpoint.send::<p::ApplicationPhaseSettled>(&id).await?;
+                id = id.checked_add(1).ok_or(Error::Binding)?;
+                break 'application;
+            }
+            match response.label() {
+                label if label == p::ApplicationFlight::LOGICAL_LABEL => {
+                    check(response.recv::<p::ApplicationFlight>().await?, id)?;
+                    let flight = slots.flight.take()?;
+                    endpoint.send::<p::ApplicationTaken>(&id).await?;
+                    let mut offset = 0;
+                    while offset < flight.bytes().len() {
+                        if flight.level() == Level::Initial && !keys.initial.available() {
+                            break;
+                        }
+                        let count = (flight.bytes().len() - offset).min(N - 128);
+                        let at = flight.offset() + offset as u64;
+                        let bytes = &flight.bytes()[offset..offset + count];
+                        let retained = book.store_crypto(flight.level(), at, bytes)?;
+                        loop {
+                            if flight.level() == Level::Initial && !keys.initial.available() {
+                                break;
+                            }
+                            let revision = slots.schedule.revision.get();
+                            let peer = *slots.peer.borrow();
+                            let prepared_space = {
+                                match prepare(
+                                    &mut keys,
+                                    book,
+                                    config,
+                                    &peer,
+                                    flight.level(),
+                                    Frame::Crypto {
+                                        offset: at,
+                                        data: bytes,
+                                    },
+                                    Some(retained),
+                                    false,
+                                    None,
+                                    clock.now(),
+                                )? {
+                                    Some(d) => {
+                                        let space = d.reservation.packet().space;
+                                        slots.datagram.put(d)?;
+                                        Some(space)
+                                    }
+                                    None => None,
+                                }
+                            };
+                            if let Some(space) = prepared_space {
+                                {
+                                    let is_initial =
+                                        space == crate::accounting::PacketNumberSpace::Initial;
+                                    output.send::<p::ApplicationDataDatagram>(&id).await?;
+                                    let result = output.offer().await.map_err(|error| {
+                                        Error::EndpointAt {
+                                            role: p::TX_WIRE,
+                                            expected_label:
+                                                p::ApplicationDataAccepted::LOGICAL_LABEL,
+                                            error,
+                                        }
+                                    })?;
+                                    let accepted = match result.label() {
+                                        label
+                                            if label
+                                                == p::ApplicationDataAccepted::LOGICAL_LABEL =>
+                                        {
+                                            check(
+                                                result.recv::<p::ApplicationDataAccepted>().await?,
+                                                id,
+                                            )?;
+                                            true
+                                        }
+                                        label
+                                            if label
+                                                == p::ApplicationDataRejected::LOGICAL_LABEL =>
+                                        {
+                                            check(
+                                                result.recv::<p::ApplicationDataRejected>().await?,
+                                                id,
+                                            )?;
+                                            false
+                                        }
+                                        label => return Err(Error::UnexpectedLabel(label)),
+                                    };
+                                    output.send::<p::ApplicationDataSettled>(&id).await?;
+                                    crate::runtime::yield_now().await;
+                                    if !accepted && (!is_initial || keys.initial.available()) {
+                                        return Err(Error::Io(IoError::Rejected));
+                                    }
+                                }
+                                break;
+                            }
+                            if let Some(packet) = prepare_recovery_packet::<N, P>(
+                                slots, &mut keys, book, config, clock,
+                            )? {
+                                match packet {
+                                    RecoveryPacket::Acknowledgment(space) => {
+                                        let is_initial =
+                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                        output.send::<p::ApplicationAckDatagram>(&id).await?;
+                                        let result = output.offer().await.map_err(|error| {
+                                            Error::EndpointAt {
+                                                role: p::TX_WIRE,
+                                                expected_label:
+                                                    p::ApplicationAckAccepted::LOGICAL_LABEL,
+                                                error,
+                                            }
+                                        })?;
+                                        let accepted = match result.label() {
+                                            label
+                                                if label
+                                                    == p::ApplicationAckAccepted::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result
+                                                        .recv::<p::ApplicationAckAccepted>()
+                                                        .await?,
+                                                    id,
+                                                )?;
+                                                true
+                                            }
+                                            label
+                                                if label
+                                                    == p::ApplicationAckRejected::LOGICAL_LABEL =>
+                                            {
+                                                check(
+                                                    result
+                                                        .recv::<p::ApplicationAckRejected>()
+                                                        .await?,
+                                                    id,
+                                                )?;
+                                                false
+                                            }
+                                            label => return Err(Error::UnexpectedLabel(label)),
+                                        };
+                                        output.send::<p::ApplicationAckSettled>(&id).await?;
+                                        crate::runtime::yield_now().await;
+                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                            return Err(Error::Io(IoError::Rejected));
+                                        }
+                                    }
+                                    RecoveryPacket::Probe(space) => {
+                                        let is_initial =
+                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                        output.send::<p::ApplicationProbeDatagram>(&id).await?;
+                                        let result = output.offer().await.map_err(|error| {
+                                            Error::EndpointAt {
+                                                role: p::TX_WIRE,
+                                                expected_label:
+                                                    p::ApplicationProbeAccepted::LOGICAL_LABEL,
+                                                error,
+                                            }
+                                        })?;
+                                        let accepted = match result.label() {
+        label if label == p::ApplicationProbeAccepted::LOGICAL_LABEL => {
+            check(result.recv::<p::ApplicationProbeAccepted>().await?, id)?;
+            true
+        }
+        label if label == p::ApplicationProbeRejected::LOGICAL_LABEL => {
+            check(result.recv::<p::ApplicationProbeRejected>().await?, id)?;
+            false
+        }
+        label => return Err(Error::UnexpectedLabel(label)),
+    };
+                                        output.send::<p::ApplicationProbeSettled>(&id).await?;
+                                        crate::runtime::yield_now().await;
+                                        if !accepted && (!is_initial || keys.initial.available()) {
+                                            return Err(Error::Io(IoError::Rejected));
+                                        }
+                                    }
+                                }
+                            } else {
+                                slots.schedule.wait_changed(1, revision).await;
+                            }
+                        }
+                        offset += count;
+                    }
+                }
+                label if label == p::ApplicationIdle::LOGICAL_LABEL => {
+                    response.recv::<p::ApplicationIdle>().await?;
+                    endpoint.send::<p::ApplicationTaken>(&id).await?;
+                    slots.schedule.wait_changed(1, revision).await;
+                }
+                label => return Err(Error::UnexpectedLabel(label)),
+            }
+            id = id.checked_add(1).ok_or(Error::Binding)?;
+            crate::runtime::yield_now().await;
+        }
+    }
     loop {
         let revision = slots.schedule.revision.get();
-        if numerical::<p::DrainAck, p::DrainProbe, N, P>(
-            output, slots, &mut keys, book, config, clock, id,
-        )
-        .await?
+        if let Some(packet) =
+            prepare_recovery_packet::<N, P>(slots, &mut keys, book, config, clock)?
         {
+            match packet {
+                RecoveryPacket::Acknowledgment(space) => {
+                    let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                    output.send::<p::DrainAckDatagram>(&id).await?;
+                    let result = output.offer().await.map_err(|error| Error::EndpointAt {
+                        role: p::TX_WIRE,
+                        expected_label: p::DrainAckAccepted::LOGICAL_LABEL,
+                        error,
+                    })?;
+                    let accepted = match result.label() {
+                        label if label == p::DrainAckAccepted::LOGICAL_LABEL => {
+                            check(result.recv::<p::DrainAckAccepted>().await?, id)?;
+                            true
+                        }
+                        label if label == p::DrainAckRejected::LOGICAL_LABEL => {
+                            check(result.recv::<p::DrainAckRejected>().await?, id)?;
+                            false
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    };
+                    output.send::<p::DrainAckSettled>(&id).await?;
+                    crate::runtime::yield_now().await;
+                    if !accepted && (!is_initial || keys.initial.available()) {
+                        return Err(Error::Io(IoError::Rejected));
+                    }
+                }
+                RecoveryPacket::Probe(space) => {
+                    let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                    output.send::<p::DrainProbeDatagram>(&id).await?;
+                    let result = output.offer().await.map_err(|error| Error::EndpointAt {
+                        role: p::TX_WIRE,
+                        expected_label: p::DrainProbeAccepted::LOGICAL_LABEL,
+                        error,
+                    })?;
+                    let accepted = match result.label() {
+                        label if label == p::DrainProbeAccepted::LOGICAL_LABEL => {
+                            check(result.recv::<p::DrainProbeAccepted>().await?, id)?;
+                            true
+                        }
+                        label if label == p::DrainProbeRejected::LOGICAL_LABEL => {
+                            check(result.recv::<p::DrainProbeRejected>().await?, id)?;
+                            false
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    };
+                    output.send::<p::DrainProbeSettled>(&id).await?;
+                    crate::runtime::yield_now().await;
+                    if !accepted && (!is_initial || keys.initial.available()) {
+                        return Err(Error::Io(IoError::Rejected));
+                    }
+                }
+            };
             continue;
         } // Unacknowledged Handshake CRYPTO must transfer to the application roles:
         // HANDSHAKE_DONE confirms it even when the explicit Finished ACK was lost.
@@ -779,139 +1511,24 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
         slots.schedule.wait_changed(1, revision).await;
     }
     output.send::<p::HandshakeRecoveryTransferred>(&id).await?;
-    slots.schedule.stop_timer.set(true);
-    slots.schedule.changed()?;
+    // Stop prefix input at its explicit handoff boundary, before unrelated
+    // timer/adapter retirement can prolong that finite receive ownership.
+    output.send::<p::StopReceive>(&id).await?;
+    check(output.recv::<p::ReceiveStopped>().await?, id)?;
+    output.send::<p::StopTimer>(&id).await?;
+    check(output.recv::<p::TimerStopped>().await?, id)?;
     endpoint.send::<p::TransmitComplete>(&id).await?;
     check(endpoint.recv::<p::TransmitContinuation>().await?, id)?;
     output.send::<p::AdapterComplete>(&id).await?;
     check(output.recv::<p::AdapterRetired>().await?, id)?;
-    slots.schedule.transmit_done.set(true);
-    slots.schedule.changed()?;
     Ok(TransmitContinuation {
         initial: None,
         handshake: keys.handshake.ok_or(Error::Binding)?,
         application: keys.application.ok_or(Error::Binding)?,
     })
 }
-async fn publish_result<'scope, 'book, Pub: p::Publication, const N: usize, const P: usize>(
-    endpoint: &mut Endpoint<'_, { p::UDP }>,
-    io: &mut impl DatagramTx,
-    slots: &Storage<'scope, 'book, N, P>,
-    initial: &initial::Keys<'scope>,
-    exchange: &initial::Exchange<'scope>,
-    initial_endpoint: &mut Option<&mut Endpoint<'_, { p::INITIAL_EVENT }>>,
-    issuer: &mut publication_gate::Issuer<'_, 'scope>,
-    outcome: &Outcome,
-    book: &mut recovery::Publication<'book, 'scope, N>,
-    id: u64,
-) -> Result<(), Error> {
-    let wire::Datagram {
-        sealed,
-        reservation,
-        acknowledgment,
-    } = slots.datagram.take()?;
-    let permit = match issuer.begin() {
-        Ok(p) => p,
-        Err(e) => {
-            book.cancel(reservation)?;
-            return Err(e.into());
-        }
-    };
-    if !core::ptr::eq(permit.scope(), reservation.scope()) {
-        book.cancel(reservation)?;
-        return Err(Error::Binding);
-    }
-    let is_initial = reservation.packet().space == crate::accounting::PacketNumberSpace::Initial;
-    let result = if is_initial {
-        initial.submit(permit.submit(io.send(sealed.bytes()))).await
-    } else {
-        Some(permit.submit(io.send(sealed.bytes())).await)
-    };
-    let accepted_at = match result {
-        Some(Ok(Ok(at))) => Some(at),
-        _ => None,
-    };
-    book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
-    if accepted_at.is_some()
-        && let Some(ack) = acknowledgment
-    {
-        book.acknowledgment_sent(ack)?;
-    }
-    slots.schedule.changed()?;
-    if let Some(endpoint) = initial_endpoint.as_deref_mut()
-        && let Some(evidence) = book.take_initial_retirement()
-    {
-        initial::announce(endpoint, exchange, evidence).await?;
-    }
-    outcome.set(accepted_at.is_some())?;
-    match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
-        DecisionArm::Left => endpoint.send::<Pub::Accepted>(&id).await?,
-        DecisionArm::Right => endpoint.send::<Pub::Rejected>(&id).await?,
-    };
-    check(endpoint.recv::<Pub::Settled>().await?, id)?;
-    outcome.clear();
-    match result {
-        None | Some(Ok(Ok(_))) => Ok(()),
-        Some(_) if is_initial && !initial.available() => Ok(()),
-        Some(Ok(Err(e))) => Err(e.into()),
-        Some(Err(e)) => Err(e.into()),
-    }
-}
-async fn publish_phase<'scope, 'book, Stage: p::TransmitPhase, const N: usize, const P: usize>(
-    endpoint: &mut Endpoint<'_, { p::UDP }>,
-    io: &mut impl DatagramTx,
-    slots: &Storage<'scope, 'book, N, P>,
-    initial: &initial::Keys<'scope>,
-    exchange: &initial::Exchange<'scope>,
-    initial_endpoint: &mut Option<&mut Endpoint<'_, { p::INITIAL_EVENT }>>,
-    issuer: &mut publication_gate::Issuer<'_, 'scope>,
-    outcome: &Outcome,
-    book: &mut recovery::Publication<'book, 'scope, N>,
-) -> Result<(), Error> {
-    loop {
-        let input = endpoint.offer().await.map_err(|error| Error::EndpointAt {
-            role: p::UDP,
-            expected_label: <Stage::Data as p::Publication>::Datagram::LOGICAL_LABEL,
-            error,
-        })?;
-        macro_rules! accept {
-            ($pub:ty) => {{
-                let id = input.recv::<<$pub as p::Publication>::Datagram>().await?;
-                publish_result::<$pub, N, P>(
-                    endpoint,
-                    io,
-                    slots,
-                    initial,
-                    exchange,
-                    initial_endpoint,
-                    issuer,
-                    outcome,
-                    book,
-                    id,
-                )
-                .await?;
-            }};
-        }
-        match input.label() {
-            label if label == <Stage::Ack as p::Publication>::Datagram::LOGICAL_LABEL => {
-                accept!(Stage::Ack)
-            }
-            label if label == <Stage::Probe as p::Publication>::Datagram::LOGICAL_LABEL => {
-                accept!(Stage::Probe)
-            }
-            label if label == <Stage::Data as p::Publication>::Datagram::LOGICAL_LABEL => {
-                accept!(Stage::Data)
-            }
-            label if label == Stage::WireBoundary::LOGICAL_LABEL => {
-                let id = input.recv::<Stage::WireBoundary>().await?;
-                endpoint.send::<Stage::WireBoundarySeen>(&id).await?;
-                return Ok(());
-            }
-            label => return Err(Error::UnexpectedLabel(label)),
-        }
-        crate::runtime::yield_now().await;
-    }
-}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, { p::UDP }>,
     io: &mut impl DatagramTx,
@@ -923,84 +1540,734 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
     outcome: &Outcome,
     book: &mut recovery::Publication<'book, 'scope, N>,
 ) -> Result<(), Error> {
-    publish_phase::<p::InitialTransmit, N, P>(
-        endpoint,
-        io,
-        slots,
-        initial,
-        exchange,
-        &mut initial_endpoint,
-        issuer,
-        outcome,
-        book,
-    )
-    .await?;
-    publish_phase::<p::HandshakeTransmit, N, P>(
-        endpoint,
-        io,
-        slots,
-        initial,
-        exchange,
-        &mut initial_endpoint,
-        issuer,
-        outcome,
-        book,
-    )
-    .await?;
-    publish_phase::<p::ApplicationTransmit, N, P>(
-        endpoint,
-        io,
-        slots,
-        initial,
-        exchange,
-        &mut initial_endpoint,
-        issuer,
-        outcome,
-        book,
-    )
-    .await?;
+    // InitialTransmit: actual UDP acceptance selects the declared reply.
+    'initial: {
+        loop {
+            let input = endpoint.offer().await.map_err(|error| Error::EndpointAt {
+                role: p::UDP,
+                expected_label: p::InitialDataDatagram::LOGICAL_LABEL,
+                error,
+            })?;
+            match input.label() {
+                label if label == p::InitialAckDatagram::LOGICAL_LABEL => {
+                    let id = input.recv::<p::InitialAckDatagram>().await?;
+                    {
+                        let wire::Datagram {
+                            sealed,
+                            reservation,
+                            acknowledgment,
+                        } = slots.datagram.take()?;
+                        let permit = match issuer.begin() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                book.cancel(reservation)?;
+                                return Err(e.into());
+                            }
+                        };
+                        if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                            book.cancel(reservation)?;
+                            return Err(Error::Binding);
+                        }
+                        let is_initial = reservation.packet().space
+                            == crate::accounting::PacketNumberSpace::Initial;
+                        let result = if is_initial {
+                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        } else {
+                            Some(permit.submit(io.send(sealed.bytes())).await)
+                        };
+                        let accepted_at = match result {
+                            Some(Ok(Ok(at))) => Some(at),
+                            _ => None,
+                        };
+                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        if accepted_at.is_some()
+                            && let Some(ack) = acknowledgment
+                        {
+                            book.acknowledgment_sent(ack)?;
+                        }
+                        slots.schedule.changed()?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            initial::announce(endpoint, exchange, evidence).await?;
+                        }
+                        outcome.set(accepted_at.is_some())?;
+                        match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                            DecisionArm::Left => {
+                                endpoint.send::<p::InitialAckAccepted>(&id).await?
+                            }
+                            DecisionArm::Right => {
+                                endpoint.send::<p::InitialAckRejected>(&id).await?
+                            }
+                        };
+                        check(endpoint.recv::<p::InitialAckSettled>().await?, id)?;
+                        outcome.clear();
+                        match result {
+                            None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                            Some(_) if is_initial && !initial.available() => Ok(()),
+                            Some(Ok(Err(e))) => Err(e.into()),
+                            Some(Err(e)) => Err(e.into()),
+                        }?;
+                    }
+                }
+                label if label == p::InitialProbeDatagram::LOGICAL_LABEL => {
+                    let id = input.recv::<p::InitialProbeDatagram>().await?;
+                    {
+                        let wire::Datagram {
+                            sealed,
+                            reservation,
+                            acknowledgment,
+                        } = slots.datagram.take()?;
+                        let permit = match issuer.begin() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                book.cancel(reservation)?;
+                                return Err(e.into());
+                            }
+                        };
+                        if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                            book.cancel(reservation)?;
+                            return Err(Error::Binding);
+                        }
+                        let is_initial = reservation.packet().space
+                            == crate::accounting::PacketNumberSpace::Initial;
+                        let result = if is_initial {
+                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        } else {
+                            Some(permit.submit(io.send(sealed.bytes())).await)
+                        };
+                        let accepted_at = match result {
+                            Some(Ok(Ok(at))) => Some(at),
+                            _ => None,
+                        };
+                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        if accepted_at.is_some()
+                            && let Some(ack) = acknowledgment
+                        {
+                            book.acknowledgment_sent(ack)?;
+                        }
+                        slots.schedule.changed()?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            initial::announce(endpoint, exchange, evidence).await?;
+                        }
+                        outcome.set(accepted_at.is_some())?;
+                        match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                            DecisionArm::Left => {
+                                endpoint.send::<p::InitialProbeAccepted>(&id).await?
+                            }
+                            DecisionArm::Right => {
+                                endpoint.send::<p::InitialProbeRejected>(&id).await?
+                            }
+                        };
+                        check(endpoint.recv::<p::InitialProbeSettled>().await?, id)?;
+                        outcome.clear();
+                        match result {
+                            None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                            Some(_) if is_initial && !initial.available() => Ok(()),
+                            Some(Ok(Err(e))) => Err(e.into()),
+                            Some(Err(e)) => Err(e.into()),
+                        }?;
+                    }
+                }
+                label if label == p::InitialDataDatagram::LOGICAL_LABEL => {
+                    let id = input.recv::<p::InitialDataDatagram>().await?;
+                    {
+                        let wire::Datagram {
+                            sealed,
+                            reservation,
+                            acknowledgment,
+                        } = slots.datagram.take()?;
+                        let permit = match issuer.begin() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                book.cancel(reservation)?;
+                                return Err(e.into());
+                            }
+                        };
+                        if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                            book.cancel(reservation)?;
+                            return Err(Error::Binding);
+                        }
+                        let is_initial = reservation.packet().space
+                            == crate::accounting::PacketNumberSpace::Initial;
+                        let result = if is_initial {
+                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        } else {
+                            Some(permit.submit(io.send(sealed.bytes())).await)
+                        };
+                        let accepted_at = match result {
+                            Some(Ok(Ok(at))) => Some(at),
+                            _ => None,
+                        };
+                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        if accepted_at.is_some()
+                            && let Some(ack) = acknowledgment
+                        {
+                            book.acknowledgment_sent(ack)?;
+                        }
+                        slots.schedule.changed()?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            initial::announce(endpoint, exchange, evidence).await?;
+                        }
+                        outcome.set(accepted_at.is_some())?;
+                        match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                            DecisionArm::Left => {
+                                endpoint.send::<p::InitialDataAccepted>(&id).await?
+                            }
+                            DecisionArm::Right => {
+                                endpoint.send::<p::InitialDataRejected>(&id).await?
+                            }
+                        };
+                        check(endpoint.recv::<p::InitialDataSettled>().await?, id)?;
+                        outcome.clear();
+                        match result {
+                            None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                            Some(_) if is_initial && !initial.available() => Ok(()),
+                            Some(Ok(Err(e))) => Err(e.into()),
+                            Some(Err(e)) => Err(e.into()),
+                        }?;
+                    }
+                }
+                label if label == p::InitialWireBoundary::LOGICAL_LABEL => {
+                    let id = input.recv::<p::InitialWireBoundary>().await?;
+                    endpoint.send::<p::InitialWireBoundarySeen>(&id).await?;
+                    break 'initial;
+                }
+                label => return Err(Error::UnexpectedLabel(label)),
+            }
+            crate::runtime::yield_now().await;
+        }
+    }
+
+    // HandshakeTransmit: actual UDP acceptance selects the declared reply.
+    'handshake: {
+        loop {
+            let input = endpoint.offer().await.map_err(|error| Error::EndpointAt {
+                role: p::UDP,
+                expected_label: p::HandshakeDataDatagram::LOGICAL_LABEL,
+                error,
+            })?;
+            match input.label() {
+                label if label == p::HandshakeAckDatagram::LOGICAL_LABEL => {
+                    let id = input.recv::<p::HandshakeAckDatagram>().await?;
+                    {
+                        let wire::Datagram {
+                            sealed,
+                            reservation,
+                            acknowledgment,
+                        } = slots.datagram.take()?;
+                        let permit = match issuer.begin() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                book.cancel(reservation)?;
+                                return Err(e.into());
+                            }
+                        };
+                        if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                            book.cancel(reservation)?;
+                            return Err(Error::Binding);
+                        }
+                        let is_initial = reservation.packet().space
+                            == crate::accounting::PacketNumberSpace::Initial;
+                        let result = if is_initial {
+                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        } else {
+                            Some(permit.submit(io.send(sealed.bytes())).await)
+                        };
+                        let accepted_at = match result {
+                            Some(Ok(Ok(at))) => Some(at),
+                            _ => None,
+                        };
+                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        if accepted_at.is_some()
+                            && let Some(ack) = acknowledgment
+                        {
+                            book.acknowledgment_sent(ack)?;
+                        }
+                        slots.schedule.changed()?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            initial::announce(endpoint, exchange, evidence).await?;
+                        }
+                        outcome.set(accepted_at.is_some())?;
+                        match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                            DecisionArm::Left => {
+                                endpoint.send::<p::HandshakeAckAccepted>(&id).await?
+                            }
+                            DecisionArm::Right => {
+                                endpoint.send::<p::HandshakeAckRejected>(&id).await?
+                            }
+                        };
+                        check(endpoint.recv::<p::HandshakeAckSettled>().await?, id)?;
+                        outcome.clear();
+                        match result {
+                            None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                            Some(_) if is_initial && !initial.available() => Ok(()),
+                            Some(Ok(Err(e))) => Err(e.into()),
+                            Some(Err(e)) => Err(e.into()),
+                        }?;
+                    }
+                }
+                label if label == p::HandshakeProbeDatagram::LOGICAL_LABEL => {
+                    let id = input.recv::<p::HandshakeProbeDatagram>().await?;
+                    {
+                        let wire::Datagram {
+                            sealed,
+                            reservation,
+                            acknowledgment,
+                        } = slots.datagram.take()?;
+                        let permit = match issuer.begin() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                book.cancel(reservation)?;
+                                return Err(e.into());
+                            }
+                        };
+                        if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                            book.cancel(reservation)?;
+                            return Err(Error::Binding);
+                        }
+                        let is_initial = reservation.packet().space
+                            == crate::accounting::PacketNumberSpace::Initial;
+                        let result = if is_initial {
+                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        } else {
+                            Some(permit.submit(io.send(sealed.bytes())).await)
+                        };
+                        let accepted_at = match result {
+                            Some(Ok(Ok(at))) => Some(at),
+                            _ => None,
+                        };
+                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        if accepted_at.is_some()
+                            && let Some(ack) = acknowledgment
+                        {
+                            book.acknowledgment_sent(ack)?;
+                        }
+                        slots.schedule.changed()?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            initial::announce(endpoint, exchange, evidence).await?;
+                        }
+                        outcome.set(accepted_at.is_some())?;
+                        match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                            DecisionArm::Left => {
+                                endpoint.send::<p::HandshakeProbeAccepted>(&id).await?
+                            }
+                            DecisionArm::Right => {
+                                endpoint.send::<p::HandshakeProbeRejected>(&id).await?
+                            }
+                        };
+                        check(endpoint.recv::<p::HandshakeProbeSettled>().await?, id)?;
+                        outcome.clear();
+                        match result {
+                            None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                            Some(_) if is_initial && !initial.available() => Ok(()),
+                            Some(Ok(Err(e))) => Err(e.into()),
+                            Some(Err(e)) => Err(e.into()),
+                        }?;
+                    }
+                }
+                label if label == p::HandshakeDataDatagram::LOGICAL_LABEL => {
+                    let id = input.recv::<p::HandshakeDataDatagram>().await?;
+                    {
+                        let wire::Datagram {
+                            sealed,
+                            reservation,
+                            acknowledgment,
+                        } = slots.datagram.take()?;
+                        let permit = match issuer.begin() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                book.cancel(reservation)?;
+                                return Err(e.into());
+                            }
+                        };
+                        if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                            book.cancel(reservation)?;
+                            return Err(Error::Binding);
+                        }
+                        let is_initial = reservation.packet().space
+                            == crate::accounting::PacketNumberSpace::Initial;
+                        let result = if is_initial {
+                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        } else {
+                            Some(permit.submit(io.send(sealed.bytes())).await)
+                        };
+                        let accepted_at = match result {
+                            Some(Ok(Ok(at))) => Some(at),
+                            _ => None,
+                        };
+                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        if accepted_at.is_some()
+                            && let Some(ack) = acknowledgment
+                        {
+                            book.acknowledgment_sent(ack)?;
+                        }
+                        slots.schedule.changed()?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            initial::announce(endpoint, exchange, evidence).await?;
+                        }
+                        outcome.set(accepted_at.is_some())?;
+                        match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                            DecisionArm::Left => {
+                                endpoint.send::<p::HandshakeDataAccepted>(&id).await?
+                            }
+                            DecisionArm::Right => {
+                                endpoint.send::<p::HandshakeDataRejected>(&id).await?
+                            }
+                        };
+                        check(endpoint.recv::<p::HandshakeDataSettled>().await?, id)?;
+                        outcome.clear();
+                        match result {
+                            None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                            Some(_) if is_initial && !initial.available() => Ok(()),
+                            Some(Ok(Err(e))) => Err(e.into()),
+                            Some(Err(e)) => Err(e.into()),
+                        }?;
+                    }
+                }
+                label if label == p::HandshakeWireBoundary::LOGICAL_LABEL => {
+                    let id = input.recv::<p::HandshakeWireBoundary>().await?;
+                    endpoint.send::<p::HandshakeWireBoundarySeen>(&id).await?;
+                    break 'handshake;
+                }
+                label => return Err(Error::UnexpectedLabel(label)),
+            }
+            crate::runtime::yield_now().await;
+        }
+    }
+
+    // ApplicationTransmit: actual UDP acceptance selects the declared reply.
+    'application: {
+        loop {
+            let input = endpoint.offer().await.map_err(|error| Error::EndpointAt {
+                role: p::UDP,
+                expected_label: p::ApplicationDataDatagram::LOGICAL_LABEL,
+                error,
+            })?;
+            match input.label() {
+                label if label == p::ApplicationAckDatagram::LOGICAL_LABEL => {
+                    let id = input.recv::<p::ApplicationAckDatagram>().await?;
+                    {
+                        let wire::Datagram {
+                            sealed,
+                            reservation,
+                            acknowledgment,
+                        } = slots.datagram.take()?;
+                        let permit = match issuer.begin() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                book.cancel(reservation)?;
+                                return Err(e.into());
+                            }
+                        };
+                        if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                            book.cancel(reservation)?;
+                            return Err(Error::Binding);
+                        }
+                        let is_initial = reservation.packet().space
+                            == crate::accounting::PacketNumberSpace::Initial;
+                        let result = if is_initial {
+                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        } else {
+                            Some(permit.submit(io.send(sealed.bytes())).await)
+                        };
+                        let accepted_at = match result {
+                            Some(Ok(Ok(at))) => Some(at),
+                            _ => None,
+                        };
+                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        if accepted_at.is_some()
+                            && let Some(ack) = acknowledgment
+                        {
+                            book.acknowledgment_sent(ack)?;
+                        }
+                        slots.schedule.changed()?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            initial::announce(endpoint, exchange, evidence).await?;
+                        }
+                        outcome.set(accepted_at.is_some())?;
+                        match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                            DecisionArm::Left => {
+                                endpoint.send::<p::ApplicationAckAccepted>(&id).await?
+                            }
+                            DecisionArm::Right => {
+                                endpoint.send::<p::ApplicationAckRejected>(&id).await?
+                            }
+                        };
+                        check(endpoint.recv::<p::ApplicationAckSettled>().await?, id)?;
+                        outcome.clear();
+                        match result {
+                            None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                            Some(_) if is_initial && !initial.available() => Ok(()),
+                            Some(Ok(Err(e))) => Err(e.into()),
+                            Some(Err(e)) => Err(e.into()),
+                        }?;
+                    }
+                }
+                label if label == p::ApplicationProbeDatagram::LOGICAL_LABEL => {
+                    let id = input.recv::<p::ApplicationProbeDatagram>().await?;
+                    {
+                        let wire::Datagram {
+                            sealed,
+                            reservation,
+                            acknowledgment,
+                        } = slots.datagram.take()?;
+                        let permit = match issuer.begin() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                book.cancel(reservation)?;
+                                return Err(e.into());
+                            }
+                        };
+                        if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                            book.cancel(reservation)?;
+                            return Err(Error::Binding);
+                        }
+                        let is_initial = reservation.packet().space
+                            == crate::accounting::PacketNumberSpace::Initial;
+                        let result = if is_initial {
+                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        } else {
+                            Some(permit.submit(io.send(sealed.bytes())).await)
+                        };
+                        let accepted_at = match result {
+                            Some(Ok(Ok(at))) => Some(at),
+                            _ => None,
+                        };
+                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        if accepted_at.is_some()
+                            && let Some(ack) = acknowledgment
+                        {
+                            book.acknowledgment_sent(ack)?;
+                        }
+                        slots.schedule.changed()?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            initial::announce(endpoint, exchange, evidence).await?;
+                        }
+                        outcome.set(accepted_at.is_some())?;
+                        match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                            DecisionArm::Left => {
+                                endpoint.send::<p::ApplicationProbeAccepted>(&id).await?
+                            }
+                            DecisionArm::Right => {
+                                endpoint.send::<p::ApplicationProbeRejected>(&id).await?
+                            }
+                        };
+                        check(endpoint.recv::<p::ApplicationProbeSettled>().await?, id)?;
+                        outcome.clear();
+                        match result {
+                            None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                            Some(_) if is_initial && !initial.available() => Ok(()),
+                            Some(Ok(Err(e))) => Err(e.into()),
+                            Some(Err(e)) => Err(e.into()),
+                        }?;
+                    }
+                }
+                label if label == p::ApplicationDataDatagram::LOGICAL_LABEL => {
+                    let id = input.recv::<p::ApplicationDataDatagram>().await?;
+                    {
+                        let wire::Datagram {
+                            sealed,
+                            reservation,
+                            acknowledgment,
+                        } = slots.datagram.take()?;
+                        let permit = match issuer.begin() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                book.cancel(reservation)?;
+                                return Err(e.into());
+                            }
+                        };
+                        if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                            book.cancel(reservation)?;
+                            return Err(Error::Binding);
+                        }
+                        let is_initial = reservation.packet().space
+                            == crate::accounting::PacketNumberSpace::Initial;
+                        let result = if is_initial {
+                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        } else {
+                            Some(permit.submit(io.send(sealed.bytes())).await)
+                        };
+                        let accepted_at = match result {
+                            Some(Ok(Ok(at))) => Some(at),
+                            _ => None,
+                        };
+                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        if accepted_at.is_some()
+                            && let Some(ack) = acknowledgment
+                        {
+                            book.acknowledgment_sent(ack)?;
+                        }
+                        slots.schedule.changed()?;
+                        if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                            && let Some(evidence) = book.take_initial_retirement()
+                        {
+                            initial::announce(endpoint, exchange, evidence).await?;
+                        }
+                        outcome.set(accepted_at.is_some())?;
+                        match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                            DecisionArm::Left => {
+                                endpoint.send::<p::ApplicationDataAccepted>(&id).await?
+                            }
+                            DecisionArm::Right => {
+                                endpoint.send::<p::ApplicationDataRejected>(&id).await?
+                            }
+                        };
+                        check(endpoint.recv::<p::ApplicationDataSettled>().await?, id)?;
+                        outcome.clear();
+                        match result {
+                            None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                            Some(_) if is_initial && !initial.available() => Ok(()),
+                            Some(Ok(Err(e))) => Err(e.into()),
+                            Some(Err(e)) => Err(e.into()),
+                        }?;
+                    }
+                }
+                label if label == p::ApplicationWireBoundary::LOGICAL_LABEL => {
+                    let id = input.recv::<p::ApplicationWireBoundary>().await?;
+                    endpoint.send::<p::ApplicationWireBoundarySeen>(&id).await?;
+                    break 'application;
+                }
+                label => return Err(Error::UnexpectedLabel(label)),
+            }
+            crate::runtime::yield_now().await;
+        }
+    }
     loop {
         let input = endpoint.offer().await.map_err(|error| Error::EndpointAt {
             role: p::UDP,
-            expected_label: <p::DrainAck as p::Publication>::Datagram::LOGICAL_LABEL,
+            expected_label: p::DrainAckDatagram::LOGICAL_LABEL,
             error,
         })?;
         match input.label() {
-            label if label == <p::DrainAck as p::Publication>::Datagram::LOGICAL_LABEL => {
-                let id = input
-                    .recv::<<p::DrainAck as p::Publication>::Datagram>()
-                    .await?;
-                publish_result::<p::DrainAck, N, P>(
-                    endpoint,
-                    io,
-                    slots,
-                    initial,
-                    exchange,
-                    &mut initial_endpoint,
-                    issuer,
-                    outcome,
-                    book,
-                    id,
-                )
-                .await?;
+            label if label == p::DrainAckDatagram::LOGICAL_LABEL => {
+                let id = input.recv::<p::DrainAckDatagram>().await?;
+                {
+                    let wire::Datagram {
+                        sealed,
+                        reservation,
+                        acknowledgment,
+                    } = slots.datagram.take()?;
+                    let permit = match issuer.begin() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            book.cancel(reservation)?;
+                            return Err(e.into());
+                        }
+                    };
+                    if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                        book.cancel(reservation)?;
+                        return Err(Error::Binding);
+                    }
+                    let is_initial =
+                        reservation.packet().space == crate::accounting::PacketNumberSpace::Initial;
+                    let result = if is_initial {
+                        initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                    } else {
+                        Some(permit.submit(io.send(sealed.bytes())).await)
+                    };
+                    let accepted_at = match result {
+                        Some(Ok(Ok(at))) => Some(at),
+                        _ => None,
+                    };
+                    book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                    if accepted_at.is_some()
+                        && let Some(ack) = acknowledgment
+                    {
+                        book.acknowledgment_sent(ack)?;
+                    }
+                    slots.schedule.changed()?;
+                    if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                        && let Some(evidence) = book.take_initial_retirement()
+                    {
+                        initial::announce(endpoint, exchange, evidence).await?;
+                    }
+                    outcome.set(accepted_at.is_some())?;
+                    match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                        DecisionArm::Left => endpoint.send::<p::DrainAckAccepted>(&id).await?,
+                        DecisionArm::Right => endpoint.send::<p::DrainAckRejected>(&id).await?,
+                    };
+                    check(endpoint.recv::<p::DrainAckSettled>().await?, id)?;
+                    outcome.clear();
+                    match result {
+                        None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                        Some(_) if is_initial && !initial.available() => Ok(()),
+                        Some(Ok(Err(e))) => Err(e.into()),
+                        Some(Err(e)) => Err(e.into()),
+                    }?;
+                }
             }
-            label if label == <p::DrainProbe as p::Publication>::Datagram::LOGICAL_LABEL => {
-                let id = input
-                    .recv::<<p::DrainProbe as p::Publication>::Datagram>()
-                    .await?;
-                publish_result::<p::DrainProbe, N, P>(
-                    endpoint,
-                    io,
-                    slots,
-                    initial,
-                    exchange,
-                    &mut initial_endpoint,
-                    issuer,
-                    outcome,
-                    book,
-                    id,
-                )
-                .await?;
+            label if label == p::DrainProbeDatagram::LOGICAL_LABEL => {
+                let id = input.recv::<p::DrainProbeDatagram>().await?;
+                {
+                    let wire::Datagram {
+                        sealed,
+                        reservation,
+                        acknowledgment,
+                    } = slots.datagram.take()?;
+                    let permit = match issuer.begin() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            book.cancel(reservation)?;
+                            return Err(e.into());
+                        }
+                    };
+                    if !core::ptr::eq(permit.scope(), reservation.scope()) {
+                        book.cancel(reservation)?;
+                        return Err(Error::Binding);
+                    }
+                    let is_initial =
+                        reservation.packet().space == crate::accounting::PacketNumberSpace::Initial;
+                    let result = if is_initial {
+                        initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                    } else {
+                        Some(permit.submit(io.send(sealed.bytes())).await)
+                    };
+                    let accepted_at = match result {
+                        Some(Ok(Ok(at))) => Some(at),
+                        _ => None,
+                    };
+                    book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                    if accepted_at.is_some()
+                        && let Some(ack) = acknowledgment
+                    {
+                        book.acknowledgment_sent(ack)?;
+                    }
+                    slots.schedule.changed()?;
+                    if let Some(endpoint) = initial_endpoint.as_deref_mut()
+                        && let Some(evidence) = book.take_initial_retirement()
+                    {
+                        initial::announce(endpoint, exchange, evidence).await?;
+                    }
+                    outcome.set(accepted_at.is_some())?;
+                    match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
+                        DecisionArm::Left => endpoint.send::<p::DrainProbeAccepted>(&id).await?,
+                        DecisionArm::Right => endpoint.send::<p::DrainProbeRejected>(&id).await?,
+                    };
+                    check(endpoint.recv::<p::DrainProbeSettled>().await?, id)?;
+                    outcome.clear();
+                    match result {
+                        None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
+                        Some(_) if is_initial && !initial.available() => Ok(()),
+                        Some(Ok(Err(e))) => Err(e.into()),
+                        Some(Err(e)) => Err(e.into()),
+                    }?;
+                }
             }
             label if label == p::HandshakeRecoveryTransferred::LOGICAL_LABEL => {
                 input.recv::<p::HandshakeRecoveryTransferred>().await?;

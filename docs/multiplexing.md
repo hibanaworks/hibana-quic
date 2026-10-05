@@ -40,8 +40,10 @@ three release receipts, cancels and loses MAX_STREAMS publication, and verifies
 that retransmission stops only after ACK. Existing full connection, reuse,
 loss, retirement and no-allocation tests remain applicable.
 
-Official multiplexing qualification is pending. The historical total remains
-28/44 until exact-commit runner results are read. The deferred 15-second
+Official multiplexing passed both directions at commit
+`4fdc24a716f5e854f7df603f8c312f789984cf57` in run37359435433. The unchanged
+Neqo control and both candidate M verdicts were read from artifact11365669307.
+The historical total is 30/44; later cleanup changes still require revalidation. The deferred 15-second
 50-connection loss requirement is a different workload and remains unmet.
 
 Final local validation: all 420 core unit tests and all integration/doc-test
@@ -50,4 +52,4 @@ Clippy, thumbv6m compilation and release build passed. The final binary repeated
 all three native multiplexing directions with 1,999 distinct content matches,
 and explicit candidate retirement assertions. Forty-file client 0-RTT retained
 39 actual early packets and clean retirement; client key-update regression
-passed. These remain local evidence, not official qualification.
+passed. These are local evidence separate from the official qualification above.

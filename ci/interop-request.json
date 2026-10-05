@@ -1,20 +1,22 @@
 {
-  "request": "Qualify bounded multiplexing through existing Hibana stream reclamation",
-  "requested_at": "2026-10-05T18:52:00Z",
+  "request": "Requalify direct projected prefix locals and explicit receive/timer joins",
+  "requested_at": "2026-10-05T20:09:00Z",
   "scope": [
-    "unchanged Neqo multiplexing control",
-    "multiplexing both candidate directions"
+    "unchanged Neqo controls",
+    "both candidate directions"
   ],
-  "approval": "User requested implementation and qualification of all remaining interoperability cases and prioritized multiplexing.",
-  "local_evidence": "docs/multiplexing.md",
+  "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
+  "local_evidence": "docs/direct-locals.md",
   "cases": [
-    "multiplexing"
+    "multiplexing",
+    "zerortt",
+    "handshakeloss",
+    "handshakecorruption"
   ],
-  "qualification": "Keep the runner unchanged: 1999 distinct 32-byte files, one handshake, initial server bidi credit <=1000. Reuse at most 64 live slots through the existing three-release Hibana join, then publish retained MAX_STREAMS credit. Keep early data and multiconnection bounds unchanged. Native diagnostics passed all distinct files and candidate retirement both directions; exact official verdict is required before increasing historical 28/44.",
   "candidate_directions": [
     "client",
     "server"
   ],
   "reference_implementation": "neqo",
-  "previous_attempt": "37357632689 stopped before runner execution because multiplexing was absent from the local case-abbreviation registry. Add the pinned runner M mapping; no runner or protocol changes."
+  "qualification": "Keep the pinned runner and success criteria unchanged. Recheck the explicit receive-stop and timer-stop joins, default bounded capacities, post-handshake ticket handoff and real retirement. Do not increment the historical 30/44 count for repeated cells."
 }

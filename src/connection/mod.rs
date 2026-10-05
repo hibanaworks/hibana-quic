@@ -233,6 +233,8 @@ pub struct Roles<'a> {
     pub timer: Endpoint<'a, { protocol::TIMER }>,
     pub initial_event: Endpoint<'a, { protocol::INITIAL_EVENT }>,
     pub initial_owner: Endpoint<'a, { protocol::INITIAL_OWNER }>,
+    pub timer_stop: Endpoint<'a, { protocol::TIMER_STOP }>,
+    pub receive_stop: Endpoint<'a, { protocol::RECEIVE_STOP }>,
     pub timer_tx: Endpoint<'a, { protocol::TIMER_TX }>,
     pub tx_wire: Endpoint<'a, { protocol::TX_WIRE }>,
 }
@@ -240,8 +242,6 @@ pub struct Roles<'a> {
 struct Schedule {
     revision: Cell<u64>,
     wakers: [RefCell<Option<Waker>>; 4],
-    stop_timer: Cell<bool>,
-    transmit_done: Cell<bool>,
     keys: Cell<[bool; 2]>,
 }
 impl Schedule {
@@ -249,8 +249,6 @@ impl Schedule {
         Self {
             revision: Cell::new(0),
             wakers: core::array::from_fn(|_| RefCell::new(None)),
-            stop_timer: Cell::new(false),
-            transmit_done: Cell::new(false),
             keys: Cell::new([true, false]),
         }
     }
@@ -478,6 +476,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
             received = Some(
                 locals::receive(
                     &mut roles.rx,
+                    &mut roles.receive_stop,
                     receive_io,
                     &message_slot,
                     storage,
@@ -532,6 +531,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         ));
         let mut timer = pin!(timer::run(
             &mut roles.timer,
+            &mut roles.timer_stop,
             storage,
             &mut clock_book,
             clock
