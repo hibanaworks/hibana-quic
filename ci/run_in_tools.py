@@ -575,8 +575,9 @@ def main():
         and baseline.get('cleanup_exit_code') == 0
         and baseline.get('non_null_case_results') == len(EXPECTED)
         and baseline.get('unexecuted_case_results') == 0
-        and all(baseline.get('runner_progress', {}).get(key) is True for key in
-            ('client_compliance_passed', 'server_compliance_passed')))
+        and (baseline['status'] == 'PASSED' or
+             all(baseline.get('runner_progress', {}).get(key) is True for key in
+                 ('client_compliance_passed', 'server_compliance_passed'))))
     if control_completed:
         if 'client' in directions:
             records.append(phase('bounded-client', 'hibana-quic', REFERENCE, True))

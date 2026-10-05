@@ -277,7 +277,8 @@ class Diagnostics(unittest.TestCase):
                  (['server'], False, {'cleanup_exit_code':1}, False),
                  (['server'], False, {'non_null_case_results':0}, False),
                  (['server'], False, {'unexecuted_case_results':1}, False),
-                 (['server'], False, {'runner_progress':{}}, False)]
+                 (['server'], False, {'runner_progress':{}}, False),
+                 (['client', 'server'], True, {'runner_progress':{}}, True)]
         for reference, directions, baseline_ok, overrides, run_candidate in [
                 (reference, *case) for reference in ('neqo', 'quiche') for case in cases]:
             request.write_text(json.dumps({'cases':['zerortt'], 'candidate_directions':directions, 'reference_implementation':reference}))

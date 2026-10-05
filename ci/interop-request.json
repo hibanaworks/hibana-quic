@@ -1,6 +1,6 @@
 {
-  "request": "Exercise existing recovery under runner blackhole while client early-data integration proceeds",
-  "requested_at": "2026-10-05T04:16:00Z",
+  "request": "Run blackhole candidate directions after authoritative baseline success even when optional logs exceed diagnostic caps",
+  "requested_at": "2026-10-05T04:30:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "blackhole in both candidate directions"
@@ -10,7 +10,7 @@
   "cases": [
     "blackhole"
   ],
-  "qualification": "Keep exact runner 5s-on/2s-off blackhole and 10 MB file, reference and all verdicts unchanged. New qualification requires baseline plus both candidate directions. Prior Neqo16/44 and separate quiche server Z retained.",
+  "qualification": "Previous blackhole control passed, but candidate was incorrectly skipped when optional logs exceeded caps. Trust validated runner success with cleanup and complete case results; retain stricter diagnostic preconditions for a negative control. Runner verdict and topology unchanged.",
   "candidate_directions": [
     "client",
     "server"
