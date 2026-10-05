@@ -2,6 +2,7 @@
 import socket
 import time
 import unittest
+from unittest.mock import patch
 from udp_impairment import UdpProxy, EarlyWireProbe
 
 
@@ -20,6 +21,24 @@ class ProxyTests(unittest.TestCase):
                     returned, _ = client.recvfrom(100)
                     elapsed = time.monotonic() - started
                 return data, returned, elapsed, dict(proxy.stats)
+
+    def test_one_blackhole_drops_both_directions_then_recovers(self):
+        proxy = UdpProxy(('127.0.0.1', 9), blackhole_after_bytes=4, blackhole_seconds=2.0)
+        try:
+            with patch('udp_impairment.time.monotonic', return_value=10.0):
+                proxy._enqueue('to_server', b'1234')
+            with patch('udp_impairment.time.monotonic', return_value=11.0):
+                proxy._enqueue('to_client', b'reply')
+            with patch('udp_impairment.time.monotonic', return_value=12.1):
+                proxy._enqueue('to_server', b'after')
+            self.assertEqual(proxy.stats['to_server_blackhole_dropped'], 1)
+            self.assertEqual(proxy.stats['to_client_blackhole_dropped'], 1)
+            self.assertEqual(proxy._blackhole_started, 10.0)
+            self.assertEqual(len(proxy._queue), 1)
+            self.assertEqual(proxy._queue[0][-1], b'after')
+        finally:
+            proxy._front.close()
+            proxy._back.close()
 
     def test_forward_and_return(self):
         data, returned, _, stats = self.exchange()

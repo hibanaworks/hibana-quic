@@ -1,6 +1,6 @@
 {
-  "request": "Requalify existing bidirectional Neqo cases with exact Hibana ee5727d8 dependency",
-  "requested_at": "2026-10-05T04:55:00Z",
+  "request": "Qualify bounded PTO record headroom after reproduced blackhole server stall",
+  "requested_at": "2026-10-05T05:20:00Z",
   "scope": [
     "unchanged Neqo baseline",
     "blackhole in both candidate directions"
@@ -8,16 +8,9 @@
   "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
-    "handshake",
-    "transfer",
-    "longrtt",
-    "transferloss",
-    "transfercorruption",
-    "ipv6",
-    "chacha20",
-    "resumption"
+    "blackhole"
   ],
-  "qualification": "Exact 1265-file upstream snapshot; local core/TLS/host/thumb/Python/native regressions pass. Repeat existing eight bidirectional cases with unchanged peers and runner. Known blackhole-server failure is separately reproduced on old and new dependencies and is not called a new regression.",
+  "qualification": "Exact runner and Neqo unchanged. Reserve recovery publication headroom inside the existing 64-record ledger; no invented ACK/loss and explicit failure on exhausted PTO capacity. Failed-before numerical test and native 2-second outage reproduced old server stall; corrected native transfer completes exact 10 MiB in both directions. Require real baseline and both runner candidate verdicts.",
   "candidate_directions": [
     "client",
     "server"

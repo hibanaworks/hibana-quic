@@ -3,7 +3,7 @@
   "registered_quic_cases": 22,
   "directions": 2,
   "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
-  "current_cleanup_commit_qualification": "17/44 qualified Neqo candidate cells: seven cases both directions at 99943a86 (run37255425723), resumption both directions at 622a17a4 (run37257163222), blackhole client at 7db1f72d (run37263917795). Baselines excluded; blackhole server failed. New Hibana dependency official repetition pending.",
+  "current_cleanup_commit_qualification": "18/44 unique observed Neqo case/direction passes: seven cases both directions at 99943a86 (run37255425723), resumption both directions at 622a17a4 (run37257163222), blackhole client at 7db1f72d (run37263917795), server zerortt at 4e01231f (run37260959576), independently confirmed against quiche with successful quiche control at 4ba95dd2 (run37261848054). The failed Neqo/Neqo zerortt control is retained; this does not turn that combined run green. Peer duplicates are not additional matrix cells.",
   "cases": [
     {
       "case": "handshake",
@@ -51,8 +51,9 @@
       "case": "zerortt",
       "abbreviation": "Z",
       "client_vs_neqo": "not-run",
-      "server_vs_neqo": "passed-diagnostic-control-failed",
-      "server_vs_neqo_run": 37260959576
+      "server_vs_neqo": "passed-pilot",
+      "server_vs_neqo_run": 37260959576,
+      "server_vs_neqo_control": "failed; independently checked by quiche control and candidate run37261848054"
     },
     {
       "case": "http3",

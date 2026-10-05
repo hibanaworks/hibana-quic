@@ -1406,7 +1406,8 @@ mod tests {
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
         let guard = actor_test_allocator::NoAlloc::start();
         let state = State::new(book_publication, publication);
-        // Burn numbers before filling the 64-record ordinary ledger.
+        // Burn numbers before filling the ordinary admission quota. PTO headroom
+        // remains reserved, while close still requires actual ordinary retirement.
         for expected in 0..3 {
             let reservation = book_tx
                 .reserve_application(&[1], write.generation(), 22, false, 0)
@@ -1415,7 +1416,7 @@ mod tests {
             book_tx.cancel(reservation).unwrap();
         }
         let mut socket = AcceptedSocket { at: 10 };
-        for offset in 0..recovery::LEDGER_CAPACITY as u64 {
+        for offset in 0..recovery::ORDINARY_RECORD_CAPACITY as u64 {
             socket.at = 10 + offset;
             let reservation = book_tx
                 .reserve_application(&[1], write.generation(), 22, false, socket.at)
@@ -1447,11 +1448,15 @@ mod tests {
             };
             pending.complete(Some(accepted_at)).unwrap();
         }
+        let next = recovery::ORDINARY_RECORD_CAPACITY as u64 + 3;
         let full = book_tx.snapshot();
-        assert_eq!(full.retained_packets, recovery::LEDGER_CAPACITY);
+        assert_eq!(full.retained_packets, recovery::ORDINARY_RECORD_CAPACITY);
         assert_eq!(full.pending_publications, [0; 3]);
-        assert_eq!(full.bytes_in_flight, 22 * recovery::LEDGER_CAPACITY as u64);
-        assert_eq!(full.next_packet_number[2], Some(67));
+        assert_eq!(
+            full.bytes_in_flight,
+            22 * recovery::ORDINARY_RECORD_CAPACITY as u64
+        );
+        assert_eq!(full.next_packet_number[2], Some(next));
         assert!(matches!(
             book_tx.reserve_application(&[1], write.generation(), 22, false, 80),
             Err(recovery::Error::Accounting(AccountingError::Full))
@@ -1463,7 +1468,7 @@ mod tests {
             .discard_for_close(super::super::OrdinaryRetired { scope })
             .unwrap();
         assert_eq!(book_tx.snapshot().retained_packets, 0);
-        assert_eq!(book_tx.snapshot().next_packet_number[2], Some(67));
+        assert_eq!(book_tx.snapshot().next_packet_number[2], Some(next));
         let mut stream_plaintext = [0; 32];
         let stream_len = packet::encode_frame(
             &Frame::Stream {
@@ -1489,8 +1494,8 @@ mod tests {
         let close = close_packet(&mut write, &mut book_tx, &peer, true, 0, 1000, 80)
             .unwrap()
             .expect("full ordinary ledger must permit close after retirement");
-        assert_eq!(write.last_sealed_packet_number(), Some(67));
-        assert_eq!(book_tx.snapshot().next_packet_number[2], Some(68));
+        assert_eq!(write.last_sealed_packet_number(), Some(next));
+        assert_eq!(book_tx.snapshot().next_packet_number[2], Some(next + 1));
 
         // Authenticate the actual protected close bytes with installed peer keys.
         let mut peer_scope = ApplicationKeyScope::new(147);
@@ -1500,12 +1505,12 @@ mod tests {
             &mut IntegrityBudget::new(),
             close.sealed.bytes(),
             &[],
-            Some(66),
+            Some(next - 1),
             80,
             1000,
         )
         .unwrap();
-        assert_eq!(opened.packet_number(), 67);
+        assert_eq!(opened.packet_number(), next);
         let frame = packet::FrameIter::new(
             opened.plaintext(),
             packet::EncryptionLevel::OneRtt,
@@ -1520,13 +1525,13 @@ mod tests {
         );
         state.settle(close, None).unwrap();
         assert_eq!(book_tx.snapshot().pending_publications, [0; 3]);
-        assert_eq!(book_tx.snapshot().next_packet_number[2], Some(68));
+        assert_eq!(book_tx.snapshot().next_packet_number[2], Some(next + 1));
         let second = close_packet(&mut write, &mut book_tx, &peer, true, 0, 1000, 81)
             .unwrap()
             .expect("cancelled close burns its number");
-        assert_eq!(write.last_sealed_packet_number(), Some(68));
+        assert_eq!(write.last_sealed_packet_number(), Some(next + 1));
         state.settle(second, Some(81)).unwrap();
-        assert_eq!(book_tx.snapshot().next_packet_number[2], Some(69));
+        assert_eq!(book_tx.snapshot().next_packet_number[2], Some(next + 2));
         drop(state);
         retirement.disarm();
         guard.finish();

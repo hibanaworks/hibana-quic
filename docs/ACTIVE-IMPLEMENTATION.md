@@ -60,7 +60,7 @@ not official runner qualification. The subsequent loss-projection refinement pas
 native deterministic-loss baseline and both candidate directions pass with matching
 2 MiB payload hashes. Its actual binary hash is recorded in the local evidence.
 
-Official unmodified runner qualification is 17/44 unique candidate cells.
+Official unmodified runner qualification is 18/44 unique candidate cells.
 The seven existing cases passed both directions at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723).
 Session resumption passed both directions at `622a17a4` in
@@ -68,7 +68,7 @@ Session resumption passed both directions at `622a17a4` in
 Blackhole client passed with Neqo control in
 [run 37263917795](https://github.com/hibanaworks/hibana-quic/actions/runs/37263917795);
 the server direction timed out and is reproduced locally. Neqo controls are
-not counted. The remaining 27 Neqo cells and full repeated matrix are unqualified.
+not counted. The remaining 26 Neqo cells and full repeated matrix are unqualified.
 Server 0-RTT passed against quiche with its control in
 [run 37261848054](https://github.com/hibanaworks/hibana-quic/actions/runs/37261848054),
 separately from the Neqo count. Client 0-RTT remains unconnected. The new Hibana

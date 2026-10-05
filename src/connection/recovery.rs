@@ -27,6 +27,11 @@ use crate::{
 use core::cell::RefCell;
 
 pub const LEDGER_CAPACITY: usize = 64;
+// Keep a bounded recovery lane inside the existing ledger: ordinary in-flight
+// traffic must not consume every record required to publish fresh PTO packets.
+// This profile backs eight two-packet PTO events without any peer feedback.
+const PTO_RECORD_RESERVE: usize = 16;
+pub(super) const ORDINARY_RECORD_CAPACITY: usize = LEDGER_CAPACITY - PTO_RECORD_RESERVE;
 pub const FLIGHT_CAPACITY: usize = 16;
 pub const REFERENCE_CAPACITY: usize = 64;
 pub const ACK_CAPACITY: usize = 32;
@@ -1537,8 +1542,25 @@ fn reserve_kind<'book, const B: usize>(
     }
     n.check_time(now)?;
     n.reclaim_application()?;
-    if kind == PacketKind::OneRtt && n.epochs.iter().all(Option::is_some) {
+    if !pto_probe
+        && !closing
+        && (ack_eliciting || padded)
+        && n.ledger.remaining_capacity() <= LEDGER_CAPACITY - ORDINARY_RECORD_CAPACITY
+    {
         return Err(AccountingError::Full.into());
+    }
+    if n.ledger.remaining_capacity() == 0 && pto_probe {
+        // No fabricated loss or ACK frees an outstanding publication. Exhausting
+        // this finite profile is an explicit error, not a wait for an ACK which
+        // cannot be elicited because its probe can never be published.
+        return Err(Error::Capacity);
+    }
+    if kind == PacketKind::OneRtt && n.epochs.iter().all(Option::is_some) {
+        return Err(if pto_probe {
+            Error::Capacity
+        } else {
+            AccountingError::Full.into()
+        });
     }
     let probe_epoch = if pto_probe {
         if n.probe_space != Some(SPACES[index])
@@ -2856,6 +2878,89 @@ mod tests {
     }
 
     #[test]
+    fn outstanding_data_backpressure_preserves_actual_pto_publication() {
+        book!(book, scope, installation, arena, Side::Client, 178);
+        book.numbers.borrow_mut().handshake_confirmed = true;
+        let (mut tx, _, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let mut admitted = 0;
+        for now in 0..LEDGER_CAPACITY as u64 {
+            match tx.reserve_application(&[1], 0, 64, false, now) {
+                Ok(packet) => {
+                    publication
+                        .settle(Completion::from_adapter(packet, Some(now)))
+                        .unwrap();
+                    admitted += 1;
+                }
+                Err(Error::Accounting(AccountingError::Full) | Error::CongestionLimited) => break,
+                Err(error) => panic!("unexpected ordinary reservation: {error:?}"),
+            }
+        }
+        assert!(admitted > 0);
+        let deadline = clock
+            .update_application(LEDGER_CAPACITY as u64, [false, false, true])
+            .unwrap()
+            .unwrap();
+        let at = deadline.at();
+        assert!(matches!(
+            clock.expire(deadline, at).unwrap(),
+            Some(TimeoutAction::Probe { .. })
+        ));
+        let probe = tx
+            .reserve_application(&[1], 0, 1200, true, at)
+            .expect("ordinary outstanding packets must leave publication capacity for actual PTO");
+        tx.cancel(probe).unwrap();
+        retirement.disarm();
+    }
+
+    #[test]
+    fn repeated_unanswered_pto_uses_only_backed_headroom_then_fails_explicitly() {
+        book!(book, scope, installation, arena, Side::Client, 179);
+        book.numbers.borrow_mut().handshake_confirmed = true;
+        let (mut tx, _, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let guard = NoAlloc::start();
+        for now in 0..(LEDGER_CAPACITY - PTO_RECORD_RESERVE) as u64 {
+            let packet = tx.reserve_application(&[1], 0, 64, false, now).unwrap();
+            publication
+                .settle(Completion::from_adapter(packet, Some(now)))
+                .unwrap();
+        }
+        let mut now = LEDGER_CAPACITY as u64;
+        for _ in 0..PTO_RECORD_RESERVE / 2 {
+            let deadline = clock
+                .update_application(now, [false, false, true])
+                .unwrap()
+                .unwrap();
+            now = deadline.at();
+            assert!(matches!(
+                clock.expire(deadline, now).unwrap(),
+                Some(TimeoutAction::Probe { .. })
+            ));
+            for _ in 0..2 {
+                let probe = tx.reserve_application(&[1], 0, 1200, true, now).unwrap();
+                publication
+                    .settle(Completion::from_adapter(probe, Some(now)))
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            tx.snapshot().bytes_in_flight,
+            ((LEDGER_CAPACITY - PTO_RECORD_RESERVE) * 64 + PTO_RECORD_RESERVE * 1200) as u64
+        );
+        let deadline = clock
+            .update_application(now, [false, false, true])
+            .unwrap()
+            .unwrap();
+        now = deadline.at();
+        clock.expire(deadline, now).unwrap();
+        assert!(matches!(
+            tx.reserve_application(&[1], 0, 1200, true, now),
+            Err(Error::Capacity)
+        ));
+        retirement.disarm();
+        drop(guard);
+    }
+
+    #[test]
     fn outstanding_packet_does_not_let_ack_only_history_exhaust_recovery() {
         book!(book, scope, installation, arena, Side::Client, 177);
         // Numerical recovery fixture after handshake confirmation. Actual TLS
@@ -2906,7 +3011,7 @@ mod tests {
         let mut peer = key(KeyKind::OneRtt, 9);
         let guard = NoAlloc::start();
         let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
-        let mut reservations: [Option<Reservation<'_>>; LEDGER_CAPACITY] =
+        let mut reservations: [Option<Reservation<'_>>; ORDINARY_RECORD_CAPACITY] =
             core::array::from_fn(|_| None);
         for slot in &mut reservations {
             *slot = Some(tx.reserve_application(&[1], 0, 32, false, 0).unwrap());
@@ -2917,7 +3022,7 @@ mod tests {
         ));
         tx.cancel(reservations[0].take().unwrap()).unwrap();
         let extra = tx.reserve_application(&[1], 0, 32, false, 0).unwrap();
-        assert_eq!(extra.packet().value, 64);
+        assert_eq!(extra.packet().value, ORDINARY_RECORD_CAPACITY as u64);
         for r in reservations.into_iter().flatten() {
             tx.cancel(r).unwrap();
         }
@@ -2960,8 +3065,14 @@ mod tests {
             assert!(tx.snapshot().revision > before);
         }
         let snapshot = tx.snapshot();
-        assert_eq!(snapshot.next_packet_number[2], Some(257));
-        assert_eq!(snapshot.history_floor[2], 257);
+        assert_eq!(
+            snapshot.next_packet_number[2],
+            Some(ORDINARY_RECORD_CAPACITY as u64 + 193)
+        );
+        assert_eq!(
+            snapshot.history_floor[2],
+            ORDINARY_RECORD_CAPACITY as u64 + 193
+        );
         assert_eq!(snapshot.retained_packets, 0);
         assert_eq!(snapshot.reserved_bytes, 0);
         assert_eq!(snapshot.bytes_in_flight, 0);

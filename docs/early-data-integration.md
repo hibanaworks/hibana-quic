@@ -2,8 +2,9 @@
 
 This is an implementation ledger, not an official interop result.
 
-Current official qualification is **16/44** unique candidate cells: the seven
-existing cases in both directions passed at `99943a86` in
+Current observed qualification is **18/44** unique candidate case/direction cells.
+The first sixteen came from seven
+existing cases in both directions at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723),
 and real session resumption passed both directions at `622a17a4` in
 [run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222).
@@ -12,8 +13,9 @@ Server-only 0-RTT passed the unchanged runner against quiche in
 at `4ba95dd2`, together with the same-image quiche/quiche control. The fixed image
 was `cloudflare/quiche-qns@sha256:6cbde3c4767c8894917d6c88e62890a4e663188a36bb606907afc48ffd7fd7fc`.
 Candidate client 1-RTT payload was 3,857 bytes (limit 5,000); 0-RTT payload was
-11,125 bytes. This is an additional quiche server-direction result, not an extra
-Neqo matrix cell. Client-side early transmission is still not connected.
+11,125 bytes. This quiche result corroborates the same server Z cell; it does not add a
+duplicate matrix cell. Client-side early transmission is still not connected. The other new counted
+cell is blackhole client, passed with its Neqo control in run37263917795.
 
 The unchanged Neqo/Neqo control in [run 37259858685](https://github.com/hibanaworks/hibana-quic/actions/runs/37259858685)
 transferred all files, but the unchanged trace verdict measured 22,726 bytes of
@@ -22,11 +24,12 @@ limit. The candidate was not executed in that run. In the subsequent
 [run 37260959576](https://github.com/hibanaworks/hibana-quic/actions/runs/37260959576),
 the unchanged runner passed Neqo client to hibana-quic server: forty files,
 10,698 bytes of 0-RTT and 1,834 bytes of client 1-RTT payload. The Neqo control
-still failed, so the combined gate remains NOT_PASSED and this extra candidate
-cell is not yet included in the qualified 16/44. The successful quiche control/candidate pair above is recorded separately from the Neqo matrix. A completed negative control
+still failed, so that combined run remains NOT_PASSED. The server Z cell is now counted once after
+the independent successful quiche control/candidate run, without counting peer
+duplicates or fabricating a successful Neqo self-control. The successful quiche control/candidate pair above is recorded separately from the Neqo matrix. A completed negative control
 may now be followed by candidate diagnostics, only after valid case results,
-compliance and cleanup. Overall qualification still requires the control and
-all selected candidate directions to pass; setup/cleanup failures stop execution.
+compliance and cleanup. A combined run is PASSED only when its control and
+all selected candidate directions pass; setup/cleanup failures stop execution.
 
 Native control diagnostics need two additional precautions: Neqo's normal
 server rejects early data for its first ten seconds, so the fixture waits eleven

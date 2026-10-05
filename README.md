@@ -42,7 +42,7 @@ alone. Passing interop does not complete this migration.
 ## Status
 
 This is **not production-ready** and is not yet a fully qualified QUIC stack.
-The pinned, unmodified quic-interop-runner has qualified **17 of 44 candidate
+The pinned, unmodified quic-interop-runner has qualified **18 of 44 candidate
 cells** against unmodified Neqo. `handshake`, `transfer`, `longrtt`,
 `transferloss`, `transfercorruption`, `ipv6` and `chacha20` passed both directions
 at `99943a86` in
@@ -52,9 +52,11 @@ at `99943a86` in
 Blackhole passed in the client direction at `7db1f72d` in
 [run 37263917795](https://github.com/hibanaworks/hibana-quic/actions/runs/37263917795);
 the server direction still times out. Neqo/Neqo controls are separate from
-candidate counts. Server-side 0-RTT also passed against quiche with its successful
+candidate counts. Server-side 0-RTT passed the runner against Neqo in
+[run 37260959576](https://github.com/hibanaworks/hibana-quic/actions/runs/37260959576),
+whose Neqo self-control failed. It also passed against quiche with its successful
 control in [run 37261848054](https://github.com/hibanaworks/hibana-quic/actions/runs/37261848054),
-recorded separately from the Neqo matrix. The other 27 Neqo cells, a full
+corroborating the same server Z cell without counting the second peer twice. The other 26 Neqo cells, a full
 repeated matrix and embedded hardware remain unqualified. These links qualify
 the stated checkpoints; the new Hibana dependency's official repeat is pending.
 

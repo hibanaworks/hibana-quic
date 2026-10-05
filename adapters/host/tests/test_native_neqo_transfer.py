@@ -71,7 +71,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('hq', 'neqo-client', 'neqo-server', 'nss', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt'), default='clean')
+    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--timeout-seconds', type=int, default=60)
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
@@ -80,10 +80,14 @@ def main():
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
     env = os.environ.copy()
     env['RUST_LOG'] = 'debug'
+    if args.scenario == 'blackhole':
+        env['HIBANA_QUIC_DIAGNOSTICS'] = '1'
     env['LD_LIBRARY_PATH'] = str(nss / 'lib')
     env.pop('SSLKEYLOGFILE', None)
     ipv6 = args.scenario == 'ipv6'
     sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario == 'chacha20' else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
+    if args.scenario == 'blackhole':
+        sizes = [10 << 20]
     if args.ordinary_files != 3:
         if args.scenario != 'clean':
             parser.error('--ordinary-files requires the clean scenario')
@@ -93,6 +97,8 @@ def main():
             {'corrupt_every': 50} if args.scenario == 'corruption' else None
         )
     )
+    if args.scenario == 'blackhole':
+        options = {'blackhole_after_bytes': 4 << 20, 'blackhole_seconds': 2.0}
     report = {
         'scope': 'native-peer-diagnostics', 'official_interop_pass': False,
         'scenario': args.scenario, 'impairment': options, 'ordinary_files': len(sizes),
@@ -182,7 +188,8 @@ def main():
                         try:
                             result = run(command, env, timeout=args.timeout_seconds + 5)
                             returncode = result.returncode
-                        except subprocess.TimeoutExpired:
+                        except subprocess.TimeoutExpired as error:
+                            result = error
                             returncode = 'timeout'
                         resumed_report = None
                         if args.scenario in ('resumption', 'zerortt') and direction != 'baseline' and returncode == 0:
@@ -217,6 +224,8 @@ def main():
                         row = {'direction': direction, 'client_exit': returncode, 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'resumed_two_connections': bool(resumed_report), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
                         report['runs'].append(row)
                         save()
+                        if args.scenario == 'blackhole':
+                            assert sum(v for k, v in proxy.stats.items() if k.endswith('_blackhole_dropped')) > 0, dict(proxy.stats)
                         if returncode != 0 or any(x['expected_sha256'] != x['received_sha256'] for x in files):
                             raise AssertionError(f'{args.scenario}/{direction}: exit={returncode}, received byte hashes did not all qualify')
                 finally:
@@ -225,7 +234,9 @@ def main():
                         args.private_log_dir.mkdir(parents=True, exist_ok=True)
                         (args.private_log_dir / f'{args.scenario}-{direction}-server.log').write_bytes(log_path.read_bytes())
                         if result is not None:
-                            (args.private_log_dir / f'{args.scenario}-{direction}-client.log').write_text(result.stdout + result.stderr)
+                            (args.private_log_dir / f'{args.scenario}-{direction}-client.log').write_text(''.join(
+                                part.decode(errors='replace') if isinstance(part, bytes) else part or ''
+                                for part in (result.stdout, result.stderr)))
     save()
     print(json.dumps(report, indent=2))
 

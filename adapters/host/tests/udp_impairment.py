@@ -15,11 +15,18 @@ import time
 class UdpProxy:
     MAX_QUEUED_BYTES = 16 * 1024 * 1024
 
-    def __init__(self, server, *, delay=0.0, drop_every=0, corrupt_every=0):
+    def __init__(self, server, *, delay=0.0, drop_every=0, corrupt_every=0,
+                 blackhole_after_bytes=0, blackhole_seconds=0.0):
+        if blackhole_after_bytes < 0 or blackhole_seconds < 0 or bool(blackhole_after_bytes) != bool(blackhole_seconds):
+            raise ValueError('blackhole requires a positive byte threshold and duration')
         self.server = server
         self.delay = delay
         self.drop_every = drop_every
         self.corrupt_every = corrupt_every
+        self.blackhole_after_bytes = blackhole_after_bytes
+        self.blackhole_seconds = blackhole_seconds
+        self._wire_bytes = 0
+        self._blackhole_started = None
         self.stats = Counter()
         self._counts = Counter()
         self._queue = []
@@ -54,6 +61,14 @@ class UdpProxy:
         self._counts[direction] += 1
         number = self._counts[direction]
         self.stats[direction + '_received'] += 1
+        self._wire_bytes += len(data)
+        if self.blackhole_after_bytes and self._wire_bytes >= self.blackhole_after_bytes:
+            now = time.monotonic()
+            if self._blackhole_started is None:
+                self._blackhole_started = now
+            if now - self._blackhole_started < self.blackhole_seconds:
+                self.stats[direction + '_blackhole_dropped'] += 1
+                return
         if self.drop_every and number % self.drop_every == 0:
             self.stats[direction + '_dropped'] += 1
             return
