@@ -231,7 +231,7 @@ async fn connected<
         return Err(Error::Capacity);
     }
     let scope = source.scope();
-    let (read, write) = {
+    let (read, write, pending_application) = {
         // Storage is bounded and owned by this finite prefix; dropping it ends
         // every reservation borrow before application facets are issued.
         let storage = if let Some(early) = early.as_mut() {
@@ -240,7 +240,7 @@ async fn connected<
             Storage::<N, P>::new(config.peer_connection_id)?
         };
 
-        connection::handshake_with_early(
+        let (read, write) = connection::handshake_with_early(
             &mut roles.handshake,
             source,
             config,
@@ -255,7 +255,9 @@ async fn connected<
             &outcomes.handshake_adapter,
             client_early.as_deref_mut(),
         )
-        .await?
+        .await?;
+        let pending = storage.pending_application.borrow_mut().take();
+        (read, write, pending)
     };
     let (mut received, write, transcript) =
         startup::transfer(roles, source, config, read, write).await?;
@@ -441,6 +443,7 @@ async fn connected<
                 &terminal,
                 confirmation,
                 key_update_target,
+                pending_application,
             )
             .await
         });

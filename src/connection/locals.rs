@@ -114,6 +114,12 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                     _ => return Ok(true),
                 }
             }
+            Header::Short { destination_id, .. } => {
+                if destination_id == config.local_connection_id {
+                    slots.retain_application(untrusted.bytes)?;
+                }
+                return Ok(true);
+            }
             _ => return Ok(true),
         };
         // Both Initial key access and AEAD end before the retirement edge can await.

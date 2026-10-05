@@ -132,6 +132,7 @@ struct Report {
     connections: usize,
     idle_expired_connections: usize,
     resumed: bool,
+    resumed_connections: usize,
     side: Side,
     peer: SocketAddr,
     sent: u64,
@@ -151,6 +152,10 @@ impl Report {
         self.idle_expired_connections = self
             .idle_expired_connections
             .checked_add(previous.idle_expired_connections)
+            .ok_or("report counter overflow")?;
+        self.resumed_connections = self
+            .resumed_connections
+            .checked_add(previous.resumed_connections)
             .ok_or("report counter overflow")?;
         self.sent = self
             .sent
@@ -235,9 +240,10 @@ impl Report {
             "\"scope\":\"authenticated-handshake-prefix\",\"owned_application_continuations\":true,\"quic_handshake_confirmed\":false,\"http_transfer_complete\":false,\"lifecycle_closed\":false".to_owned()
         };
         format!(
-            "{{\"connections\":{},\"resumed\":{},\"backend\":\"direct-hibana-roles\",\"status\":\"{}\",{transfer},\"role\":\"{}\",\"peer\":\"{}\",\"tls_finished_authenticated\":true,\"datagrams_sent\":{},\"datagrams_received\":{},\"foreign_datagrams_ignored\":{},\"last_os_acceptance_us\":{},\"duration_ms\":{},\"reactor_polls\":{},\"reactor_waits\":{},\"reactor_socket_events\":{},\"reactor_timer_events\":{}}}",
+            "{{\"connections\":{},\"resumed\":{},\"resumed_connections\":{},\"backend\":\"direct-hibana-roles\",\"status\":\"{}\",{transfer},\"role\":\"{}\",\"peer\":\"{}\",\"tls_finished_authenticated\":true,\"datagrams_sent\":{},\"datagrams_received\":{},\"foreign_datagrams_ignored\":{},\"last_os_acceptance_us\":{},\"duration_ms\":{},\"reactor_polls\":{},\"reactor_waits\":{},\"reactor_socket_events\":{},\"reactor_timer_events\":{}}}",
             self.connections,
             self.resumed,
+            self.resumed_connections,
             if self.idle_expired_connections == 0 {
                 "success"
             } else {
@@ -403,6 +409,7 @@ async fn connected<const S: usize, const T: usize>(
                 .is_some_and(|report| report.termination == application::Termination::IdleExpired),
         ),
         resumed: source.resumed(),
+        resumed_connections: usize::from(source.resumed()),
         side: config.side,
         peer: address.remote,
         sent: statistics.sent.get(),

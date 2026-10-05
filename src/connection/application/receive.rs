@@ -57,6 +57,7 @@ pub(crate) async fn run<
     termination: &termination::Exchange<'_, '_, 'scope>,
     initial_confirmation: Option<recovery::HandshakeConfirmed<'scope>>,
     key_update_target: u64,
+    mut pending_application: Option<([u8; N], usize)>,
 ) -> Result<(), Error> {
     let scope = material.application.scope();
     if !core::ptr::eq(scope, transcript.scope())
@@ -96,7 +97,12 @@ pub(crate) async fn run<
     let mut burst = 0usize;
     let mut burst_started = 0u64;
     'receive: while !control.stopping() {
-        let result = {
+        let retained = pending_application.take();
+        let already_accounted = retained.is_some();
+        let result = if let Some((bytes, len)) = retained {
+            datagram = bytes;
+            Some(Ok(len))
+        } else {
             let mut input = pin!(control.until_stop(3, socket.receive(&mut datagram)));
             match poll_fn(|cx| Poll::Ready(input.as_mut().poll(cx))).await {
                 Poll::Ready(result) => result,
@@ -118,7 +124,11 @@ pub(crate) async fn run<
         if len > N {
             return Err(Error::Capacity);
         }
-        book.received_datagram(len as u64)?;
+        // The prefix counted the complete UDP datagram before retaining this
+        // short packet, including any coalesced Handshake bytes.
+        if !already_accounted {
+            book.received_datagram(len as u64)?;
+        }
         control.changed()?;
         let mut offset = 0;
         while offset < len && !control.stopping() {

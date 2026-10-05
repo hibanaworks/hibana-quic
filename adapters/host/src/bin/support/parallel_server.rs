@@ -14,6 +14,55 @@ use std::{
 };
 const MAX: usize = 64;
 const BYTES: usize = direct_bootstrap::DATAGRAM;
+// Only synchronous ticket operations borrow the root-owned key. No worker can
+// extract it, clone its nonce counter, or hold a mutable borrow across an await.
+struct TicketAccess<'a, 'key>(&'a RefCell<ticket::TicketKey<'key>>);
+impl ticket::ServerTicketStore for TicketAccess<'_, '_> {
+    fn prepare(
+        &mut self,
+        rng: &mut dyn rand_core::CryptoRngCore,
+        now_ms: u64,
+        lifetime_seconds: u32,
+        suite: u16,
+        binding: ticket::Binding,
+    ) -> std::result::Result<ticket::IssueToken, ticket::Error> {
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| ticket::Error::InvalidBinding)?
+            .prepare(rng, now_ms, lifetime_seconds, suite, binding)
+    }
+    fn seal(
+        &mut self,
+        token: ticket::IssueToken,
+        psk: hibana_quic::tls_schedule::Secret32,
+        out: &mut [u8],
+    ) -> std::result::Result<ticket::IssuedTicket, ticket::Error> {
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| ticket::Error::InvalidBinding)?
+            .seal(token, psk, out)
+    }
+    fn accept(
+        &mut self,
+        bytes: &[u8],
+        request: ticket::Acceptance<'_>,
+    ) -> std::result::Result<ticket::AcceptedTicket, ticket::Error> {
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| ticket::Error::InvalidBinding)?
+            .accept(bytes, request)
+    }
+    fn check(
+        &mut self,
+        bytes: &[u8],
+        request: ticket::Acceptance<'_>,
+    ) -> std::result::Result<ticket::AcceptedTicket, ticket::Error> {
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| ticket::Error::InvalidBinding)?
+            .check(bytes, request)
+    }
+}
 struct Admission {
     address: Address,
     original: Vec<u8>,
@@ -57,12 +106,24 @@ pub async fn run<const S: usize, const T: usize>(
         .unzip();
     let results: RefCell<Vec<Option<Result<Report>>>> =
         RefCell::new((0..count).map(|_| None).collect());
+    let mut replay = [];
+    let ticket_owner = RefCell::new(
+        ticket::TicketKey::generate(
+            &mut OsRng,
+            ticket::ReplayPolicy::ReusableOneRtt,
+            &mut replay,
+        )
+        .map_err(|e| format!("ticket key: {e:?}"))?,
+    );
+    let ticket_clock = WallTicketClock;
     let mut workers: Vec<Pin<Box<dyn Future<Output = Result<()>> + '_>>> = Vec::new();
     for (index, mut assignment) in receivers.into_iter().enumerate() {
         let results = &results;
         let raw = &raw;
         let chain = &chain;
         let key = &key;
+        let ticket_owner = &ticket_owner;
+        let ticket_clock = &ticket_clock;
         workers.push(Box::pin(async move {
             if index >= count {
                 return Ok(());
@@ -88,7 +149,9 @@ pub async fn run<const S: usize, const T: usize>(
                     Some(files.local_limits()),
                 )?;
                 let mut buffers = TlsBuffers::new();
-                let tls = BoundedTls::server_with_policy(
+                let mut tickets = TicketAccess(ticket_owner);
+                let mut entropy = OsRng;
+                let tls = BoundedTls::server_with_tickets_and_policy(
                     ServerConfig {
                         certificate_chain: chain,
                         signing_key: key,
@@ -96,6 +159,14 @@ pub async fn run<const S: usize, const T: usize>(
                     },
                     buffers.storage(),
                     &mut OsRng,
+                    ServerResumption {
+                        store: &mut tickets,
+                        entropy: &mut entropy,
+                        clock: ticket_clock,
+                        policy: b"hibana-quic fixed-path hq v1",
+                        lifetime_seconds: 3600,
+                        max_age_skew_ms: 300000,
+                    },
                     cipher,
                 )
                 .map_err(|e| format!("server TLS: {e:?}"))?;
@@ -250,4 +321,43 @@ pub async fn run<const S: usize, const T: usize>(
         });
     }
     aggregate.ok_or_else(|| "no connection result".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ticket::ServerTicketStore;
+
+    #[test]
+    fn interleaved_workers_share_unique_issuance_and_disable_early_data() {
+        let mut replay = [];
+        let owner = RefCell::new(
+            ticket::TicketKey::generate(
+                &mut OsRng,
+                ticket::ReplayPolicy::ReusableOneRtt,
+                &mut replay,
+            )
+            .unwrap(),
+        );
+        let mut a = TicketAccess(&owner);
+        let mut b = TicketAccess(&owner);
+        let binding = ticket::Binding::new("localhost", b"hq-interop", b"test").unwrap();
+        assert!(!a.supports_early());
+        assert!(!b.supports_early());
+        let first = a.prepare(&mut OsRng, 1000, 60, 0x1301, binding).unwrap();
+        let second = b.prepare(&mut OsRng, 1000, 60, 0x1301, binding).unwrap();
+        assert_ne!(first.ticket_nonce(), second.ticket_nonce());
+        let abandoned = *first.ticket_nonce();
+        drop(first);
+        let third = a.prepare(&mut OsRng, 1000, 60, 0x1301, binding).unwrap();
+        assert_ne!(&abandoned, third.ticket_nonce());
+        assert_ne!(second.ticket_nonce(), third.ticket_nonce());
+        let held = owner.borrow_mut();
+        assert!(matches!(
+            b.prepare(&mut OsRng, 1000, 60, 0x1301, binding),
+            Err(ticket::Error::InvalidBinding)
+        ));
+        drop(held);
+        assert!(b.prepare(&mut OsRng, 1000, 60, 0x1301, binding).is_ok());
+    }
 }

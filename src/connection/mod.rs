@@ -300,6 +300,7 @@ pub struct Storage<'scope, 'book, const N: usize, const P: usize> {
     datagram: Inbox<wire::Datagram<'book, N>>,
     failure: Cell<Option<crate::tls::Error>>,
     early_packets: RefCell<Option<&'book mut dyn early_wire::RetainPackets>>,
+    pending_application: RefCell<Option<([u8; N], usize)>>,
 }
 impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P> {
     pub fn new(peer: &[u8]) -> Result<Self, Error> {
@@ -317,6 +318,7 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
             datagram: Inbox::new(),
             failure: Cell::new(None),
             early_packets: RefCell::new(None),
+            pending_application: RefCell::new(None),
         })
     }
     pub fn with_early_packets(
@@ -326,6 +328,20 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
         let storage = Self::new(peer)?;
         *storage.early_packets.borrow_mut() = Some(packets);
         Ok(storage)
+    }
+    // Retain ciphertext only. Authentication and frame effects belong to the
+    // application receive role after the actual handshake join and key transfer.
+    fn retain_application(&self, packet: &[u8]) -> Result<(), Error> {
+        if packet.is_empty() || packet.len() > N {
+            return Err(Error::Capacity);
+        }
+        let mut pending = self.pending_application.borrow_mut();
+        if pending.is_none() {
+            let mut bytes = [0; N];
+            bytes[..packet.len()].copy_from_slice(packet);
+            *pending = Some((bytes, packet.len()));
+        }
+        Ok(())
     }
     fn claim(&self) -> Result<(), Error> {
         if self.claimed.replace(true) {
@@ -554,3 +570,37 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
 }
 
 pub mod publication_gate;
+
+#[cfg(test)]
+mod retained_application_tests {
+    use super::*;
+
+    #[test]
+    fn first_packet_is_owned_and_not_overwritten() {
+        let storage = Storage::<8, 1>::new(b"peer").unwrap();
+        let mut packet = [1, 2, 3];
+        storage.retain_application(&packet).unwrap();
+        packet.fill(9);
+        storage.retain_application(&packet).unwrap();
+        let (bytes, len) = storage.pending_application.borrow_mut().take().unwrap();
+        assert_eq!(&bytes[..len], &[1, 2, 3]);
+        assert!(storage.pending_application.borrow_mut().take().is_none());
+    }
+    #[test]
+    fn cleanup_preserves_ciphertext_for_successful_single_use_transfer() {
+        let storage = Storage::<8, 1>::new(b"peer").unwrap();
+        storage.claim().unwrap();
+        storage.retain_application(&[7]).unwrap();
+        storage.clear();
+        assert!(storage.claim().is_err());
+        let (bytes, len) = storage.pending_application.borrow_mut().take().unwrap();
+        assert_eq!(&bytes[..len], &[7]);
+    }
+    #[test]
+    fn invalid_packet_lengths_do_not_publish_a_buffer() {
+        let storage = Storage::<8, 1>::new(b"peer").unwrap();
+        assert!(storage.retain_application(&[]).is_err());
+        assert!(storage.retain_application(&[1; 9]).is_err());
+        assert!(storage.pending_application.borrow().is_none());
+    }
+}

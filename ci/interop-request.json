@@ -1,6 +1,6 @@
 {
-  "request": "Restore shared stateless version negotiation before parallel admission",
-  "requested_at": "2026-10-05T12:45:00Z",
+  "request": "Requalify owned prefix ciphertext transfer and shared parallel 1-RTT tickets",
+  "requested_at": "2026-10-05T15:26:00Z",
   "scope": [
     "unchanged Neqo fifty-connection controls",
     "handshakeloss and handshakecorruption as candidate server"
@@ -11,7 +11,7 @@
     "handshakeloss",
     "handshakecorruption"
   ],
-  "qualification": "Bounded parallel admission runs each complete Hibana connection independently. Actual IdleExpired joins ordinary I/O and retires owned resources without pretending clean close. Initial ACKs carry retained ServerHello CRYPTO within the same 1200B padding budget, with ordinary congestion/amplification accounting and actual publication receipts. Handshake ACK buffering delay follows RFC9002 5.3. Corrected native per-client routing: three burst-loss runs and one burst-corruption run each matched all 50 file hashes and retired every owner (58.941/62.480/56.890/50.051 seconds). Isolated missing-feedback idle, client 0-RTT and key-update regressions pass. Core/host tests, thumb, host Clippy, limited Lean/Z3 pass. Earlier failed experiments remain unqualified. Require unchanged official controls and actual server verdicts before increasing the current 26/44 count. Official 37307010360 retained both server failures: simulator exit 1, client/server 137, no client logs or captures; runtime37307010407 passed. This rerun adds fixed-class simulator diagnostics only, without publishing raw logs or changing protocol verdicts. Diagnostic rerun37309538333 reproduced sim exit1 before captures. The official simulator sends reserved WAIT version and requires Version Negotiation before starting. Parallel admission omitted the existing unsupported-version response. Both admission paths now share that bounded stateless response; no connection or completion is fabricated. Native probe regression reproduces the old timeout.",
+  "qualification": "Actual handshake join precedes application authentication of one retained short packet; original datagram accounting is not duplicated. Parallel workers borrow one existing root-owned TicketKey synchronously; no early-data capability is enabled. Same fifty-file native loss trials complete in22.127/24.353s and corruption17.425s with all hashes and retirement verified;15s target unmet. Historical28/44 stays unchanged until exact official results. Require unchanged Neqo controls and both server verdicts.",
   "candidate_directions": [
     "server"
   ],

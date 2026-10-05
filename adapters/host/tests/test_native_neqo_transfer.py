@@ -276,7 +276,10 @@ def main():
                             candidates = [json.loads(line) for line in lines if line.startswith('{')]
                             resumed_report = next((row for row in candidates if row.get('backend') == 'direct-hibana-roles'), None)
                             assert resumed_report and resumed_report['connections'] == (50 if args.scenario == 'multiconnect' else 2), resumed_report
-                            assert resumed_report['resumed'] == (args.scenario != 'multiconnect'), resumed_report
+                            if args.scenario != 'multiconnect':
+                                assert resumed_report['resumed'], resumed_report
+                            else:
+                                assert 0 <= resumed_report['resumed_connections'] < 50, resumed_report
                             if args.expect_idle_expiry:
                                 assert resumed_report['resources_retired'], resumed_report
                                 assert 0 < resumed_report['idle_expired_connections'] <= 50, resumed_report
@@ -307,7 +310,7 @@ def main():
                             assert proxy.stats['zero_rtt_packets'] > 0, dict(proxy.stats)
                             assert proxy.stats['one_rtt_protected_payload_upper_bound'] <= 5000, dict(proxy.stats)
                         files = [{'name': name, 'bytes': (destination / name).stat().st_size if (destination / name).exists() else None, 'expected_sha256': sha(www / name), 'received_sha256': sha(destination / name) if (destination / name).exists() else None} for name in names]
-                        row = {'direction': direction, 'client_exit': returncode, 'client_elapsed_seconds': round(client_elapsed, 3), 'post_client_verification_and_retirement_seconds': round(time.monotonic() - started - client_elapsed, 3), 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'connections': resumed_report.get('connections') if resumed_report else None, 'resources_retired': resumed_report.get('resources_retired') if resumed_report else None, 'idle_expired_connections': resumed_report.get('idle_expired_connections') if resumed_report else None, 'lifecycle_closed': resumed_report.get('lifecycle_closed') if resumed_report else None, 'resumed_two_connections': bool(resumed_report and resumed_report['resumed']), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
+                        row = {'direction': direction, 'client_exit': returncode, 'client_elapsed_seconds': round(client_elapsed, 3), 'post_client_verification_and_retirement_seconds': round(time.monotonic() - started - client_elapsed, 3), 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'connections': resumed_report.get('connections') if resumed_report else None, 'resources_retired': resumed_report.get('resources_retired') if resumed_report else None, 'idle_expired_connections': resumed_report.get('idle_expired_connections') if resumed_report else None, 'lifecycle_closed': resumed_report.get('lifecycle_closed') if resumed_report else None, 'resumed_connections': resumed_report.get('resumed_connections', 0) if resumed_report else None, 'resumed_two_connections': bool(args.scenario != 'multiconnect' and resumed_report and resumed_report['resumed']), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
                         report['runs'].append(row)
                         save()
                         if args.client_early_loss:

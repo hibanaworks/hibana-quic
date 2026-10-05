@@ -98,3 +98,37 @@ burst-loss trials took 29.447 and 29.288 seconds to client completion, within
 the previous 26.668–32.369 second range. Additional look-ahead complexity was
 removed rather than claiming a material speed improvement. Native reports now
 separate client elapsed time from subsequent verification/resource retirement.
+
+## Owned prefix packet and parallel TLS resumption (2026-10-05)
+
+The finite handshake prefix previously discarded a short-header packet that
+arrived before its transmit branch settled, including application data
+coalesced after the client's Finished. It now retains the first matching-CID
+packet as a bounded owned ciphertext buffer. The actual handshake join and
+application key transfer precede normal authentication and frame processing.
+Later packets cannot overwrite that buffer. Its original UDP datagram has
+already been accounted once; application delivery does not count it again.
+Failure drops the single-use owner. No plaintext or successful receipt is
+invented at this boundary.
+
+Parallel workers now use the existing server TLS ticket interface through
+short synchronous borrows of one root-owned key. Nonce issuance is shared and
+abandoned reservations remain burned. The key outlives every worker and its
+join. Reusable 1-RTT tickets do not enable early data. This adds neither a
+Hibana public API nor a connection progress state machine.
+
+The comparison also exposed a capability difference: the native Neqo control
+completed 26 resumed and 24 full handshakes, whereas the prior parallel server
+completed 50 full handshakes. Reports now count actual resumed connections;
+this is separate from 0-RTT acceptance. Receiving a ticket before a short-lived
+client closes is not guaranteed under loss.
+
+Native diagnostics, unchanged 50 files, 15 ms one-way delay and three-packet
+burst loss: ticket sharing alone took 29.153 s (17 resumed). With owned prefix
+retention, two runs took 22.127 and 24.353 s. The corruption counterpart took
+17.425 s. All 50 file hashes and actual resource retirement were checked in
+each run. Missing close feedback still terminates through the existing honest
+idle-expiry path; client completion and later retirement are reported separately.
+The no-impairment run took 0.892 s with clean lifecycle closure. These are local
+diagnostics, not new official qualification cells, and the requested 15 s
+burst-loss target remains unmet. The verified historical total remains 28/44.
