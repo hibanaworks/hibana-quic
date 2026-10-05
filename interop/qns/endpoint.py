@@ -7,7 +7,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit
 
-SUPPORTED = {'handshake', 'transfer', 'chacha20', 'resumption', 'zerortt', 'keyupdate'}
+SUPPORTED = {'handshake', 'transfer', 'chacha20', 'resumption', 'zerortt', 'keyupdate', 'multiconnect'}
 
 class Unsupported(ValueError):
     pass
@@ -27,12 +27,17 @@ def command(env, resolve=socket.getaddrinfo):
         args += ['--cipher', 'chacha20']
     if case in ('resumption', 'zerortt'):
         args += ['--session', 'resume']
+    if case == 'multiconnect':
+        args += ['--session', 'multi']
+        if role == 'server':
+            args += ['--connections', '50']
+    timeout = '300' if case == 'multiconnect' else '120'
     if case == 'zerortt':
         args += ['--early', 'buffered' if role == 'server' else 'replay-safe']
     if role == 'server':
         return args + ['--listen', '[::]:443', '--cert', '/certs/cert.pem',
                        '--key', '/certs/priv.key', '--www', '/www',
-                       '--timeout-seconds', '120']
+                       '--timeout-seconds', timeout]
     requests = env.get('REQUESTS', '').split()
     if not requests:
         raise ValueError('client REQUESTS must contain at least one HTTPS URL')
@@ -61,7 +66,7 @@ def command(env, resolve=socket.getaddrinfo):
     else:
         raise ValueError('unsupported address family')
     args += ['--connect', target, '--server-name', host, '--ca', '/certs/ca.pem',
-             '--downloads', '/downloads', '--timeout-seconds', '120']
+             '--downloads', '/downloads', '--timeout-seconds', timeout]
     for request in requests:
         args += ['--request', request]
     return args

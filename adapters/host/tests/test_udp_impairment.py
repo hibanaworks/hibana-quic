@@ -37,6 +37,22 @@ class ProxyTests(unittest.TestCase):
                 proxy._front.close()
                 proxy._back.close()
 
+    def test_fifty_sequential_endpoints_keep_old_and_foreign_ports_rejected(self):
+        proxy = UdpProxy(('127.0.0.1', 9), client_endpoints=50)
+        try:
+            for index in range(50):
+                self.assertTrue(proxy._accept_client(('127.0.0.1', 10000 + index)))
+                if index:
+                    self.assertFalse(proxy._accept_client(('127.0.0.1', 9999 + index)))
+            self.assertFalse(proxy._accept_client(('127.0.0.1', 10050)))
+            self.assertFalse(proxy._accept_client(('192.0.2.1', 10049)))
+        finally:
+            proxy._front.close()
+            proxy._back.close()
+        for invalid in (0, 65):
+            with self.assertRaises(ValueError):
+                UdpProxy(('127.0.0.1', 9), client_endpoints=invalid)
+
     def test_one_blackhole_drops_both_directions_then_recovers(self):
         proxy = UdpProxy(('127.0.0.1', 9), blackhole_after_bytes=4, blackhole_seconds=2.0)
         try:

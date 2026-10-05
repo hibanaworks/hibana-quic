@@ -1,7 +1,7 @@
 use super::host_files::{MAX_REQUESTS, Request};
 use hibana_quic::bounded_tls::CipherPolicy;
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
-pub const USAGE: &str = "Direct Hibana QUIC v1 / hq-interop\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume]\n\nOne connection, or two ticket-resuming connections with --session resume; at most 64 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
+pub const USAGE: &str = "Direct Hibana QUIC v1 / hq-interop\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume|multi] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume|multi]\n\nOne connection, two ticket-resuming connections with --session resume, or one full connection per request with --session multi (server: --connections 1..64); at most 64 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
 #[derive(Debug)]
 pub struct ClientFiles {
     pub requests: Vec<Request>,
@@ -21,6 +21,7 @@ pub enum Options {
         timeout: Duration,
         cipher: CipherPolicy,
         resumption: bool,
+        connections: usize,
         early: bool,
         key_update_target: u64,
         files: Option<ClientFiles>,
@@ -32,6 +33,7 @@ pub enum Options {
         timeout: Duration,
         cipher: CipherPolicy,
         resumption: bool,
+        connections: usize,
         early: bool,
         files: Option<ServerFiles>,
     },
@@ -91,11 +93,13 @@ pub fn options(args: &[String]) -> Result<Options> {
         "chacha20" => CipherPolicy::ChaCha20Only,
         _ => return Err("--cipher must be auto, aes128 or chacha20".into()),
     };
-    let resumption = match flags.remove("--session").unwrap_or("single") {
+    let session = flags.remove("--session").unwrap_or("single");
+    let resumption = match session {
         "single" => false,
         "resume" if application => true,
-        "resume" => return Err("resumption requires file mode".into()),
-        _ => return Err("--session must be single or resume".into()),
+        "multi" if application => false,
+        "resume" | "multi" => return Err("multiple connections require file mode".into()),
+        _ => return Err("--session must be single, resume or multi".into()),
     };
     let result = match role.as_str() {
         "client" => {
@@ -142,8 +146,19 @@ pub fn options(args: &[String]) -> Result<Options> {
             };
             let key_update_target = match flags.remove("--key-update").unwrap_or("none") {
                 "none" => 0,
-                "once" if files.is_some() && !resumption => 1,
+                "once" if files.is_some() && session == "single" => 1,
                 _ => return Err("--key-update once requires one file-transfer connection".into()),
+            };
+            let connections = if session == "multi" {
+                files
+                    .as_ref()
+                    .ok_or("multi requires file requests")?
+                    .requests
+                    .len()
+            } else if resumption {
+                2
+            } else {
+                1
             };
             Options::Client {
                 connect,
@@ -154,6 +169,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 resumption,
                 early,
                 key_update_target,
+                connections,
                 files,
             }
         }
@@ -191,6 +207,19 @@ pub fn options(args: &[String]) -> Result<Options> {
                     );
                 }
             };
+            let connections = if session == "multi" {
+                let count = required(&mut flags, "--connections")?
+                    .parse::<usize>()
+                    .map_err(|_| "invalid connection count")?;
+                if count == 0 || count > MAX_REQUESTS {
+                    return Err("connections must be 1..=64".into());
+                }
+                count
+            } else if resumption {
+                2
+            } else {
+                1
+            };
             Options::Server {
                 early,
                 listen,
@@ -199,6 +228,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 timeout,
                 cipher,
                 resumption,
+                connections,
                 files,
             }
         }
@@ -279,6 +309,40 @@ mod tests {
             .application_requested()
         );
     }
+    #[test]
+    fn independent_connections_are_bounded_by_explicit_work() {
+        let base = "client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem --request /a --request /b --downloads output";
+        let Options::Client {
+            connections,
+            resumption,
+            ..
+        } = options(&args(&format!("{base} --session multi"))).unwrap()
+        else {
+            panic!("client expected")
+        };
+        assert_eq!(connections, 2);
+        assert!(!resumption);
+        assert!(options(&args(&format!("{base} --session multi --key-update once"))).is_err());
+        let server =
+            "server --listen 127.0.0.1:443 --cert cert.pem --key key.pem --www www --session multi";
+        for count in [1, 50, 64] {
+            let Options::Server {
+                connections,
+                resumption,
+                ..
+            } = options(&args(&format!("{server} --connections {count}"))).unwrap()
+            else {
+                panic!("server expected")
+            };
+            assert_eq!(connections, count);
+            assert!(!resumption);
+        }
+        for count in [0, 65] {
+            assert!(options(&args(&format!("{server} --connections {count}"))).is_err());
+        }
+        assert!(options(&args(server)).is_err());
+    }
+
     #[test]
     fn key_update_policy_is_explicit_and_bounded() {
         let base = "client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem --request /a --downloads output";

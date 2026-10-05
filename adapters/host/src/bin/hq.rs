@@ -493,6 +493,7 @@ async fn run_async(
             server_name,
             cipher,
             resumption,
+            connections,
             early,
             key_update_target,
             ca,
@@ -515,6 +516,19 @@ async fn run_async(
                         downloads: files.downloads,
                     }),
                 ]
+            } else if connections > 1 {
+                let files = files.ok_or("independent connections require files")?;
+                let downloads = files.downloads;
+                files
+                    .requests
+                    .into_iter()
+                    .map(|request| {
+                        Some(cli::ClientFiles {
+                            requests: vec![request],
+                            downloads: downloads.clone(),
+                        })
+                    })
+                    .collect()
             } else {
                 vec![files]
             }
@@ -649,7 +663,7 @@ async fn run_async(
                     Some(old) => report.append(old)?,
                     None => report,
                 });
-                if groups.peek().is_some() {
+                if resumption && groups.peek().is_some() {
                     let origin = ticket::Binding::new(&server_name, b"hq-interop", &[])
                         .map_err(|e| format!("ticket origin: {e:?}"))?;
                     let context = ticket::VerificationContext::new(&anchors, Limits::default())
@@ -686,6 +700,7 @@ async fn run_async(
             cert,
             cipher,
             resumption,
+            connections,
             early,
             key,
             files,
@@ -723,7 +738,14 @@ async fn run_async(
             let ticket_clock = WallTicketClock;
             let mut entropy = OsRng;
             let mut previous: Option<Report> = None;
-            for connection_index in 0..if resumption { 2 } else { 1 } {
+            for connection_index in 0..connections {
+                if std::env::var_os("HIBANA_QUIC_DIAGNOSTICS").is_some() {
+                    eprintln!(
+                        "connection admission {} of {}",
+                        connection_index + 1,
+                        connections
+                    );
+                }
                 let files = files
                     .as_ref()
                     .map(|files| {
@@ -751,7 +773,8 @@ async fn run_async(
                 let early_storage = early.then(application_storage::EarlyStorage::new);
                 let tls = if let Some(storage) = early_storage.as_ref() {
                     let early_config = hibana_quic::bounded_tls::ServerEarlyData::buffered(
-                        connection_index + 1,
+                        u64::try_from(connection_index + 1)
+                            .map_err(|_| "connection scope overflow")?,
                         application_storage::EarlyStorage::policy(),
                         &parameters,
                         &storage.slots,

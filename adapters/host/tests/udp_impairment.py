@@ -19,8 +19,8 @@ class UdpProxy:
                  blackhole_after_bytes=0, blackhole_seconds=0.0, client_endpoints=1):
         if blackhole_after_bytes < 0 or blackhole_seconds < 0 or bool(blackhole_after_bytes) != bool(blackhole_seconds):
             raise ValueError('blackhole requires a positive byte threshold and duration')
-        if client_endpoints not in (1, 2):
-            raise ValueError("fixture permits one endpoint or two sequential resumption endpoints")
+        if not 1 <= client_endpoints <= 64:
+            raise ValueError("fixture permits 1..64 bounded sequential endpoints")
         self._client_endpoints = client_endpoints
         self._seen_clients = set()
         self.server = server

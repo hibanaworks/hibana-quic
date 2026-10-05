@@ -71,11 +71,12 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('hq', 'neqo-client', 'neqo-server', 'nss', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate'), default='clean')
+    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--timeout-seconds', type=int, default=60)
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
     parser.add_argument('--client-keyupdate', action='store_true')
+    parser.add_argument('--multi-impairment', choices=('none', 'loss', 'corruption'), default='none')
     parser.add_argument('--client-early', action='store_true')
     parser.add_argument('--client-early-loss', action='store_true', help='drop the first real 0-RTT datagram; forward direction only')
     parser.add_argument('--client-early-reject', action='store_true', help='native Neqo startup rejection; forward direction only')
@@ -90,12 +91,14 @@ def main():
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
     env = os.environ.copy()
     env['RUST_LOG'] = 'debug'
-    if args.scenario in ('blackhole', 'keyupdate'):
+    if args.scenario in ('blackhole', 'keyupdate', 'multiconnect'):
         env['HIBANA_QUIC_DIAGNOSTICS'] = '1'
     env['LD_LIBRARY_PATH'] = str(nss / 'lib')
     env.pop('SSLKEYLOGFILE', None)
     ipv6 = args.scenario == 'ipv6'
     sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario in ('chacha20', 'keyupdate') else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
+    if args.scenario == 'multiconnect':
+        sizes = list(range(1024, 1074))
     if args.scenario == 'blackhole':
         sizes = [10 << 20]
     if args.ordinary_files != 3:
@@ -109,6 +112,11 @@ def main():
     )
     if args.scenario == 'blackhole':
         options = {'blackhole_after_bytes': 4 << 20, 'blackhole_seconds': 2.0}
+    if args.multi_impairment != 'none':
+        if args.scenario != 'multiconnect':
+            parser.error('--multi-impairment requires multiconnect')
+        options = {'client_endpoints': 50, 'delay': 0.015,
+                   ('drop_every' if args.multi_impairment == 'loss' else 'corrupt_every'): 3}
     report = {
         'scope': 'native-peer-diagnostics', 'official_interop_pass': False,
         'scenario': args.scenario, 'impairment': options, 'ordinary_files': len(sizes),
@@ -170,6 +178,8 @@ def main():
                 server_command += ['--session', 'resume']
                 if args.scenario == 'zerortt':
                     server_command += ['--early', 'buffered']
+            if args.scenario == 'multiconnect' and direction == 'reverse':
+                server_command += ['--session', 'multi', '--connections', str(len(names))]
             if args.scenario == 'chacha20':
                 server_command += ['--cipher', 'chacha20'] if direction == 'reverse' else ['-c', 'TLS_CHACHA20_POLY1305_SHA256']
             log_path = root / 'server.log'
@@ -193,12 +203,14 @@ def main():
                                 command += ['--session', 'resume']
                                 if args.scenario == 'zerortt':
                                     command += ['--early', 'replay-safe']
+                            if args.scenario == 'multiconnect':
+                                command += ['--session', 'multi']
                             if args.scenario == 'keyupdate':
                                 command += ['--key-update', 'once']
                             for url in urls:
                                 command += ['--request', url]
                         else:
-                            command = [str(nc), '--qns-test', args.scenario if args.scenario in ('resumption', 'zerortt', 'keyupdate') else 'transfer', '-Q', '1', '--ipv6-only' if ipv6 else '--ipv4-only', '--output-dir', str(destination), '--idle', str(args.timeout_seconds)] + urls
+                            command = [str(nc), '--qns-test', args.scenario if args.scenario in ('resumption', 'zerortt', 'keyupdate', 'multiconnect') else 'transfer', '-Q', '1', '--ipv6-only' if ipv6 else '--ipv4-only', '--output-dir', str(destination), '--idle', str(args.timeout_seconds)] + urls
                         if args.scenario == 'chacha20':
                             command += ['--cipher', 'chacha20'] if direction == 'forward' else ['-c', 'TLS_CHACHA20_POLY1305_SHA256']
                         started = time.monotonic()
@@ -209,7 +221,7 @@ def main():
                             result = error
                             returncode = 'timeout'
                         resumed_report = None
-                        if args.scenario in ('resumption', 'zerortt') and direction != 'baseline' and returncode == 0:
+                        if args.scenario in ('resumption', 'zerortt', 'multiconnect') and direction != 'baseline' and returncode == 0:
                             if direction == 'reverse':
                                 server.wait(timeout=args.timeout_seconds + 5)
                                 if server.returncode != 0:
@@ -219,7 +231,8 @@ def main():
                                 lines = result.stdout.splitlines()
                             candidates = [json.loads(line) for line in lines if line.startswith('{')]
                             resumed_report = next((row for row in candidates if row.get('backend') == 'direct-hibana-roles'), None)
-                            assert resumed_report and resumed_report['connections'] == 2 and resumed_report['resumed'], resumed_report
+                            assert resumed_report and resumed_report['connections'] == (50 if args.scenario == 'multiconnect' else 2), resumed_report
+                            assert resumed_report['resumed'] == (args.scenario != 'multiconnect'), resumed_report
                             assert resumed_report['lifecycle_closed'], resumed_report
                             if direction == 'forward':
                                 assert resumed_report['all_streams_acked'], resumed_report
@@ -243,7 +256,7 @@ def main():
                             assert proxy.stats['zero_rtt_packets'] > 0, dict(proxy.stats)
                             assert proxy.stats['one_rtt_protected_payload_upper_bound'] <= 5000, dict(proxy.stats)
                         files = [{'name': name, 'bytes': (destination / name).stat().st_size if (destination / name).exists() else None, 'expected_sha256': sha(www / name), 'received_sha256': sha(destination / name) if (destination / name).exists() else None} for name in names]
-                        row = {'direction': direction, 'client_exit': returncode, 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'resumed_two_connections': bool(resumed_report), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
+                        row = {'direction': direction, 'client_exit': returncode, 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'connections': resumed_report.get('connections') if resumed_report else None, 'resumed_two_connections': bool(resumed_report and resumed_report['resumed']), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
                         report['runs'].append(row)
                         save()
                         if args.client_early_loss:

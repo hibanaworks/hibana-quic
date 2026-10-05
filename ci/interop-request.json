@@ -1,19 +1,19 @@
 {
-  "request": "Qualify address-validation amplification budget with the pinned long chain",
-  "requested_at": "2026-10-05T07:15:00Z",
+  "request": "Qualify independent client handshakes under loss and corruption",
+  "requested_at": "2026-10-05T07:49:00Z",
   "scope": [
-    "unchanged Neqo amplificationlimit baseline",
-    "amplificationlimit in both candidate directions"
+    "unchanged Neqo fifty-connection controls",
+    "handshakeloss and handshakecorruption as candidate client"
   ],
   "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
-    "amplificationlimit"
+    "handshakeloss",
+    "handshakecorruption"
   ],
-  "qualification": "Unchanged pinned runner certificate generator produced nine certificates and a 9662-byte DER chain. Native real client/server transfer completed with client datagrams 2..7 dropped. Before observed client Handshake publication, server sent 2400 bytes after receiving 1200, below the strict 3x allowance. All 5120 file bytes matched and authenticated close completed. This is native evidence only; require unchanged runner certificate/trace checks, Neqo control, and both actual candidate verdicts.",
+  "qualification": "Native fifty independent connections completed all file hashes and actual projected retirement in all clean directions. With deterministic one-in-three loss or corruption and 15 ms delay, candidate-client and Neqo control completed fifty connections. These are diagnostics, not ns3 verdicts. Native candidate-server remained blocked after a lost close and is explicitly not requested for qualification; its admission/retirement overlap needs separate work.",
   "candidate_directions": [
-    "client",
-    "server"
+    "client"
   ],
   "reference_implementation": "neqo"
 }

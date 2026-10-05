@@ -234,3 +234,25 @@ byte-identical 3 MiB transfers. The candidate client reports key generation 1,
 real confirmation, all stream bytes ACKed and completed close. Native 0-RTT and
 blackhole regressions also pass. These local results do not substitute for the
 runner's encrypted packet-trace requirement for key-phase changes on both sides.
+
+## Bounded independent client connections (2026-10-05)
+
+The host can execute one complete existing Hibana connection per request with
+`--session multi`. This is a finite application workload, capped at 64 requests;
+each connection owns fresh TLS, packet numbers, recovery and projected resource
+retirement. Tickets are not selected in this mode. No core progress flags or
+new Hibana APIs were added. The QNS `multiconnect` workload requests 50 connections.
+
+Native clean runs completed 50 files with matching hashes in the reference,
+candidate-client and candidate-server directions. One-in-three deterministic
+loss and corruption with 15 ms delay also completed the reference and candidate
+client runs. These fixtures are not the runner's stochastic ns3 topology.
+
+The serial candidate server is not qualified under impaired multi-connection
+traffic: loss of a peer close can leave its old owner waiting while the peer
+starts another connection. It must not be treated as successful retirement.
+The official request therefore includes only the client direction for
+`handshakeloss` and `handshakecorruption`; server admission/retirement overlap
+remains open. The completed amplification pilot also retains its failed Neqo
+self-control, despite both candidate directions passing; it adds no qualified
+cells until the control issue is resolved.

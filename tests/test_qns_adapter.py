@@ -71,6 +71,19 @@ class EndpointCommand(unittest.TestCase):
         args = module.command({'ROLE':'server', 'TESTCASE':'keyupdate'}, resolve)
         self.assertNotIn('--key-update', args)
 
+    def test_multiconnect_uses_independent_bounded_connections(self):
+        for role in ('client', 'server'):
+            env = self.env(); env.update(ROLE=role, TESTCASE='multiconnect')
+            args = module.command(env, resolve)
+            self.assertEqual(args[args.index('--session') + 1], 'multi')
+            self.assertEqual(args[args.index('--timeout-seconds') + 1], '300')
+            self.assertNotIn('--early', args)
+            if role == 'server':
+                self.assertEqual(args[args.index('--connections') + 1], '50')
+            else:
+                self.assertNotIn('--connections', args)
+                self.assertEqual(args.count('--request'), 2)
+
     def test_unsupported_is_explicit(self):
         for case in ('retry', 'http3', 'unknown'):
             with self.assertRaises(module.Unsupported):
