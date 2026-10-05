@@ -782,6 +782,42 @@ pub fn choreography() -> g::Program<Flow> {
     g::seq(ordinary, g::seq(retirement, final_phase))
 }
 
+pub type EarlyRequest = g::Msg<209, u64>;
+pub type EarlyStored = g::Msg<210, u64>;
+pub type EarlyRequestsDone = g::Msg<211, u64>;
+pub type EarlyReceiptsDone = g::Msg<212, u64>;
+pub type EarlyAdmission = g::Roll<
+    g::Route<
+        g::Seq<
+            g::Send<SOURCE, INGRESS, EarlyRequest>,
+            g::Seq<ProductionTransfer, g::Send<INGRESS, SOURCE, EarlyStored>>,
+        >,
+        g::Seq<
+            g::Send<SOURCE, INGRESS, EarlyRequestsDone>,
+            g::Send<INGRESS, SOURCE_COLLECTOR, EarlyReceiptsDone>,
+        >,
+    >,
+>;
+fn early_admission() -> g::Program<EarlyAdmission> {
+    g::route(
+        g::seq(
+            g::send::<SOURCE, INGRESS, EarlyRequest>(),
+            g::seq(
+                g::seq(
+                    g::send::<INGRESS, SOURCE_COLLECTOR, ProductionReclaim>(),
+                    g::send::<SOURCE_COLLECTOR, INGRESS, ProductionStored>(),
+                ),
+                g::send::<INGRESS, SOURCE, EarlyStored>(),
+            ),
+        ),
+        g::seq(
+            g::send::<SOURCE, INGRESS, EarlyRequestsDone>(),
+            g::send::<INGRESS, SOURCE_COLLECTOR, EarlyReceiptsDone>(),
+        ),
+    )
+    .roll()
+}
+
 pub struct Programs {
     pub handshake: crate::connection::protocol::Programs,
     pub source: RoleProgram<SOURCE>,
@@ -811,7 +847,10 @@ pub fn programs() -> Programs {
         crate::connection::protocol::choreography(),
         g::seq(
             startup(),
-            g::seq(crate::early_data::protocol::bridge(), choreography()),
+            g::seq(
+                crate::early_data::protocol::bridge(),
+                g::seq(early_admission(), choreography()),
+            ),
         ),
     );
     Programs {

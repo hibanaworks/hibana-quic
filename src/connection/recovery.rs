@@ -784,6 +784,45 @@ impl<const B: usize> Numbers<'_, B> {
         }
         Ok(())
     }
+    // Called only at the authenticated client Finished boundary below. TLS
+    // rejection cancels the early epoch, not the shared application PN space.
+    // The application owner retains request bytes for explicit 1-RTT replay.
+    fn reject_zero_rtt(&mut self) -> Result<u64, Error> {
+        self.ordinary()?;
+        if self.side != Side::Client {
+            return Err(Error::Binding);
+        }
+        if self.pending[2] != 0 {
+            return Err(AccountingError::OutstandingPackets.into());
+        }
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(AccountingError::Overflow)?;
+        let early_lost = self.lost.map(|packet| {
+            packet.is_some_and(|packet| self.ledger.sent_kind(packet) == Some(PacketKind::ZeroRtt))
+        });
+        let removed = self.ledger.reject_zero_rtt()?;
+        for (entry, early) in self.lost.iter_mut().zip(early_lost) {
+            if early {
+                *entry = None;
+            }
+        }
+        if !self.ledger.outstanding_sent().any(|packet| {
+            packet.packet.space == PacketNumberSpace::ApplicationData && packet.ack_eliciting
+        }) {
+            self.loss_time[2] = None;
+            self.last_ack_eliciting[2] = None;
+            if self.probe_space == Some(PacketNumberSpace::ApplicationData) {
+                self.probe_space = None;
+                self.probe_credits = 0;
+            }
+        }
+        // Invalidate previously issued deadlines. No congestion event, ACK,
+        // key-update grant, PN reset, or physical-path accounting is invented.
+        self.revision = revision;
+        Ok(removed)
+    }
     fn mint_initial_event(&mut self, event: InitialRetirementEvent) {
         if !self.initial_event_minted {
             self.initial_event_minted = true;
@@ -940,6 +979,10 @@ fn bind_peer<'scope, const B: usize, const P: usize>(
     }
     if n.parameters_bound {
         return Ok(None);
+    }
+    if n.side == Side::Client && receipt.early_status() == crate::early_data::EarlyStatus::Rejected
+    {
+        n.reject_zero_rtt()?;
     }
     n.ack_delay_exponent = peer.ack_delay_exponent();
     n.max_ack_delay_us = peer.max_ack_delay_us();
@@ -2312,6 +2355,65 @@ mod tests {
             output,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn rejected_early_epoch_preserves_actual_one_rtt_and_burned_packet_numbers() {
+        // Numerical rejection kernel test. Production entry is guarded by the
+        // authenticated Finished receipt in bind_peer, never a copied status.
+        book!(book, scope, installation, arena, Side::Client, 173);
+        let (mut tx, _, _, mut publication, mut retirement) = book.split().unwrap();
+        let guard = NoAlloc::start();
+        let early = reserve_kind(
+            tx.book,
+            PacketKind::ZeroRtt,
+            64,
+            None,
+            true,
+            false,
+            false,
+            0,
+            0,
+            Some(PlaintextBinding::new(&[1])),
+            None,
+            false,
+        )
+        .unwrap();
+        let early_packet = early.packet();
+        let before = tx.snapshot();
+        assert_eq!(
+            tx.book.numbers.borrow_mut().reject_zero_rtt(),
+            Err(Error::Accounting(AccountingError::OutstandingPackets))
+        );
+        assert_eq!(tx.snapshot(), before);
+        publication
+            .settle(Completion::from_adapter(early, Some(1)))
+            .unwrap();
+        let ordinary = tx.reserve_application(&[1], 0, 80, false, 2).unwrap();
+        let ordinary_packet = ordinary.packet();
+        publication
+            .settle(Completion::from_adapter(ordinary, Some(2)))
+            .unwrap();
+        let before = tx.snapshot();
+        assert_eq!(tx.book.numbers.borrow_mut().reject_zero_rtt().unwrap(), 64);
+        let after = tx.snapshot();
+        assert_eq!(after.bytes_in_flight, 80);
+        assert_eq!(after.accepted_bytes, before.accepted_bytes);
+        assert_eq!(after.next_packet_number, before.next_packet_number);
+        assert_eq!(after.congestion_window, before.congestion_window);
+        assert_eq!(after.pto_count, before.pto_count);
+        {
+            let numbers = tx.book.numbers.borrow();
+            assert!(numbers.ledger.sent_packet(early_packet).is_none());
+            assert!(numbers.ledger.sent_packet(ordinary_packet).is_some());
+            assert_eq!(numbers.last_ack_eliciting[2], Some(2));
+        }
+        assert_eq!(tx.book.numbers.borrow_mut().reject_zero_rtt().unwrap(), 0);
+        let replay = tx.reserve_application(&[1], 0, 64, false, 3).unwrap();
+        assert_eq!(replay.packet().value, 2);
+        tx.cancel(replay).unwrap();
+        retirement.disarm();
+        drop(guard);
     }
 
     #[test]

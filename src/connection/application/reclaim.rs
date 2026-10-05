@@ -93,7 +93,7 @@ impl<'book> Exchange<'book> {
             cursor: Cell::new(0),
         }
     }
-    fn source_received(&self, receipt: ProductionReleased<'book>) -> Result<(), Error> {
+    pub(super) fn source_received(&self, receipt: ProductionReleased<'book>) -> Result<(), Error> {
         let origin = receipt.origin();
         let mut slots = self.slots.try_borrow_mut().map_err(|_| Error::Binding)?;
         let slot = slots.get_mut(origin.slot()).ok_or(Error::Capacity)?;

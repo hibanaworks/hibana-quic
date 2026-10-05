@@ -48,7 +48,64 @@ pub fn client<'scope, const N: usize, const P: usize, const RX: usize, const CHU
         outcomes,
         Source::Client(requests),
         Sink::Client(sink),
+        None,
     )
+}
+
+/// Explicit replay-safe early client. Slot storage is caller-owned and used
+/// only for this connection. TLS must already be configured for early data.
+#[allow(clippy::too_many_arguments)]
+pub async fn client_early<
+    'scope,
+    const N: usize,
+    const P: usize,
+    const RX: usize,
+    const CHUNK: usize,
+>(
+    roles: &mut Roles<'_>,
+    source: &mut Transcript<'scope, '_, '_>,
+    setup: Setup<'_, RX, CHUNK>,
+    receive: &mut impl DatagramRx,
+    send: &mut impl DatagramTx,
+    clock: &impl Clock,
+    issuer: &mut Issuer<'_, 'scope>,
+    stop: Stop<'_, 'scope>,
+    book: &mut Recovery<'scope, N>,
+    outcomes: &Outcomes,
+    requests: &mut impl ClientRequests,
+    sink: &mut impl StreamSink,
+    slots: &mut [connection::early_client::RequestSlot],
+) -> Result<Report, Error> {
+    let limits = source.remembered_early_limits().ok_or(Error::Binding)?;
+    let mut retained = connection::early_client::Requests::new(
+        source.scope(),
+        slots,
+        limits,
+        setup
+            .application
+            .streams
+            .len()
+            .min(setup.application.chunks.len())
+            .min(setup.application.references.len()),
+        CHUNK,
+    )?;
+    retained.prepare(requests).await?;
+    connected::<N, P, RX, CHUNK, _, Unused, _>(
+        roles,
+        source,
+        setup,
+        receive,
+        send,
+        clock,
+        issuer,
+        stop,
+        book,
+        outcomes,
+        Source::Client(requests),
+        Sink::Client(sink),
+        Some(&mut retained),
+    )
+    .await
 }
 
 /// Each actual authenticated request is passed to the handler only after FIN.
@@ -80,6 +137,7 @@ pub fn server<'scope, const N: usize, const P: usize, const RX: usize, const CHU
         outcomes,
         Source::Server(handler),
         Sink::Server,
+        None,
     )
 }
 
@@ -145,6 +203,7 @@ async fn connected<
     outcomes: &Outcomes,
     source_io: Source<'_, C, H>,
     sink_io: Sink<'_, S>,
+    mut client_early: Option<&mut connection::early_client::Requests<'_, 'scope>>,
 ) -> Result<Report, Error> {
     if !matches!(
         (&source_io, setup.config.side),
@@ -179,7 +238,7 @@ async fn connected<
             Storage::<N, P>::new(config.peer_connection_id)?
         };
 
-        connection::handshake(
+        connection::handshake_with_early(
             &mut roles.handshake,
             source,
             config,
@@ -192,6 +251,7 @@ async fn connected<
             book,
             &outcomes.tls,
             &outcomes.handshake_adapter,
+            client_early.as_deref_mut(),
         )
         .await?
     };
@@ -205,6 +265,18 @@ async fn connected<
         return Err(Error::Capacity);
     }
     let peer_id = ConnectionId::new(received.material.peer_connection_id())?;
+    let accepted_early = if let Some(requests) = client_early.as_deref() {
+        match requests.decision(peer.finished())? {
+            crate::early_data::EarlyStatus::Accepted => {
+                requests.validate_accepted_limits(peer.parameters())?;
+                requests.accepted_count()
+            }
+            crate::early_data::EarlyStatus::Rejected => 0,
+            _ => return Err(Error::Binding),
+        }
+    } else {
+        0
+    };
     let confirmation = book.bind_validated_peer(&peer)?;
     let mut stream_numbers = StreamNumbers::new(
         scope,
@@ -223,7 +295,7 @@ async fn connected<
         app,
         mut rx,
         mut tx,
-        publication,
+        mut publication,
         reset: mut reset_owner,
     } = stream_numbers.split();
     let app = RefCell::new(app);
@@ -249,10 +321,22 @@ async fn connected<
     .await?;
     let control = Control::new(stop);
     let state = io::State::<CHUNK, H::Body>::new();
-    let publication_state = transmit::State::new(book_publication, publication);
     let terminal = termination::Exchange::new(&control, scope);
     let reset_exchange = reset::Exchange::new();
     let reclaim_exchange = super::reclaim::Exchange::new();
+    super::early_client::admit::<N, RX, CHUNK, H::Body>(
+        roles,
+        client_early.as_deref(),
+        accepted_early,
+        &app,
+        &mut tx,
+        &mut publication,
+        &state,
+        &reclaim_exchange,
+    )
+    .await?;
+    let publication_state = transmit::State::new(book_publication, publication);
+
     let acknowledgments = super::acknowledgments::Exchange::new();
     let mut request_slots = [const { None }; io::REQUEST_CAPACITY];
     let requests = Mailbox::<io::OwnedRequest, { io::REQUEST_CAPACITY }>::new(&mut request_slots)
@@ -266,7 +350,13 @@ async fn connected<
         let mut source = pin!(async {
             let result = match source_io {
                 Source::Client(requests) => {
-                    io::client_source(&mut roles.source, &control, &state, &app, requests).await
+                    if let Some(retained) = client_early.as_deref() {
+                        let mut replay = retained.replay(accepted_early);
+                        io::client_source(&mut roles.source, &control, &state, &app, &mut replay)
+                            .await
+                    } else {
+                        io::client_source(&mut roles.source, &control, &state, &app, requests).await
+                    }
                 }
                 Source::Server(handler) => {
                     io::server_source(
@@ -515,9 +605,16 @@ async fn connected<
         return Err(Error::Incomplete);
     }
     Ok(Report {
-        early_accepted_packets: early_received.packets,
-        early_stream_bytes: early_received.stream_bytes,
-        early_finished_streams: early_received.finished_streams,
+        early_accepted_packets: early_received.packets + accepted_early,
+        early_stream_bytes: early_received.stream_bytes
+            + if let Some(requests) = client_early.as_deref() {
+                (0..accepted_early).try_fold(0_u64, |sum, index| {
+                    requests.bytes(index).map(|bytes| sum + bytes.len() as u64)
+                })?
+            } else {
+                0
+            },
+        early_finished_streams: early_received.finished_streams + accepted_early,
         confirmed: before_close.handshake_confirmed,
         submitted_streams: state.submitted_count(),
         completed_streams,

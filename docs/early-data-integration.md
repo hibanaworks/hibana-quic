@@ -2,7 +2,7 @@
 
 This is an implementation ledger, not an official interop result.
 
-Current observed qualification is **18/44** unique candidate case/direction cells.
+Current observed qualification is **19/44** unique candidate case/direction cells.
 The first sixteen came from seven
 existing cases in both directions at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723),
@@ -14,8 +14,10 @@ at `4ba95dd2`, together with the same-image quiche/quiche control. The fixed ima
 was `cloudflare/quiche-qns@sha256:6cbde3c4767c8894917d6c88e62890a4e663188a36bb606907afc48ffd7fd7fc`.
 Candidate client 1-RTT payload was 3,857 bytes (limit 5,000); 0-RTT payload was
 11,125 bytes. This quiche result corroborates the same server Z cell; it does not add a
-duplicate matrix cell. Client-side early transmission is still not connected. The other new counted
-cell is blackhole client, passed with its Neqo control in run37263917795.
+duplicate matrix cell. Client-side early transmission now passes the native diagnostics below; official client Z qualification remains pending.
+Blackhole passed both candidate directions and its unchanged Neqo control at
+`e33e9df1` in [run 37269130471](https://github.com/hibanaworks/hibana-quic/actions/runs/37269130471).
+This adds the server B cell to the previously qualified client B cell (run37263917795).
 
 The unchanged Neqo/Neqo control in [run 37259858685](https://github.com/hibanaworks/hibana-quic/actions/runs/37259858685)
 transferred all files, but the unchanged trace verdict measured 22,726 bytes of
@@ -100,16 +102,17 @@ official runner's packet-trace verdict.
 
 - Preserve the locally passing forty-file early receive behavior in the pinned
   official server-direction test, including its packet-trace verdict.
-- Connect the client's early source/transmit ownership and rejection/recovery
-  continuation to the same ordinary stream and packet-number ledgers.
+- Preserve the new client prefix, accepted-publication handoff and authenticated
+  rejection replay in the same ordinary stream and packet-number ledgers.
 - Run the pinned official `zerortt` case in both directions. Two connections and
   file delivery alone are insufficient: the runner requires early packets and
   bounds the client's 1-RTT payload volume.
 
-The QNS adapter selects `--session resume --early buffered` only for server
-0-RTT reception. Client 0-RTT remains explicitly unsupported. The runner request
-names its candidate direction, and still requires the unchanged Neqo baseline
-and the actual verdict; unselected directions are never counted as passes. No raw environment logs, generated keys or
+The QNS adapter selects `--session resume --early buffered` for server reception
+and `--session resume --early replay-safe` for client GET transmission. The runner
+request names both candidate directions and the pinned quiche reference; its
+unchanged same-image baseline and actual candidate verdicts remain mandatory.
+Unselected directions are never counted as passes. No raw environment logs, generated keys or
 session tickets belong in this source ledger.
 
 ## Preserved early-owner contract
@@ -157,3 +160,35 @@ actual `KeysRetire`/`KeysRetired` send/receive remains. Keys remain privately
 owned until `take_closing` checks the existing joined receipt's scope and
 takes the actual key once. The independent TX role is not stopped by early
 key-control completion. There is no new per-packet synchronization.
+
+## Client early transmission candidate (2026-10-05)
+
+The optional early prefix uses actual projected send/recv/route/resolver edges.
+Its ClientHello is published before the early packets. The next handshake TX
+role receives an explicit causal handoff; a seq alone is not a substitute for
+that communication. No packet-level control FSM or Hibana API was added.
+
+Caller-owned bounded GET slots retain request intent. Early packets use the
+real scoped TLS key, shared application PN allocator, congestion/ledger budgets
+and actual UDP publication results. After accepted Finished, a finite admission
+prefix materializes those exact requests and packet references before ordinary
+RX can consume their ACKs. The source's production receipts cross the same
+collector used by ordinary streams. On authenticated rejection only the early
+epoch is cancelled, without resetting packet numbers, forging ACKs/loss or
+refunding physical path bytes; replay uses the fresh peer limits and ordinary
+source. The caller's started callback runs once per original request.
+
+The unchanged native Neqo forty-file diagnostic passed all three directions.
+The candidate client accepted 39 early packets/requests (10,023 stream bytes),
+matched all forty file hashes, resumed two connections and closed. The measured
+conservative client 1-RTT protected-payload upper bound was 754 bytes. The native
+fixture now permits exactly two sequential loopback client endpoints for this
+resumption test; previously it dropped the candidate's new UDP source port as
+foreign, so that failed attempt did not measure early protocol correctness.
+The one-endpoint default, foreign-IP rejection and old-port rejection remain.
+
+An actual Neqo startup anti-replay rejection produced zero accepted early
+requests and delivered all forty files through 1-RTT replay. A separate test
+lost the first actual early datagram, then recovered every file under fresh
+1-RTT publication (940-byte conservative upper bound). These are native
+observations, not official runner passes or exactly-once application guarantees.

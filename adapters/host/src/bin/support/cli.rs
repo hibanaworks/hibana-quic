@@ -1,7 +1,7 @@
 use super::host_files::{MAX_REQUESTS, Request};
 use hibana_quic::bounded_tls::CipherPolicy;
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
-pub const USAGE: &str = "Direct Hibana QUIC v1 / hq-interop\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume]\n\nOne connection, or two ticket-resuming connections with --session resume; at most 64 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
+pub const USAGE: &str = "Direct Hibana QUIC v1 / hq-interop\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume]\n\nOne connection, or two ticket-resuming connections with --session resume; at most 64 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
 #[derive(Debug)]
 pub struct ClientFiles {
     pub requests: Vec<Request>,
@@ -21,6 +21,7 @@ pub enum Options {
         timeout: Duration,
         cipher: CipherPolicy,
         resumption: bool,
+        early: bool,
         files: Option<ClientFiles>,
     },
     Server {
@@ -129,6 +130,15 @@ pub fn options(args: &[String]) -> Result<Options> {
             if resumption && files.as_ref().is_none_or(|files| files.requests.len() < 2) {
                 return Err("resumption requires at least two requests".into());
             }
+            let early = match flags.remove("--early").unwrap_or("reject") {
+                "reject" => false,
+                "replay-safe" if resumption => true,
+                _ => {
+                    return Err(
+                        "client --early replay-safe requires file mode and --session resume".into(),
+                    );
+                }
+            };
             Options::Client {
                 connect,
                 server_name,
@@ -136,6 +146,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 timeout,
                 cipher,
                 resumption,
+                early,
                 files,
             }
         }
@@ -261,6 +272,26 @@ mod tests {
             .application_requested()
         );
     }
+    #[test]
+    fn client_early_requires_explicit_replay_safe_two_connection_mode() {
+        let base = "client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem --request /a --request /b --downloads output";
+        let Options::Client { early, .. } = options(&args(&format!(
+            "{base} --session resume --early replay-safe"
+        )))
+        .unwrap() else {
+            panic!("client expected")
+        };
+        assert!(early);
+        let Options::Client { early, .. } =
+            options(&args(&format!("{base} --session resume"))).unwrap()
+        else {
+            panic!("client expected")
+        };
+        assert!(!early);
+        assert!(options(&args(&format!("{base} --early replay-safe"))).is_err());
+        assert!(options(&args(&format!("{base} --session resume --early buffered"))).is_err());
+    }
+
     #[test]
     fn official_early_workload_fits_the_explicit_backed_request_bound() {
         let mut values = args(

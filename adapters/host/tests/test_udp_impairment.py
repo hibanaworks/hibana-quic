@@ -22,6 +22,21 @@ class ProxyTests(unittest.TestCase):
                     elapsed = time.monotonic() - started
                 return data, returned, elapsed, dict(proxy.stats)
 
+    def test_resumption_endpoint_allowance_is_bounded_and_cannot_return_to_old_port(self):
+        for maximum in (1, 2):
+            proxy = UdpProxy(('127.0.0.1', 9), client_endpoints=maximum)
+            try:
+                self.assertTrue(proxy._accept_client(('127.0.0.1', 10001)))
+                self.assertTrue(proxy._accept_client(('127.0.0.1', 10001)))
+                self.assertFalse(proxy._accept_client(('192.0.2.1', 10002)))
+                self.assertEqual(proxy._accept_client(('127.0.0.1', 10002)), maximum == 2)
+                self.assertFalse(proxy._accept_client(('127.0.0.1', 10003)))
+                if maximum == 2:
+                    self.assertFalse(proxy._accept_client(('127.0.0.1', 10001)))
+            finally:
+                proxy._front.close()
+                proxy._back.close()
+
     def test_one_blackhole_drops_both_directions_then_recovers(self):
         proxy = UdpProxy(('127.0.0.1', 9), blackhole_after_bytes=4, blackhole_seconds=2.0)
         try:

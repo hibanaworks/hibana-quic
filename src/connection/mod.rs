@@ -6,6 +6,7 @@
 pub mod application;
 pub mod application_stream;
 pub mod application_wire;
+pub mod early_client;
 pub mod early_wire;
 mod initial;
 mod locals;
@@ -366,6 +367,40 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
     tls_outcome: &Outcome,
     adapter_outcome: &Outcome,
 ) -> Result<(ReceiveContinuation<'scope, P>, TransmitContinuation<'scope>), Error> {
+    handshake_with_early(
+        roles,
+        source,
+        config,
+        reassembly,
+        receive_io,
+        send_io,
+        clock,
+        issuer,
+        storage,
+        book,
+        tls_outcome,
+        adapter_outcome,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P: usize>(
+    roles: &mut Roles<'_>,
+    source: &mut Transcript<'scope, '_, '_>,
+    config: Config<'_>,
+    reassembly: [CryptoBuffer<'_>; 2],
+    receive_io: &mut impl DatagramRx,
+    send_io: &mut impl DatagramTx,
+    clock: &impl Clock,
+    issuer: &mut publication_gate::Issuer<'_, 'scope>,
+    storage: &Storage<'scope, 'book, N, P>,
+    book: &'book mut recovery::Recovery<'scope, N>,
+    tls_outcome: &Outcome,
+    adapter_outcome: &Outcome,
+    early: Option<&mut early_client::Requests<'_, 'scope>>,
+) -> Result<(ReceiveContinuation<'scope, P>, TransmitContinuation<'scope>), Error> {
     config.validate()?;
     if N < 1200
         || book.max_datagram_size() > N as u64
@@ -398,8 +433,22 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
         .take_message_buffer()
         .map_err(|_| Error::Binding)?;
     let message_slot = crate::bounded_tls::locals::MessageSlot::new(message_buffer);
-    let numbers = transcript::Numbers::new(source);
     let (mut tx, mut rx, mut clock_book, mut publication, mut retirement) = book.split()?;
+    early_client::run(
+        roles,
+        source,
+        early,
+        config,
+        &initial,
+        &mut tx,
+        &mut publication,
+        send_io,
+        clock,
+        issuer,
+        adapter_outcome,
+    )
+    .await?;
+    let numbers = transcript::Numbers::new(source);
     let mut initial_owner = tx.initial_retirement_owner();
     let (mut receive_initial, mut publish_initial) = match config.side {
         Side::Client => (None, Some(&mut roles.initial_event)),

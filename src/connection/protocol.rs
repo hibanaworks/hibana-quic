@@ -232,7 +232,57 @@ pub type TimerFlow = g::Roll<
         g::Seq<g::Send<TIMER, TIMER_TX, TimerRetired>, g::Send<TIMER_TX, TIMER, TimerAcknowledged>>,
     >,
 >;
-pub type Flow = g::Par<ReceiveFlow, g::Par<TransmitFlow, g::Par<TimerFlow, InitialRetirementFlow>>>;
+pub type EarlyStart = g::Msg<148, u64>;
+pub type EarlySkip = g::Msg<149, u64>;
+pub type EarlyEnd = g::Msg<150, u64>;
+pub type EarlyDone = g::Msg<151, u64>;
+pub type EarlyContinue = g::Msg<160, u64>;
+pub type EarlyInitial = Emission<152, 153, 154, 155>;
+pub type EarlyPacket = Emission<156, 157, 158, 159>;
+pub type EarlyFlow = g::Route<
+    g::Seq<
+        g::Send<TLS_TX, TX_WIRE, EarlyStart>,
+        g::Seq<
+            g::Send<TX_WIRE, UDP, EarlyStart>,
+            g::Seq<
+                Publish<EarlyInitial>,
+                g::Seq<
+                    g::Roll<g::Route<Publish<EarlyPacket>, g::Send<TX_WIRE, UDP, EarlyEnd>>>,
+                    g::Send<TX_WIRE, TLS_TX, EarlyDone>,
+                >,
+            >,
+        >,
+    >,
+    g::Seq<g::Send<TLS_TX, TX_WIRE, EarlySkip>, g::Send<TX_WIRE, UDP, EarlySkip>>,
+>;
+pub fn early_prefix() -> g::Program<EarlyFlow> {
+    g::route(
+        g::seq(
+            g::send::<TLS_TX, TX_WIRE, EarlyStart>(),
+            g::seq(
+                g::send::<TX_WIRE, UDP, EarlyStart>(),
+                g::seq(
+                    publication::<EarlyInitial>(),
+                    g::seq(
+                        g::route(
+                            publication::<EarlyPacket>(),
+                            g::send::<TX_WIRE, UDP, EarlyEnd>(),
+                        )
+                        .roll(),
+                        g::send::<TX_WIRE, TLS_TX, EarlyDone>(),
+                    ),
+                ),
+            ),
+        ),
+        g::seq(
+            g::send::<TLS_TX, TX_WIRE, EarlySkip>(),
+            g::send::<TX_WIRE, UDP, EarlySkip>(),
+        ),
+    )
+}
+pub type MainFlow =
+    g::Par<ReceiveFlow, g::Par<TransmitFlow, g::Par<TimerFlow, InitialRetirementFlow>>>;
+pub type Flow = g::Seq<EarlyFlow, g::Seq<g::Send<TLS_TX, TX, EarlyContinue>, MainFlow>>;
 
 pub fn choreography() -> g::Program<Flow> {
     let receive = g::seq(
@@ -291,7 +341,13 @@ pub fn choreography() -> g::Program<Flow> {
         ),
         g::send::<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>(),
     );
-    g::par(receive, g::par(transmit, g::par(timer, initial)))
+    g::seq(
+        early_prefix(),
+        g::seq(
+            g::send::<TLS_TX, TX, EarlyContinue>(),
+            g::par(receive, g::par(transmit, g::par(timer, initial))),
+        ),
+    )
 }
 pub struct Programs {
     pub rx: RoleProgram<RX>,

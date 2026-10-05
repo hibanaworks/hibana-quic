@@ -60,15 +60,16 @@ not official runner qualification. The subsequent loss-projection refinement pas
 native deterministic-loss baseline and both candidate directions pass with matching
 2 MiB payload hashes. Its actual binary hash is recorded in the local evidence.
 
-Official unmodified runner qualification is 18/44 unique candidate cells.
+Official unmodified runner qualification is 19/44 unique candidate cells.
 The seven existing cases passed both directions at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723).
 Session resumption passed both directions at `622a17a4` in
 [run 37257163222](https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222).
 Blackhole client passed with Neqo control in
 [run 37263917795](https://github.com/hibanaworks/hibana-quic/actions/runs/37263917795);
-the server direction timed out and is reproduced locally. Neqo controls are
-not counted. The remaining 26 Neqo cells and full repeated matrix are unqualified.
+the initially failing server direction subsequently passed with the same Neqo
+control at e33e9df1 in run37269130471. Reference controls are not counted.
+The remaining 25 aggregate cells and full repeated matrix are unqualified.
 Server 0-RTT passed against quiche with its control in
 [run 37261848054](https://github.com/hibanaworks/hibana-quic/actions/runs/37261848054),
 separately from the Neqo count. Client 0-RTT remains unconnected. The new Hibana
@@ -191,3 +192,9 @@ Hibana contracts/locals; remaining numeric/resource tombstones are documented in
 control-migration-audit.md. Dynamic CID, local-update trigger, migration/ECN/Retry
 endpoint features and host0-RTT remain unqualified work, not hidden old fallbacks.
 The new exact replacement tree still requires official regression qualification.
+
+Client 0-RTT now has a bounded projected transmission/admission prefix, with
+actual accepted-publication receipts and authenticated rejection replay.
+Native forty-file accepted, rejected and first-early-packet-loss cases pass;
+official client Z remains pending. Blackhole both directions and Neqo control
+passed at e33e9df1 in run37269130471, taking the unique aggregate to 19/44.

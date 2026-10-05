@@ -52,15 +52,20 @@ class EndpointCommand(unittest.TestCase):
             module.command(env, resolve)
         self.assertNotIn('--session', module.command(self.env(), resolve))
 
-    def test_zerortt_is_explicit_server_reception_only(self):
+    def test_zerortt_explicit_replay_safe_client_and_buffered_server(self):
         args = module.command({'ROLE':'server', 'TESTCASE':'zerortt'}, resolve)
         self.assertEqual(args[args.index('--session') + 1], 'resume')
         self.assertEqual(args[args.index('--early') + 1], 'buffered')
-        with self.assertRaises(module.Unsupported):
-            module.command({'ROLE':'client', 'TESTCASE':'zerortt'}, resolve)
+        env = self.env(); env.update(TESTCASE='zerortt', REQUESTS='https://server/a https://server/b')
+        args = module.command(env, resolve)
+        self.assertEqual(args[args.index('--early') + 1], 'replay-safe')
+        self.assertEqual(args[args.index('--session') + 1], 'resume')
+        env['REQUESTS'] = 'https://server/a'
+        with self.assertRaises(ValueError):
+            module.command(env, resolve)
 
     def test_unsupported_is_explicit(self):
-        for case in ('keyupdate', 'retry', 'zerortt', 'http3', 'unknown'):
+        for case in ('keyupdate', 'retry', 'http3', 'unknown'):
             with self.assertRaises(module.Unsupported):
                 module.command({'ROLE':'client', 'TESTCASE':case}, resolve)
     def test_extra_params_not_evaluated(self):

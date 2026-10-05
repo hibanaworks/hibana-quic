@@ -89,7 +89,7 @@ impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
             .flatten()
             .any(|id| *id == stream_id)
     }
-    fn submitted(&self) -> Result<(), Error> {
+    pub(super) fn submitted(&self) -> Result<(), Error> {
         let count = self.submitted.get().checked_add(1).ok_or(Error::Capacity)?;
         if count > MAX_REQUESTS {
             return Err(Error::Capacity);

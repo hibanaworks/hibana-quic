@@ -75,8 +75,15 @@ def main():
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--timeout-seconds', type=int, default=60)
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
+    parser.add_argument('--client-early', action='store_true')
+    parser.add_argument('--client-early-loss', action='store_true', help='drop the first real 0-RTT datagram; forward direction only')
+    parser.add_argument('--client-early-reject', action='store_true', help='native Neqo startup rejection; forward direction only')
     parser.add_argument('--ordinary-files', type=int, choices=[3, 5, 40, 64], default=3)
     args = parser.parse_args()
+    if (args.client_early_reject or args.client_early_loss) and (args.scenario != 'zerortt' or not args.client_early):
+        parser.error('early fault scenarios require --scenario zerortt --client-early')
+    if args.client_early_reject and args.client_early_loss:
+        parser.error('select acceptance/loss or rejection separately')
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
     env = os.environ.copy()
     env['RUST_LOG'] = 'debug'
@@ -124,7 +131,8 @@ def main():
         checked([str(nss / 'bin/certutil'), '-N', '-d', str(db), '--empty-password'], env)
         checked(['openssl', 'pkcs12', '-export', '-inkey', str(root / 'server.key'), '-in', str(root / 'server.pem'), '-certfile', str(root / 'ca.pem'), '-name', 'native-peer', '-passout', 'pass:', '-out', str(root / 'fixture.p12')], env)
         checked([str(nss / 'bin/pk12util'), '-i', str(root / 'fixture.p12'), '-d', str(db), '-W', '', '-K', ''], env)
-        for direction in (('baseline', 'reverse') if args.scenario == 'zerortt' else ('baseline', 'forward', 'reverse')):
+        directions = ('forward',) if args.client_early_reject or args.client_early_loss else (('baseline', 'reverse') if args.scenario == 'zerortt' and not args.client_early else ('baseline', 'forward', 'reverse'))
+        for direction in directions:
             destination = root / direction
             destination.mkdir()
             www = root / ('www-' + direction)
@@ -150,7 +158,7 @@ def main():
                 server_command = [str(hq), 'server', '--listen', server_address, '--cert', str(root / 'server.pem'), '--key', str(root / 'server.key'), '--www', str(www), '--max-requests', str(64 if args.scenario in ('resumption', 'zerortt') else len(names)), '--timeout-seconds', str(args.timeout_seconds)]
             else:
                 server_command = [str(ns), '-a', 'hq-interop', '-Q', '1', '-d', str(db), '-k', 'native-peer', '--idle', str(args.timeout_seconds), server_address]
-            if args.scenario == 'zerortt' and direction == 'baseline':
+            if args.scenario == 'zerortt' and direction != 'reverse':
                 # Match the reference's QNS zerortt stream-credit configuration.
                 server_command += ['--max-streams-bidi', '100']
             if args.scenario in ('resumption', 'zerortt') and direction == 'reverse':
@@ -165,11 +173,11 @@ def main():
                 result = None
                 try:
                     wait_ready(server, log_path)
-                    if args.scenario == 'zerortt' and direction == 'baseline':
+                    if args.scenario == 'zerortt' and direction != 'reverse' and not args.client_early_reject:
                         # Native Neqo correctly rejects early data for ten seconds
                         # after startup. Unlike its QNS mode, do not shift its clock.
                         time.sleep(11)
-                    proxy_context = (EarlyWireProbe(('127.0.0.1', server_port)) if args.scenario == 'zerortt' else UdpProxy(('127.0.0.1', server_port), **options) if options else nullcontext(None))
+                    proxy_context = (EarlyWireProbe(('127.0.0.1', server_port), client_endpoints=2 if direction == 'forward' else 1, drop_first_early=args.client_early_loss) if args.scenario == 'zerortt' else UdpProxy(('127.0.0.1', server_port), **options) if options else nullcontext(None))
                     with proxy_context as proxy:
                         client_port = proxy.address[1] if proxy else server_port
                         address = f'[::1]:{client_port}' if ipv6 else f'127.0.0.1:{client_port}'
@@ -178,6 +186,8 @@ def main():
                             command = [str(hq), 'client', '--connect', address, '--server-name', 'localhost', '--ca', str(root / 'ca.pem'), '--downloads', str(destination), '--timeout-seconds', str(args.timeout_seconds)]
                             if args.scenario in ('resumption', 'zerortt'):
                                 command += ['--session', 'resume']
+                                if args.scenario == 'zerortt':
+                                    command += ['--early', 'replay-safe']
                             for url in urls:
                                 command += ['--request', url]
                         else:
@@ -207,12 +217,17 @@ def main():
                             if direction == 'forward':
                                 assert resumed_report['all_streams_acked'], resumed_report
                             if args.scenario == 'zerortt':
-                                assert resumed_report['early_accepted_packets'] > 0, resumed_report
-                                assert 0 < resumed_report['early_finished_streams'] <= len(names) - 1, resumed_report
-                                assert resumed_report['early_stream_bytes'] > 0, resumed_report
+                                if args.client_early_reject:
+                                    assert resumed_report['early_accepted_packets'] == 0, resumed_report
+                                    assert resumed_report['early_finished_streams'] == 0, resumed_report
+                                    assert resumed_report['early_stream_bytes'] == 0, resumed_report
+                                else:
+                                    assert resumed_report['early_accepted_packets'] > 0, resumed_report
+                                    assert 0 < resumed_report['early_finished_streams'] <= len(names) - 1, resumed_report
+                                    assert resumed_report['early_stream_bytes'] > 0, resumed_report
                                 assert proxy.stats['zero_rtt_packets'] > 0, dict(proxy.stats)
                                 assert proxy.stats['unclassified_client_datagrams'] == 0, dict(proxy.stats)
-                                if args.early_files == 40:
+                                if args.early_files == 40 and not args.client_early_reject:
                                     # Match the runner's protected-payload bound conservatively,
                                     # retaining protected PN/tag/padding and all retransmissions.
                                     assert proxy.stats['one_rtt_protected_payload_upper_bound'] <= 5000, dict(proxy.stats)
@@ -224,6 +239,8 @@ def main():
                         row = {'direction': direction, 'client_exit': returncode, 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'resumed_two_connections': bool(resumed_report), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
                         report['runs'].append(row)
                         save()
+                        if args.client_early_loss:
+                            assert proxy.stats['first_early_dropped'] == 1, dict(proxy.stats)
                         if args.scenario == 'blackhole':
                             assert sum(v for k, v in proxy.stats.items() if k.endswith('_blackhole_dropped')) > 0, dict(proxy.stats)
                         if returncode != 0 or any(x['expected_sha256'] != x['received_sha256'] for x in files):

@@ -22,8 +22,8 @@ use direct_wire::{
 };
 use hibana_quic::{
     bounded_tls::{
-        BoundedTls, ClientConfig, ClientResumption, ServerConfig, ServerResumption, SigningKey,
-        Storage as TlsStorage,
+        BoundedTls, ClientConfig, ClientEarlyData, ClientResumption, ServerConfig,
+        ServerResumption, SigningKey, Storage as TlsStorage,
     },
     connection::publication_gate::PublicationGate,
     connection::{Config, Side, application, recovery::Recovery, tls::Transcript},
@@ -487,6 +487,7 @@ async fn run_async(
             server_name,
             cipher,
             resumption,
+            early,
             ca,
             files,
             ..
@@ -576,17 +577,32 @@ async fn run_async(
                     transport_parameters: &parameters,
                 };
                 let tls = if let Some(offer) = offer.take() {
-                    BoundedTls::client_resuming_with_policy(
-                        config,
-                        buffers.storage(),
-                        &mut OsRng,
-                        ClientResumption {
-                            store: &mut cache,
-                            clock: &ticket_clock,
-                        },
-                        offer,
-                        cipher,
-                    )
+                    if early {
+                        BoundedTls::client_resuming_early_with_policy(
+                            config,
+                            buffers.storage(),
+                            &mut OsRng,
+                            ClientResumption {
+                                store: &mut cache,
+                                clock: &ticket_clock,
+                            },
+                            offer,
+                            ClientEarlyData::replay_safe_requests(1),
+                            cipher,
+                        )
+                    } else {
+                        BoundedTls::client_resuming_with_policy(
+                            config,
+                            buffers.storage(),
+                            &mut OsRng,
+                            ClientResumption {
+                                store: &mut cache,
+                                clock: &ticket_clock,
+                            },
+                            offer,
+                            cipher,
+                        )
+                    }
                 } else if resumption {
                     BoundedTls::client_with_tickets_and_policy(
                         config,

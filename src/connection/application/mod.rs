@@ -3,6 +3,7 @@
 
 mod acknowledgments;
 mod early;
+mod early_client;
 mod io;
 mod keys;
 pub mod protocol;
@@ -15,7 +16,7 @@ mod termination;
 mod timer;
 mod transmit;
 
-pub use run::{client, server};
+pub use run::{client, client_early, server};
 
 use super::{Config, Outcome, application_stream, parameters, recovery};
 use crate::{connection::publication_gate, crypto, handshake::CryptoBuffer, packet, streams};

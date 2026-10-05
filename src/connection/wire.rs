@@ -70,6 +70,19 @@ impl<const N: usize> Bytes<N> {
     }
 }
 impl<'book, const N: usize> Datagram<'book, N> {
+    pub(super) fn from_early(packet: super::early_wire::Sealed<'book, N>) -> Self {
+        let mut sealed = Bytes {
+            data: [0; N],
+            len: packet.bytes().len(),
+        };
+        sealed.data[..sealed.len].copy_from_slice(packet.bytes());
+        Self {
+            sealed,
+            reservation: packet.into_reservation(),
+            acknowledgment: None,
+        }
+    }
+
     pub(super) fn from_application(
         packet: super::application_wire::SealedApplicationDatagram<'book, N>,
         acknowledgment: Option<recovery::AckSnapshot<'book>>,

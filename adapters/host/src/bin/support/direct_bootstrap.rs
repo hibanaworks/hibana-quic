@@ -239,26 +239,53 @@ pub async fn files<'scope>(
                 ($rx:expr) => {{
                     let mut storage = application_storage::Storage::<$rx>::new(client.count)?;
                     let setup = storage.setup(config)?;
-                    Box::pin(application::client::<
-                        DATAGRAM,
-                        PARAMETERS,
-                        $rx,
-                        { application_storage::CHUNK_BYTES },
-                    >(
-                        &mut roles,
-                        source,
-                        setup,
-                        receive,
-                        transmit,
-                        clock,
-                        issuer,
-                        stop,
-                        book,
-                        &outcomes,
-                        &mut client.requests,
-                        &mut client.downloads,
-                    ))
-                    .await
+                    if source.early_status() == hibana_quic::early_data::EarlyStatus::Offered {
+                        let mut early_slots = (0..client.count)
+                            .map(|_| hibana_quic::connection::early_client::RequestSlot::EMPTY)
+                            .collect::<Vec<_>>();
+                        Box::pin(application::client_early::<
+                            DATAGRAM,
+                            PARAMETERS,
+                            $rx,
+                            { application_storage::CHUNK_BYTES },
+                        >(
+                            &mut roles,
+                            source,
+                            setup,
+                            receive,
+                            transmit,
+                            clock,
+                            issuer,
+                            stop,
+                            book,
+                            &outcomes,
+                            &mut client.requests,
+                            &mut client.downloads,
+                            &mut early_slots,
+                        ))
+                        .await
+                    } else {
+                        Box::pin(application::client::<
+                            DATAGRAM,
+                            PARAMETERS,
+                            $rx,
+                            { application_storage::CHUNK_BYTES },
+                        >(
+                            &mut roles,
+                            source,
+                            setup,
+                            receive,
+                            transmit,
+                            clock,
+                            issuer,
+                            stop,
+                            book,
+                            &outcomes,
+                            &mut client.requests,
+                            &mut client.downloads,
+                        ))
+                        .await
+                    }
                 }};
             }
             if application_storage::client_uses_large_window(client.count) {

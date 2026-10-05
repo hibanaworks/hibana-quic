@@ -97,11 +97,16 @@ fn minimal_programs() -> (RoleProgram<{ p::TX_WIRE }>, RoleProgram<{ p::UDP }>) 
 }
 
 fn run_publications(publications: &[u8], combined: bool) {
-    let (sender_program, receiver_program) = if combined {
+    let (sender_program, receiver_program, starter_program) = if combined {
         let programs = application::protocol::programs();
-        (programs.handshake.tx_wire, programs.handshake.udp)
+        (
+            programs.handshake.tx_wire,
+            programs.handshake.udp,
+            Some(programs.handshake.tls_tx),
+        )
     } else {
-        minimal_programs()
+        let (sender, receiver) = minimal_programs();
+        (sender, receiver, None)
     };
     let result = Cell::new(None);
     let queues = Box::new(CarrierStorage::<1, 32, 128>::new());
@@ -122,6 +127,15 @@ fn run_publications(publications: &[u8], combined: bool) {
         .unwrap();
     let mut sender = rendezvous.enter(session, &sender_program).unwrap();
     let mut receiver = rendezvous.enter(session, &receiver_program).unwrap();
+    let mut starter = starter_program
+        .as_ref()
+        .map(|program| rendezvous.enter(session, program).unwrap());
+    let start = async {
+        if let Some(endpoint) = starter.as_mut() {
+            endpoint.send::<p::EarlySkip>(&0).await?;
+        }
+        Ok::<_, hibana::EndpointError>(())
+    };
     type Data = <p::InitialTransmit as p::TransmitPhase>::Data;
     type Ack = <p::InitialTransmit as p::TransmitPhase>::Ack;
     type Probe = <p::InitialTransmit as p::TransmitPhase>::Probe;
@@ -129,6 +143,10 @@ fn run_publications(publications: &[u8], combined: bool) {
     type Seen = <p::InitialTransmit as p::TransmitPhase>::WireBoundarySeen;
     let parked = Cell::new(0);
     let send = async {
+        if combined {
+            assert_eq!(sender.offer().await?.recv::<p::EarlySkip>().await?, 0);
+            sender.send::<p::EarlySkip>(&0).await?;
+        }
         macro_rules! publish {
             ($pub:ty, $id:expr) => {{
                 sender
@@ -162,6 +180,9 @@ fn run_publications(publications: &[u8], combined: bool) {
         Ok::<_, hibana::EndpointError>(())
     };
     let receive = async {
+        if combined {
+            assert_eq!(receiver.offer().await?.recv::<p::EarlySkip>().await?, 0);
+        }
         macro_rules! accept {
             ($pub:ty, $id:expr) => {{
                 {
@@ -223,7 +244,10 @@ fn run_publications(publications: &[u8], combined: bool) {
     let wake = Arc::new(WakeFlag(std::sync::atomic::AtomicBool::new(true)));
     let waker: Waker = wake.clone().into();
     let mut cx = Context::from_waker(&waker);
-    let mut joined = Box::pin(hibana_quic::runtime::join2(send, receive));
+    let mut joined = Box::pin(hibana_quic::runtime::join2(
+        send,
+        hibana_quic::runtime::join2(receive, start),
+    ));
     for _ in 0..128 {
         wake.0.store(false, std::sync::atomic::Ordering::SeqCst);
         match joined.as_mut().poll(&mut cx) {

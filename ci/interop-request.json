@@ -1,19 +1,19 @@
 {
-  "request": "Qualify bounded PTO record headroom after reproduced blackhole server stall",
-  "requested_at": "2026-10-05T05:20:00Z",
+  "request": "Qualify projected replay-safe client 0-RTT and preserve server 0-RTT",
+  "requested_at": "2026-10-05T06:13:00Z",
   "scope": [
-    "unchanged Neqo baseline",
-    "blackhole in both candidate directions"
+    "unchanged quiche baseline",
+    "zerortt in both candidate directions"
   ],
   "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
-    "blackhole"
+    "zerortt"
   ],
-  "qualification": "Exact runner and Neqo unchanged. Reserve recovery publication headroom inside the existing 64-record ledger; no invented ACK/loss and explicit failure on exhausted PTO capacity. Failed-before numerical test and native 2-second outage reproduced old server stall; corrected native transfer completes exact 10 MiB in both directions. Require real baseline and both runner candidate verdicts.",
+  "qualification": "Native unchanged Neqo forty-file client early transmission passes with all file hashes, authenticated close, 39 accepted early requests and 754-byte conservative 1-RTT upper bound. Actual Neqo startup rejection replays all requests over 1-RTT; dropping the first early datagram recovers all files. The official runner and verdict are unchanged; require the same pinned quiche image baseline and both candidate verdicts.",
   "candidate_directions": [
     "client",
     "server"
   ],
-  "reference_implementation": "neqo"
+  "reference_implementation": "quiche"
 }

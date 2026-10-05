@@ -16,9 +16,13 @@ class UdpProxy:
     MAX_QUEUED_BYTES = 16 * 1024 * 1024
 
     def __init__(self, server, *, delay=0.0, drop_every=0, corrupt_every=0,
-                 blackhole_after_bytes=0, blackhole_seconds=0.0):
+                 blackhole_after_bytes=0, blackhole_seconds=0.0, client_endpoints=1):
         if blackhole_after_bytes < 0 or blackhole_seconds < 0 or bool(blackhole_after_bytes) != bool(blackhole_seconds):
             raise ValueError('blackhole requires a positive byte threshold and duration')
+        if client_endpoints not in (1, 2):
+            raise ValueError("fixture permits one endpoint or two sequential resumption endpoints")
+        self._client_endpoints = client_endpoints
+        self._seen_clients = set()
         self.server = server
         self.delay = delay
         self.drop_every = drop_every
@@ -42,6 +46,15 @@ class UdpProxy:
         self._back.bind(('127.0.0.1', 0))
         self._back.connect(server)
         self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _accept_client(self, sender):
+        if sender == self._client:
+            return True
+        if sender[0] != '127.0.0.1' or sender in self._seen_clients or len(self._seen_clients) >= self._client_endpoints:
+            return False
+        self._seen_clients.add(sender)
+        self._client = sender
+        return True
 
     def __enter__(self):
         self._thread.start()
@@ -118,10 +131,9 @@ class UdpProxy:
                             self.stats['destination_unavailable'] += 1
                             continue
                         if key.data == 'to_server':
-                            if self._client is not None and sender != self._client:
+                            if not self._accept_client(sender):
                                 self.stats['foreign_client_drops'] += 1
                                 continue
-                            self._client = sender
                         self._enqueue(key.data, data)
                     # Flush zero-delay traffic in this readiness turn. Otherwise
                     # the select timeout injects an unrequested 20 ms delay.
@@ -132,9 +144,10 @@ class UdpProxy:
 
 class EarlyWireProbe(UdpProxy):
     """Conservative packet-byte upper bounds, never decrypted payload claims."""
-    def __init__(self, server):
-        super().__init__(server)
+    def __init__(self, server, *, client_endpoints=1, drop_first_early=False):
+        super().__init__(server, client_endpoints=client_endpoints)
         self._server_cids = set()
+        self._drop_first_early = drop_first_early
 
     def _enqueue(self, direction, data):
         if direction == 'to_client' and len(data) >= 7 and data[0] & 0xf0 == 0xc0 and data[1:5] == b'\x00\x00\x00\x01':
@@ -155,6 +168,13 @@ class EarlyWireProbe(UdpProxy):
                 self.stats['unclassified_client_datagrams'] += 1
                 self.stats['unclassified_client_wire_bytes'] += len(data)
                 self.stats['parse_' + str(error)] += 1
+        if direction == 'to_server' and self._drop_first_early and not self.stats['first_early_dropped']:
+            try:
+                if any(kind == 'zero_rtt' for kind, _ in self.packet_lengths(data)):
+                    self.stats['first_early_dropped'] += 1
+                    return
+            except ValueError:
+                pass  # Already counted as unclassified above; never hides a bad observation.
         super()._enqueue(direction, data)
 
     @staticmethod

@@ -7,14 +7,14 @@ import subprocess
 import sys
 from urllib.parse import urlsplit
 
-SUPPORTED = {'handshake', 'transfer', 'chacha20', 'resumption'}
+SUPPORTED = {'handshake', 'transfer', 'chacha20', 'resumption', 'zerortt'}
 
 class Unsupported(ValueError):
     pass
 
 def command(env, resolve=socket.getaddrinfo):
     case, role = env.get('TESTCASE', ''), env.get('ROLE', '')
-    if case not in SUPPORTED and not (case == 'zerortt' and role == 'server'):
+    if case not in SUPPORTED:
         raise Unsupported(f'unsupported endpoint testcase: {case!r}')
     if role not in ('client', 'server'):
         raise ValueError('ROLE must be client or server')
@@ -26,7 +26,7 @@ def command(env, resolve=socket.getaddrinfo):
     if case in ('resumption', 'zerortt'):
         args += ['--session', 'resume']
     if case == 'zerortt':
-        args += ['--early', 'buffered']
+        args += ['--early', 'buffered' if role == 'server' else 'replay-safe']
     if role == 'server':
         return args + ['--listen', '[::]:443', '--cert', '/certs/cert.pem',
                        '--key', '/certs/priv.key', '--www', '/www',
@@ -34,7 +34,7 @@ def command(env, resolve=socket.getaddrinfo):
     requests = env.get('REQUESTS', '').split()
     if not requests:
         raise ValueError('client REQUESTS must contain at least one HTTPS URL')
-    if case == 'resumption' and len(requests) < 2:
+    if case in ('resumption', 'zerortt') and len(requests) < 2:
         raise ValueError('resumption requires requests for two connections')
     origin = None
     for request in requests:
