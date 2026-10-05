@@ -56,6 +56,7 @@ pub(crate) async fn run<
     socket: &mut impl DatagramRx,
     termination: &termination::Exchange<'_, '_, 'scope>,
     initial_confirmation: Option<recovery::HandshakeConfirmed<'scope>>,
+    key_update_target: u64,
 ) -> Result<(), Error> {
     let scope = material.application.scope();
     if !core::ptr::eq(scope, transcript.scope())
@@ -153,6 +154,7 @@ pub(crate) async fn run<
                         clock,
                         &mut largest,
                         &mut confirmed,
+                        key_update_target,
                     )
                     .await
                 }
@@ -230,6 +232,7 @@ async fn application<'streams, 'scope, const N: usize, const RX: usize, const CH
     clock: &impl Clock,
     largest: &mut Option<u64>,
     confirmed: &mut bool,
+    key_update_target: u64,
 ) -> Result<Option<u64>, Error> {
     let now = clock.now();
     let pto = book.pto_duration_us()?;
@@ -350,6 +353,16 @@ async fn application<'streams, 'scope, const N: usize, const RX: usize, const CH
                 return Err(connection::Error::UnsupportedFrame.into());
             }
         }
+    }
+    if key_update_target != 0 && keys.local_update_due(key_update_target, clock.now())? {
+        keys.local_update(
+            endpoint,
+            &mut material.application,
+            clock.now(),
+            book.pto_duration_us()?,
+        )
+        .await?;
+        control.changed()?;
     }
     Ok(None)
 }

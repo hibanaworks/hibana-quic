@@ -758,6 +758,24 @@ impl<'a> ApplicationWriteKeys<'a> {
         }
         Ok(())
     }
+    fn local_update_permitted(&self, receive_generation: u64, now: u64) -> bool {
+        receive_generation == self.receive_generation
+            && self.generation == self.receive_generation
+            && self.confirmation.is_some()
+            && self.update_evidence.as_ref().is_some_and(|evidence| {
+                evidence.acknowledged.sent_key_generation == self.generation
+                    && now >= evidence.not_before
+            })
+    }
+    /// A policy target is compared with actual installed key generations and
+    /// affine ACK/confirmation evidence. No independent update-progress flag.
+    pub(crate) fn local_update_due(&self, target: u64, now: u64) -> Result<bool, Error> {
+        self.ensure_active()?;
+        if now < self.last_now {
+            return Err(Error::InvalidTime);
+        }
+        Ok(self.generation < target && self.local_update_permitted(self.receive_generation, now))
+    }
     pub(crate) fn initiate(
         &mut self,
         ready: LocalUpdateReady<'a>,
@@ -772,15 +790,7 @@ impl<'a> ApplicationWriteKeys<'a> {
             if now < ready.prepared_at {
                 return Err(Error::InvalidTime);
             }
-            if ready.receive_generation != self.receive_generation
-                || self.generation != self.receive_generation
-                || self.confirmation.is_none()
-                || self.update_evidence.as_ref().is_none_or(|evidence| {
-                    evidence.acknowledged.sent_key_generation != self.generation
-                        || now < evidence.not_before
-                })
-                || self.next.is_none()
-            {
+            if !self.local_update_permitted(ready.receive_generation, now) || self.next.is_none() {
                 return Err(Error::KeyUpdateNotAllowed);
             }
             self.promote()

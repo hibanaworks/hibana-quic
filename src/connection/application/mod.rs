@@ -66,6 +66,8 @@ pub struct EarlyServer<'a, const RX: usize> {
     pub policy: crate::early_data::ServerPolicy,
 }
 pub struct Setup<'a, const RX: usize, const CHUNK: usize> {
+    /// Optional target write generation, reached only after actual ACK and QUIC confirmation. Zero leaves initiation to the peer.
+    pub key_update_target: u64,
     pub early: Option<EarlyServer<'a, RX>>,
     pub config: Config<'a>,
     pub local_limits: streams::Limits,
@@ -96,6 +98,8 @@ impl Default for Outcomes {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Report {
+    /// Actual installed write generation observed before final key retirement.
+    pub key_generation: u64,
     pub early_accepted_packets: usize,
     pub early_stream_bytes: u64,
     pub early_finished_streams: usize,

@@ -199,7 +199,8 @@ impl Report {
         let stats = reactor.statistics();
         let transfer = if let Some(report) = self.application {
             format!(
-                "\"scope\":\"authenticated-file-transfer\",\"early_accepted_packets\":{},\"early_stream_bytes\":{},\"early_finished_streams\":{},\"quic_handshake_confirmed\":{},\"http_transfer_complete\":true,\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{}",
+                "\"scope\":\"authenticated-file-transfer\",\"key_generation\":{},\"early_accepted_packets\":{},\"early_stream_bytes\":{},\"early_finished_streams\":{},\"quic_handshake_confirmed\":{},\"http_transfer_complete\":true,\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{}",
+                report.key_generation,
                 report.early_accepted_packets,
                 report.early_stream_bytes,
                 report.early_finished_streams,
@@ -247,6 +248,7 @@ async fn connected(
     first: Option<&[u8]>,
     mut files: Option<direct_bootstrap::Files>,
     early: Option<application_storage::EarlyStorage>,
+    key_update_target: u64,
 ) -> Result<Report> {
     let generation = u64::from_be_bytes(random::<8>()?);
     let mut scope = ApplicationKeyScope::new(generation);
@@ -315,12 +317,16 @@ async fn connected(
             generation,
             files,
             early,
+            key_update_target,
         ))
         .await
         .map_err(|error| match diagnostics.take() {
             Some(detail) => format!("{error}: {detail}"),
             None => error,
         })?;
+        if report.key_generation < key_update_target {
+            return Err("requested key generation was not actually installed".into());
+        }
         if !report.confirmed
             // A real peer close retires the server's retained response even
             // when the peer did not include its final ACK. Keep that fact false
@@ -488,6 +494,7 @@ async fn run_async(
             cipher,
             resumption,
             early,
+            key_update_target,
             ca,
             files,
             ..
@@ -632,6 +639,7 @@ async fn run_async(
                     None,
                     files,
                     None,
+                    key_update_target,
                 ))
                 .await?;
                 if resumption && previous.is_some() && !report.resumed {
@@ -799,6 +807,7 @@ async fn run_async(
                     Some(&first[..len]),
                     files,
                     early_storage,
+                    0,
                 ))
                 .await?;
                 if resumption && previous.is_some() && !report.resumed {

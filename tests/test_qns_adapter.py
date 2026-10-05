@@ -64,8 +64,15 @@ class EndpointCommand(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.command(env, resolve)
 
+    def test_keyupdate_client_requests_one_actual_generation(self):
+        env = self.env(); env.update(TESTCASE='keyupdate')
+        args = module.command(env, resolve)
+        self.assertEqual(args[args.index('--key-update') + 1], 'once')
+        args = module.command({'ROLE':'server', 'TESTCASE':'keyupdate'}, resolve)
+        self.assertNotIn('--key-update', args)
+
     def test_unsupported_is_explicit(self):
-        for case in ('keyupdate', 'retry', 'http3', 'unknown'):
+        for case in ('retry', 'http3', 'unknown'):
             with self.assertRaises(module.Unsupported):
                 module.command({'ROLE':'client', 'TESTCASE':case}, resolve)
     def test_extra_params_not_evaluated(self):

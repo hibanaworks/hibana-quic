@@ -1,17 +1,18 @@
 {
-  "request": "Qualify peer-initiated key update after fixing stale recovery commit time",
-  "requested_at": "2026-10-05T06:40:00Z",
+  "request": "Qualify actual locally initiated key update in both directions",
+  "requested_at": "2026-10-05T07:00:00Z",
   "scope": [
     "unchanged Neqo keyupdate baseline",
-    "server keyupdate candidate"
+    "keyupdate in both candidate directions"
   ],
   "approval": "User requested implementation and qualification of remaining Neqo interoperability cases.",
   "local_evidence": "docs/early-data-integration.md",
   "cases": [
     "keyupdate"
   ],
-  "qualification": "Native unchanged Neqo initiated key update, then candidate failed with actual Recovery(TimeWentBackwards). Refresh the real clock after projected peer-key installation before committing shared recovery state; retain monotonicity rejection. Fixed native Neqo baseline and server-direction 3 MiB transfer pass exact byte hashes. Client initiation remains unqualified. Require unchanged runner baseline and actual server-direction key-phase trace verdict.",
+  "qualification": "The server direction passed officially at 6bfdf43 in run37274077941. Client once-policy derives readiness from actual scoped QUIC confirmation and accepted-packet ACK evidence, then uses existing projected LocalUpdate/LocalInstalled/LocalSettled ownership transfer. Native baseline and both candidate directions repeatedly match 3 MiB; candidate client reports actual installed write generation one and completed ACK/close. Existing no-update default, zero-RTT and blackhole regressions pass. Require unchanged Neqo control and both exact runner key-phase trace verdicts.",
   "candidate_directions": [
+    "client",
     "server"
   ],
   "reference_implementation": "neqo"

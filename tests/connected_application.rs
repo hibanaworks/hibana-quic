@@ -1002,6 +1002,7 @@ fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
     let mut client_refs = [PacketReference::EMPTY; 64];
     let mut server_refs = [PacketReference::EMPTY; 64];
     let client_setup = application::Setup {
+        key_update_target: 0,
         early: None,
         config: Config {
             side: Side::Client,
@@ -1022,6 +1023,7 @@ fn connection_case_with_slots(count: usize, loss: Loss, client_slots: usize) {
         },
     };
     let server_setup = application::Setup {
+        key_update_target: 0,
         early: None,
         config: Config {
             side: Side::Server,

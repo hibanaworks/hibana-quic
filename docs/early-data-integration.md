@@ -2,7 +2,7 @@
 
 This is an implementation ledger, not an official interop result.
 
-Current observed qualification is **20/44** unique candidate case/direction cells.
+Current observed qualification is **21/44** unique candidate case/direction cells.
 The first sixteen came from seven
 existing cases in both directions at `99943a86` in
 [run 37255425723](https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723),
@@ -211,3 +211,26 @@ The monotonicity guard correctly rejected it. Recovery now reads the actual
 clock at its synchronous commit after that await; it does not clamp time or
 relax the rollback check. The failed-before native evidence and fixed 3 MiB
 byte-exact transfer are separate from the pending official key-phase verdict.
+
+## Key-update qualification and client initiation (2026-10-05)
+
+The unchanged Neqo baseline and candidate server U passed officially at
+6bfdf43 in [run37274077941](https://github.com/hibanaworks/hibana-quic/actions/runs/37274077941).
+Runtime run37274077932 also passed. This adds one unique cell, taking the
+current aggregate to 21/44; client U remains pending its actual trace verdict.
+
+The client now accepts an explicit `--key-update once` policy for a single
+file-transfer connection. The library compares a target generation with actual
+installed key generations and scoped ACK/QUIC-confirmation evidence. It adds no
+update-in-progress flag: the existing localUpdate contract parks the real read
+key, installs the write epoch and returns the read owner through LocalSettled.
+Default ordinary traffic does not request local updates. Peer updates retain
+the independent actual-authentication path. The report observes the actual
+write generation before final key retirement, and the host refuses success if
+a requested target was never installed.
+
+Three native Neqo trials pass the control and both candidate directions with
+byte-identical 3 MiB transfers. The candidate client reports key generation 1,
+real confirmation, all stream bytes ACKed and completed close. Native 0-RTT and
+blackhole regressions also pass. These local results do not substitute for the
+runner's encrypted packet-trace requirement for key-phase changes on both sides.

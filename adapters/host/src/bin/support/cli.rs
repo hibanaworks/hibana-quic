@@ -22,6 +22,7 @@ pub enum Options {
         cipher: CipherPolicy,
         resumption: bool,
         early: bool,
+        key_update_target: u64,
         files: Option<ClientFiles>,
     },
     Server {
@@ -139,6 +140,11 @@ pub fn options(args: &[String]) -> Result<Options> {
                     );
                 }
             };
+            let key_update_target = match flags.remove("--key-update").unwrap_or("none") {
+                "none" => 0,
+                "once" if files.is_some() && !resumption => 1,
+                _ => return Err("--key-update once requires one file-transfer connection".into()),
+            };
             Options::Client {
                 connect,
                 server_name,
@@ -147,6 +153,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 cipher,
                 resumption,
                 early,
+                key_update_target,
                 files,
             }
         }
@@ -272,6 +279,26 @@ mod tests {
             .application_requested()
         );
     }
+    #[test]
+    fn key_update_policy_is_explicit_and_bounded() {
+        let base = "client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem --request /a --downloads output";
+        let Options::Client {
+            key_update_target, ..
+        } = options(&args(&format!("{base} --key-update once"))).unwrap()
+        else {
+            panic!("client expected")
+        };
+        assert_eq!(key_update_target, 1);
+        let Options::Client {
+            key_update_target, ..
+        } = options(&args(base)).unwrap()
+        else {
+            panic!("client expected")
+        };
+        assert_eq!(key_update_target, 0);
+        assert!(options(&args(&format!("{base} --key-update arbitrary"))).is_err());
+    }
+
     #[test]
     fn client_early_requires_explicit_replay_safe_two_connection_mode() {
         let base = "client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem --request /a --request /b --downloads output";

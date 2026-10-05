@@ -63,6 +63,7 @@ impl<const RX: usize> Storage<RX> {
         config: Config<'a>,
     ) -> Result<application::Setup<'a, RX, CHUNK_BYTES>, String> {
         Ok(application::Setup {
+            key_update_target: 0,
             early: None,
             config,
             local_limits: local_limits::<RX>(config.side, self.streams.len()),

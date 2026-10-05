@@ -340,6 +340,20 @@ impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
         result
     }
 
+    pub(crate) fn local_update_due(&self, target: u64, now: u64) -> Result<bool, Error> {
+        let owned = self
+            .exchange
+            .owner
+            .owned
+            .try_borrow()
+            .map_err(|_| Error::Binding)?;
+        Ok(owned
+            .application
+            .as_ref()
+            .ok_or(Error::Retired)?
+            .local_update_due(target, now)?)
+    }
+
     /// The parked object owns the actual receive key until the projected
     /// write-owner response returns it. No local-update phase flag is stored.
     pub(crate) async fn local_update(
@@ -610,10 +624,13 @@ mod tests {
         let measured = actor_test_allocator::NoAlloc::start();
         {
             let mut receiving = pin!(async {
+                assert!(!control.local_update_due(0, 0).unwrap());
+                assert_eq!(control.local_update_due(1, 0).unwrap(), authorized_fixture);
                 let result = control.local_update(&mut rx, &mut read, 0, 10).await;
                 if authorized_fixture {
                     result.unwrap();
                     assert_eq!(owner.generation().unwrap(), 1);
+                    assert!(!control.local_update_due(1, 0).unwrap());
                 } else {
                     assert!(matches!(
                         result,

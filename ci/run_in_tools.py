@@ -42,7 +42,7 @@ ENDPOINT_ENUMS = {
 ENDPOINT_BOOLEANS = {'lifecycle_closed', 'resumption_offered', 'resumed', 'handshake_complete', 'pending_work',
     'certificate_chain_hostname_time_verified'}
 ENDPOINT_NUMBERS = {key: MAX_COUNT for key in (
-    'files_completed', 'streams_completed', 'live_streams', 'datagrams_sent',
+    'key_generation', 'files_completed', 'streams_completed', 'live_streams', 'datagrams_sent',
     'datagrams_received', 'authenticated_packets', 'discarded_packets',
     'send_key_generation', 'authenticated_receive_key_generation',
     'connection_index', 'connection_generation', 'tickets_cached',

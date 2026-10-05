@@ -152,6 +152,7 @@ pub async fn files<'scope>(
     generation: u64,
     files: &mut Files,
     mut early: Option<application_storage::EarlyStorage>,
+    key_update_target: u64,
 ) -> Result<application::Report, String> {
     let programs = application::protocol::programs();
     // Resolver states precede the kit so all endpoint borrows expire first.
@@ -238,7 +239,8 @@ pub async fn files<'scope>(
             macro_rules! run_client {
                 ($rx:expr) => {{
                     let mut storage = application_storage::Storage::<$rx>::new(client.count)?;
-                    let setup = storage.setup(config)?;
+                    let mut setup = storage.setup(config)?;
+                    setup.key_update_target = key_update_target;
                     if source.early_status() == hibana_quic::early_data::EarlyStatus::Offered {
                         let mut early_slots = (0..client.count)
                             .map(|_| hibana_quic::connection::early_client::RequestSlot::EMPTY)

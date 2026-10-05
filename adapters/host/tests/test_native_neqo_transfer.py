@@ -75,6 +75,7 @@ def main():
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--timeout-seconds', type=int, default=60)
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
+    parser.add_argument('--client-keyupdate', action='store_true')
     parser.add_argument('--client-early', action='store_true')
     parser.add_argument('--client-early-loss', action='store_true', help='drop the first real 0-RTT datagram; forward direction only')
     parser.add_argument('--client-early-reject', action='store_true', help='native Neqo startup rejection; forward direction only')
@@ -84,6 +85,8 @@ def main():
         parser.error('early fault scenarios require --scenario zerortt --client-early')
     if args.client_early_reject and args.client_early_loss:
         parser.error('select acceptance/loss or rejection separately')
+    if args.client_keyupdate and args.scenario != 'keyupdate':
+        parser.error('--client-keyupdate requires --scenario keyupdate')
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
     env = os.environ.copy()
     env['RUST_LOG'] = 'debug'
@@ -133,7 +136,7 @@ def main():
         checked([str(nss / 'bin/pk12util'), '-i', str(root / 'fixture.p12'), '-d', str(db), '-W', '', '-K', ''], env)
         directions = ('forward',) if args.client_early_reject or args.client_early_loss else (('baseline', 'reverse') if args.scenario == 'zerortt' and not args.client_early else ('baseline', 'forward', 'reverse'))
         if args.scenario == 'keyupdate':
-            directions = ('baseline', 'reverse')
+            directions = ('baseline', 'forward', 'reverse') if args.client_keyupdate else ('baseline', 'reverse')
         for direction in directions:
             destination = root / direction
             destination.mkdir()
@@ -190,6 +193,8 @@ def main():
                                 command += ['--session', 'resume']
                                 if args.scenario == 'zerortt':
                                     command += ['--early', 'replay-safe']
+                            if args.scenario == 'keyupdate':
+                                command += ['--key-update', 'once']
                             for url in urls:
                                 command += ['--request', url]
                         else:
@@ -246,7 +251,11 @@ def main():
                         if args.scenario == 'blackhole':
                             assert sum(v for k, v in proxy.stats.items() if k.endswith('_blackhole_dropped')) > 0, dict(proxy.stats)
                         if args.scenario == 'keyupdate' and returncode == 0:
-                            assert 'Initiating key update' in result.stderr, 'reference never actually initiated key update'
+                            if direction == 'forward':
+                                actual = next(json.loads(line) for line in result.stdout.splitlines() if line.startswith('{'))
+                                assert actual['key_generation'] >= 1 and actual['lifecycle_closed'], actual
+                            else:
+                                assert 'Initiating key update' in result.stderr, 'reference never actually initiated key update'
                         if returncode != 0 or any(x['expected_sha256'] != x['received_sha256'] for x in files):
                             if args.scenario == 'keyupdate':
                                 try:

@@ -212,6 +212,7 @@ async fn connected<
         return Err(Error::Binding);
     }
     let Setup {
+        key_update_target,
         config,
         local_limits,
         handshake_crypto,
@@ -438,6 +439,7 @@ async fn connected<
                 receive_io,
                 &terminal,
                 confirmation,
+                key_update_target,
             )
             .await
         });
@@ -538,6 +540,7 @@ async fn connected<
     }
 
     let before_close = book_tx.snapshot();
+    let key_generation = owner.generation()?;
     let completed_streams = if config.side == Side::Client {
         state.completed_count()
     } else {
@@ -605,6 +608,7 @@ async fn connected<
         return Err(Error::Incomplete);
     }
     Ok(Report {
+        key_generation,
         early_accepted_packets: early_received.packets + accepted_early,
         early_stream_bytes: early_received.stream_bytes
             + if let Some(requests) = client_early.as_deref() {
