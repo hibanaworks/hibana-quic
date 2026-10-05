@@ -28,6 +28,14 @@ class Diagnostics(unittest.TestCase):
         self.case = self.logs / 'neqo_hibana-quic/transfer'
         self.case.mkdir(parents=True)
 
+    def test_requested_multiplexing_is_registered_and_unknown_cases_still_fail(self):
+        self.assertEqual(self.module.requested_cases(['multiplexing']), {'multiplexing'})
+        self.assertEqual(self.module.CASE_ABBREVIATIONS['multiplexing'], 'M')
+        with self.assertRaises(RuntimeError):
+            self.module.requested_cases(['unregistered'])
+        with self.assertRaises(RuntimeError):
+            self.module.requested_cases(['multiplexing', 'multiplexing'])
+
     def put(self, relative, data):
         path = self.case / relative
         path.parent.mkdir(parents=True, exist_ok=True)

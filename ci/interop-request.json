@@ -1,6 +1,6 @@
 {
   "request": "Qualify bounded multiplexing through existing Hibana stream reclamation",
-  "requested_at": "2026-10-05T18:31:00Z",
+  "requested_at": "2026-10-05T18:52:00Z",
   "scope": [
     "unchanged Neqo multiplexing control",
     "multiplexing both candidate directions"
@@ -15,5 +15,6 @@
     "client",
     "server"
   ],
-  "reference_implementation": "neqo"
+  "reference_implementation": "neqo",
+  "previous_attempt": "37357632689 stopped before runner execution because multiplexing was absent from the local case-abbreviation registry. Add the pinned runner M mapping; no runner or protocol changes."
 }
