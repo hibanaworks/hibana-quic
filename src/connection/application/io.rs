@@ -56,7 +56,6 @@ pub(crate) struct State<'book, const CHUNK: usize, B> {
     opened: Inbox<Production<'book>>,
     submitted: Cell<usize>,
     bodies_finished: Cell<usize>,
-    done: Cell<bool>,
     completed: RefCell<[Option<StreamHandle>; MAX_LIVE_STREAMS]>,
     completed_total: Cell<usize>,
 }
@@ -67,7 +66,6 @@ impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
             opened: Inbox::new(),
             submitted: Cell::new(0),
             bodies_finished: Cell::new(0),
-            done: Cell::new(false),
             completed: RefCell::new([None; MAX_LIVE_STREAMS]),
             completed_total: Cell::new(0),
         }
@@ -80,9 +78,6 @@ impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
     }
     pub(crate) fn completed_count(&self) -> usize {
         self.completed_total.get()
-    }
-    pub(crate) fn source_done(&self) -> bool {
-        self.done.get()
     }
     pub(crate) fn is_complete(&self, stream_id: u64) -> bool {
         self.completed
@@ -147,93 +142,6 @@ enum Admission {
     Interrupted,
 }
 
-/// Transfer actual owned input before announcing it on the source wire. The
-/// ingress response and SourceTaken settle the lane even during shutdown.
-async fn submit<const CHUNK: usize, B>(
-    endpoint: &mut Endpoint<'_, { p::SOURCE }>,
-    state: &State<'_, CHUNK, B>,
-    sequence: &mut u64,
-    input: Input<B, CHUNK>,
-) -> Result<Admission, Error> {
-    state.data.put(input).map_err(|_| Error::Binding)?;
-    endpoint.send::<p::SourceData>(sequence).await?;
-    let reply = endpoint.offer().await?;
-    let accepted = match reply.label() {
-        1 => {
-            check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
-            Admission::Accepted
-        }
-        2 => {
-            check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
-            Admission::Interrupted
-        }
-        187 => {
-            check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
-            Admission::Stopped
-        }
-        label => return Err(Error::UnexpectedLabel(label)),
-    };
-    endpoint.send::<p::SourceTaken>(sequence).await?;
-    *sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
-    Ok(accepted)
-}
-
-// A stream is bound once at the start of its finite production fragment.
-async fn begin_stream<'book, const CHUNK: usize, B>(
-    endpoint: &mut Endpoint<'_, { p::SOURCE }>,
-    state: &State<'book, CHUNK, B>,
-    production: Production<'book>,
-) -> Result<(), Error> {
-    let id = production.id();
-    state.opened.put(production).map_err(|_| Error::Binding)?;
-    endpoint.send::<p::SourceOpen>(&id).await?;
-    Ok(())
-}
-
-async fn end_stream(
-    endpoint: &mut Endpoint<'_, { p::SOURCE }>,
-    stream_id: u64,
-    outcome: Admission,
-) -> Result<Admission, Error> {
-    endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
-    if outcome == Admission::Accepted {
-        endpoint.send::<p::SourceFin>(&stream_id).await?;
-    } else {
-        // Connection shutdown abandons production; this is not a fabricated
-        // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
-        endpoint.send::<p::SourceAbandon>(&stream_id).await?;
-    }
-    let reply = endpoint.offer().await?;
-    match reply.label() {
-        171 => {
-            check(reply.recv::<p::SourceEnded>().await?, stream_id)?;
-            Ok(outcome)
-        }
-        172 => {
-            check(reply.recv::<p::SourceEndRejected>().await?, stream_id)?;
-            Ok(Admission::Interrupted)
-        }
-        188 => {
-            check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
-            Ok(Admission::Stopped)
-        }
-        label => Err(Error::UnexpectedLabel(label)),
-    }
-}
-
-async fn source_finished<const CHUNK: usize, B>(
-    endpoint: &mut Endpoint<'_, { p::SOURCE }>,
-    control: &Control<'_, '_>,
-    state: &State<'_, CHUNK, B>,
-    sequence: u64,
-) -> Result<(), Error> {
-    endpoint.send::<p::SourceDone>(&sequence).await?;
-    check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
-    state.done.set(true);
-    control.changed()?;
-    Ok(())
-}
-
 pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     control: &Control<'_, '_>,
@@ -242,105 +150,161 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
     requests: &mut impl ClientRequests,
 ) -> Result<(), Error> {
     let mut sequence = 0;
-    let result = client_requests(endpoint, control, state, app, requests, &mut sequence).await;
+    let result = async {
+        let sequence = &mut sequence;
+
+        if CHUNK == 0 {
+            return Err(Error::Capacity);
+        }
+        let mut request = [0; REQUEST_BYTES];
+        while !control.stopping() {
+            let next = match control
+                .until_stop(0, next_request(state, requests, &mut request))
+                .await
+            {
+                Some(result) => result?,
+                None => break,
+            };
+            let Some(len) = next else {
+                break;
+            };
+            let stream = loop {
+                if control.stopping() {
+                    return Ok(());
+                }
+                let revision = control.revision();
+                let result = app
+                    .try_borrow_mut()
+                    .map_err(|_| Error::Binding)?
+                    .open_local();
+                match result {
+                    Ok(stream) => break stream,
+                    // Peer credit and the actual three-owner reclamation can
+                    // unblock the bounded slot; neither is fabricated here.
+                    Err(application_stream::Error::Streams(
+                        streams::Error::StreamLimit | streams::Error::Capacity,
+                    )) => {
+                        control.wait(0, revision).await;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            };
+            requests
+                .started(stream.id())
+                .map_err(|_| Error::Application)?;
+            state.submitted()?;
+            control.changed()?;
+            let production = app
+                .try_borrow_mut()
+                .map_err(|_| Error::Binding)?
+                .take_production(stream)?;
+            {
+                let id = production.id();
+                state.opened.put(production).map_err(|_| Error::Binding)?;
+                endpoint.send::<p::SourceOpen>(&id).await?;
+            }
+            let result = async {
+                let mut offset = 0;
+                while offset < len && !control.stopping() {
+                    let count = (len - offset).min(CHUNK);
+                    let mut chunk = Chunk {
+                        bytes: [0; CHUNK],
+                        len: count,
+                    };
+                    chunk.bytes[..count].copy_from_slice(&request[offset..offset + count]);
+                    let admitted = async {
+                        let endpoint = &mut *endpoint;
+
+                        let sequence = &mut *sequence;
+                        let input = Input::Chunk(chunk);
+
+                        state.data.put(input).map_err(|_| Error::Binding)?;
+                        endpoint.send::<p::SourceData>(sequence).await?;
+                        let reply = endpoint.offer().await?;
+                        let accepted = match reply.label() {
+                            1 => {
+                                check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
+                                Admission::Accepted
+                            }
+                            2 => {
+                                check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
+                                Admission::Interrupted
+                            }
+                            187 => {
+                                check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
+                                Admission::Stopped
+                            }
+                            label => return Err(Error::UnexpectedLabel(label)),
+                        };
+                        endpoint.send::<p::SourceTaken>(sequence).await?;
+                        *sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                        Ok(accepted)
+                    }
+                    .await?;
+                    if admitted != Admission::Accepted {
+                        return Ok(admitted);
+                    }
+                    offset += count;
+                    crate::runtime::yield_now().await;
+                }
+                Ok::<_, Error>(if offset == len {
+                    Admission::Accepted
+                } else {
+                    Admission::Interrupted
+                })
+            }
+            .await;
+            let finished = async {
+                let endpoint = &mut *endpoint;
+                let stream_id = stream.id();
+                let outcome = result.as_ref().copied().unwrap_or(Admission::Interrupted);
+
+                endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
+                if outcome == Admission::Accepted {
+                    endpoint.send::<p::SourceFin>(&stream_id).await?;
+                } else {
+                    // Connection shutdown abandons production; this is not a fabricated
+                    // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
+                    endpoint.send::<p::SourceAbandon>(&stream_id).await?;
+                }
+                let reply = endpoint.offer().await?;
+                match reply.label() {
+                    171 => {
+                        check(reply.recv::<p::SourceEnded>().await?, stream_id)?;
+                        Ok(outcome)
+                    }
+                    172 => {
+                        check(reply.recv::<p::SourceEndRejected>().await?, stream_id)?;
+                        Ok(Admission::Interrupted)
+                    }
+                    188 => {
+                        check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
+                        Ok(Admission::Stopped)
+                    }
+                    label => Err(Error::UnexpectedLabel(label)),
+                }
+            }
+            .await?;
+            result?;
+            match finished {
+                Admission::Interrupted => return Ok(()),
+                Admission::Stopped => continue,
+                Admission::Accepted => {}
+            }
+        }
+        Ok(())
+    }
+    .await;
     if result.is_err() {
         control.fail()?;
     }
-    source_finished(endpoint, control, state, sequence).await?;
-    result
-}
-
-async fn client_requests<'book, const RX: usize, const CHUNK: usize, B>(
-    endpoint: &mut Endpoint<'_, { p::SOURCE }>,
-    control: &Control<'_, '_>,
-    state: &State<'book, CHUNK, B>,
-    app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
-    requests: &mut impl ClientRequests,
-    sequence: &mut u64,
-) -> Result<(), Error> {
-    if CHUNK == 0 {
-        return Err(Error::Capacity);
-    }
-    let mut request = [0; REQUEST_BYTES];
-    while !control.stopping() {
-        let next = match control
-            .until_stop(0, next_request(state, requests, &mut request))
-            .await
-        {
-            Some(result) => result?,
-            None => break,
-        };
-        let Some(len) = next else {
-            break;
-        };
-        let stream = loop {
-            if control.stopping() {
-                return Ok(());
-            }
-            let revision = control.revision();
-            let result = app
-                .try_borrow_mut()
-                .map_err(|_| Error::Binding)?
-                .open_local();
-            match result {
-                Ok(stream) => break stream,
-                // Peer MAX_STREAMS can unblock opening; the fixed local
-                // table's Capacity cannot. Its slots are never recycled.
-                Err(application_stream::Error::Streams(
-                    streams::Error::StreamLimit | streams::Error::Capacity,
-                )) => {
-                    control.wait(0, revision).await;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        };
-        requests
-            .started(stream.id())
-            .map_err(|_| Error::Application)?;
-        state.submitted()?;
+    {
+        endpoint.send::<p::SourceDone>(&sequence).await?;
+        check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
+        endpoint.send::<p::SourceJoined>(&sequence).await?;
         control.changed()?;
-        let production = app
-            .try_borrow_mut()
-            .map_err(|_| Error::Binding)?
-            .take_production(stream)?;
-        begin_stream(endpoint, state, production).await?;
-        let result = async {
-            let mut offset = 0;
-            while offset < len && !control.stopping() {
-                let count = (len - offset).min(CHUNK);
-                let mut chunk = Chunk {
-                    bytes: [0; CHUNK],
-                    len: count,
-                };
-                chunk.bytes[..count].copy_from_slice(&request[offset..offset + count]);
-                let admitted = submit(endpoint, state, sequence, Input::Chunk(chunk)).await?;
-                if admitted != Admission::Accepted {
-                    return Ok(admitted);
-                }
-                offset += count;
-                crate::runtime::yield_now().await;
-            }
-            Ok::<_, Error>(if offset == len {
-                Admission::Accepted
-            } else {
-                Admission::Interrupted
-            })
-        }
-        .await;
-        let finished = end_stream(
-            endpoint,
-            stream.id(),
-            result.as_ref().copied().unwrap_or(Admission::Interrupted),
-        )
-        .await?;
-        result?;
-        match finished {
-            Admission::Interrupted => return Ok(()),
-            Admission::Stopped => continue,
-            Admission::Accepted => {}
-        }
     }
-    Ok(())
+    result
 }
 
 /// `next` must still be called at the limit so exactly MAX_REQUESTS requests
@@ -377,81 +341,139 @@ pub(crate) async fn server_source<
     handler: &mut H,
 ) -> Result<(), Error> {
     let mut sequence = 0;
-    let result = server_responses(endpoint, control, state, requests, handler, &mut sequence).await;
+    let result = async {
+        let sequence = &mut sequence;
+
+        if CHUNK == 0 {
+            return Err(Error::Capacity);
+        }
+        let limit = handler.request_limit().map(core::num::NonZeroUsize::get);
+        if limit.is_some_and(|count| count > MAX_REQUESTS) {
+            return Err(Error::Capacity);
+        }
+        while !control.stopping() {
+            if limit == Some(state.submitted_count()) {
+                break;
+            }
+            let request = match control.until_stop(0, requests.recv()).await {
+                Some(Ok(request)) => request,
+                Some(Err(_)) | None => break,
+            };
+            if state.submitted_count() >= MAX_REQUESTS {
+                return Err(Error::Capacity);
+            }
+            let body = match control
+                .until_stop(
+                    0,
+                    handler.open(request.production.id(), &request.bytes[..request.len]),
+                )
+                .await
+            {
+                Some(result) => result.map_err(|_| Error::Application)?,
+                None => break,
+            };
+            state.submitted()?;
+            control.changed()?;
+            let stream_id = request.production.id();
+            {
+                let production = request.production;
+
+                let id = production.id();
+                state.opened.put(production).map_err(|_| Error::Binding)?;
+                endpoint.send::<p::SourceOpen>(&id).await?;
+            }
+            // The actual reader moves once through the Hibana data edge. Ingress
+            // alone owns the reader until EOF, failure or cancellation; each packet
+            // still uses its ordinary bounded send chunk and publication contract.
+            let result = async {
+                let endpoint = &mut *endpoint;
+
+                let sequence = &mut *sequence;
+                let input = Input::Body(body);
+
+                state.data.put(input).map_err(|_| Error::Binding)?;
+                endpoint.send::<p::SourceData>(sequence).await?;
+                let reply = endpoint.offer().await?;
+                let accepted = match reply.label() {
+                    1 => {
+                        check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
+                        Admission::Accepted
+                    }
+                    2 => {
+                        check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
+                        Admission::Interrupted
+                    }
+                    187 => {
+                        check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
+                        Admission::Stopped
+                    }
+                    label => return Err(Error::UnexpectedLabel(label)),
+                };
+                endpoint.send::<p::SourceTaken>(sequence).await?;
+                *sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                Ok(accepted)
+            }
+            .await;
+            let finished = async {
+                let endpoint = &mut *endpoint;
+
+                let outcome = result.as_ref().copied().unwrap_or(Admission::Interrupted);
+
+                endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
+                if outcome == Admission::Accepted {
+                    endpoint.send::<p::SourceFin>(&stream_id).await?;
+                } else {
+                    // Connection shutdown abandons production; this is not a fabricated
+                    // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
+                    endpoint.send::<p::SourceAbandon>(&stream_id).await?;
+                }
+                let reply = endpoint.offer().await?;
+                match reply.label() {
+                    171 => {
+                        check(reply.recv::<p::SourceEnded>().await?, stream_id)?;
+                        Ok(outcome)
+                    }
+                    172 => {
+                        check(reply.recv::<p::SourceEndRejected>().await?, stream_id)?;
+                        Ok(Admission::Interrupted)
+                    }
+                    188 => {
+                        check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
+                        Ok(Admission::Stopped)
+                    }
+                    label => Err(Error::UnexpectedLabel(label)),
+                }
+            }
+            .await?;
+            result?;
+            match finished {
+                Admission::Interrupted => return Ok(()),
+                Admission::Stopped => continue,
+                Admission::Accepted => {}
+            }
+            state.bodies_finished.set(
+                state
+                    .bodies_finished
+                    .get()
+                    .checked_add(1)
+                    .ok_or(Error::Capacity)?,
+            );
+            control.changed()?;
+        }
+        Ok(())
+    }
+    .await;
     if result.is_err() {
         control.fail()?;
     }
     requests.close();
-    source_finished(endpoint, control, state, sequence).await?;
+    {
+        endpoint.send::<p::SourceDone>(&sequence).await?;
+        check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
+        endpoint.send::<p::SourceJoined>(&sequence).await?;
+        control.changed()?;
+    }
     result
-}
-
-async fn server_responses<'book, const CHUNK: usize, B: BodyReader, H: ServerHandler<Body = B>>(
-    endpoint: &mut Endpoint<'_, { p::SOURCE }>,
-    control: &Control<'_, '_>,
-    state: &State<'book, CHUNK, B>,
-    requests: &mut Receiver<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
-    handler: &mut H,
-    sequence: &mut u64,
-) -> Result<(), Error> {
-    if CHUNK == 0 {
-        return Err(Error::Capacity);
-    }
-    let limit = handler.request_limit().map(core::num::NonZeroUsize::get);
-    if limit.is_some_and(|count| count > MAX_REQUESTS) {
-        return Err(Error::Capacity);
-    }
-    while !control.stopping() {
-        if limit == Some(state.submitted_count()) {
-            break;
-        }
-        let request = match control.until_stop(0, requests.recv()).await {
-            Some(Ok(request)) => request,
-            Some(Err(_)) | None => break,
-        };
-        if state.submitted_count() >= MAX_REQUESTS {
-            return Err(Error::Capacity);
-        }
-        let body = match control
-            .until_stop(
-                0,
-                handler.open(request.production.id(), &request.bytes[..request.len]),
-            )
-            .await
-        {
-            Some(result) => result.map_err(|_| Error::Application)?,
-            None => break,
-        };
-        state.submitted()?;
-        control.changed()?;
-        let stream_id = request.production.id();
-        begin_stream(endpoint, state, request.production).await?;
-        // The actual reader moves once through the Hibana data edge. Ingress
-        // alone owns the reader until EOF, failure or cancellation; each packet
-        // still uses its ordinary bounded send chunk and publication contract.
-        let result = submit(endpoint, state, sequence, Input::Body(body)).await;
-        let finished = end_stream(
-            endpoint,
-            stream_id,
-            result.as_ref().copied().unwrap_or(Admission::Interrupted),
-        )
-        .await?;
-        result?;
-        match finished {
-            Admission::Interrupted => return Ok(()),
-            Admission::Stopped => continue,
-            Admission::Accepted => {}
-        }
-        state.bodies_finished.set(
-            state
-                .bodies_finished
-                .get()
-                .checked_add(1)
-                .ok_or(Error::Capacity)?,
-        );
-        control.changed()?;
-    }
-    Ok(())
 }
 
 pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyReader>(
@@ -1103,6 +1125,7 @@ mod stop_tests {
         let state = State::<8, CountingBody<'_>>::new();
         let global = p::source_choreography();
         let source: RoleProgram<{ p::SOURCE }> = project(&global);
+        let source_join_role: RoleProgram<{ p::SOURCE_JOIN }> = project(&global);
         let ingress_role: RoleProgram<{ p::INGRESS }> = project(&global);
         let collector_role: RoleProgram<{ p::SOURCE_COLLECTOR }> = project(&global);
         let reclaim = super::super::reclaim::Exchange::new();
@@ -1115,21 +1138,30 @@ mod stop_tests {
             .rendezvous(&mut slab, carrier.bind(id).unwrap())
             .unwrap();
         let mut source = rv.enter(id, &source).unwrap();
+        let mut source_join = rv.enter(id, &source_join_role).unwrap();
         let mut input = rv.enter(id, &ingress_role).unwrap();
         let mut collector = rv.enter(id, &collector_role).unwrap();
         let allocations = actor_test_allocator::NoAlloc::start();
         let mut all = pin!(crate::runtime::join2(
             async {
                 let mut sequence = 0;
-                begin_stream(&mut source, &state, first_production).await?;
+                {
+                    let endpoint = &mut source;
+                    let state = &state;
+                    let production = first_production;
+
+                    let id = production.id();
+                    state.opened.put(production).map_err(|_| Error::Binding)?;
+                    endpoint.send::<p::SourceOpen>(&id).await?;
+                }
                 let outcome = if fin {
                     Admission::Accepted
                 } else {
-                    let result = submit(
-                        &mut source,
-                        &state,
-                        &mut sequence,
-                        if body {
+                    let result = async {
+                        let endpoint = &mut source;
+                        let state = &state;
+                        let sequence = &mut sequence;
+                        let input = if body {
                             Input::Body(CountingBody {
                                 drops: &drops,
                                 reads: &reads,
@@ -1141,21 +1173,83 @@ mod stop_tests {
                                 bytes: [1; 8],
                                 len: 1,
                             })
-                        },
-                    )
+                        };
+
+                        state.data.put(input).map_err(|_| Error::Binding)?;
+                        endpoint.send::<p::SourceData>(sequence).await?;
+                        let reply = endpoint.offer().await?;
+                        let accepted = match reply.label() {
+                            1 => {
+                                check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
+                                Admission::Accepted
+                            }
+                            2 => {
+                                check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
+                                Admission::Interrupted
+                            }
+                            187 => {
+                                check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
+                                Admission::Stopped
+                            }
+                            label => return Err(Error::UnexpectedLabel(label)),
+                        };
+                        endpoint.send::<p::SourceTaken>(sequence).await?;
+                        *sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                        Ok(accepted)
+                    }
                     .await?;
                     assert!(result == Admission::Stopped);
                     result
                 };
-                assert!(end_stream(&mut source, first.id(), outcome).await? == Admission::Stopped);
+                assert!(
+                    async {
+                        let endpoint = &mut source;
+                        let stream_id = first.id();
+
+                        endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
+                        if outcome == Admission::Accepted {
+                            endpoint.send::<p::SourceFin>(&stream_id).await?;
+                        } else {
+                            // Connection shutdown abandons production; this is not a fabricated
+                            // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
+                            endpoint.send::<p::SourceAbandon>(&stream_id).await?;
+                        }
+                        let reply = endpoint.offer().await?;
+                        match reply.label() {
+                            171 => {
+                                check(reply.recv::<p::SourceEnded>().await?, stream_id)?;
+                                Ok(outcome)
+                            }
+                            172 => {
+                                check(reply.recv::<p::SourceEndRejected>().await?, stream_id)?;
+                                Ok(Admission::Interrupted)
+                            }
+                            188 => {
+                                check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
+                                Ok(Admission::Stopped)
+                            }
+                            label => Err(Error::UnexpectedLabel(label)),
+                        }
+                    }
+                    .await?
+                        == Admission::Stopped
+                );
                 assert!(!control.failed());
                 assert!(!control.stopping());
-                begin_stream(&mut source, &state, second_production).await?;
-                let second_outcome = submit(
-                    &mut source,
-                    &state,
-                    &mut sequence,
-                    if body {
+                {
+                    let endpoint = &mut source;
+                    let state = &state;
+                    let production = second_production;
+
+                    let id = production.id();
+                    state.opened.put(production).map_err(|_| Error::Binding)?;
+                    endpoint.send::<p::SourceOpen>(&id).await?;
+                }
+                let second_outcome = async {
+                    let endpoint = &mut source;
+                    let state = &state;
+                    let sequence = &mut sequence;
+                    let input = if body {
                         Input::Body(CountingBody {
                             drops: &drops,
                             reads: &reads,
@@ -1167,8 +1261,30 @@ mod stop_tests {
                             bytes: [2; 8],
                             len: 1,
                         })
-                    },
-                )
+                    };
+
+                    state.data.put(input).map_err(|_| Error::Binding)?;
+                    endpoint.send::<p::SourceData>(sequence).await?;
+                    let reply = endpoint.offer().await?;
+                    let accepted = match reply.label() {
+                        1 => {
+                            check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
+                            Admission::Accepted
+                        }
+                        2 => {
+                            check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
+                            Admission::Interrupted
+                        }
+                        187 => {
+                            check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
+                            Admission::Stopped
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    };
+                    endpoint.send::<p::SourceTaken>(sequence).await?;
+                    *sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                    Ok(accepted)
+                }
                 .await?;
                 let expected = if fail_second {
                     Admission::Interrupted
@@ -1176,14 +1292,62 @@ mod stop_tests {
                     Admission::Accepted
                 };
                 assert!(second_outcome == expected);
-                assert!(end_stream(&mut source, second.id(), second_outcome).await? == expected);
+                assert!(
+                    async {
+                        let endpoint = &mut source;
+                        let stream_id = second.id();
+                        let outcome = second_outcome;
+
+                        endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
+                        if outcome == Admission::Accepted {
+                            endpoint.send::<p::SourceFin>(&stream_id).await?;
+                        } else {
+                            // Connection shutdown abandons production; this is not a fabricated
+                            // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
+                            endpoint.send::<p::SourceAbandon>(&stream_id).await?;
+                        }
+                        let reply = endpoint.offer().await?;
+                        match reply.label() {
+                            171 => {
+                                check(reply.recv::<p::SourceEnded>().await?, stream_id)?;
+                                Ok(outcome)
+                            }
+                            172 => {
+                                check(reply.recv::<p::SourceEndRejected>().await?, stream_id)?;
+                                Ok(Admission::Interrupted)
+                            }
+                            188 => {
+                                check(reply.recv::<p::SourceEndStopped>().await?, stream_id)?;
+                                Ok(Admission::Stopped)
+                            }
+                            label => Err(Error::UnexpectedLabel(label)),
+                        }
+                    }
+                    .await?
+                        == expected
+                );
                 assert_eq!(control.failed(), fail_second);
-                source_finished(&mut source, &control, &state, sequence).await?;
+                {
+                    let endpoint = &mut source;
+                    let control = &control;
+                    let state = &state;
+
+                    endpoint.send::<p::SourceDone>(&sequence).await?;
+                    check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
+                    endpoint.send::<p::SourceJoined>(&sequence).await?;
+                    control.changed()?;
+                }
                 Ok::<_, Error>(())
             },
             crate::runtime::join2(
                 ingress(&mut input, &control, &state, &app, &reclaim),
-                super::super::reclaim::source(&mut collector, &reclaim, &control)
+                crate::runtime::join2(
+                    super::super::reclaim::source(&mut collector, &reclaim, &control),
+                    async {
+                        source_join.recv::<p::SourceJoined>().await?;
+                        Ok::<(), Error>(())
+                    }
+                )
             )
         ));
         for _ in 0..1000 {

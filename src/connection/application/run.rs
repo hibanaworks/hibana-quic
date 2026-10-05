@@ -493,6 +493,7 @@ async fn connected<
         ));
         let mut completion = pin!(termination::completion(
             &mut roles.files_event,
+            &mut roles.source_join,
             &terminal,
             &state,
             &app,
@@ -610,10 +611,7 @@ async fn connected<
     }
     if config.side == Side::Client
         && !matches!(close_kind, super::CloseKind::IdleExpired)
-        && (!before_close.handshake_confirmed
-            || !all_streams_acked
-            || completed_streams == 0
-            || !publication_state.close_completed())
+        && (!before_close.handshake_confirmed || !all_streams_acked || completed_streams == 0)
     {
         return Err(Error::Incomplete);
     }
@@ -638,7 +636,7 @@ async fn connected<
         submitted_streams: state.submitted_count(),
         completed_streams,
         all_streams_acked,
-        close_completed: publication_state.close_completed(),
+        close_completed: !matches!(close_kind, super::CloseKind::IdleExpired),
         received_bytes: before_close.received_bytes,
         sent_bytes: before_close.accepted_bytes,
     })

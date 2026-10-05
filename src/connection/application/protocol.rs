@@ -25,6 +25,8 @@ pub const CLOSE_JOIN: u8 = 26;
 pub const SOURCE_COLLECTOR: u8 = 27;
 pub const INPUT_COLLECTOR: u8 = 28;
 pub const DELIVERY_COLLECTOR: u8 = 29;
+pub const SOURCE_JOIN: u8 = 30;
+pub type SourceJoined = g::Msg<213, u64>;
 pub const SUBMISSION_RESULT: u16 = 1100;
 pub const STOP_RESULT: u16 = 1101;
 
@@ -185,7 +187,7 @@ pub type StreamProduction = g::Seq<
 >;
 pub type SourceBase = g::Seq<
     g::Roll<g::Route<StreamProduction, g::Send<SOURCE, INGRESS, SourceDone>>>,
-    g::Send<INGRESS, SOURCE, SourceRetired>,
+    g::Seq<g::Send<INGRESS, SOURCE, SourceRetired>, g::Send<SOURCE, SOURCE_JOIN, SourceJoined>>,
 >;
 pub type ReceiveBase = g::Seq<
     g::Roll<
@@ -498,7 +500,10 @@ fn source_base() -> g::Program<SourceBase> {
     );
     g::seq(
         g::route(stream, g::send::<SOURCE, INGRESS, SourceDone>()).roll(),
-        g::send::<INGRESS, SOURCE, SourceRetired>(),
+        g::seq(
+            g::send::<INGRESS, SOURCE, SourceRetired>(),
+            g::send::<SOURCE, SOURCE_JOIN, SourceJoined>(),
+        ),
     )
 }
 
@@ -828,6 +833,7 @@ fn early_admission() -> g::Program<EarlyAdmission> {
 pub struct Programs {
     pub handshake: crate::connection::protocol::Programs,
     pub source: RoleProgram<SOURCE>,
+    pub source_join: RoleProgram<SOURCE_JOIN>,
     pub ingress: RoleProgram<INGRESS>,
     pub receive: RoleProgram<RECEIVE>,
     pub sink: RoleProgram<SINK>,
@@ -876,6 +882,7 @@ pub fn programs() -> Programs {
             receive_stop: project(&global),
         },
         source: project(&global),
+        source_join: project(&global),
         ingress: project(&global),
         receive: project(&global),
         sink: project(&global),

@@ -224,6 +224,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
             receive_stop: enter!(programs.handshake.receive_stop),
         },
         source: enter!(programs.source),
+        source_join: enter!(programs.source_join),
         ingress: enter!(programs.ingress),
         receive: enter!(programs.receive),
         sink: enter!(programs.sink),
@@ -246,7 +247,9 @@ pub async fn files<'scope, const S: usize, const T: usize>(
         Files::Client(client) => {
             macro_rules! run_client {
                 ($rx:expr) => {{
-                    let mut storage = application_storage::Storage::<$rx>::new(client.count.min(application_storage::STREAMS))?;
+                    let mut storage = application_storage::Storage::<$rx>::new(
+                        client.count.min(application_storage::STREAMS),
+                    )?;
                     let mut setup = storage.setup(config)?;
                     setup.key_update_target = key_update_target;
                     if source.early_status() == hibana_quic::early_data::EarlyStatus::Offered {

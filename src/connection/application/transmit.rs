@@ -79,7 +79,6 @@ pub(crate) struct State<
     owners: RefCell<Owners<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>>,
     delivery: crate::connection::tls::Inbox<application_stream::Delivered<'streams>>,
     drain_deadline: Cell<Option<u64>>,
-    completed: Cell<bool>,
 }
 struct Owners<
     'book,
@@ -105,11 +104,7 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
             owners: RefCell::new(Owners { book, streams }),
             delivery: crate::connection::tls::Inbox::new(),
             drain_deadline: Cell::new(None),
-            completed: Cell::new(false),
         }
-    }
-    pub(crate) fn close_completed(&self) -> bool {
-        self.completed.get()
     }
     pub(crate) fn retire_all(&self) {
         self.owners.borrow_mut().book.retire_all();
@@ -1018,7 +1013,6 @@ pub(crate) async fn close<
     if !close_accepted {
         return Err(Error::Incomplete);
     }
-    state.completed.set(true);
     Ok(())
 }
 

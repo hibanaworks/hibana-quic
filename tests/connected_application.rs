@@ -731,6 +731,7 @@ macro_rules! roles {
                 receive_stop: $rv.enter($sid, &$program.handshake.receive_stop).unwrap(),
             },
             source: $rv.enter($sid, &$program.source).unwrap(),
+            source_join: $rv.enter($sid, &$program.source_join).unwrap(),
             ingress: $rv.enter($sid, &$program.ingress).unwrap(),
             receive: $rv.enter($sid, &$program.receive).unwrap(),
             sink: $rv.enter($sid, &$program.sink).unwrap(),

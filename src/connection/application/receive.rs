@@ -1,7 +1,7 @@
 //! The application receive continuation owns authentication and frame effects.
 //! Plaintext, affine key transitions and stream handles remain local; only the
 //! declared key, delivery and termination edges cross async role boundaries.
-use super::{Control, Error, io, keys, protocol as p, reset, termination};
+use super::{CloseKind, Control, Error, io, keys, protocol as p, reset, termination};
 use crate::{
     accounting::AccountingError,
     connection::{
@@ -85,7 +85,6 @@ pub(crate) async fn run<
     }
     let mut datagram = [0; N];
     let mut largest = None;
-    let mut peer_reported = false;
     // A Finished-gated early bridge may already have retained request bytes.
     notify_ready(receive, control, state, app).await?;
     // Bounded opportunistic batching: flush ready streams before actually
@@ -96,125 +95,161 @@ pub(crate) async fn run<
     let burst_limit = (RX / N.max(1)).max(64);
     let mut burst = 0usize;
     let mut burst_started = 0u64;
-    'receive: while !control.stopping() {
-        let retained = pending_application.take();
-        let already_accounted = retained.is_some();
-        let result = if let Some((bytes, len)) = retained {
-            datagram = bytes;
-            Some(Ok(len))
-        } else {
-            let mut input = pin!(control.until_stop(3, socket.receive(&mut datagram)));
-            match poll_fn(|cx| Poll::Ready(input.as_mut().poll(cx))).await {
-                Poll::Ready(result) => result,
-                Poll::Pending => {
-                    notify_ready(receive, control, state, app).await?;
-                    burst = 0;
-                    input.await
+    async {
+        while !control.stopping() {
+            let retained = pending_application.take();
+            let already_accounted = retained.is_some();
+            let result = if let Some((bytes, len)) = retained {
+                datagram = bytes;
+                Some(Ok(len))
+            } else {
+                let mut input = pin!(control.until_stop(3, socket.receive(&mut datagram)));
+                match poll_fn(|cx| Poll::Ready(input.as_mut().poll(cx))).await {
+                    Poll::Ready(result) => result,
+                    Poll::Pending => {
+                        notify_ready(receive, control, state, app).await?;
+                        burst = 0;
+                        input.await
+                    }
                 }
+            };
+            let Some(result) = result else {
+                break;
+            };
+            if burst == 0 {
+                burst_started = clock.now();
             }
-        };
-        let Some(result) = result else {
-            break;
-        };
-        if burst == 0 {
-            burst_started = clock.now();
-        }
-        burst += 1;
-        let len = result.map_err(connection::Error::from)?;
-        if len > N {
-            return Err(Error::Capacity);
-        }
-        // The prefix counted the complete UDP datagram before retaining this
-        // short packet, including any coalesced Handshake bytes.
-        if !already_accounted {
-            book.received_datagram(len as u64)?;
-        }
-        control.changed()?;
-        let mut offset = 0;
-        while offset < len && !control.stopping() {
-            // Parse one bounded packet at a time; all pre-AEAD syntax errors
-            // discard the remainder because its next boundary is untrusted.
-            let packet =
-                match PacketIter::new(&datagram[offset..len], config.local_connection_id.len(), 1)
-                    .ok()
-                    .and_then(|mut packets| packets.next())
+            burst += 1;
+            let len = result.map_err(connection::Error::from)?;
+            if len > N {
+                return Err(Error::Capacity);
+            }
+            // The prefix counted the complete UDP datagram before retaining this
+            // short packet, including any coalesced Handshake bytes.
+            if !already_accounted {
+                book.received_datagram(len as u64)?;
+            }
+            control.changed()?;
+            let mut offset = 0;
+            while offset < len && !control.stopping() {
+                // Parse one bounded packet at a time; all pre-AEAD syntax errors
+                // discard the remainder because its next boundary is untrusted.
+                let packet = match PacketIter::new(
+                    &datagram[offset..len],
+                    config.local_connection_id.len(),
+                    1,
+                )
+                .ok()
+                .and_then(|mut packets| packets.next())
                 {
                     Some(Ok(packet)) => packet,
                     _ => break,
                 };
-            if packet.bytes.is_empty() {
-                break;
-            }
-            offset += packet.bytes.len();
-            let result = match packet.header {
-                Header::Short { .. } => {
-                    application::<N, RX, CHUNK>(
-                        rx_keys,
-                        &mut keys,
+                if packet.bytes.is_empty() {
+                    break;
+                }
+                offset += packet.bytes.len();
+                let result = match packet.header {
+                    Header::Short { .. } => {
+                        application::<N, RX, CHUNK>(
+                            rx_keys,
+                            &mut keys,
+                            &mut material,
+                            packet.bytes,
+                            config,
+                            transcript,
+                            &mut crypto,
+                            book,
+                            streams,
+                            reset,
+                            acknowledgments,
+                            control,
+                            clock,
+                            &mut largest,
+                            &mut confirmed,
+                            key_update_target,
+                        )
+                        .await
+                    }
+                    Header::Long { .. } if !confirmed => old::<N>(
                         &mut material,
-                        packet.bytes,
+                        packet,
+                        len,
                         config,
                         transcript,
-                        &mut crypto,
                         book,
-                        streams,
-                        reset,
-                        acknowledgments,
-                        control,
-                        clock,
-                        &mut largest,
-                        &mut confirmed,
-                        key_update_target,
-                    )
-                    .await
+                        clock.now(),
+                    ),
+                    _ => Ok(None),
+                };
+                match result {
+                    Ok(Some(code)) => {
+                        // Preserve delivery of already authenticated buffered FINs
+                        // before publishing the actual peer-close observation.
+                        notify_ready(receive, control, state, app).await?;
+
+                        termination.check_scope(scope)?;
+                        termination
+                            .peer
+                            .put(termination::Permission {
+                                scope,
+                                kind: CloseKind::Peer { code },
+                            })
+                            .map_err(|_| Error::Binding)?;
+                        let sequence = termination.sequence();
+                        peer_event.send::<p::PeerClose>(&sequence).await?;
+                        control.revoke()?;
+                        check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+                        return Ok::<(), Error>(());
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let code = protocol_code(&error);
+                        control.record_protocol_error(error);
+
+                        termination.check_scope(scope)?;
+                        termination
+                            .peer
+                            .put(termination::Permission {
+                                scope,
+                                kind: CloseKind::Local {
+                                    application: false,
+                                    code,
+                                },
+                            })
+                            .map_err(|_| Error::Binding)?;
+                        let sequence = termination.sequence();
+                        peer_event.send::<p::PeerFailed>(&sequence).await?;
+                        control.revoke()?;
+                        check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+                        return Ok::<(), Error>(());
+                    }
                 }
-                Header::Long { .. } if !confirmed => old::<N>(
-                    &mut material,
-                    packet,
-                    len,
-                    config,
-                    transcript,
-                    book,
-                    clock.now(),
-                ),
-                _ => Ok(None),
-            };
-            match result {
-                Ok(Some(code)) => {
-                    // Preserve delivery of already authenticated buffered FINs
-                    // before publishing the actual peer-close observation.
+                control.changed()?;
+                // Let the adapter consume retained ACK grants before another
+                // packet can add more evidence to the bounded receipt slot.
+                if !acknowledgments.pending.is_empty() {
                     notify_ready(receive, control, state, app).await?;
-                    termination::peer_close(peer_event, termination, scope, code).await?;
-                    peer_reported = true;
-                    break 'receive;
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    let code = protocol_code(&error);
-                    control.record_protocol_error(error);
-                    termination::protocol_failed(peer_event, termination, scope, code).await?;
-                    peer_reported = true;
-                    break 'receive;
+                    burst = 0;
+                    crate::runtime::yield_now().await;
                 }
             }
-            control.changed()?;
-            // Let the adapter consume retained ACK grants before another
-            // packet can add more evidence to the bounded receipt slot.
-            if !acknowledgments.pending.is_empty() {
+            if burst >= burst_limit || clock.now().saturating_sub(burst_started) >= 1_000 {
                 notify_ready(receive, control, state, app).await?;
                 burst = 0;
                 crate::runtime::yield_now().await;
             }
         }
-        if burst >= burst_limit || clock.now().saturating_sub(burst_started) >= 1_000 {
-            notify_ready(receive, control, state, app).await?;
-            burst = 0;
-            crate::runtime::yield_now().await;
+
+        if !termination.peer.is_empty() {
+            return Err(Error::Binding);
         }
+        let sequence = termination.sequence();
+        peer_event.send::<p::PeerCancelled>(&sequence).await?;
+        check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+        Ok::<(), Error>(())
     }
-    if !peer_reported {
-        termination::cancel_peer(peer_event, termination).await?;
-    }
+    .await?;
     receive.send::<p::ReceiveRetire>(&0).await?;
     check(receive.recv::<p::ReceiveRetired>().await?, 0)?;
     material.application.discard();

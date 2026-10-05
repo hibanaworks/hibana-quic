@@ -135,6 +135,7 @@ pub struct Report {
 pub struct Roles<'a> {
     pub handshake: super::Roles<'a>,
     pub source: Endpoint<'a, { protocol::SOURCE }>,
+    pub source_join: Endpoint<'a, { protocol::SOURCE_JOIN }>,
     pub ingress: Endpoint<'a, { protocol::INGRESS }>,
     pub receive: Endpoint<'a, { protocol::RECEIVE }>,
     pub sink: Endpoint<'a, { protocol::SINK }>,

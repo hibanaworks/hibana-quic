@@ -1,6 +1,6 @@
 {
-  "request": "Requalify direct projected prefix locals and explicit receive/timer joins",
-  "requested_at": "2026-10-05T20:09:00Z",
+  "request": "Requalify direct prefix and application locals with explicit source retirement",
+  "requested_at": "2026-10-05T20:29:00Z",
   "scope": [
     "unchanged Neqo controls",
     "both candidate directions"
@@ -18,5 +18,5 @@
     "server"
   ],
   "reference_implementation": "neqo",
-  "qualification": "Keep the pinned runner and success criteria unchanged. Recheck the explicit receive-stop and timer-stop joins, default bounded capacities, post-handshake ticket handoff and real retirement. Do not increment the historical 30/44 count for repeated cells."
+  "qualification": "Keep the pinned runner and success criteria unchanged. Recheck the explicit receive-stop and timer-stop joins, default bounded capacities, post-handshake ticket handoff and real retirement. Do not increment the historical 30/44 count for repeated cells. Application source completion now consumes SourceJoined; cancellation/expiry must join that actual receive without reporting success. Terminal receiver and peer-close progression flags and communication wrappers were removed."
 }

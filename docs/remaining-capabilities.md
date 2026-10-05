@@ -18,7 +18,10 @@ matrix has not run.
 
 ## Current priority
 
-Continue remaining interoperability cases, starting with multiplexing. The
+Complete the user-requested whole-codebase direct-local control audit and
+replacement, while requalifying changed paths against existing interop cases.
+Multiplexing has already passed both official directions. Then resume the
+remaining interop capabilities. The
 [15-second performance requirement and evidence](performance-follow-up.md)
 remain open, with further optimization experiments deferred.
 
