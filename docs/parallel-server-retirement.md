@@ -132,3 +132,40 @@ idle-expiry path; client completion and later retirement are reported separately
 The no-impairment run took 0.892 s with clean lifecycle closure. These are local
 diagnostics, not new official qualification cells, and the requested 15 s
 burst-loss target remains unmet. The verified historical total remains 28/44.
+
+## Address tokens for short-lived resumption
+
+The pinned Neqo client waits for a TLS session ticket and a QUIC NEW_TOKEN
+before publishing its normal resumption event. Without NEW_TOKEN it releases
+the ticket only after three PTOs; a short-lived request often closes first.
+The native multiconnect client does not use its special forced-ticket option.
+This is a concrete capability gap, independent of whether a particular timing
+trial gets faster.
+
+The listener now owns a fixed-capacity one-use token store. A 32-byte opaque
+value has a distinct three-byte format prefix and 232 random bits; no previous
+CID or IP is exposed in it. The remembered IP and 60-second expiry are checked,
+a valid use consumes the entry, and a full store does not evict live entries.
+Clock rollback and entropy failure fail closed. Repeated Initials are routed
+to their already-owned connection before any new token admission is attempted.
+Invalid/expired tokens proceed as unvalidated new admissions instead of being
+silently discarded. Even valid tokens retain the existing conservative
+anti-amplification limit until normal authenticated handshake evidence.
+
+After authenticated Finished, the existing HANDSHAKE_DONE control flight owns
+the exact NEW_TOKEN bytes. The normal projected publication and actual
+acceptance/ACK/loss paths apply to that combined flight. A reservation cannot
+substitute a different token on retransmission. No additional Hibana API or
+connection phase controller is introduced. The no-impairment native 50-request
+trial now reports 49 actual TLS resumptions and all matching files with clean
+retirement, versus zero before NEW_TOKEN. Early data remains disabled here.
+
+The loss trial without RTT reuse took 23.271 seconds with 37 resumptions and
+all files/retirement verified; this does not meet the 15-second objective.
+A separate same-IP measured-RTT reuse experiment produced 14.781, 22.763 and
+23.517 seconds on its final three trials. It was removed because a single fast
+sample did not establish a stable gain. Initial RTT remains 333 ms. A larger
+1120-byte chunk experiment was also removed; production chunks remain 1024.
+
+RFC references: https://www.rfc-editor.org/rfc/rfc9000.html#section-8.1.3 and
+https://www.rfc-editor.org/rfc/rfc9000.html#section-8.1.4 .

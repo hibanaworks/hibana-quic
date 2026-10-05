@@ -48,3 +48,5 @@ pub mod runtime;
 pub mod mailbox;
 
 pub mod connection;
+
+pub mod new_token;

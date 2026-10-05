@@ -279,6 +279,7 @@ async fn connected<const S: usize, const T: usize>(
     early: Option<application_storage::EarlyStorage>,
     key_update_target: u64,
     routed: Option<&mut hibana_quic_host::receive_routes::Receiver<{ direct_bootstrap::DATAGRAM }>>,
+    server_token: Option<&[u8]>,
 ) -> Result<Report> {
     let generation = u64::from_be_bytes(random::<8>()?);
     let mut scope = ApplicationKeyScope::new(generation);
@@ -349,6 +350,7 @@ async fn connected<const S: usize, const T: usize>(
             files,
             early,
             key_update_target,
+            server_token,
         ))
         .await
         .map_err(|error| match diagnostics.take() {
@@ -702,6 +704,7 @@ async fn run_async<const S: usize, const T: usize>(
                     None,
                     key_update_target,
                     None,
+                    None,
                 ))
                 .await?;
                 if resumption && previous.is_some() && !report.resumed {
@@ -896,6 +899,7 @@ async fn run_async<const S: usize, const T: usize>(
                     files,
                     early_storage,
                     0,
+                    None,
                     None,
                 ))
                 .await?;

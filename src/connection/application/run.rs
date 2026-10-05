@@ -212,6 +212,7 @@ async fn connected<
         return Err(Error::Binding);
     }
     let Setup {
+        server_token,
         local_idle_timeout_ms,
         key_update_target,
         config,
@@ -220,7 +221,9 @@ async fn connected<
         application: buffers,
         mut early,
     } = setup;
-    if CHUNK == 0
+    if server_token
+        .is_some_and(|token| config.side != Side::Server || token.is_empty() || token.len() > 256)
+        || CHUNK == 0
         || CHUNK.checked_add(192).is_none_or(|required| required > N)
         || RX == 0
         || buffers.streams.is_empty()
@@ -307,7 +310,7 @@ async fn connected<
         book.split()?;
     let completion_book = book_tx.completion_observer();
     let handshake_done = if config.side == Side::Server {
-        Some(book_tx.store_handshake_done(peer.finished())?)
+        Some(book_tx.store_handshake_done_token(peer.finished(), server_token)?)
     } else {
         None
     };

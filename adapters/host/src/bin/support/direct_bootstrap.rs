@@ -153,6 +153,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
     files: &mut Files,
     mut early: Option<application_storage::EarlyStorage>,
     key_update_target: u64,
+    server_token: Option<&[u8]>,
 ) -> Result<application::Report, String> {
     let programs = application::protocol::programs();
     // Resolver states precede the kit so all endpoint borrows expire first.
@@ -302,6 +303,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
                     application_storage::STREAMS,
                 )?;
             let mut setup = storage.setup(config)?;
+            setup.server_token = server_token;
             setup.early = early
                 .as_mut()
                 .map(application_storage::EarlyStorage::borrow);

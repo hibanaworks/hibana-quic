@@ -1,6 +1,6 @@
 {
-  "request": "Requalify owned prefix ciphertext transfer and shared parallel 1-RTT tickets",
-  "requested_at": "2026-10-05T15:26:00Z",
+  "request": "Requalify bounded NEW_TOKEN issuance with actual parallel TLS resumption",
+  "requested_at": "2026-10-05T16:37:00Z",
   "scope": [
     "unchanged Neqo fifty-connection controls",
     "handshakeloss and handshakecorruption as candidate server"
@@ -11,7 +11,7 @@
     "handshakeloss",
     "handshakecorruption"
   ],
-  "qualification": "Actual handshake join precedes application authentication of one retained short packet; original datagram accounting is not duplicated. Parallel workers borrow one existing root-owned TicketKey synchronously; no early-data capability is enabled. Same fifty-file native loss trials complete in22.127/24.353s and corruption17.425s with all hashes and retirement verified;15s target unmet. Historical28/44 stays unchanged until exact official results. Require unchanged Neqo controls and both server verdicts.",
+  "qualification": "Real one-use random address tokens are bound to IP and expiry in a bounded listener-owned store. Exact token bytes share the authenticated HANDSHAKE_DONE retained flight and actual publication, ACK and retransmission. Initial tokens are validated; invalid tokens remain ordinary unvalidated admissions. Strict amplification limits remain even for valid tokens. The clean native fifty-request test verifies 49 TLS resumptions, all files, and clean retirement. The loss diagnostic took 23.271 seconds and does not meet 15 seconds; measured-RTT reuse and 1120-byte chunk experiments were removed. The prior dbc4d56 runtime run 37333549933 and official run 37333549847 both passed, including unchanged Neqo controls and server L1/C1. Historical qualification remains 28/44. Require verdicts for this exact head.",
   "candidate_directions": [
     "server"
   ],

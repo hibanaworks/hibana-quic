@@ -105,7 +105,26 @@ impl<const F: usize, const B: usize, const R: usize> FlightStore<F, B, R> {
         })
     }
     pub fn append_handshake_done(&mut self) -> Result<FlightId, Error> {
-        let id = self.append(Level::OneRtt, 0, &[0x1e])?;
+        self.append_handshake_done_token(None)
+    }
+    pub(crate) fn append_handshake_done_token(
+        &mut self,
+        token: Option<&[u8]>,
+    ) -> Result<FlightId, Error> {
+        let mut bytes = [0; B];
+        if B == 0 {
+            return Err(Error::TooLarge);
+        }
+        bytes[0] = 0x1e;
+        let mut len = 1;
+        if let Some(token) = token {
+            len += crate::packet::encode_frame(
+                &crate::packet::Frame::NewToken { token },
+                &mut bytes[len..],
+            )
+            .map_err(|_| Error::TooLarge)?;
+        }
+        let id = self.append(Level::OneRtt, 0, &bytes[..len])?;
         self.flights[id.slot].control = true;
         Ok(id)
     }
@@ -370,6 +389,19 @@ fn level_space(level: Level) -> PacketNumberSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn handshake_control_owns_token_bytes_across_loss() {
+        let mut store = FlightStore::<1, 64, 4>::new();
+        let mut token = [9; 32];
+        let id = store.append_handshake_done_token(Some(&token)).unwrap();
+        token.fill(0);
+        let (_, _, data) = store.data(id).unwrap();
+        assert_eq!(&data[..3], &[0x1e, 7, 32]);
+        assert_eq!(&data[3..], &[9; 32]);
+        assert!(store.is_handshake_done(id).unwrap());
+        store.discard();
+        assert!(store.data(id).is_err());
+    }
     fn pn(value: u64) -> PacketNumber {
         PacketNumber {
             space: PacketNumberSpace::Initial,

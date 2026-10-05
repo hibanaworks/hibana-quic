@@ -1,6 +1,7 @@
 //! Host admission and routing run beside independent Hibana connection owners.
 //! The scheduler joins futures; it does not implement QUIC protocol phases.
 use super::*;
+use hibana_quic::connection::Clock as _;
 use hibana_quic::{
     mailbox::Mailbox,
     runtime::{Task, TaskSet},
@@ -69,6 +70,7 @@ struct Admission {
     peer: Vec<u8>,
     local: [u8; 8],
     first: Vec<u8>,
+    new_token: [u8; hibana_quic::new_token::TOKEN_LEN],
     receiver: Receiver<BYTES>,
 }
 
@@ -186,6 +188,7 @@ pub async fn run<const S: usize, const T: usize>(
                     None,
                     0,
                     Some(&mut admission.receiver),
+                    Some(&admission.new_token),
                 )
                 .await
             }
@@ -225,6 +228,7 @@ pub async fn run<const S: usize, const T: usize>(
         let mut routes =
             Dispatcher::<BYTES>::new(count, 8).map_err(|e| format!("routes: {e:?}"))?;
         let mut seen: Vec<(Address, Vec<u8>)> = Vec::with_capacity(count);
+        let mut tokens = hibana_quic::new_token::Issuer::<MAX>::new();
         let mut bytes = [0; BYTES];
         loop {
             hibana_quic::runtime::yield_now().await;
@@ -270,7 +274,6 @@ pub async fn run<const S: usize, const T: usize>(
             };
             if metadata.len < 1200
                 || destination_id.len() < 8
-                || !token.is_empty()
                 || seen.len() >= count
                 || seen
                     .iter()
@@ -278,6 +281,16 @@ pub async fn run<const S: usize, const T: usize>(
             {
                 continue;
             }
+            // A previous NEW_TOKEN is checked only for a new admission. Routing
+            // above handles repeated Initials for an already-owned connection.
+            // Even a valid token currently retains the conservative amplification
+            // limit until this connection supplies ordinary handshake evidence.
+            let _address_token_valid = tokens
+                .consume(token, address.remote.ip(), clock.now())
+                .map_err(|e| format!("address token validation: {e:?}"))?;
+            let new_token = tokens
+                .issue(address.remote.ip(), clock.now(), &mut OsRng)
+                .map_err(|e| format!("address token issuance: {e:?}"))?;
             let local = random::<8>()?;
             let receiver = routes
                 .register(address, &[destination_id, &local])
@@ -291,6 +304,7 @@ pub async fn run<const S: usize, const T: usize>(
                     peer: source_id.to_vec(),
                     local,
                     first: bytes[..metadata.len].to_vec(),
+                    new_token,
                     receiver,
                 })
                 .await

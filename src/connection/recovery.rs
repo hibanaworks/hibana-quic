@@ -1132,6 +1132,13 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         &mut self,
         receipt: &FinishedAuthenticated<'scope>,
     ) -> Result<FlightId, Error> {
+        self.store_handshake_done_token(receipt, None)
+    }
+    pub(super) fn store_handshake_done_token(
+        &mut self,
+        receipt: &FinishedAuthenticated<'scope>,
+        token: Option<&[u8]>,
+    ) -> Result<FlightId, Error> {
         let mut n = self.book.numbers.borrow_mut();
         n.ordinary()?;
         if !core::ptr::eq(self.book.scope, receipt.scope())
@@ -1145,7 +1152,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         if let Some(id) = n.handshake_done {
             return Ok(id);
         }
-        let id = n.flights.append_handshake_done()?;
+        let id = n.flights.append_handshake_done_token(token)?;
         n.handshake_done = Some(id);
         n.changed()?;
         Ok(id)
@@ -1260,7 +1267,10 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         now: u64,
     ) -> Result<Reservation<'book>, Error> {
         let classification = classify_application(plaintext)?;
-        if classification.handshake_done != 0 || classification.close != 0 {
+        if classification.handshake_done != 0
+            || classification.close != 0
+            || classification.new_token != 0
+        {
             return Err(Error::UnsupportedFrame);
         }
         reserve(
@@ -1341,7 +1351,11 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         now: u64,
     ) -> Result<Reservation<'book>, Error> {
         let classification = classify_application(plaintext)?;
-        if classification.handshake_done != 1 || classification.other || classification.close != 0 {
+        if classification.handshake_done != 1
+            || classification.other
+            || classification.close != 0
+            || classification.new_token > 1
+        {
             return Err(Error::UnsupportedFrame);
         }
         if !self
@@ -1351,6 +1365,20 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
             .flights
             .is_handshake_done(flight)?
         {
+            return Err(Error::Binding);
+        }
+        // Control bytes are retained with the actual flight. A retransmission
+        // may add only ACK/PING/PADDING, never replace the issued token.
+        let retained = self.flight_data(flight)?;
+        let mut control = [0; B];
+        let mut len = 0;
+        for frame in frames(plaintext, EncryptionLevel::OneRtt)? {
+            let frame = frame?;
+            if matches!(frame, Frame::HandshakeDone | Frame::NewToken { .. }) {
+                len += packet::encode_frame(&frame, &mut control[len..])?;
+            }
+        }
+        if &control[..len] != retained.bytes() {
             return Err(Error::Binding);
         }
         reserve(
@@ -1530,6 +1558,7 @@ struct Classification {
     padded: bool,
     handshake_done: usize,
     close: usize,
+    new_token: usize,
     other: bool,
 }
 fn classify_application(plaintext: &[u8]) -> Result<Classification, Error> {
@@ -1538,6 +1567,7 @@ fn classify_application(plaintext: &[u8]) -> Result<Classification, Error> {
         padded: false,
         handshake_done: 0,
         close: 0,
+        new_token: 0,
         other: false,
     };
     for frame in frames(plaintext, EncryptionLevel::OneRtt)? {
@@ -1546,6 +1576,7 @@ fn classify_application(plaintext: &[u8]) -> Result<Classification, Error> {
         match frame {
             Frame::Padding { length } => result.padded |= length != 0,
             Frame::HandshakeDone => result.handshake_done += 1,
+            Frame::NewToken { .. } => result.new_token += 1,
             Frame::ConnectionClose { .. } => result.close += 1,
             Frame::Ack { .. } | Frame::Ping => {}
             _ => result.other = true,
@@ -3581,13 +3612,35 @@ mod tests {
             InitialRetirementEvent::ServerHandshakeAuthenticated
         );
         srx.retire_initial(initial).unwrap();
-        let hd = stx.store_handshake_done(server_peer.finished()).unwrap();
-        assert!(stx.is_handshake_done(hd).unwrap());
-        let retained_hd = stx
-            .reserve_application_control(&[0x1e], server_write.generation(), 22, hd, false, 0)
+        let hd = stx
+            .store_handshake_done_token(server_peer.finished(), Some(b"a"))
             .unwrap();
-        assert!(retained_hd.matches_plaintext(&[0x1e]).unwrap());
+        assert!(stx.is_handshake_done(hd).unwrap());
+        let control = [0x1e, 0x07, 0x01, b'a'];
+        let retained_hd = stx
+            .reserve_application_control(&control, server_write.generation(), 25, hd, false, 0)
+            .unwrap();
+        assert!(retained_hd.matches_plaintext(&control).unwrap());
         stx.cancel(retained_hd).unwrap();
+        assert!(
+            stx.reserve_application_control(
+                &[0x1e, 7, 1, b'b'],
+                server_write.generation(),
+                25,
+                hd,
+                false,
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            stx.reserve_application_control(&[0x1e], server_write.generation(), 22, hd, false, 0)
+                .is_err()
+        );
+        assert!(
+            stx.reserve_application(&[7, 1, b'a'], server_write.generation(), 24, false, 0)
+                .is_err()
+        );
 
         let (mut tx, mut rx, _, mut publication, mut retirement) = client_book.split().unwrap();
         let completion = tx.completion_observer();

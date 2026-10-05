@@ -465,7 +465,9 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     // lost nor PTO eligible yet. Keep its actual FlightId until acceptance.
     if let Some(flight) = handshake_done {
         let mut plaintext = Zeroizing::new([0; N]);
-        let len = packet::encode_frame(&Frame::HandshakeDone, &mut plaintext[..])?;
+        let data = book.flight_data(flight)?;
+        let len = data.bytes().len();
+        plaintext[..len].copy_from_slice(data.bytes());
         if let Some(mut pending) =
             application_control_packet(keys, book, peer, &plaintext[..len], flight, false, now)?
         {
@@ -476,7 +478,9 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     if let Some((flight, probe)) = book.next_retransmit() {
         if book.is_handshake_done(flight)? {
             let mut plaintext = Zeroizing::new([0; N]);
-            let mut len = packet::encode_frame(&Frame::HandshakeDone, &mut plaintext[..])?;
+            let data = book.flight_data(flight)?;
+            let mut len = data.bytes().len();
+            plaintext[..len].copy_from_slice(data.bytes());
             pad_probe(
                 &mut plaintext,
                 &mut len,

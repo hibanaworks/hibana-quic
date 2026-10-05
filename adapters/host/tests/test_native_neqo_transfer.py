@@ -280,6 +280,8 @@ def main():
                                 assert resumed_report['resumed'], resumed_report
                             else:
                                 assert 0 <= resumed_report['resumed_connections'] < 50, resumed_report
+                                if direction == 'reverse' and args.multi_impairment == 'none':
+                                    assert resumed_report['resumed_connections'] == 49, resumed_report
                             if args.expect_idle_expiry:
                                 assert resumed_report['resources_retired'], resumed_report
                                 assert 0 < resumed_report['idle_expired_connections'] <= 50, resumed_report
