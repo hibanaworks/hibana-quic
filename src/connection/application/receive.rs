@@ -154,6 +154,12 @@ pub(crate) async fn run<
                 match result.label() {
                     7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
                     8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                    219 => {
+                        check(result.recv::<p::ReceivedInterrupted>().await?, id)?;
+                        if !control.stopping() {
+                            return Err(Error::Binding);
+                        }
+                    }
                     217 => {
                         check(result.recv::<p::ReceivedFailed>().await?, id)?;
                         return Err(Error::Application);
@@ -208,6 +214,15 @@ pub(crate) async fn run<
                                     match result.label() {
                                         7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
                                         8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                                        219 => {
+                                            check(
+                                                result.recv::<p::ReceivedInterrupted>().await?,
+                                                id,
+                                            )?;
+                                            if !control.stopping() {
+                                                return Err(Error::Binding);
+                                            }
+                                        }
                                         217 => {
                                             check(result.recv::<p::ReceivedFailed>().await?, id)?;
                                             return Err(Error::Application);
@@ -654,6 +669,15 @@ pub(crate) async fn run<
                                     match result.label() {
                                         7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
                                         8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                                        219 => {
+                                            check(
+                                                result.recv::<p::ReceivedInterrupted>().await?,
+                                                id,
+                                            )?;
+                                            if !control.stopping() {
+                                                return Err(Error::Binding);
+                                            }
+                                        }
                                         217 => {
                                             check(result.recv::<p::ReceivedFailed>().await?, id)?;
                                             return Err(Error::Application);
@@ -730,6 +754,12 @@ pub(crate) async fn run<
                                 match result.label() {
                                     7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
                                     8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                                    219 => {
+                                        check(result.recv::<p::ReceivedInterrupted>().await?, id)?;
+                                        if !control.stopping() {
+                                            return Err(Error::Binding);
+                                        }
+                                    }
                                     217 => {
                                         check(result.recv::<p::ReceivedFailed>().await?, id)?;
                                         return Err(Error::Application);
@@ -769,6 +799,12 @@ pub(crate) async fn run<
                             match result.label() {
                                 7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
                                 8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                                219 => {
+                                    check(result.recv::<p::ReceivedInterrupted>().await?, id)?;
+                                    if !control.stopping() {
+                                        return Err(Error::Binding);
+                                    }
+                                }
                                 217 => {
                                     check(result.recv::<p::ReceivedFailed>().await?, id)?;
                                     return Err(Error::Application);

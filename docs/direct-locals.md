@@ -129,3 +129,19 @@ interop retry stopped at a failed Neqo/Neqo 0-RTT control, before candidate runs
 Handshake loss, corruption and multiplexing controls passed. The next request
 uses quiche as the reference, under the same runner verdicts. No new historical
 case is counted from a native diagnostic or a failed reference run.
+
+## Interrupted receive delivery
+
+The next audit found cancellation returning the same boolean as successful FIN
+from the sink's native delivery attempt. It did not mark the stream complete,
+but the local still sent ReceivedFin. The contract now has a separate
+ReceivedInterrupted branch, consumed and checked against actual publication
+revocation by RX. The one-attempt delivery result is not stored as a protocol
+phase. A capacity-one endpoint fixture verifies the exact interruption message,
+no sink write/finish, no completion record, and actual role retirement.
+
+This follow-up passed 422 core tests plus integration/doc groups, fifteen
+connected-application tests, selected host Clippy and thumbv6m. Native forty-file
+0-RTT passed both directions; the impaired fifty-connection run matched every
+file and retired every connection, including fifteen genuine idle expiries.
+The formal runner remains responsible for exact-head interoperability verdicts.

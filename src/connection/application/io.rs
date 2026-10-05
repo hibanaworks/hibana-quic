@@ -702,6 +702,14 @@ fn ready_handle<const RX: usize, const CHUNK: usize>(
         .ok_or(Error::Binding)
 }
 
+// Result of one actual delivery attempt, not a retained protocol phase.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Delivery {
+    More,
+    Fin,
+    Interrupted,
+}
+
 pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SINK }>,
     control: &Control<'_, '_>,
@@ -715,12 +723,14 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
         match offered.label() {
             6 => {
                 let stream_id = offered.recv::<p::ReceivedData>().await?;
-                let delivery = if control.stopping() || state.is_complete(stream_id) {
-                    Ok(true)
+                let delivery = if control.stopping() {
+                    Ok(Delivery::Interrupted)
+                } else if state.is_complete(stream_id) {
+                    Ok(Delivery::Fin)
                 } else {
                     deliver(control, state, app, sink, stream_id).await
                 };
-                if !matches!(delivery, Ok(false)) {
+                if !matches!(delivery, Ok(Delivery::More)) {
                     let receipt = if state.is_complete(stream_id) {
                         app.try_borrow_mut()
                             .map_err(|_| Error::Binding)?
@@ -736,7 +746,11 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                     }
                     check(endpoint.recv::<p::InputStored>().await?, stream_id)?;
                     match delivery {
-                        Ok(_) => endpoint.send::<p::ReceivedFin>(&stream_id).await?,
+                        Ok(Delivery::Fin) => endpoint.send::<p::ReceivedFin>(&stream_id).await?,
+                        Ok(Delivery::Interrupted) => {
+                            endpoint.send::<p::ReceivedInterrupted>(&stream_id).await?
+                        }
+                        Ok(Delivery::More) => return Err(Error::Binding),
                         Err(_) => endpoint.send::<p::ReceivedFailed>(&stream_id).await?,
                     }
                 } else {
@@ -761,7 +775,7 @@ async fn deliver<const RX: usize, const CHUNK: usize, B>(
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
     sink: &mut impl StreamSink,
     stream_id: u64,
-) -> Result<bool, Error> {
+) -> Result<Delivery, Error> {
     let stream = ready_handle(app, stream_id)?;
     // Receive delivery uses its actual receive window, not the unrelated
     // outbound chunk size. One datagram must not require several sink rounds.
@@ -780,18 +794,22 @@ async fn deliver<const RX: usize, const CHUNK: usize, B>(
             .await
         {
             Some(result) => result.map_err(|_| Error::Application)?,
-            None => return Ok(true),
+            None => return Ok(Delivery::Interrupted),
         }
     }
     if read.fin {
         match control.until_stop(2, sink.finish(stream_id)).await {
             Some(result) => result.map_err(|_| Error::Application)?,
-            None => return Ok(true),
+            None => return Ok(Delivery::Interrupted),
         }
         state.complete(stream)?;
         control.changed()?;
     }
-    Ok(read.fin)
+    Ok(if read.fin {
+        Delivery::Fin
+    } else {
+        Delivery::More
+    })
 }
 
 pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
@@ -809,12 +827,14 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
         match offered.label() {
             6 => {
                 let stream_id = offered.recv::<p::ReceivedData>().await?;
-                let delivery = if control.stopping() || state.is_complete(stream_id) {
-                    Ok(true)
+                let delivery = if control.stopping() {
+                    Ok(Delivery::Interrupted)
+                } else if state.is_complete(stream_id) {
+                    Ok(Delivery::Fin)
                 } else {
                     receive_request(control, state, app, requests, &mut pending, stream_id).await
                 };
-                if !matches!(delivery, Ok(false)) {
+                if !matches!(delivery, Ok(Delivery::More)) {
                     let receipt = if state.is_complete(stream_id) {
                         app.try_borrow_mut()
                             .map_err(|_| Error::Binding)?
@@ -830,7 +850,11 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                     }
                     check(endpoint.recv::<p::InputStored>().await?, stream_id)?;
                     match delivery {
-                        Ok(_) => endpoint.send::<p::ReceivedFin>(&stream_id).await?,
+                        Ok(Delivery::Fin) => endpoint.send::<p::ReceivedFin>(&stream_id).await?,
+                        Ok(Delivery::Interrupted) => {
+                            endpoint.send::<p::ReceivedInterrupted>(&stream_id).await?
+                        }
+                        Ok(Delivery::More) => return Err(Error::Binding),
                         Err(_) => endpoint.send::<p::ReceivedFailed>(&stream_id).await?,
                     }
                 } else {
@@ -857,7 +881,7 @@ async fn receive_request<'book, const RX: usize, const CHUNK: usize, B>(
     requests: &mut Sender<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
     pending: &mut [Option<PendingRequest>; MAX_LIVE_STREAMS],
     stream_id: u64,
-) -> Result<bool, Error> {
+) -> Result<Delivery, Error> {
     let stream = ready_handle(app, stream_id)?;
     // Receive delivery uses its actual receive window, not the unrelated
     // outbound chunk size. One datagram must not require several sink rounds.
@@ -899,12 +923,16 @@ async fn receive_request<'book, const RX: usize, const CHUNK: usize, B>(
         };
         match control.until_stop(2, requests.send(request)).await {
             Some(result) => result.map_err(|_| Error::Application)?,
-            None => return Ok(true),
+            None => return Ok(Delivery::Interrupted),
         }
         state.complete(stream)?;
         control.changed()?;
     }
-    Ok(read.fin)
+    Ok(if read.fin {
+        Delivery::Fin
+    } else {
+        Delivery::More
+    })
 }
 
 #[cfg(test)]
@@ -1415,5 +1443,120 @@ mod stop_tests {
     #[test]
     fn actual_body_read_failure_is_rejected_without_a_successful_eof() {
         stopped_ingress(false, true, true);
+    }
+}
+
+#[cfg(test)]
+mod interrupted_delivery_tests {
+    use super::*;
+    use crate::{
+        carrier::CarrierStorage,
+        connection::{
+            application_stream::{Facets, StreamNumbers},
+            publication_gate::PublicationGate,
+        },
+        crypto::directional::ApplicationKeyScope,
+        streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
+    };
+    use core::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+    use hibana::g::Message;
+    use hibana::runtime::{
+        SessionKitStorage,
+        ids::SessionId,
+        program::{RoleProgram, project},
+    };
+    struct NeverSink;
+    impl StreamSink for NeverSink {
+        async fn write(&mut self, _: u64, _: &[u8]) -> Result<(), ()> {
+            panic!("cancelled sink must not write")
+        }
+        async fn finish(&mut self, _: u64) -> Result<(), ()> {
+            panic!("cancelled sink must not finish")
+        }
+    }
+    #[test]
+    fn revoked_delivery_consumes_interrupted_branch_without_successful_fin() {
+        let mut scope = ApplicationKeyScope::new(914);
+        let mut installation = scope.claim().unwrap();
+        let mut gate = PublicationGate::new(installation.take_publication_gate().unwrap());
+        let (_issuer, stop) = gate.split().unwrap();
+        let control = Control::new(stop);
+        control.revoke().unwrap();
+        let limits = Limits {
+            max_data: 16,
+            max_streams_bidi: 2,
+            max_streams_uni: 0,
+            stream_data_bidi_local: 8,
+            stream_data_bidi_remote: 8,
+            stream_data_uni: 0,
+        };
+        let mut slots = [StreamSlot::<8>::EMPTY; 2];
+        let mut chunks = [SendChunk::<8>::EMPTY; 4];
+        let mut refs = [PacketReference::EMPTY; 4];
+        let mut numbers = StreamNumbers::new(
+            installation.scope(),
+            Role::Client,
+            limits,
+            limits,
+            &mut slots,
+            &mut chunks,
+            &mut refs,
+        )
+        .unwrap();
+        let Facets { app, .. } = numbers.split();
+        let app = RefCell::new(app);
+        let state = State::<8, EmptyBody>::new();
+        let reclaim = super::super::reclaim::Exchange::new();
+        let global = p::receive_choreography();
+        let rx_role: RoleProgram<{ p::RECEIVE }> = project(&global);
+        let sink_role: RoleProgram<{ p::SINK }> = project(&global);
+        let collector_role: RoleProgram<{ p::INPUT_COLLECTOR }> = project(&global);
+        let carrier = CarrierStorage::<1, 16, 8>::new();
+        let mut slab = [0; 65536];
+        let mut storage = SessionKitStorage::uninit();
+        let id = SessionId::new(914);
+        let rv = storage
+            .init()
+            .rendezvous(&mut slab, carrier.bind(id).unwrap())
+            .unwrap();
+        let mut rx = rv.enter(id, &rx_role).unwrap();
+        let mut sink_endpoint = rv.enter(id, &sink_role).unwrap();
+        let mut collector = rv.enter(id, &collector_role).unwrap();
+        let mut sink = NeverSink;
+        let mut all = pin!(crate::runtime::join2(
+            async {
+                rx.send::<p::ReceivedData>(&0).await?;
+                let reply = rx.offer().await?;
+                assert_eq!(reply.label(), p::ReceivedInterrupted::LOGICAL_LABEL);
+                check(reply.recv::<p::ReceivedInterrupted>().await?, 0)?;
+                rx.send::<p::ReceiveRetire>(&0).await?;
+                check(rx.recv::<p::ReceiveRetired>().await?, 0)?;
+                Ok::<(), Error>(())
+            },
+            crate::runtime::join2(
+                client_sink(
+                    &mut sink_endpoint,
+                    &control,
+                    &state,
+                    &app,
+                    &mut sink,
+                    &reclaim
+                ),
+                super::super::reclaim::input(&mut collector, &reclaim, &control),
+            ),
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        for _ in 0..128 {
+            if let Poll::Ready(result) = all.as_mut().poll(&mut cx) {
+                result.unwrap();
+                assert!(!state.is_complete(0));
+                return;
+            }
+        }
+        panic!("interrupted delivery did not join");
     }
 }

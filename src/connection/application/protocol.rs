@@ -31,6 +31,7 @@ pub type SourceFailed = g::Msg<214, u64>;
 pub type SourceDataFailed = g::Msg<215, u64>;
 pub type SourceEndFailed = g::Msg<216, u64>;
 pub type ReceivedFailed = g::Msg<217, u64>;
+pub type ReceivedInterrupted = g::Msg<219, u64>;
 pub type PeerApplicationFailed = g::Msg<218, u64>;
 pub const SUBMISSION_RESULT: u16 = 1100;
 pub const STOP_RESULT: u16 = 1101;
@@ -215,7 +216,10 @@ pub type ReceiveBase = g::Seq<
                     g::Send<SINK, RECEIVE, ReceivedMore>,
                     g::Route<
                         g::Send<SINK, RECEIVE, ReceivedFin>,
-                        g::Send<SINK, RECEIVE, ReceivedFailed>,
+                        g::Route<
+                            g::Send<SINK, RECEIVE, ReceivedFailed>,
+                            g::Send<SINK, RECEIVE, ReceivedInterrupted>,
+                        >,
                     >,
                 >,
             >,
@@ -565,7 +569,10 @@ pub fn receive_choreography() -> g::Program<ReceiveFlow> {
                     g::send::<SINK, RECEIVE, ReceivedMore>(),
                     g::route(
                         g::send::<SINK, RECEIVE, ReceivedFin>(),
-                        g::send::<SINK, RECEIVE, ReceivedFailed>(),
+                        g::route(
+                            g::send::<SINK, RECEIVE, ReceivedFailed>(),
+                            g::send::<SINK, RECEIVE, ReceivedInterrupted>(),
+                        ),
                     ),
                 ),
             ),
