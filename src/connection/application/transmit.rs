@@ -7,7 +7,7 @@ use crate::{
     accounting::AccountingError,
     connection::publication_gate,
     connection::{
-        self, Clock, Config, ConnectionId, DatagramTx, Outcome, application_stream,
+        self, Clock, Config, ConnectionId, DatagramRx, DatagramTx, Outcome, application_stream,
         application_wire::{self, SealedApplicationDatagram},
         recovery, wire,
     },
@@ -935,6 +935,7 @@ pub(crate) async fn close<
     closing: startup::Closing<'scope>,
     book: &mut recovery::Tx<'book, 'scope, N>,
     peer: &ConnectionId,
+    receive: &mut impl DatagramRx,
     clock: &impl Clock,
 ) -> Result<(), Error> {
     let startup::Closing {
@@ -972,11 +973,54 @@ pub(crate) async fn close<
             check(endpoint.recv::<p::Drained>().await?, sequence)?;
         }
         CloseKind::Local { application, code } => {
-            for attempt in 0u64..3 {
-                let at = started_at
-                    .checked_add(pto.checked_mul(attempt).ok_or(Error::Capacity)?)
-                    .ok_or(Error::Capacity)?;
-                clock.wait_until(at).await;
+            let mut retry_at = started_at;
+            let mut received = [0; N];
+            let mut received_since_reply = 0u64;
+            let mut packets_per_reply = 1u64;
+            loop {
+                if clock.now() >= deadline {
+                    break;
+                }
+                // Ordinary RX has actually retired, transferring its native
+                // receive borrow here. Observe late datagrams during closing
+                // rather than abandoning them behind three blind timer sends.
+                let input = {
+                    let mut input = pin!(receive.receive(&mut received));
+                    let mut timer = pin!(clock.wait_until(retry_at.min(deadline)));
+                    poll_fn(|cx| {
+                        if clock.now() >= deadline {
+                            return Poll::Ready(None);
+                        }
+                        if let Poll::Ready(result) = input.as_mut().poll(cx) {
+                            return Poll::Ready(Some(result));
+                        }
+                        timer.as_mut().poll(cx).map(|()| None)
+                    })
+                    .await
+                };
+                let reply_budget = match input {
+                    Some(Ok(len)) if len <= N => {
+                        // RFC9000 10.2.1 suggests progressively requiring more
+                        // input packets, bounding close-response ping-pong.
+                        received_since_reply =
+                            received_since_reply.checked_add(1).ok_or(Error::Capacity)?;
+                        if received_since_reply < packets_per_reply {
+                            crate::runtime::yield_now().await;
+                            continue;
+                        }
+                        received_since_reply = 0;
+                        packets_per_reply = packets_per_reply.saturating_mul(2);
+                        Some(len.checked_mul(3).ok_or(Error::Capacity)?)
+                    }
+                    Some(Ok(_)) => return Err(Error::Capacity),
+                    Some(Err(_)) => {
+                        // A late native receive error cannot invent another
+                        // datagram. Keep the original finite closing deadline.
+                        clock.wait_until(retry_at.min(deadline)).await;
+                        None
+                    }
+                    None => None,
+                };
                 if clock.now() >= deadline {
                     break;
                 }
@@ -992,6 +1036,13 @@ pub(crate) async fn close<
                 else {
                     break;
                 };
+                // No read key remains in closing. A triggered response may
+                // use at most three times the actual attributed input bytes.
+                if reply_budget.is_some_and(|budget| packet.sealed.bytes().len() > budget) {
+                    book.cancel(packet.sealed.into_parts().0)?;
+                    crate::runtime::yield_now().await;
+                    continue;
+                }
                 if let Err((error, packet)) = state.put(packet) {
                     book.cancel(packet.sealed.into_parts().0)?;
                     return Err(error);
@@ -1008,6 +1059,8 @@ pub(crate) async fn close<
                 }
                 endpoint.send::<p::CloseSettled>(&sequence).await?;
                 sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                retry_at = clock.now().checked_add(pto).ok_or(Error::Capacity)?;
+                crate::runtime::yield_now().await;
             }
             endpoint.send::<p::CloseFlightDone>(&sequence).await?;
             check(endpoint.recv::<p::CloseFlightSettled>().await?, sequence)?;

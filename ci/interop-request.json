@@ -1,6 +1,6 @@
 {
-  "request": "Requalify client and server M/Z after upstream intrinsic-entry repair",
-  "requested_at": "2026-10-05T22:26:00Z",
+  "request": "Experimental parallel client retirement C1/L1 qualification",
+  "requested_at": "2026-10-05T23:31:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions"
@@ -8,14 +8,14 @@
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
   "local_evidence": "docs/direct-locals.md",
   "cases": [
-    "multiplexing",
-    "zerortt"
+    "handshakecorruption",
+    "handshakeloss"
   ],
   "candidate_directions": [
     "client",
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Keep the unchanged runner and success criteria. Run37379219813 passed quiche controls and all server C1/L1/M/Z. Its client C1 hit300s, L1 transfer/retirement took259285ms, and phase600s expired before M/Z. Isolate M/Z here in both directions; do not count unexecuted cases or claim C1/L1 fixed. Upstream Hibana4d0077b9 now selects actual intrinsic entries rather than unchosen descendant sends. QUIC core, capacity-one entry histories and native M/Z/loss regressions passed. Historical30/44 remains unchanged until new unique official cells pass.",
+  "qualification": "Experimental branch only; do not advance development/rolled-route-runtime until regressions are resolved. Keep unchanged quiche controls and runner verdicts. Independent client sessions now run concurrently and join actual terminal results. Local completion waits retained control flights; authenticated peer close can retire complete responses while missing request ACKs remain false. Closing observes native incoming packets until the original3PTO deadline, with progressive response rate and per-response3x input-byte bound. Core422+integration/16connected/Clippy/thumb pass; nativeM/Z latestpublishedf160 alreadyofficiallypassed; candidate0RTT40both passed. Candidate self50clean/loss passed; selfcorruption deliveredall50/clientclosed butserveroneactualidleexpiry, retained as a known failure of the strict all-clean diagnostic. Parallel nativeNeqo failed; its globalStreamId-only HTTP09 partial-request maps are a source-backed suspected cause, not a fabricated control pass. No criteria or historicalcounts change.",
   "formal_models": true
 }

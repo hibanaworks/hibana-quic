@@ -178,10 +178,16 @@ class MultiEndpointProxy(UdpProxy):
             _, sequence, direction, data = heapq.heappop(self._queue)
             self._queued_bytes -= len(data)
             client = self._destinations.pop(sequence)
-            if direction == 'to_server':
-                self._routes[client].send(data)
-            else:
-                self._front.sendto(data, client)
+            try:
+                if direction == 'to_server':
+                    self._routes[client].send(data)
+                else:
+                    self._front.sendto(data, client)
+            except ConnectionRefusedError:
+                # A real peer may close while a delayed datagram is queued.
+                # Record the rejected send; never count it as forwarded.
+                self.stats[direction + '_destination_unavailable'] += 1
+                continue
             self.stats[direction + '_forwarded'] += 1
 
     def _run(self):

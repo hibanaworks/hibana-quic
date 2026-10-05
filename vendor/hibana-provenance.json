@@ -1,6 +1,6 @@
 {
   "upstream": "https://github.com/hibanaworks/hibana",
-  "revision": "4d0077b9ad3bfe3758165995f07d69a844d47632",
+  "revision": "12383a07f7a198031762e3092f6de0e72d8ee68f",
   "local_patches": [],
   "files": {
     ".gitattributes": "818cbff433decf3d92b969293887cb18679861b8d948cfdb6c0ba89192cb0512",
@@ -410,7 +410,7 @@
     "proofs/rolled-route-ownership/EligibleIngress.lean": "ec74ec15d1bdead860c8ee2b6a31e6b92ab3eb3724c34fb0bf94a8137f520e6e",
     "proofs/rolled-route-ownership/NestedReentry.lean": "704718eb76c66d1afe349e17ee6180c63b7515f343655664036c28c3b7783ff0",
     "proofs/rolled-route-ownership/PhaseOwnership.lean": "00b5d6415e2238db247569111c9e25833e7eb74fc30e538f78e19f9b04f87490",
-    "proofs/rolled-route-ownership/README.md": "8d1e9f66d301101ad3159f78ac7ac12c670f62f9839cad640e8ca5523adadf13",
+    "proofs/rolled-route-ownership/README.md": "1016ffe3d66e36640aa3fc05988a3a0014d40f3489ea51bb85ba748af9be6abc",
     "proofs/rolled-route-ownership/ReentryAdmission.lean": "4cfb3a7e8b72ea8d8b4ab242c326a27fdb0ecdd4a60f12ecb377c83e76cf6011",
     "proofs/rolled-route-ownership/ResetAlignment.lean": "a6bc2af1acd7d259eeb87997a96591d2fb216a77ced05d4605c7dc8733787fbe",
     "proofs/rolled-route-ownership/SendContinuation.lean": "62075230dd0e5d654af1fdccc6d7ddad93fbf19414c657306fe87fe3fe92d774",
@@ -1004,7 +1004,7 @@
     "tests/runtime_contract.rs": "3e256ad06142dfad1d81924d2eec6f978816f6453cdc7e37661e82cf8343101e",
     "tests/security_report_regressions/reentry_colors.rs": "dbbc09024d000c1522b11264c0ea9243d9a06432e7a8677a262440b5fb529d4e",
     "tests/security_report_regressions/rolled_routes.rs": "95edc38785ea661de0abc02ff331c4673519ef5541ea8f767a7396a5a8a0de89",
-    "tests/security_report_regressions/send_continuations.rs": "7c5f6bad1d324b448e1a92f72b25626fdf2eb9c08205ac9576d6852e191cf518",
+    "tests/security_report_regressions/send_continuations.rs": "1b086f2a5ca3d011a07cd2fe3c92970993035cd6605795da92cd4bff2e141c28",
     "tests/security_report_regressions.rs": "c38b48f6f50823781ba065bf79c40d2c39430bb5438bd39e4c7aef1cf3c884d7",
     "tests/send_route_authority.rs": "ac7749331b3529f64b0f01edf0340ab82558985091e56b0a77f517c560c22b3c",
     "tests/support/cursor_send_recv.rs": "b5a4042d5e3b0556d2c49a05244a863319e6ca16d43e7be5c8fc59ae3c1cd8e6",
@@ -1194,6 +1194,6 @@
     "tests/visible_route_reentry.rs": "723a5c82962459b8df8cfe91ecfdb800aaf3fc4e13fa6fcc3815ea69a44d9231"
   },
   "qualification": "Exact published receive-lane census snapshot. Local consumer core, thumbv6m, TLS, host, Python and native peer regressions passed; known blackhole-server timeout reproduces on both old and new revisions. New official runner qualification pending.",
-  "base_commit": "4d0077b9ad3bfe3758165995f07d69a844d47632",
+  "base_commit": "12383a07f7a198031762e3092f6de0e72d8ee68f",
   "branch": "development/rolled-route-ownership"
 }

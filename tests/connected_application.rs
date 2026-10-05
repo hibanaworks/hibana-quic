@@ -306,6 +306,7 @@ fn inspection_keys<'scope>(
 #[derive(Default)]
 struct Classification {
     handshake_ack: bool,
+    application_ack: bool,
     handshake_done: bool,
 }
 fn classify_frames(bytes: &[u8], level: EncryptionLevel) -> Classification {
@@ -313,7 +314,10 @@ fn classify_frames(bytes: &[u8], level: EncryptionLevel) -> Classification {
     let mut only_ack_or_padding = true;
     for frame in FrameIter::new(bytes, level, ParseLimits::default()).unwrap() {
         match frame.unwrap() {
-            Frame::Ack { .. } => result.handshake_ack = level == EncryptionLevel::Handshake,
+            Frame::Ack { .. } => {
+                result.handshake_ack = level == EncryptionLevel::Handshake;
+                result.application_ack = level == EncryptionLevel::OneRtt;
+            }
             Frame::Padding { .. } => {}
             Frame::HandshakeDone => {
                 result.handshake_done = true;
@@ -323,6 +327,7 @@ fn classify_frames(bytes: &[u8], level: EncryptionLevel) -> Classification {
         }
     }
     result.handshake_ack &= only_ack_or_padding;
+    result.application_ack &= only_ack_or_padding;
     result
 }
 impl Inspector<'_> {
@@ -386,6 +391,7 @@ impl Inspector<'_> {
                 _ => Classification::default(),
             };
             result.handshake_ack |= current.handshake_ack;
+            result.application_ack |= current.application_ack;
             result.handshake_done |= current.handshake_done;
         }
         self.handshake_acks += usize::from(result.handshake_ack);
@@ -576,6 +582,7 @@ impl DatagramRx for Rx<'_> {
 #[derive(Clone, Copy)]
 enum Loss {
     None,
+    ServerApplicationAcks,
     FirstServerOneRtt,
     ServerHandshakeAck,
     HandshakeDone,
@@ -605,6 +612,9 @@ impl DatagramTx for Tx<'_, '_> {
             // The two frame-specific cases below require authenticated parsing.
             let selected = match self.loss {
                 Loss::None => false,
+                Loss::ServerApplicationAcks => {
+                    classification.as_ref().is_some_and(|p| p.application_ack)
+                }
                 Loss::FirstServerOneRtt => bytes[0] & 0x80 == 0,
                 Loss::ServerHandshakeAck => classification
                     .as_ref()
@@ -613,8 +623,11 @@ impl DatagramTx for Tx<'_, '_> {
                     .as_ref()
                     .is_some_and(|packet| packet.handshake_done),
             };
-            if selected && self.path.dropped.get() == 0 {
-                self.path.dropped.set(1);
+            if selected
+                && (matches!(self.loss, Loss::ServerApplicationAcks)
+                    || self.path.dropped.get() == 0)
+            {
+                self.path.dropped.set(self.path.dropped.get() + 1);
                 return Poll::Ready(Ok(self.clock.now()));
             }
             let mut datagram = Datagram {
@@ -690,11 +703,15 @@ impl BodyReader for Body {
     }
 }
 struct Handler {
+    limit: Option<core::num::NonZeroUsize>,
     failure: FileFailure,
     opened: Vec<(u64, usize)>,
 }
 impl ServerHandler for Handler {
     type Body = Body;
+    fn request_limit(&self) -> Option<core::num::NonZeroUsize> {
+        self.limit
+    }
     async fn open(&mut self, stream_id: u64, request: &[u8]) -> Result<Body, ()> {
         if self.failure == FileFailure::Open {
             return Err(());
@@ -1140,6 +1157,11 @@ fn connection_case_with_failure(
         started: Vec::new(),
     };
     let mut handler = Handler {
+        limit: if matches!(loss, Loss::ServerApplicationAcks) {
+            core::num::NonZeroUsize::new(count)
+        } else {
+            None
+        },
         opened: Vec::new(),
         failure,
     };
@@ -1257,7 +1279,15 @@ fn connection_case_with_failure(
     assert_eq!(client.submitted_streams, count);
     assert_eq!(client.completed_streams, count);
     assert_eq!(server.completed_streams, count);
-    assert!(client.all_streams_acked && server.all_streams_acked);
+    if matches!(loss, Loss::ServerApplicationAcks) {
+        assert!(
+            !client.all_streams_acked,
+            "lost request ACK must not be invented"
+        );
+        assert!(server.all_streams_acked);
+    } else {
+        assert!(client.all_streams_acked && server.all_streams_acked);
+    }
     assert!(client.received_bytes > BODY_SIZES[..count].iter().sum::<usize>() as u64);
     assert!(client.sent_bytes >= 1200 && server.sent_bytes >= 1200);
     assert_eq!(requests.started.len(), count);
@@ -1280,10 +1310,14 @@ fn connection_case_with_failure(
     assert!(to_client.accepted.get() >= to_client.delivered.get());
     assert!(to_server.accepted.get() >= to_server.delivered.get());
     assert_eq!(to_server.dropped.get(), 0);
-    assert_eq!(
-        to_client.dropped.get(),
-        if matches!(loss, Loss::None) { 0 } else { 1 }
-    );
+    if matches!(loss, Loss::ServerApplicationAcks) {
+        assert!(to_client.dropped.get() > 0);
+    } else {
+        assert_eq!(
+            to_client.dropped.get(),
+            if matches!(loss, Loss::None) { 0 } else { 1 }
+        );
+    }
     if matches!(loss, Loss::ServerHandshakeAck) {
         assert!(inspector.handshake_acks >= 1);
     }
@@ -1293,4 +1327,9 @@ fn connection_case_with_failure(
             "HANDSHAKE_DONE must be retransmitted as an authenticated frame"
         );
     }
+}
+
+#[test]
+fn authenticated_peer_close_after_complete_response_does_not_invent_lost_request_ack() {
+    connection_case(1, Loss::ServerApplicationAcks);
 }

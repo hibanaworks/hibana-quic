@@ -1,7 +1,7 @@
 # Selected upstream snapshot
 
 `hibana/` is the tracked source of `development/rolled-route-ownership`
-at `4d0077b9ad3bfe3758165995f07d69a844d47632`, without local patches.
+at `12383a07f7a198031762e3092f6de0e72d8ee68f`, without local patches.
 The update removes the intrinsic send-preview scan of unselected descendant
 contracts, so an interior matching send cannot hide the real outer entry.
 It also includes the upstream cleanup of source-spelling and fixed-count audits.

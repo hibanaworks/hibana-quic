@@ -2,7 +2,7 @@ name: QUIC interoperability pilot
 
 on:
   push:
-    branches: [development/rolled-route-runtime]
+    branches: [development/rolled-route-runtime, ci/parallel-client-retirement]
     paths: [ci/interop-request.json]
   workflow_dispatch:
     inputs:

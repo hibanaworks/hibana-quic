@@ -571,6 +571,7 @@ async fn connected<
             closing,
             &mut book_tx,
             &peer_id,
+            receive_io,
             clock,
         ),
         transmit::publish_close(
@@ -601,9 +602,16 @@ async fn connected<
     ) {
         return Err(Error::Application);
     }
+    // An authenticated peer close ends retransmission (RFC 9000 section10.2.2).
+    // Complete response delivery is still mandatory. A missing request ACK
+    // stays false in the report; peer close must never fabricate that receipt.
+    // Local normal completion still requires every request chunk acknowledged.
     if config.side == Side::Client
         && !matches!(close_kind, super::CloseKind::IdleExpired)
-        && (!before_close.handshake_confirmed || !all_streams_acked || completed_streams == 0)
+        && (!before_close.handshake_confirmed
+            || completed_streams == 0
+            || completed_streams != state.submitted_count()
+            || (!matches!(close_kind, super::CloseKind::Peer { code: 0 }) && !all_streams_acked))
     {
         return Err(Error::Incomplete);
     }

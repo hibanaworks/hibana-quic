@@ -2,11 +2,31 @@
 import socket
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from udp_impairment import UdpProxy, EarlyWireProbe, MultiEndpointProxy
 
 
 class ProxyTests(unittest.TestCase):
+    def test_delayed_send_to_closed_peer_is_rejected_not_forwarded(self):
+        proxy = MultiEndpointProxy(('127.0.0.1', 9), client_endpoints=1)
+        client = ('127.0.0.1', 10001)
+        peer = Mock()
+        peer.send.side_effect = ConnectionRefusedError()
+        try:
+            proxy._routes[client] = peer
+            proxy._incoming_route = client
+            proxy._enqueue('to_server', b'late close')
+            proxy._flush()
+            peer.send.assert_called_once_with(b'late close')
+            self.assertEqual(proxy.stats['to_server_forwarded'], 0)
+            self.assertEqual(proxy.stats['to_server_destination_unavailable'], 1)
+            self.assertEqual(proxy._queued_bytes, 0)
+            self.assertFalse(proxy._queue)
+            self.assertFalse(proxy._destinations)
+        finally:
+            proxy._front.close()
+            proxy._back.close()
+
     def exchange(self, **options):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
             server.bind(('127.0.0.1', 0))

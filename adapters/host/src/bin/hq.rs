@@ -362,10 +362,9 @@ async fn connected<const S: usize, const T: usize>(
         }
         if report.termination == application::Termination::Closed
             && (!report.confirmed
-            // A real peer close retires the server's retained response even
-            // when the peer did not include its final ACK. Keep that fact false
-            // in the report; do not require or fabricate an acknowledgment.
-            || (config.side == Side::Client && !report.all_streams_acked)
+            // The library validates actual peer close separately from local
+            // completion. Missing transport ACKs remain false in the report;
+            // authenticated complete files and actual retirement are required.
             || !report.close_completed
             || report.completed_streams == 0
             || report.completed_streams != report.submitted_streams
@@ -547,8 +546,92 @@ async fn run_async<const S: usize, const T: usize>(
             key_update_target,
             ca,
             files,
-            ..
+            timeout,
         } => {
+            // Independent connections own independent projected sessions. Join
+            // their real retirement concurrently instead of serializing every
+            // new Initial behind the preceding connection's closing PTOs.
+            // Resumption keeps its actual ticket-dependent sequential path.
+            if !resumption && connections > 1 {
+                use hibana_quic::runtime::{Task, TaskSet};
+                use std::{cell::RefCell, future::Future, pin::Pin};
+                const MAX: usize = 64;
+                let files = files.ok_or("independent connections require files")?;
+                if connections > MAX || files.requests.len() != connections {
+                    return Err("independent client connection capacity".into());
+                }
+                let results: RefCell<Vec<Option<Result<Report>>>> =
+                    RefCell::new((0..connections).map(|_| None).collect());
+                let mut requests = files.requests.into_iter();
+                let mut workers: Vec<Pin<Box<dyn Future<Output = Result<()>> + '_>>> =
+                    Vec::with_capacity(MAX);
+                for index in 0..MAX {
+                    let request = requests.next();
+                    let results = &results;
+                    let server_name = server_name.clone();
+                    let ca = ca.clone();
+                    let downloads = files.downloads.clone();
+                    workers.push(Box::pin(async move {
+                        let Some(request) = request else {
+                            return Ok(());
+                        };
+                        let result = Box::pin(run_async(
+                            reactor,
+                            clock,
+                            Options::Client {
+                                connect,
+                                server_name,
+                                ca,
+                                timeout,
+                                cipher,
+                                resumption: false,
+                                connections: 1,
+                                early,
+                                key_update_target,
+                                files: Some(cli::ClientFiles {
+                                    requests: vec![request],
+                                    downloads,
+                                }),
+                            },
+                        ))
+                        .await;
+                        if std::env::var_os("HIBANA_QUIC_DIAGNOSTICS").is_some() {
+                            match &result {
+                                Ok(report) => eprintln!("connection-terminal index={} idle={} confirmed={} completed={} submitted={} acked={} closed={} elapsed_ms={}", index,
+                                    report.idle_expired_connections,
+                                    report.application.as_ref().is_some_and(|a| a.confirmed),
+                                    report.application.as_ref().map_or(0, |a| a.completed_streams),
+                                    report.application.as_ref().map_or(0, |a| a.submitted_streams),
+                                    report.application.as_ref().is_some_and(|a| a.all_streams_acked),
+                                    report.application.as_ref().is_some_and(|a| a.close_completed),report.elapsed),
+                                Err(error) => eprintln!("connection-terminal index={index} failure={error}"),
+                            }
+                        }
+                        results.borrow_mut()[index] = Some(result);
+                        Ok(())
+                    }));
+                }
+                let refs: Vec<Task<'_, String>> = workers
+                    .iter_mut()
+                    .map(|f| f.as_mut() as Task<'_, String>)
+                    .collect();
+                let refs: [Task<'_, String>; MAX] = refs
+                    .try_into()
+                    .map_err(|_| "independent client task count")?;
+                TaskSet::new(refs).await?;
+                drop(workers);
+                let mut aggregate: Option<Report> = None;
+                for result in results.into_inner() {
+                    let report = result.ok_or("missing independent client result")??;
+                    aggregate = Some(match aggregate {
+                        Some(old) => report.append(old)?,
+                        None => report,
+                    });
+                }
+                let mut report = aggregate.ok_or("no independent client result")?;
+                report.elapsed = clock.start.elapsed().as_millis();
+                return Ok(report);
+            }
             let mut groups = if resumption {
                 let mut files = files.ok_or("resumption requires files")?;
                 if files.requests.len() < 2 {
@@ -565,19 +648,6 @@ async fn run_async<const S: usize, const T: usize>(
                         downloads: files.downloads,
                     }),
                 ]
-            } else if connections > 1 {
-                let files = files.ok_or("independent connections require files")?;
-                let downloads = files.downloads;
-                files
-                    .requests
-                    .into_iter()
-                    .map(|request| {
-                        Some(cli::ClientFiles {
-                            requests: vec![request],
-                            downloads: downloads.clone(),
-                        })
-                    })
-                    .collect()
             } else {
                 vec![files]
             }
@@ -916,7 +986,7 @@ async fn run_async<const S: usize, const T: usize>(
     }
 }
 fn run(options: Options) -> Result<String> {
-    if matches!(&options, Options::Server { resumption: false, connections, .. } if *connections > 1)
+    if matches!(&options, Options::Server { resumption: false, connections, .. } | Options::Client { resumption: false, connections, .. } if *connections > 1)
     {
         run_sized::<65, 256>(options)
     } else {

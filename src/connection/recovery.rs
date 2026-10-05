@@ -112,12 +112,14 @@ impl<const B: usize> CompletionObserver<'_, '_, B> {
             .transpose()
             .map_err(|()| AccountingError::Overflow.into())
     }
-    /// The final receive ACK must have reached actual adapter acceptance before
-    /// clean completion may revoke the ordinary publication role.
+    /// Receive ACKs must reach actual adapter acceptance, and retained control
+    /// flights must be acknowledged or retired before normal completion revokes
+    /// publication. An accepted HANDSHAKE_DONE or ticket is not yet delivered.
     pub fn ordinary_settled(&self) -> Result<bool, Error> {
         let n = self.book.numbers.borrow();
         n.ordinary()?;
         Ok(n.pending.iter().all(|count| *count == 0)
+            && n.flights.active_flights() == 0
             && (0..3).all(|index| n.retired_space[index] || !n.ack_pending[index]))
     }
     /// Clients become confirmed only after authenticated HANDSHAKE_DONE;
@@ -2570,7 +2572,10 @@ mod tests {
             .unwrap();
         let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
         let guard = NoAlloc::start();
+        let completion = tx.completion_observer();
+        assert!(completion.ordinary_settled().unwrap());
         let flight = tx.store_crypto(Level::OneRtt, 0, b"ticket").unwrap();
+        assert!(!completion.ordinary_settled().unwrap());
         let mut plaintext = [0; 128];
         let len = packet::encode_frame(
             &Frame::Crypto {
@@ -2593,6 +2598,7 @@ mod tests {
         publication
             .settle(Completion::from_adapter(reservation, Some(0)))
             .unwrap();
+        assert!(!completion.ordinary_settled().unwrap());
         let wrong = packet::encode_frame(
             &Frame::Crypto {
                 offset: 1,
@@ -2616,6 +2622,7 @@ mod tests {
         rx.apply_application_packet(receipt, &plaintext[..len], 10)
             .unwrap();
         assert_eq!(tx.snapshot().active_flights, 0);
+        assert!(completion.ordinary_settled().unwrap());
         retirement.disarm();
         drop(guard);
     }
