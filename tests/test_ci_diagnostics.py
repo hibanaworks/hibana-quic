@@ -37,6 +37,16 @@ class Diagnostics(unittest.TestCase):
     def collect(self):
         return self.module.collect_case_diagnostics(self.logs, 'hibana-quic', 'neqo')['transfer']
 
+    def test_simulator_faults_are_classified_without_raw_details(self):
+        secret = 'PRIVATE_PATH_AND_TOKEN_NOT_FOR_ARTIFACT'
+        self.put('sim/sim.log', f'NS_FATAL_ERROR msg=Device or resource busy file={secret} line=42\n')
+        result = self.collect()['simulator_log']
+        self.assertEqual(result['state'], 'present')
+        self.assertIn('simulator-fatal', result['runner_classes'])
+        self.assertIn('device-busy', result['runner_classes'])
+        self.assertIn('simulator-fatal-location', result['runner_classes'])
+        self.assertNotIn(secret, json.dumps(result))
+
     def test_fixed_runner_events_and_numeric_exit_codes(self):
         self.put('output.txt', '\n'.join([
             'Container sim  Starting', 'Container sim  Started',

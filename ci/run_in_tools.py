@@ -28,21 +28,21 @@ MAX_LINE_BYTES = 32768
 MAX_JSON_BYTES = 16384
 MAX_JSON_RECORDS = 256
 MAX_JSON_SAMPLES = 16
-MAX_DIRECTORY_ENTRIES = 32
+MAX_DIRECTORY_ENTRIES = 64
 MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 MAX_BYTES = 1 << 40
 MAX_COUNT = 1000000
 ENDPOINT_ENUMS = {
     'event': {'hq_progress'}, 'stage': {'listener', 'connection'},
     'lifecycle': {'Listening', 'Active', 'Closing', 'Draining', 'Closed'},
-    'status': {'success', 'failure'}, 'role': {'client', 'server'},
+    'status': {'success', 'failure', 'idle-expired'}, 'role': {'client', 'server'},
     'handshake_mode': {'full', 'resumed', 'fallback'},
     'authentication': {'peer-finished', 'cached-ticket-finished', 'verified-certificate'},
 }
-ENDPOINT_BOOLEANS = {'lifecycle_closed', 'resumption_offered', 'resumed', 'handshake_complete', 'pending_work',
+ENDPOINT_BOOLEANS = {'resources_retired', 'http_transfer_complete', 'lifecycle_closed', 'resumption_offered', 'resumed', 'handshake_complete', 'pending_work',
     'certificate_chain_hostname_time_verified'}
 ENDPOINT_NUMBERS = {key: MAX_COUNT for key in (
-    'key_generation', 'files_completed', 'streams_completed', 'live_streams', 'datagrams_sent',
+    'connections', 'idle_expired_connections', 'key_generation', 'files_completed', 'streams_completed', 'live_streams', 'datagrams_sent',
     'datagrams_received', 'authenticated_packets', 'discarded_packets',
     'send_key_generation', 'authenticated_receive_key_generation',
     'connection_index', 'connection_generation', 'tickets_cached',
@@ -70,6 +70,23 @@ ENDPOINT_CLASSES = {
 }
 RUNNER_PATTERNS = {
     'container-exit-abort': ('Aborting on container exit',),
+    'simulator-assertion': ('assert failed.',),
+    'simulator-fatal': ('NS_FATAL_ERROR',),
+    'simulator-abort-condition': ('aborted. cond=',),
+    'simulator-fatal-location': ('msg=', 'file=', 'line='),
+    'address-in-use': ('Address already in use',),
+    'address-unavailable': ('Cannot assign requested address',),
+    'device-busy': ('Device or resource busy',),
+    'operation-not-permitted': ('Operation not permitted',),
+    'permission-denied': ('Permission denied',),
+    'missing-command': ('command not found',),
+    'missing-library': ('error while loading shared libraries',),
+    'missing-file': ('No such file or directory',),
+    'tap-open-failed': ('Could not open', '/dev/net/tun'),
+    'tap-allocation-failed': ('Could not allocate tap interface',),
+    'out-of-memory': ('Cannot allocate memory',),
+    'allocation-failed': ('std::bad_alloc',),
+
     'simulator-started': ('Container sim', 'Started'),
     'simulator-starting': ('Container sim', 'Starting'),
     'simulator-startup-error': ('Error response from daemon', 'sim'),
@@ -339,10 +356,10 @@ def collect_case_diagnostics(logs, client, server):
     for case in sorted(EXPECTED):
         prefix = (server + '_' + client, case)
         record = {}
-        for label, suffix in (('runner_output', ('output.txt',)), ('client_log', ('client', 'client.log')), ('server_log', ('server', 'server.log'))):
+        for label, suffix in (('runner_output', ('output.txt',)), ('client_log', ('client', 'client.log')), ('server_log', ('server', 'server.log')), ('simulator_log', ('sim', 'sim.log'))):
             metadata, raw = diagnostic_file(logs, prefix + suffix)
             if raw is not None:
-                metadata.update(summarize_log(raw, endpoint=label != 'runner_output'))
+                metadata.update(summarize_log(raw, endpoint=label in ('client_log', 'server_log')))
             record[label] = metadata
         record['captures'] = {}
         for side in ('left', 'right'):
