@@ -83,6 +83,7 @@ impl<'storage, 'scope, const RX: usize, const CHUNK: usize>
                 role,
                 streams: [const { StreamState::EMPTY }; MAX_LIVE_STREAMS],
                 data_credit: Credit::new(local.max_data),
+                bidi_credit: Credit::new(local.max_streams_bidi),
                 control_cursor: 0,
                 controls: [ControlReference::EMPTY; CONTROL_CAPACITY],
             }),
@@ -223,6 +224,16 @@ impl<'book, const RX: usize, const CHUNK: usize> FrameEffects<'book, '_, '_, RX,
             .map_err(|_| Error::Borrowed)?;
         n.state(origin.stream)?;
         n.table.reclaim_storage(origin.stream)?;
+        // Only the actual three-way reclaim releases backing storage for a
+        // further peer stream. Publish the resulting credit through the same
+        // retained control flight as other flow-control updates.
+        if origin.stream.id() & 3 == u64::from(n.role == Role::Client)
+            && n.bidi_credit.current < streams::MAX_STREAMS
+        {
+            let maximum = n.bidi_credit.current + 1;
+            n.table.grant_max_streams(true, maximum)?;
+            n.bidi_credit.update(maximum);
+        }
         // Old per-stream credit/control copies are no longer applicable; the
         // recovery ledger retains packet accounting independently for late ACKs.
         for reference in &mut n.controls {
@@ -760,6 +771,12 @@ impl<'book, const RX: usize, const CHUNK: usize> Tx<'book, '_, '_, RX, CHUNK> {
         if let Some(maximum) = controls.max_data {
             prepared.append(&Frame::MaxData { maximum })?;
         }
+        if let Some(maximum) = controls.max_streams_bidi {
+            prepared.append(&Frame::MaxStreams {
+                bidirectional: true,
+                maximum,
+            })?;
+        }
         if let Some((stream, maximum)) = controls.max_stream_data {
             prepared.append(&Frame::MaxStreamData {
                 id: stream.id(),
@@ -887,6 +904,7 @@ impl<const RX: usize, const CHUNK: usize> Publication<'_, '_, '_, RX, CHUNK> {
             if published {
                 n.controls[slot].state = ReferenceState::Sent;
                 n.data_credit.published(contents.max_data);
+                n.bidi_credit.published(contents.max_streams_bidi);
                 if let Some((stream, maximum)) = contents.max_stream_data {
                     n.state_mut(stream)?.credit.published(Some(maximum));
                     n.control_cursor = (stream.slot() + 1) % MAX_LIVE_STREAMS;
@@ -957,17 +975,22 @@ impl Credit {
 #[derive(Clone, Copy)]
 struct Controls {
     max_data: Option<u64>,
+    max_streams_bidi: Option<u64>,
     max_stream_data: Option<(StreamHandle, u64)>,
     reset: Option<(StreamHandle, streams::Reset)>,
 }
 impl Controls {
     const EMPTY: Self = Self {
         max_data: None,
+        max_streams_bidi: None,
         max_stream_data: None,
         reset: None,
     };
     fn is_empty(self) -> bool {
-        self.max_data.is_none() && self.max_stream_data.is_none() && self.reset.is_none()
+        self.max_data.is_none()
+            && self.max_streams_bidi.is_none()
+            && self.max_stream_data.is_none()
+            && self.reset.is_none()
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1041,6 +1064,7 @@ struct Numbers<'storage, const RX: usize, const CHUNK: usize> {
     role: Role,
     streams: [StreamState; MAX_LIVE_STREAMS],
     data_credit: Credit,
+    bidi_credit: Credit,
     control_cursor: usize,
     controls: [ControlReference; CONTROL_CAPACITY],
 }
@@ -1177,6 +1201,7 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
     fn next_controls(&self, probe: bool) -> Controls {
         let mut controls = Controls {
             max_data: self.data_credit.next(probe),
+            max_streams_bidi: self.bidi_credit.next(probe),
             ..Controls::EMPTY
         };
         for offset in 0..MAX_LIVE_STREAMS {
@@ -1207,6 +1232,7 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
     }
     fn acknowledge_control(&mut self, contents: Controls) -> Result<(), Error> {
         self.data_credit.acknowledge(contents.max_data);
+        self.bidi_credit.acknowledge(contents.max_streams_bidi);
         if let Some((stream, maximum)) = contents.max_stream_data {
             self.state_mut(stream)?.credit.acknowledge(Some(maximum));
         }
@@ -1231,6 +1257,7 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
     }
     fn retry_control(&mut self, contents: Controls) {
         self.data_credit.retry(contents.max_data);
+        self.bidi_credit.retry(contents.max_streams_bidi);
         if let Some((stream, maximum)) = contents.max_stream_data
             && let Ok(state) = self.state_mut(stream)
         {
@@ -1245,6 +1272,9 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
                 && r.contents
                     .max_data
                     .is_none_or(|v| v <= self.data_credit.acknowledged)
+                && r.contents
+                    .max_streams_bidi
+                    .is_none_or(|v| v <= self.bidi_credit.acknowledged)
                 && r.contents.max_stream_data.is_none_or(|(stream, maximum)| {
                     self.state(stream)
                         .is_ok_and(|s| maximum <= s.credit.acknowledged)
@@ -1861,6 +1891,99 @@ mod tests {
         assert!(effects.take_delivery().unwrap().is_none());
         allocation.finish();
     }
+    #[test]
+    fn peer_stream_credit_follows_real_reclaim_and_retries_until_ack() {
+        use super::super::application::reclaim::Joined;
+        let scope = ApplicationKeyScope::new(1108);
+        let mut slots = [StreamSlot::<8>::EMPTY];
+        let mut chunks = [SendChunk::<8>::EMPTY; 2];
+        let mut references = [PacketReference::EMPTY; 8];
+        let mut core = StreamNumbers::new(
+            &scope,
+            Role::Server,
+            Limits {
+                max_data: 1024,
+                ..local(Role::Client)
+            },
+            local(Role::Server),
+            &mut slots,
+            &mut chunks,
+            &mut references,
+        )
+        .unwrap();
+        let Facets {
+            mut app,
+            mut rx,
+            mut tx,
+            mut publication,
+            reset: mut effects,
+        } = core.split();
+        for index in 0..70u64 {
+            let id = index * 4;
+            rx.apply(&Frame::Stream {
+                id,
+                offset: 0,
+                fin: true,
+                data: b"x",
+            })
+            .unwrap();
+            let stream = app
+                .ready_streams()
+                .unwrap()
+                .into_iter()
+                .flatten()
+                .next()
+                .unwrap();
+            let mut bytes = [0; 8];
+            assert!(app.read(stream, &mut bytes).unwrap().fin);
+            let input = app.release_input(id).unwrap().unwrap();
+            let mut production = app.take_production(stream).unwrap();
+            app.enqueue_prefix(&mut production, b"y", true).unwrap();
+            let source = app.release_production(production).unwrap();
+            let prepared = tx.prepare::<128>(false).unwrap().unwrap();
+            assert!(prepared.controls.max_streams_bidi.is_none());
+            let reservation = tx.reserve_transmission(&prepared, index * 3).unwrap();
+            publication.commit(reservation).unwrap();
+            rx.core
+                .numbers
+                .borrow_mut()
+                .acknowledge(&[packet(index * 3)])
+                .unwrap();
+            let delivered = effects.take_delivery().unwrap().unwrap();
+            let delivery = tx.record_delivery(delivered).unwrap();
+            assert!(tx.reclaimable(source.origin()).unwrap());
+            assert_eq!(rx.core.numbers.borrow().bidi_credit.current, index + 1);
+            effects
+                .reclaim(Joined::new(source, input, delivery).unwrap())
+                .unwrap();
+            let update = tx.prepare::<128>(false).unwrap().unwrap();
+            assert_eq!(update.controls.max_streams_bidi, Some(index + 2));
+            let reservation = tx.reserve_transmission(&update, index * 3 + 1).unwrap();
+            publication.cancel(reservation).unwrap();
+            assert_eq!(
+                tx.prepare::<128>(false)
+                    .unwrap()
+                    .unwrap()
+                    .controls
+                    .max_streams_bidi,
+                Some(index + 2)
+            );
+            let reservation = tx.reserve_transmission(&update, index * 3 + 1).unwrap();
+            publication.commit(reservation).unwrap();
+            rx.core.numbers.borrow_mut().lost(index * 3 + 1).unwrap();
+            let retry = tx.prepare::<128>(false).unwrap().unwrap();
+            assert_eq!(retry.controls.max_streams_bidi, Some(index + 2));
+            let reservation = tx.reserve_transmission(&retry, index * 3 + 2).unwrap();
+            publication.commit(reservation).unwrap();
+            rx.core
+                .numbers
+                .borrow_mut()
+                .acknowledge(&[packet(index * 3 + 2)])
+                .unwrap();
+            assert!(tx.prepare::<128>(false).unwrap().is_none());
+        }
+    }
+
     #[test]
     fn owned_release_receipts_reuse_one_slot_and_ignore_only_closed_stream_frames() {
         use super::super::application::reclaim::Joined;

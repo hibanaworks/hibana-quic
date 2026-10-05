@@ -87,7 +87,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('hq', 'neqo-client', 'neqo-server', 'nss', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect'), default='clean')
+    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect', 'multiplexing'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--direction', choices=('all', 'baseline', 'forward', 'reverse'), default='all')
     parser.add_argument('--timeout-seconds', type=int, default=60)
@@ -120,6 +120,8 @@ def main():
     sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario in ('chacha20', 'keyupdate') else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
     if args.scenario == 'multiconnect':
         sizes = list(range(1024, 1074))
+    if args.scenario == 'multiplexing':
+        sizes = [32] * 1999
     if args.scenario == 'blackhole':
         sizes = [10 << 20]
     if args.ordinary_files != 3:
@@ -178,6 +180,14 @@ def main():
             www.mkdir()
             case_sizes = sizes
             names = [str(size) for size in sizes]
+            if args.scenario == 'multiplexing':
+                if direction == 'reverse':
+                    names = [f'file-{index:04d}' for index in range(1999)]
+                else:
+                    # Unmodified native Neqo serves numeric-sized resources.
+                    # Distinct names are required: repeating /32 is not 1999 files.
+                    case_sizes = list(range(32, 2031))
+                    names = [str(size) for size in case_sizes]
             if args.scenario == 'zerortt' and args.early_files == 40:
                 if direction == 'reverse':
                     names = [f'{index:03d}' + 'x' * 247 for index in range(40)]
@@ -265,6 +275,19 @@ def main():
                         })
                         save()
                         resumed_report = None
+                        if args.scenario == 'multiplexing' and direction != 'baseline' and returncode == 0:
+                            if direction == 'reverse':
+                                server.wait(timeout=args.timeout_seconds + 5)
+                                assert server.returncode == 0, 'multiplexing server retirement failed'
+                                actual_text = log_path.read_text()
+                            else:
+                                actual_text = result.stdout
+                            resumed_report = next(json.loads(line) for line in actual_text.splitlines() if line.startswith('{'))
+                            assert resumed_report['connections'] == 1, resumed_report
+                            assert resumed_report['files_completed'] == 1999, resumed_report
+                            assert resumed_report['resources_retired'] and resumed_report['lifecycle_closed'] and resumed_report['all_streams_acked'], resumed_report
+                            report['transfer_observations'][-1]['retirement_verified'] = True
+                            save()
                         if args.scenario in ('resumption', 'zerortt', 'multiconnect') and direction != 'baseline' and returncode == 0:
                             if direction == 'reverse':
                                 server.wait(timeout=args.timeout_seconds + 5)

@@ -1,18 +1,18 @@
 {
-  "request": "Requalify finite request capacity with matching TLS credit and owned storage",
-  "requested_at": "2026-10-05T17:51:00Z",
+  "request": "Qualify bounded multiplexing through existing Hibana stream reclamation",
+  "requested_at": "2026-10-05T18:31:00Z",
   "scope": [
-    "unchanged Neqo fifty-connection controls",
-    "handshakeloss and handshakecorruption as candidate server"
+    "unchanged Neqo multiplexing control",
+    "multiplexing both candidate directions"
   ],
-  "approval": "User requested implementation and qualification of all remaining interoperability cases.",
-  "local_evidence": "docs/parallel-server-retirement.md",
+  "approval": "User requested implementation and qualification of all remaining interoperability cases and prioritized multiplexing.",
+  "local_evidence": "docs/multiplexing.md",
   "cases": [
-    "handshakeloss",
-    "handshakecorruption"
+    "multiplexing"
   ],
-  "qualification": "Derive owned receive slots and advertised stream/data credit from the existing finite server request limit. A one-request parallel worker now owns one slot instead of 64; servers without a finite limit retain 64. No core protocol, timeout, loss or completion policy changes. Three native loss runs verified all 50 files and resource retirement at 18.666, 18.384 and 22.303 seconds, with measured peak RSS 26496, 29908 and 24124 KiB. The 15-second target remains unmet. Prior cc5ae83 runtime 37343370244 and official interop 37343369994 passed both server cases and unchanged Neqo controls. Keep historical qualification at 28/44 and require exact-head official verdicts.",
+  "qualification": "Keep the runner unchanged: 1999 distinct 32-byte files, one handshake, initial server bidi credit <=1000. Reuse at most 64 live slots through the existing three-release Hibana join, then publish retained MAX_STREAMS credit. Keep early data and multiconnection bounds unchanged. Native diagnostics passed all distinct files and candidate retirement both directions; exact official verdict is required before increasing historical 28/44.",
   "candidate_directions": [
+    "client",
     "server"
   ],
   "reference_implementation": "neqo"

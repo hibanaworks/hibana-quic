@@ -123,12 +123,12 @@ impl Files {
                 if application_storage::client_uses_large_window(client.count) {
                     application_storage::local_limits::<{ application_storage::CLIENT_RECEIVE_BYTES }>(
                         Side::Client,
-                        client.count,
+                        client.count.min(application_storage::STREAMS),
                     )
                 } else {
                     application_storage::local_limits::<{ application_storage::RECEIVE_BYTES }>(
                         Side::Client,
-                        client.count,
+                        client.count.min(application_storage::STREAMS),
                     )
                 }
             }
@@ -242,7 +242,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
         Files::Client(client) => {
             macro_rules! run_client {
                 ($rx:expr) => {{
-                    let mut storage = application_storage::Storage::<$rx>::new(client.count)?;
+                    let mut storage = application_storage::Storage::<$rx>::new(client.count.min(application_storage::STREAMS))?;
                     let mut setup = storage.setup(config)?;
                     setup.key_update_target = key_update_target;
                     if source.early_status() == hibana_quic::early_data::EarlyStatus::Offered {

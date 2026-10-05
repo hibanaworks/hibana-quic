@@ -57,7 +57,8 @@ pub(crate) struct State<'book, const CHUNK: usize, B> {
     submitted: Cell<usize>,
     bodies_finished: Cell<usize>,
     done: Cell<bool>,
-    completed: RefCell<[Option<u64>; MAX_LIVE_STREAMS]>,
+    completed: RefCell<[Option<StreamHandle>; MAX_LIVE_STREAMS]>,
+    completed_total: Cell<usize>,
 }
 impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
     pub(crate) const fn new() -> Self {
@@ -68,6 +69,7 @@ impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
             bodies_finished: Cell::new(0),
             done: Cell::new(false),
             completed: RefCell::new([None; MAX_LIVE_STREAMS]),
+            completed_total: Cell::new(0),
         }
     }
     pub(crate) fn submitted_count(&self) -> usize {
@@ -77,7 +79,7 @@ impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
         self.bodies_finished.get()
     }
     pub(crate) fn completed_count(&self) -> usize {
-        self.completed.borrow().iter().flatten().count()
+        self.completed_total.get()
     }
     pub(crate) fn source_done(&self) -> bool {
         self.done.get()
@@ -87,7 +89,7 @@ impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
             .borrow()
             .iter()
             .flatten()
-            .any(|id| *id == stream_id)
+            .any(|stream| stream.id() == stream_id)
     }
     pub(super) fn submitted(&self) -> Result<(), Error> {
         let count = self.submitted.get().checked_add(1).ok_or(Error::Capacity)?;
@@ -97,18 +99,25 @@ impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
         self.submitted.set(count);
         Ok(())
     }
-    fn complete(&self, stream_id: u64) -> Result<(), Error> {
+    fn complete(&self, stream: StreamHandle) -> Result<(), Error> {
+        // A new handle in this slot can only originate after the existing
+        // three-receipt Hibana reclaim released the old storage. Keep only
+        // the live slot's completion identity, plus a cumulative observation.
         let mut completed = self
             .completed
             .try_borrow_mut()
             .map_err(|_| Error::Binding)?;
-        if completed.iter().flatten().any(|id| *id == stream_id) {
+        let slot = completed.get_mut(stream.slot()).ok_or(Error::Capacity)?;
+        if *slot == Some(stream) {
             return Ok(());
         }
-        *completed
-            .iter_mut()
-            .find(|id| id.is_none())
-            .ok_or(Error::Capacity)? = Some(stream_id);
+        let total = self
+            .completed_total
+            .get()
+            .checked_add(1)
+            .ok_or(Error::Capacity)?;
+        *slot = Some(stream);
+        self.completed_total.set(total);
         Ok(())
     }
 }
@@ -736,7 +745,7 @@ async fn deliver<const RX: usize, const CHUNK: usize, B>(
             Some(result) => result.map_err(|_| Error::Application)?,
             None => return Ok(true),
         }
-        state.complete(stream_id)?;
+        state.complete(stream)?;
         control.changed()?;
     }
     Ok(read.fin)
@@ -854,7 +863,7 @@ async fn receive_request<'book, const RX: usize, const CHUNK: usize, B>(
             Some(result) => result.map_err(|_| Error::Application)?,
             None => return Ok(true),
         }
-        state.complete(stream_id)?;
+        state.complete(stream)?;
         control.changed()?;
     }
     Ok(read.fin)

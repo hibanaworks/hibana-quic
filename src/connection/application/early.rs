@@ -104,7 +104,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
         return Ok(Received::default());
     }
     let early = early.ok_or(Error::Binding)?;
-    if early.packets.len() > super::MAX_REQUESTS {
+    if early.packets.len() > crate::connection::application_stream::MAX_LIVE_STREAMS {
         return Err(Error::Capacity);
     }
     let admission = source
@@ -120,8 +120,8 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
     let exchange = owner::Exchange::<N>::new();
     let mut stream_bytes = 0u64;
     let mut finished_streams = 0usize;
-    let mut stored: [Option<owner::StoredPacket<'scope>>; super::MAX_REQUESTS] =
-        core::array::from_fn(|_| None);
+    let mut stored: [Option<owner::StoredPacket<'scope>>;
+        crate::connection::application_stream::MAX_LIVE_STREAMS] = core::array::from_fn(|_| None);
     {
         let mut input = pin!(async {
             let mut largest = None;

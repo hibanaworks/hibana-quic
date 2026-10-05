@@ -2,7 +2,7 @@
 //! These bytes do not authorize publication or successful delivery. Only the
 //! projected wire role may attach evidence of an actual accepted UDP send.
 use super::Error;
-use super::application::{ClientRequests, MAX_REQUEST_BYTES, MAX_REQUESTS};
+use super::application::{ClientRequests, MAX_REQUEST_BYTES};
 use crate::{
     bounded_tls::key_source::FinishedAuthenticated,
     crypto::directional::ApplicationKeyScope,
@@ -51,7 +51,7 @@ impl<'a, 'scope> Requests<'a, 'scope> {
         chunk_bytes: usize,
     ) -> Result<Self, Error> {
         if slots.is_empty()
-            || slots.len() > MAX_REQUESTS
+            || slots.len() > super::application_stream::MAX_LIVE_STREAMS
             || slots
                 .iter()
                 .any(|slot| slot.len != 0 || slot.accepted.is_some())

@@ -229,7 +229,7 @@ async fn connected<
         || buffers.streams.is_empty()
         || buffers.chunks.is_empty()
         || buffers.references.is_empty()
-        || buffers.streams.len() > super::MAX_REQUESTS
+        || buffers.streams.len() > application_stream::MAX_LIVE_STREAMS
     {
         return Err(Error::Capacity);
     }

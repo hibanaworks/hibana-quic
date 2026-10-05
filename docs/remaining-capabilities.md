@@ -39,8 +39,9 @@ remain open, with further optimization experiments deferred.
 - The other 16 runner cells, including multiplexing, Retry, HTTP/3, QUIC v2,
   ECN and path migration, lack historical official
   qualification. TLS-only or numerical-kernel tests do not qualify the endpoint.
-- Request production still has a fixed total request count; two-slot reuse for four requests is locally verified, but the runner's
-  larger multiplexing workload and ongoing credit refill remain unqualified.
+- [Multiplexing](multiplexing.md) now reuses at most 64 live slots for a finite
+  4,096-request admission bound. Native 1,999-file transfer and credit refill
+  are verified; the exact official runner verdict is still pending.
 - Legacy standalone idle, close, migration, path validation, ECN marking, client
   Retry, version-negotiation and early-data
   controllers have been deleted. Their old component tests do not demonstrate

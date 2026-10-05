@@ -29,7 +29,8 @@ use core::{
 use hibana::{Endpoint, EndpointError};
 
 pub const MAX_REQUEST_BYTES: usize = 1024;
-pub const MAX_REQUESTS: usize = 64;
+/// Finite workload admission bound, independent of reusable live stream slots.
+pub const MAX_REQUESTS: usize = 4096;
 
 /// Reads a response through caller-owned bounded storage. Zero means EOF.
 pub trait BodyReader {

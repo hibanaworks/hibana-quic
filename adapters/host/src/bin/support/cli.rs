@@ -1,7 +1,7 @@
 use super::host_files::{MAX_REQUESTS, Request};
 use hibana_quic::bounded_tls::CipherPolicy;
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
-pub const USAGE: &str = "Direct Hibana QUIC v1 / hq-interop\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume|multi] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume|multi]\n\nOne connection, two ticket-resuming connections with --session resume, or one full connection per request with --session multi (server: --connections 1..64); at most 64 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
+pub const USAGE: &str = "Direct Hibana QUIC v1 / hq-interop\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume|multi] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume|multi]\n\nOne connection, two ticket-resuming connections with --session resume, or one full connection per request with --session multi (server: --connections 1..64); at most 4096 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
 #[derive(Debug)]
 pub struct ClientFiles {
     pub requests: Vec<Request>,
@@ -64,7 +64,7 @@ pub fn options(args: &[String]) -> Result<Options> {
     for pair in &mut pairs {
         if pair[0] == "--request" {
             if targets.len() >= MAX_REQUESTS {
-                return Err("at most 64 requests are supported".into());
+                return Err("at most 4096 requests are supported".into());
             }
             targets.push(pair[1].as_str());
         } else if !pair[0].starts_with("--")
@@ -144,6 +144,9 @@ pub fn options(args: &[String]) -> Result<Options> {
                     );
                 }
             };
+            if early && files.as_ref().is_some_and(|files| files.requests.len() > 64) {
+                return Err("early replay storage supports at most 64 requests".into());
+            }
             let key_update_target = match flags.remove("--key-update").unwrap_or("none") {
                 "none" => 0,
                 "once" if files.is_some() && session == "single" => 1,
@@ -160,6 +163,9 @@ pub fn options(args: &[String]) -> Result<Options> {
             } else {
                 1
             };
+            if connections > 64 {
+                return Err("connections must be 1..=64".into());
+            }
             Options::Client {
                 connect,
                 server_name,
@@ -188,7 +194,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 .map(|value| value.parse::<usize>().map_err(|_| "invalid max requests"))
                 .transpose()?;
             if max_requests.is_some_and(|n| n == 0 || n > MAX_REQUESTS) {
-                return Err("max requests must be 1..=64".into());
+                return Err("max requests must be 1..=4096".into());
             }
             let files = match www {
                 Some(www) => Some(ServerFiles {
@@ -211,7 +217,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 let count = required(&mut flags, "--connections")?
                     .parse::<usize>()
                     .map_err(|_| "invalid connection count")?;
-                if count == 0 || count > MAX_REQUESTS {
+                if count == 0 || count > 64 {
                     return Err("connections must be 1..=64".into());
                 }
                 count
@@ -381,6 +387,22 @@ mod tests {
         assert!(!early);
         assert!(options(&args(&format!("{base} --early replay-safe"))).is_err());
         assert!(options(&args(&format!("{base} --session resume --early buffered"))).is_err());
+    }
+
+    #[test]
+    fn multiplexing_admits_many_requests_without_expanding_early_or_connection_limits() {
+        let mut values = args("client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem --downloads output");
+        for index in 0..1999 {
+            values.extend(["--request".into(), format!("/file-{index}")]);
+        }
+        let Options::Client { files: Some(files), connections, .. } = options(&values).unwrap() else { panic!("files") };
+        assert_eq!(files.requests.len(), 1999);
+        assert_eq!(connections, 1);
+        let mut early = values.clone();
+        early.extend(args("--session resume --early replay-safe"));
+        assert!(options(&early).is_err());
+        values.extend(args("--session multi"));
+        assert!(options(&values).is_err());
     }
 
     #[test]

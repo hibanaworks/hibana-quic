@@ -22,7 +22,7 @@ pub struct Observations {
 pub struct FileServer { pub completion_limit: Option<core::num::NonZeroUsize>, root: SafeRoot, admitted: BTreeSet<u64>, max_requests: usize, pub observations: Rc<Observations>, pub diagnostics: Diagnostics }
 impl FileServer {
     pub fn new(root: &Path, max_requests: usize) -> Result<Self, String> {
-        if max_requests == 0 || max_requests > MAX_REQUESTS { return Err("max requests must be 1..=64".into()); }
+        if max_requests == 0 || max_requests > MAX_REQUESTS { return Err("max requests must be 1..=4096".into()); }
         Ok(Self { completion_limit: None, root: SafeRoot::open(root, false)?, admitted: BTreeSet::new(), max_requests, observations: Rc::default(), diagnostics: Diagnostics::default() })
     }
 }
@@ -63,7 +63,7 @@ pub struct Downloads(Rc<RefCell<ClientFiles>>);
 pub struct Client { pub requests: Requests, pub downloads: Downloads, pub observations: Rc<Observations>, pub diagnostics: Diagnostics, pub count: usize }
 impl Client {
     pub fn new(root: &Path, requests: Vec<Request>) -> Result<Self, String> {
-        if requests.is_empty() || requests.len() > MAX_REQUESTS { return Err("client requires 1..=64 requests".into()); }
+        if requests.is_empty() || requests.len() > MAX_REQUESTS { return Err("client requires 1..=4096 requests".into()); }
         for (index, request) in requests.iter().enumerate() { if requests[..index].iter().any(|previous| request.same_destination(previous)) { return Err("duplicate decoded download destination".into()); } }
         let count = requests.len(); let observations = Rc::default(); let diagnostics = Diagnostics::default();
         let files = Rc::new(RefCell::new(ClientFiles { root: SafeRoot::open(root, true)?, requests, next: 0, pending: None, streams: BTreeMap::new(), used_streams: BTreeSet::new(), observations: Rc::clone(&observations), diagnostics: diagnostics.clone() }));
