@@ -417,6 +417,47 @@ async fn connected<const S: usize, const T: usize>(
         body_bytes,
     })
 }
+async fn respond_unsupported_version<const S: usize, const T: usize>(
+    socket: &HostSocket<'_, S, T>,
+    header: &Header<'_>,
+    source: SocketAddr,
+    received_len: usize,
+) -> Result<bool> {
+    let Header::UnsupportedVersion {
+        destination_id,
+        source_id,
+        ..
+    } = header
+    else {
+        return Ok(false);
+    };
+    if destination_id.len() <= 20 && source_id.len() <= 20 {
+        // Stateless version selection precedes connection/key ownership.
+        // Unknown versions have a version-independent CID envelope; even
+        // a small probe may elicit VN (RFC 9000 section 6). Reverse CIDs,
+        // advertise only v1, and stay below the threefold response budget.
+        let mut reply = [0; 51];
+        reply[0] = 0x80 | (random::<1>()?[0] & 0x7f);
+        let mut end = 5;
+        reply[end] = source_id.len() as u8;
+        end += 1;
+        reply[end..end + source_id.len()].copy_from_slice(source_id);
+        end += source_id.len();
+        reply[end] = destination_id.len() as u8;
+        end += 1;
+        reply[end..end + destination_id.len()].copy_from_slice(destination_id);
+        end += destination_id.len();
+        reply[end..end + 4].copy_from_slice(&hibana_quic::packet::QUIC_V1.to_be_bytes());
+        end += 4;
+        if end <= received_len.saturating_mul(3) {
+            socket
+                .send_to(&reply[..end], source, hibana_quic::ecn::Codepoint::NotEct)
+                .await
+                .map_err(|error| format!("Version Negotiation: {error}"))?;
+        }
+    }
+    Ok(true)
+}
 async fn admit_initial<const S: usize, const T: usize>(
     socket: &HostSocket<'_, S, T>,
     first: &mut [u8],
@@ -436,41 +477,9 @@ async fn admit_initial<const S: usize, const T: usize>(
             .and_then(|mut packets| packets.next())
             .and_then(std::result::Result::ok);
         if let Some(packet) = &packet
-            && let Header::UnsupportedVersion {
-                destination_id,
-                source_id,
-                ..
-            } = packet.header
-            && destination_id.len() <= 20
-            && source_id.len() <= 20
+            && respond_unsupported_version(socket, &packet.header, metadata.source, metadata.len)
+                .await?
         {
-            // Stateless version selection precedes connection/key ownership.
-            // Unknown versions have a version-independent CID envelope; even
-            // a small probe may elicit VN (RFC 9000 section 6). Reverse CIDs,
-            // advertise only v1, and stay below the threefold response budget.
-            let mut reply = [0; 51];
-            reply[0] = 0x80 | (random::<1>()?[0] & 0x7f);
-            let mut end = 5;
-            reply[end] = source_id.len() as u8;
-            end += 1;
-            reply[end..end + source_id.len()].copy_from_slice(source_id);
-            end += source_id.len();
-            reply[end] = destination_id.len() as u8;
-            end += 1;
-            reply[end..end + destination_id.len()].copy_from_slice(destination_id);
-            end += destination_id.len();
-            reply[end..end + 4].copy_from_slice(&hibana_quic::packet::QUIC_V1.to_be_bytes());
-            end += 4;
-            if end <= metadata.len.saturating_mul(3) {
-                socket
-                    .send_to(
-                        &reply[..end],
-                        metadata.source,
-                        hibana_quic::ecn::Codepoint::NotEct,
-                    )
-                    .await
-                    .map_err(|error| format!("Version Negotiation: {error}"))?;
-            }
             continue;
         }
         if metadata.len < 1200 {

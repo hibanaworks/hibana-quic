@@ -172,6 +172,11 @@ pub async fn run<const S: usize, const T: usize>(
             else {
                 continue;
             };
+            if respond_unsupported_version(&socket, &packet.header, metadata.source, metadata.len)
+                .await?
+            {
+                continue;
+            }
             let destination = match packet.header {
                 Header::Long { destination_id, .. } | Header::Short { destination_id, .. } => {
                     destination_id

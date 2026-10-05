@@ -75,3 +75,26 @@ and one burst-corruption run (50.051 seconds). Normal and idle outcomes stayed
 separate (10, 11, 19, and 18 idle outcomes respectively). An isolated lost-feedback
 case also completed actual idle retirement; client 0-RTT and key-update
 regressions passed. These are not new official interoperability passes.
+
+## Parallel listener version negotiation
+
+Official runs 37307010360 and 37309538333 failed before capture or client
+traffic: the simulator exited 1. Its wait-for-it-quic sends the reserved WAIT
+version and requires a Version Negotiation response before starting ns-3.
+The parallel listener omitted the stateless response that the single listener
+already implemented. Both now call the same bounded helper before admission.
+Reversed connection IDs, v1-only advertisement and the threefold response
+budget are preserved. The probe consumes no connection slot or TLS owner.
+
+A native regression sends the exact simulator probe before the real client.
+The previous parallel binary times out on this probe. The corrected debug
+binary responds and subsequently transfers all 50 files with matching hashes
+and verified resource retirement. All 111 host tests and strict host Clippy
+pass. Official runner qualification is still required; no pass is inferred
+from listener readiness.
+
+A separate data-plus-FIN coalescing experiment was not adopted. Two native
+burst-loss trials took 29.447 and 29.288 seconds to client completion, within
+the previous 26.668–32.369 second range. Additional look-ahead complexity was
+removed rather than claiming a material speed improvement. Native reports now
+separate client elapsed time from subsequent verification/resource retirement.

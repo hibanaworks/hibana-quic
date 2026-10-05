@@ -25,6 +25,22 @@ fixture = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fixture)
 
 
+def version_probe(port, ipv6=False):
+    # The unmodified QNS simulator waits for this reserved-version response
+    # before it starts captures or the reference client. No connection is used.
+    probe = b'\xc0WAIT\x00\x00' + bytes(1200)
+    family = socket.AF_INET6 if ipv6 else socket.AF_INET
+    address = ('::1' if ipv6 else '127.0.0.1', port)
+    with socket.socket(family, socket.SOCK_DGRAM) as peer:
+        peer.settimeout(2)
+        peer.sendto(probe, address)
+        reply, source = peer.recvfrom(1500)
+    assert source[1] == port
+    assert len(reply) <= 3 * len(probe)
+    assert reply[0] & 0x80 and reply[1:7] == bytes(6), reply.hex()
+    assert reply[7:] == b'\x00\x00\x00\x01', reply.hex()
+
+
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -198,6 +214,8 @@ def main():
                 result = None
                 try:
                     wait_ready(server, log_path)
+                    if direction == 'reverse':
+                        version_probe(server_port, ipv6)
                     if args.scenario == 'zerortt' and direction != 'reverse' and not args.client_early_reject:
                         # Native Neqo correctly rejects early data for ten seconds
                         # after startup. Unlike its QNS mode, do not shift its clock.
@@ -230,6 +248,7 @@ def main():
                         except subprocess.TimeoutExpired as error:
                             result = error
                             returncode = 'timeout'
+                        client_elapsed = time.monotonic() - started
                         # Retain verified transfer observations even when the
                         # later clean-retirement assertion fails. Never turn
                         # this diagnostic into an official/closed verdict.
@@ -239,6 +258,7 @@ def main():
                                     for name in names]
                         report.setdefault('transfer_observations', []).append({
                             'direction': direction, 'client_exit': returncode,
+                            'client_elapsed_seconds': round(client_elapsed, 3),
                             'expected_files': len(names),
                             'matching_files': sum(item['expected_sha256'] == item['received_sha256'] for item in observed),
                             'retirement_verified': False,
@@ -287,7 +307,7 @@ def main():
                             assert proxy.stats['zero_rtt_packets'] > 0, dict(proxy.stats)
                             assert proxy.stats['one_rtt_protected_payload_upper_bound'] <= 5000, dict(proxy.stats)
                         files = [{'name': name, 'bytes': (destination / name).stat().st_size if (destination / name).exists() else None, 'expected_sha256': sha(www / name), 'received_sha256': sha(destination / name) if (destination / name).exists() else None} for name in names]
-                        row = {'direction': direction, 'client_exit': returncode, 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'connections': resumed_report.get('connections') if resumed_report else None, 'resources_retired': resumed_report.get('resources_retired') if resumed_report else None, 'idle_expired_connections': resumed_report.get('idle_expired_connections') if resumed_report else None, 'lifecycle_closed': resumed_report.get('lifecycle_closed') if resumed_report else None, 'resumed_two_connections': bool(resumed_report and resumed_report['resumed']), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
+                        row = {'direction': direction, 'client_exit': returncode, 'client_elapsed_seconds': round(client_elapsed, 3), 'post_client_verification_and_retirement_seconds': round(time.monotonic() - started - client_elapsed, 3), 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'connections': resumed_report.get('connections') if resumed_report else None, 'resources_retired': resumed_report.get('resources_retired') if resumed_report else None, 'idle_expired_connections': resumed_report.get('idle_expired_connections') if resumed_report else None, 'lifecycle_closed': resumed_report.get('lifecycle_closed') if resumed_report else None, 'resumed_two_connections': bool(resumed_report and resumed_report['resumed']), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
                         report['runs'].append(row)
                         save()
                         if args.client_early_loss:
