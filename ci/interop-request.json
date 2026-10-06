@@ -1,6 +1,6 @@
 {
-  "request": "Observe stalled handshake-loss connection with direct-local executor cleanup",
-  "requested_at": "2026-10-06T02:15:00Z",
+  "request": "Diagnose extreme handshake loss with preceding committed-operation evidence",
+  "requested_at": "2026-10-06T02:50:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions"
@@ -8,16 +8,13 @@
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
   "local_evidence": "docs/direct-locals.md",
   "cases": [
-    "handshakecorruption",
-    "handshakeloss",
-    "multiplexing",
-    "zerortt"
+    "handshakeloss"
   ],
   "candidate_directions": [
     "client",
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Isolated candidate; canonical branch unchanged. Previous130c864 runtime37398933045 passed; official37398932952 had passing quiche C1/L1/M/Z controls, candidate server4/4 and clientC1/M/Z passes, but clientL1 timed out300s with49/50 length-complete files. No root cause or content/termination success is inferred. This candidate separates direct locals from executor assembly, removes redundant unit-message counters/checks, and retains legitimate pin/join at execution boundaries. Actual Hibana tap samples and native packet counts are bounded read-only diagnostics, with no new protocol timers, verdict changes or raw-log publication. Local423 core units/all integration/doc groups,115 host,29 reference TLS tests,58 Python,14 impairment fixture tests,thumbv6m and selected host Clippy passed. Core all-targets strict Clippy failed47 diagnostics and is not claimed successful. Native50-connection loss/corruption and unchanged Neqo40-file0RTT/1999-file multiplexing passed both directions; native fixtures do not qualify official L1. Recheck unchanged C1/L1/M/Z controls and candidate directions. Corec3d89f78 is unmodified and its upstream full CI37396155673 passed. Speed tuning and other new interop cases remain deferred until the correctness failure is resolved.",
-  "formal_models": true
+  "qualification": "Diagnostic repeat of unchanged L1 in both candidate directions, requiring a passing quiche control. Previous 44a05cb run 37403324082 passed controls and client C1/L1/M/Z plus server C1/M/Z, but server L1 failed after 11/50 files with client exit 255. The last unfinished server tap was TLS_TX receiving ApplicationTaken. No root cause or fix is claimed. Add bounded preceding actual tap records to distinguish Flight from Idle; no protocol changes, retry, deadline extension or fabricated completion. 128 additional deterministic paired TLS loss histories pass in 20 connected tests. The selected core remains unmodified c3d89f78. The existing six Lean and six Z3 groups passed on 44a05cb and are not rerun in this targeted diagnostic; no formal scope is weakened or new formal success claimed. The canonical branch and historical 30/44 unique inventory remain unchanged.",
+  "formal_models": false
 }

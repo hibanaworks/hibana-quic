@@ -337,10 +337,27 @@ pub async fn files<'scope, const S: usize, const T: usize>(
     let diagnostics = std::env::var("HIBANA_QUIC_DIAGNOSTICS").as_deref() == Ok("1");
     let started = std::time::Instant::now();
     let mut sampled_at = None;
+    let mut traced_through = None;
+    let mut trace_records = 0u16;
     let result = std::future::poll_fn(|cx| {
         let result = std::future::Future::poll(application.as_mut(), cx);
         if diagnostics && (result.is_ready() || sampled_at.is_none_or(|at: std::time::Instant| at.elapsed() >= std::time::Duration::from_secs(1))) {
             sampled_at = Some(std::time::Instant::now());
+            // A bounded sample of preceding committed operations distinguishes
+            // Flight from Idle without adding protocol state or private bytes.
+            for event in rendezvous.tap().filter(|event| matches!(event.id(),
+                hibana::runtime::tap::ENDPOINT_SEND | hibana::runtime::tap::ENDPOINT_RECV | hibana::runtime::tap::ENDPOINT_SESSION)) {
+                if traced_through.is_none_or(|ordinal| event.ts() > ordinal) {
+                    traced_through = Some(event.ts());
+                    if trace_records < 512 {
+                        eprintln!("connection-trace session={} ordinal={} event={} metadata={}", event.arg0(), event.ts(), event.id(), event.arg1());
+                        trace_records += 1;
+                    } else if trace_records == 512 {
+                        eprintln!("connection-trace-capacity session={}", event.arg0());
+                        trace_records += 1;
+                    }
+                }
+            }
             if let Some(event) = rendezvous.tap().filter(|event| matches!(event.id(),
                 hibana::runtime::tap::ENDPOINT_SEND | hibana::runtime::tap::ENDPOINT_RECV | hibana::runtime::tap::ENDPOINT_SESSION)).last() {
                 eprintln!("connection-frontier session={} ordinal={} event={} metadata={} finished={} elapsed_ms={} sent={} received={}",

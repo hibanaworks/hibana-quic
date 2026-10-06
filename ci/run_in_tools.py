@@ -289,9 +289,21 @@ def summarize_log(raw, endpoint=False):
         # Fixed native diagnostic grammar only. Retain the latest actual tap
         # sample per session and exact successful terminal fields, never raw
         # error strings, peer-controlled paths, or arbitrary JSON metadata.
-        frontiers, terminals = {}, []
-        frontier_count = terminal_count = frontier_samples_omitted = 0
+        frontiers, terminals, traces, trace_capacities = {}, [], {}, []
+        frontier_count = terminal_count = frontier_samples_omitted = trace_count = 0
         for line in lines:
+            match = re.fullmatch(r'connection-trace session=([0-9]{1,10}) ordinal=([0-9]{1,10}) event=(514|515|516) metadata=([0-9]{1,10})', line)
+            if match:
+                session, ordinal, event, metadata = map(int, match.groups())
+                if max(session, ordinal, metadata) <= 0xffffffff:
+                    trace_count += 1
+                    if session in traces or len(traces) < 64:
+                        tail = traces.setdefault(session, [])
+                        tail.append(dict(ordinal=ordinal, event=event, metadata=metadata))
+                        del tail[:-16]
+            match = re.fullmatch(r'connection-trace-capacity session=([0-9]{1,10})', line)
+            if match and int(match.group(1)) <= 0xffffffff and len(trace_capacities) < 64:
+                trace_capacities.append(int(match.group(1)))
             match = re.fullmatch(r'connection-frontier session=([0-9]{1,10}) ordinal=([0-9]{1,10}) event=(514|515|516) metadata=([0-9]{1,10}) finished=(true|false) elapsed_ms=([0-9]{1,7}) sent=([0-9]{1,10}) received=([0-9]{1,10})', line)
             if match:
                 session, ordinal, event, metadata, finished, elapsed, sent, received = match.groups()
@@ -309,6 +321,10 @@ def summarize_log(raw, endpoint=False):
                     terminal_count += 1
                     if len(terminals) < 64:
                         terminals.append(dict(index=int(index), idle=int(idle), confirmed=confirmed == 'true', completed=int(completed), submitted=int(submitted), acked=acked == 'true', closed=closed == 'true', elapsed_ms=int(elapsed)))
+        record['connection_trace_records'] = trace_count
+        record['connection_trace_tails'] = [dict(session=session, events=events) for session, events in traces.items()]
+        record['connection_trace_capacity_sessions'] = trace_capacities
+        record['connection_trace_records_omitted'] = trace_count - sum(map(len, traces.values()))
         record['frontier_sample_count'] = frontier_count
         record['frontier_samples_omitted_for_capacity'] = frontier_samples_omitted
         record['latest_connection_frontiers'] = list(frontiers.values())

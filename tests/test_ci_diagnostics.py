@@ -115,6 +115,16 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(len(bounded['latest_connection_frontiers']), 64)
         self.assertEqual(bounded['frontier_samples_omitted_for_capacity'], 6)
 
+    def test_native_trace_keeps_only_bounded_numeric_tails(self):
+        raw = b''.join(f'connection-trace session=7 ordinal={i} event=515 metadata=50357248\n'.encode() for i in range(30))
+        raw += b'connection-trace session=7 ordinal=31 event=515 metadata=PRIVATE\nconnection-trace-capacity session=7\n'
+        result = self.module.summarize_log(raw, endpoint=True)
+        self.assertEqual(result['connection_trace_records'], 30)
+        self.assertEqual(result['connection_trace_records_omitted'], 14)
+        self.assertEqual(result['connection_trace_capacity_sessions'], [7])
+        self.assertEqual([x['ordinal'] for x in result['connection_trace_tails'][0]['events']], list(range(14, 30)))
+        self.assertNotIn('PRIVATE', json.dumps(result))
+
     def test_panic_backtrace_refcell_without_messages(self):
         raw = b"thread 'PRIVATE_NAME' panicked at PRIVATE_PATH\nalready borrowed: BorrowMutError\nstack backtrace:\nfatal runtime error: stack overflow\n"
         result = self.module.summarize_log(raw, endpoint=True)

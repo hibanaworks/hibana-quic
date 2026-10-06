@@ -531,6 +531,7 @@ fn execute<F: Future>(clock: &TestClock, future: F, trace: impl Fn()) -> F::Outp
 struct Datagram {
     bytes: [u8; DATAGRAM],
     len: usize,
+    ready_at: u64,
 }
 struct Path {
     queued: RefCell<Option<Datagram>>,
@@ -552,31 +553,33 @@ impl Path {
         }
     }
 }
-struct Rx<'a>(&'a Path);
+struct Rx<'a>(&'a Path, &'a TestClock);
 impl DatagramRx for Rx<'_> {
     async fn receive(&mut self, output: &mut [u8]) -> Result<usize, IoError> {
-        poll_fn(|cx| {
-            let packet = self.0.queued.borrow_mut().take();
-            match packet {
-                Some(packet) => {
-                    assert!(packet.len <= output.len());
-                    output[..packet.len].copy_from_slice(&packet.bytes[..packet.len]);
-                    self.0.delivered.set(self.0.delivered.get() + 1);
-                    let wake = self.0.writer.borrow_mut().take();
-                    if let Some(wake) = wake {
-                        wake.wake();
-                    }
-                    Poll::Ready(Ok(packet.len))
-                }
-                None => {
-                    let next = cx.waker().clone();
-                    let previous = self.0.reader.borrow_mut().replace(next);
-                    drop(previous);
-                    Poll::Pending
-                }
+        let ready_at = poll_fn(|cx| {
+            if let Some(packet) = self.0.queued.borrow().as_ref() {
+                Poll::Ready(packet.ready_at)
+            } else {
+                let previous = self.0.reader.borrow_mut().replace(cx.waker().clone());
+                drop(previous);
+                Poll::Pending
             }
         })
-        .await
+        .await;
+        self.1.wait_until(ready_at).await;
+        let packet = self
+            .0
+            .queued
+            .borrow_mut()
+            .take()
+            .expect("single RX owns queued packet");
+        assert!(packet.len <= output.len());
+        output[..packet.len].copy_from_slice(&packet.bytes[..packet.len]);
+        self.0.delivered.set(self.0.delivered.get() + 1);
+        if let Some(wake) = self.0.writer.borrow_mut().take() {
+            wake.wake();
+        }
+        Ok(packet.len)
     }
 }
 #[derive(Clone, Copy)]
@@ -585,6 +588,9 @@ enum Loss {
     ServerApplicationAcks,
     ServerApplicationAcksPersistentServer,
     FirstServerOneRtt,
+    ServerPacketBurst { first: usize, count: usize },
+    ClientPacketBurst { first: usize, count: usize },
+    DuplexPacketMask { client: u64, server: u64 },
     ServerHandshakeAck,
     HandshakeDone,
 }
@@ -613,6 +619,20 @@ impl DatagramTx for Tx<'_, '_> {
             // The two frame-specific cases below require authenticated parsing.
             let selected = match self.loss {
                 Loss::None => false,
+                Loss::DuplexPacketMask { client, server } => {
+                    let mask = if self.inspector.is_some() {
+                        server
+                    } else {
+                        client
+                    };
+                    let ordinal = self.path.accepted.get();
+                    bytes[0] & 0x80 != 0 && ordinal <= 64 && (mask & (1 << (ordinal - 1))) != 0
+                }
+                Loss::ServerPacketBurst { first, count }
+                | Loss::ClientPacketBurst { first, count } => {
+                    let ordinal = self.path.accepted.get();
+                    (first..first + count).contains(&ordinal)
+                }
                 Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer => {
                     classification.as_ref().is_some_and(|p| p.application_ack)
                 }
@@ -627,7 +647,11 @@ impl DatagramTx for Tx<'_, '_> {
             if selected
                 && (matches!(
                     self.loss,
-                    Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer
+                    Loss::ServerApplicationAcks
+                        | Loss::ServerApplicationAcksPersistentServer
+                        | Loss::ServerPacketBurst { .. }
+                        | Loss::ClientPacketBurst { .. }
+                        | Loss::DuplexPacketMask { .. }
                 ) || self.path.dropped.get() == 0)
             {
                 self.path.dropped.set(self.path.dropped.get() + 1);
@@ -636,6 +660,12 @@ impl DatagramTx for Tx<'_, '_> {
             let mut datagram = Datagram {
                 bytes: [0; DATAGRAM],
                 len: bytes.len(),
+                ready_at: self.clock.now()
+                    + if matches!(self.loss, Loss::DuplexPacketMask { .. }) {
+                        15_000
+                    } else {
+                        0
+                    },
             };
             datagram.bytes[..bytes.len()].copy_from_slice(bytes);
             *self.path.queued.borrow_mut() = Some(datagram);
@@ -1139,18 +1169,29 @@ fn connection_case_with_failure(
     let clock = TestClock::new();
     let to_client = Path::new();
     let to_server = Path::new();
-    let mut client_rx = Rx(&to_client);
-    let mut server_rx = Rx(&to_server);
+    let mut client_rx = Rx(&to_client, &clock);
+    let mut server_rx = Rx(&to_server, &clock);
     let mut client_tx = Tx {
         path: &to_server,
         clock: &clock,
-        loss: Loss::None,
+        loss: if matches!(
+            loss,
+            Loss::ClientPacketBurst { .. } | Loss::DuplexPacketMask { .. }
+        ) {
+            loss
+        } else {
+            Loss::None
+        },
         inspector: None,
     };
     let mut server_tx = Tx {
         path: &to_client,
         clock: &clock,
-        loss,
+        loss: if matches!(loss, Loss::ClientPacketBurst { .. }) {
+            Loss::None
+        } else {
+            loss
+        },
         inspector: Some(&mut inspector),
     };
     let mut requests = Requests {
@@ -1291,7 +1332,12 @@ fn connection_case_with_failure(
             "lost request ACK must not be invented"
         );
         assert!(server.all_streams_acked);
-    } else {
+    } else if !matches!(
+        loss,
+        Loss::ServerPacketBurst { .. }
+            | Loss::ClientPacketBurst { .. }
+            | Loss::DuplexPacketMask { .. }
+    ) {
         assert!(client.all_streams_acked && server.all_streams_acked);
     }
     assert!(client.received_bytes > BODY_SIZES[..count].iter().sum::<usize>() as u64);
@@ -1315,16 +1361,30 @@ fn connection_case_with_failure(
     }
     assert!(to_client.accepted.get() >= to_client.delivered.get());
     assert!(to_server.accepted.get() >= to_server.delivered.get());
-    assert_eq!(to_server.dropped.get(), 0);
+    if let Loss::ClientPacketBurst { count, .. } = loss {
+        assert!(to_server.dropped.get() > 0 && to_server.dropped.get() <= count);
+    } else if let Loss::DuplexPacketMask { client, .. } = loss {
+        assert!(to_server.dropped.get() <= client.count_ones() as usize);
+    } else {
+        assert_eq!(to_server.dropped.get(), 0);
+    }
     if matches!(
         loss,
         Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer
     ) {
         assert!(to_client.dropped.get() > 0);
+    } else if let Loss::DuplexPacketMask { server, .. } = loss {
+        assert!(to_client.dropped.get() <= server.count_ones() as usize);
+    } else if let Loss::ServerPacketBurst { count, .. } = loss {
+        assert!(to_client.dropped.get() > 0 && to_client.dropped.get() <= count);
     } else {
         assert_eq!(
             to_client.dropped.get(),
-            if matches!(loss, Loss::None) { 0 } else { 1 }
+            if matches!(loss, Loss::None | Loss::ClientPacketBurst { .. }) {
+                0
+            } else {
+                1
+            }
         );
     }
     if matches!(loss, Loss::ServerHandshakeAck) {
@@ -1346,4 +1406,53 @@ fn authenticated_peer_close_after_complete_response_does_not_invent_lost_request
 #[test]
 fn complete_responses_can_close_when_request_ack_is_lost_and_server_stays_open() {
     connection_case(1, Loss::ServerApplicationAcksPersistentServer);
+}
+
+#[test]
+fn finite_handshake_survives_each_early_server_packet_loss_burst() {
+    for first in 1..=16 {
+        for count in 1..=3 {
+            eprintln!("server loss burst: first={first} count={count}");
+            connection_case(1, Loss::ServerPacketBurst { first, count });
+        }
+    }
+}
+
+#[test]
+fn finite_handshake_survives_each_early_client_packet_loss_burst() {
+    for first in 1..=16 {
+        for count in 1..=3 {
+            eprintln!("client loss burst: first={first} count={count}");
+            connection_case(1, Loss::ClientPacketBurst { first, count });
+        }
+    }
+}
+
+#[test]
+fn finite_handshake_survives_reproducible_duplex_packet_loss() {
+    for seed in 1u64..=32 {
+        let mut word = seed;
+        let mut masks = [0u64; 2];
+        for mask in &mut masks {
+            for ordinal in 0..32 {
+                word ^= word << 13;
+                word ^= word >> 7;
+                word ^= word << 17;
+                if word % 10 < 3 {
+                    *mask |= 1 << ordinal;
+                }
+            }
+        }
+        eprintln!(
+            "duplex loss: seed={seed} client={} server={}",
+            masks[0], masks[1]
+        );
+        connection_case(
+            1,
+            Loss::DuplexPacketMask {
+                client: masks[0],
+                server: masks[1],
+            },
+        );
+    }
 }

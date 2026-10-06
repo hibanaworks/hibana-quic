@@ -245,3 +245,34 @@ fifty client terminal records. Unchanged native Neqo 40-file 0-RTT and 1999-file
 multiplexing passed both directions. These are diagnostic fixtures, not the
 unmodified official runner's loss verdict; the outstanding 49/50 failure is not
 claimed fixed. The actual TLS/RSA/resumption/early reference test groups passed.
+
+
+## Observed loss frontier, not a root-cause claim
+
+Official run 37403324082 (44a05cb, artifact 11386523430) passed all quiche controls
+and all candidate client C1/L1/M/Z cells. Client L1 had fifty actual successful
+terminal records, complete files and resource retirement in 22.839 seconds. Server
+C1/M/Z passed; server L1 failed when the reference client exited 255 with 11/50
+length-complete files. Twelve server sessions were sampled. The unfinished one
+last committed TLS_TX (role 3) receiving ApplicationTaken (label 100), ordinal 519,
+at 26.392 seconds, with 17 sent / 10 received native datagrams. A last observed tap is
+not proof of the next pending instruction or the underlying cause. All six Lean
+and six Z3 groups passed. The failure is not claimed fixed or attributed to a
+new Hibana defect.
+
+The pinned runner's L1 is an extreme-loss case: 30 percent in each direction,
+three-packet bursts, 15 ms one-way delay, 10 Mbps and queue 25. A follow-up adds bounded
+preceding committed-operation samples (up to 512 per connection, explicit capacity
+notice) and retains only the latest 16 numeric records for each of at most 64 sessions.
+It adds no wake, protocol retry, phase state, deadline change or success override.
+
+Additional actual paired-TLS fixtures pass 48 early server packet-loss bursts,
+48 early client bursts, and 32 reproducible duplex long-header loss plans with 15 ms
+one-way delay. All 20 connected tests pass. The duplex test deliberately targets
+Initial/Handshake packets. An exploratory all-packet mask instead parked after
+one peer had already closed: the capacity-one test path retained a packet with
+no remaining reader, and its persistent server had no idle deadline. That test
+is not evidence of the official unfinished-handshake fault and is not counted
+as a successful full-network simulation. Whole-connection ACK/close loss remains
+covered separately by the existing explicit cases; these fixtures do not replace
+an unchanged runner verdict.
