@@ -3,8 +3,8 @@
 ## Current qualification boundary (2026-10-06)
 
 The historical matrix remains 30/44 unique candidate cells, not a complete
-latest-commit matrix. Experimental 43c0c48a5b74f686adb4eb4557db0f008aac4cc5
-passed all runtime CI37430945679 steps. Official CI37430945721/artifact11397292521
+latest-commit matrix. Experimental 562338f7cd292b982b8293f51b2a50e3b458368a
+passed all runtime CI37437645856 steps. Official CI37437645847/artifact11400961525
 passed unchanged quiche C1/L1/M/Z controls and all eight candidate direction/case
 cells, plus the existing six Lean and six Z3 model groups. Client C1 and L1 each
 have fifty actual successful terminals, zero idle expiry, closed lifecycle and
@@ -19,7 +19,7 @@ capture/keylog/log evidence for private diagnosis; the later33c83f4e trial suppl
 [direct locals](direct-locals.md) for exact boundaries. Earlier evidence sections
 below are historical checkpoints, not current claims.
 
-The subsequent33c83f4e trial passed runtime37434925495 but failed server L1 in
+The earlier33c83f4e trial passed runtime37434925495 but failed server L1 in
 37434925514. Its actual encrypted capture was recovered: the1490-byte
 ClientHello lacked its357-byte tail at the server, while all three server ACKs
 were absent at the client. Other selected cells and controls passed. This trial

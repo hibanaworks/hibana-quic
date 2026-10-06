@@ -813,8 +813,8 @@ pub(crate) async fn run<
         }
         Err(error) => return Err(error),
     }
-    receive.send::<p::ReceiveRetire>(&0).await?;
-    check(receive.recv::<p::ReceiveRetired>().await?, 0)?;
+    receive.send::<p::ReceiveRetire>(&()).await?;
+    receive.recv::<p::ReceiveRetired>().await?;
     material.application.discard();
     if let Some(mut initial) = material.initial.take() {
         initial.discard();

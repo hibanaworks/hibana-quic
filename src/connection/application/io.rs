@@ -589,8 +589,8 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                 if !state.data.is_empty() {
                     return Err(Error::Binding);
                 }
-                endpoint.send::<p::ProductionReclaimsDone>(&0).await?;
-                check(endpoint.recv::<p::ProductionReclaimsClosed>().await?, 0)?;
+                endpoint.send::<p::ProductionReclaimsDone>(&()).await?;
+                endpoint.recv::<p::ProductionReclaimsClosed>().await?;
                 endpoint.send::<p::SourceRetired>(&()).await?;
                 return Ok(());
             }
@@ -748,10 +748,10 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                 }
             }
             9 => {
-                let sequence = offered.recv::<p::ReceiveRetire>().await?;
-                endpoint.send::<p::InputReclaimsDone>(&0).await?;
-                check(endpoint.recv::<p::InputReclaimsClosed>().await?, 0)?;
-                endpoint.send::<p::ReceiveRetired>(&sequence).await?;
+                offered.recv::<p::ReceiveRetire>().await?;
+                endpoint.send::<p::InputReclaimsDone>(&()).await?;
+                endpoint.recv::<p::InputReclaimsClosed>().await?;
+                endpoint.send::<p::ReceiveRetired>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),
@@ -852,11 +852,11 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                 }
             }
             9 => {
-                let sequence = offered.recv::<p::ReceiveRetire>().await?;
+                offered.recv::<p::ReceiveRetire>().await?;
                 requests.close();
-                endpoint.send::<p::InputReclaimsDone>(&0).await?;
-                check(endpoint.recv::<p::InputReclaimsClosed>().await?, 0)?;
-                endpoint.send::<p::ReceiveRetired>(&sequence).await?;
+                endpoint.send::<p::InputReclaimsDone>(&()).await?;
+                endpoint.recv::<p::InputReclaimsClosed>().await?;
+                endpoint.send::<p::ReceiveRetired>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),
@@ -1522,8 +1522,8 @@ mod interrupted_delivery_tests {
                 let reply = rx.offer().await?;
                 assert_eq!(reply.label(), p::ReceivedInterrupted::LOGICAL_LABEL);
                 check(reply.recv::<p::ReceivedInterrupted>().await?, 0)?;
-                rx.send::<p::ReceiveRetire>(&0).await?;
-                check(rx.recv::<p::ReceiveRetired>().await?, 0)?;
+                rx.send::<p::ReceiveRetire>(&()).await?;
+                rx.recv::<p::ReceiveRetired>().await?;
                 Ok::<(), Error>(())
             },
             crate::runtime::join2(

@@ -627,3 +627,29 @@ Final local full cargo, thumbv6m, host116, referenceTLS29 and selected host
 lib/hq strict Clippy pass, plus the new missing-tail framing test. Earlier
 obsolete integer fixture payload compile failures were corrected before these
 final runs. This new source needs its own remote qualification.
+
+## Retirement notifications do not carry fake identities
+
+ReceiveRetire/ReceiveRetired and the production/input/delivery reclaim-done/
+closed edges now carry unit, removing their fixed-zero echo checks. Actual
+received stream IDs, the three independently owned reclaim receipts, their
+origin/table binding and native pending-publication checks remain unchanged.
+
+Final local full cargo (including the missing-tail framing regression),
+thumbv6m,116 host tests,29 independent TLS tests, selected host lib/hq Clippy,
+69 Python tests and source/core audits pass. These eight message types change
+only internal projected progress; remote qualification is still required.
+
+Audit boundary: the non-Copy RxControl is retained as the unique control
+capability transferred by KeyControlAdmission, without its old sequence state.
+Replacing it with a freely copyable exchange reference would erase that local
+ownership distinction. Scheduler completion bits, cryptographic key-phase bits,
+actual storage occupancy, stream/packet identities and cancellation ownership
+are not classified as a second protocol dispatcher merely because they have
+state. The remaining whole-file audit and older client loss diagnosis are open.
+
+The key/source checkpoint562338f7 passed every runtime37437645856 step and all
+four cases in both candidate directions, unchanged quiche controls and six
+Lean/six Z3 groups in37437645847/artifact11400961525. The earlier33c83f4e
+missing-tail capture remains retained; a later pass does not erase it or
+explain the other historical candidate-client failures.

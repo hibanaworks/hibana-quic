@@ -181,8 +181,8 @@ pub(super) async fn source(
                 control.changed()?;
             }
             191 => {
-                check(offered.recv::<p::ProductionReclaimsDone>().await?, 0)?;
-                endpoint.send::<p::ProductionReclaimsClosed>(&0).await?;
+                offered.recv::<p::ProductionReclaimsDone>().await?;
+                endpoint.send::<p::ProductionReclaimsClosed>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),
@@ -210,8 +210,8 @@ pub(super) async fn input(
                 endpoint.send::<p::InputStored>(&id).await?;
             }
             196 => {
-                check(offered.recv::<p::InputReclaimsDone>().await?, 0)?;
-                endpoint.send::<p::InputReclaimsClosed>(&0).await?;
+                offered.recv::<p::InputReclaimsDone>().await?;
+                endpoint.send::<p::InputReclaimsClosed>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),
@@ -235,8 +235,8 @@ pub(super) async fn delivery(
                 control.changed()?;
             }
             200 => {
-                check(offered.recv::<p::DeliveryReclaimsDone>().await?, 0)?;
-                endpoint.send::<p::DeliveryReclaimsClosed>(&0).await?;
+                offered.recv::<p::DeliveryReclaimsDone>().await?;
+                endpoint.send::<p::DeliveryReclaimsClosed>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),

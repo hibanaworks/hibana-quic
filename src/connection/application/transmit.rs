@@ -369,8 +369,8 @@ pub(crate) async fn run<
     .await;
     endpoint.send::<p::StopPublication>(&()).await?;
     endpoint.recv::<p::PublicationStopped>().await?;
-    endpoint.send::<p::DeliveryReclaimsDone>(&0).await?;
-    check(endpoint.recv::<p::DeliveryReclaimsClosed>().await?, 0)?;
+    endpoint.send::<p::DeliveryReclaimsDone>(&()).await?;
+    endpoint.recv::<p::DeliveryReclaimsClosed>().await?;
     publication_result
 }
 
