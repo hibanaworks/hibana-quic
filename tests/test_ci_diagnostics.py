@@ -451,9 +451,10 @@ class Diagnostics(unittest.TestCase):
                  (['server'], False, {'unexecuted_case_results':1}, False),
                  (['server'], False, {'runner_progress':{}}, False),
                  (['client', 'server'], True, {'runner_progress':{}}, True)]
-        for reference, directions, baseline_ok, overrides, run_candidate in [
-                (reference, *case) for reference in ('neqo', 'quiche') for case in cases]:
-            request.write_text(json.dumps({'cases':['zerortt'], 'candidate_directions':directions, 'reference_implementation':reference}))
+        for selected_case, reference, directions, baseline_ok, overrides, run_candidate in [
+                (selected_case, reference, *case) for selected_case in ('zerortt', 'ecn')
+                for reference in ('neqo', 'quiche') for case in cases]:
+            request.write_text(json.dumps({'cases':[selected_case], 'candidate_directions':directions, 'reference_implementation':reference}))
             calls = []
             def phase(name, client, server, candidate):
                 calls.append(name)
@@ -477,6 +478,7 @@ class Diagnostics(unittest.TestCase):
             summary = json.loads((self.module.SAFE / 'summary.json').read_text())
             self.assertEqual(summary['candidate_directions'], sorted(directions))
             self.assertEqual(summary['reference_implementation'], reference)
+            self.assertEqual(summary['selected_cases'], [selected_case])
             self.assertFalse(summary['full_runner_gate_passed'])
             self.assertEqual(summary['baseline_passed'], baseline_ok)
             self.assertEqual(summary['candidate_diagnostic_after_failed_control'], run_candidate and not baseline_ok)
@@ -497,6 +499,7 @@ class Diagnostics(unittest.TestCase):
                 self.module.requested_directions(invalid)
 
     def test_requested_case_scope_is_explicit_and_fail_closed(self):
+        self.assertEqual(self.module.requested_cases(['ecn']), {'ecn'})
         self.assertEqual(self.module.requested_cases(['chacha20']), {'chacha20'})
         self.assertEqual(self.module.requested_cases(['resumption']), {'resumption'})
         self.assertEqual(self.module.requested_cases(['zerortt']), {'zerortt'})
@@ -524,6 +527,25 @@ class Diagnostics(unittest.TestCase):
             self.assertEqual(result['results'], data['results'][0])
             self.assertFalse(result['passed'])
             self.assertEqual(result['unexecuted_case_results'], int(state is None))
+
+    def test_ecn_requires_the_official_abbreviation_and_actual_passed_result(self):
+        output = self.root / 'result.json'
+        self.module.EXPECTED = {'ecn'}
+        data = {'quic_version': '0x1', 'clients': ['hibana-quic'], 'servers': ['neqo'],
+                'tests': {'E': {'name': 'ecn'}},
+                'results': [[{'name': 'ecn', 'abbr': 'E', 'result': 'succeeded'}]]}
+        for state in ('succeeded', 'failed', 'unsupported', None):
+            data['results'][0][0]['result'] = state
+            output.write_text(json.dumps(data))
+            result = self.module.checked_result(output, 'hibana-quic', 'neqo')
+            self.assertEqual(result['results'], data['results'][0])
+            self.assertEqual(result['passed'], state == 'succeeded')
+            self.assertEqual(result['unexecuted_case_results'], int(state is None))
+        data['results'][0][0]['abbr'] = 'ECN'
+        data['tests'] = {'ECN': {'name': 'ecn'}}
+        output.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, 'case abbreviation mismatch'):
+            self.module.checked_result(output, 'hibana-quic', 'neqo')
 
     def test_result_duplicate_json_and_arbitrary_abbreviation_are_rejected(self):
         output = self.root / 'result.json'
