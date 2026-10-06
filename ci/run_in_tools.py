@@ -445,21 +445,39 @@ def numeric_capture_rows(raw):
             row[field] = numbers
         rows.append(row)
     return {'state': 'parsed', 'rows': rows,
-            'scope': 'numeric long-header observations; no TLS key log supplied',
+            'scope': 'numeric QUIC observations; payload and key material withheld',
             'frame_scan_limit': MAX_CAPTURE_ROWS,
             'complete_capture_not_claimed': True,
             'coalesced_fields_are_independent_lists': True}
 
-def capture_observations(root, parts):
-    fd = None
+def capture_observations(root, parts, key_parts=None):
+    fd = key_fd = None
+    key_state = 'not-requested'
     try:
         fd = _open_beneath(root, parts)
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > MAX_CAPTURE_BYTES:
             return {'state': 'rejected-capture'}
+        # The pinned runner already creates ephemeral test-connection keys.
+        # Use only the fixed reference role's file inside this same CI process;
+        # never read it into a report or publish its bytes/hash/path. No endpoint
+        # key logging is added and no credential leaves the runner environment.
+        if key_parts is not None:
+            try:
+                key_fd = _open_beneath(root, key_parts)
+                info = os.fstat(key_fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not 0 < info.st_size <= 1024 * 1024:
+                    os.close(key_fd)
+                    key_fd = None
+                    key_state = 'rejected'
+                else:
+                    key_state = 'supplied-locally'
+            except (OSError, ValueError):
+                key_state = 'unavailable'
+        key_option = 'tls.keylog_file:' + (('/proc/self/fd/' + str(key_fd)) if key_fd is not None else '')
         command = ['tshark', '-n', '-r', '/proc/self/fd/' + str(fd),
-                   '-c', str(MAX_CAPTURE_ROWS), '-o', 'tls.keylog_file:',
-                   '-Y', 'quic.long.packet_type',
+                   '-c', str(MAX_CAPTURE_ROWS), '-o', key_option,
+                   '-Y', 'quic',
                    '-T', 'fields', '-E', 'separator=/t', '-E', 'occurrence=a']
         for field in CAPTURE_FIELDS:
             command.extend(['-e', field])
@@ -467,7 +485,7 @@ def capture_observations(root, parts):
         # private even on tool failure. Never export stderr or partial output.
         with tempfile.TemporaryFile() as output:
             result = subprocess.run(command, stdout=output, stderr=subprocess.DEVNULL,
-                                    pass_fds=(fd,), timeout=20, check=False)
+                                    pass_fds=(fd,) + ((key_fd,) if key_fd is not None else ()), timeout=20, check=False)
             if result.returncode != 0:
                 return {'state': 'dissector-failed'}
             if output.tell() > MAX_LOG_BYTES:
@@ -476,12 +494,16 @@ def capture_observations(root, parts):
             if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
                 return {'state': 'changed-capture'}
             output.seek(0)
-            return numeric_capture_rows(output.read(MAX_LOG_BYTES + 1))
+            parsed = numeric_capture_rows(output.read(MAX_LOG_BYTES + 1))
+            parsed['reference_keylog'] = key_state
+            return parsed
     except subprocess.TimeoutExpired:
         return {'state': 'dissector-timeout'}
     except (OSError, ValueError) as error:
         return {'state': _file_error(error)}
     finally:
+        if key_fd is not None:
+            os.close(key_fd)
         if fd is not None:
             os.close(fd)
 
@@ -501,7 +523,8 @@ def collect_case_diagnostics(logs, client, server):
         for side in ('left', 'right'):
             metadata, _ = diagnostic_file(logs, prefix + ('sim', 'trace_node_' + side + '.pcap'), limit=MAX_CAPTURE_BYTES, content=False)
             if metadata.get('state') == 'present':
-                metadata['long_header_observations'] = capture_observations(logs, prefix + ('sim', 'trace_node_' + side + '.pcap'))
+                reference_keys = prefix + (('server' if server == 'quiche' else 'client'), 'keys.log') if 'quiche' in (client, server) else None
+                metadata['quic_observations'] = capture_observations(logs, prefix + ('sim', 'trace_node_' + side + '.pcap'), reference_keys)
             record['captures'][side] = metadata
         record['application_files'] = {}
         for source_role, destination_role in (('server', 'client'), ('client', 'server')):

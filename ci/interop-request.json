@@ -1,6 +1,6 @@
 {
-  "request": "Measure third loss run after timer-stop correction without discarding prior failures",
-  "requested_at": "2026-10-06T05:12:00Z",
+  "request": "Disambiguate remaining Handshake loss with locally retained reference keys",
+  "requested_at": "2026-10-06T05:30:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions"
@@ -15,6 +15,6 @@
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Same executable as397acc54. Runtime37415310732 all steps passed. Interop37415310712 attempt1: control/server passed, client49 successes plus one real idle expiry. Attempt2: control and both directions passed; client50 actual terminals, zero idle expiry, closed and resources retired. Both artifacts11391555489 and11392225772 retained. Third measurement checks reproducibility, not rerun-until-green or erasure of failure. No timeout/capacity/protocol/source changes and no complete matrix claim. Server runner success does not prove all server retirement futures completed before runner shutdown.",
+  "qualification": "Same endpoint executable as397acc54. Three measurements retain client fail/pass/fail, control and server pass throughout. Third37417448473/artifact11392143204 has one actual client idle expiry48.089s, all futures returned. Not stable qualification. Use only existing fixed reference keys.log locally within CI for numeric ACK/CRYPTO/frame observations; no key material, payload, raw logs or capture exported. This adds no product key logging or timeout change. Python66 tests passed. Missing keys or incomplete parsing must not be treated as successful decryption. Diagnose before making further production recovery changes.",
   "formal_models": false
 }

@@ -424,3 +424,23 @@ endpoint duration). Six server futures were still pending when the runner
 ended; runner-cell success is not fifty clean server retirements. A third
 unchanged-source measurement is requested with both prior outcomes retained;
 no new historical unique cell or reliable root resolution is claimed.
+
+The third unchanged-executable measurement (37417448473,
+artifact11392143204) again passed quiche control and candidate server, while
+one candidate-client connection actually expired (index20, unconfirmed,
+submitted1/completed0, 48.089 s). All client futures returned. Across these
+three measurements the client outcome is fail/pass/fail, with every control
+and server runner cell passing. Do not promote one passing run into stable
+qualification or merge this candidate on that basis.
+
+The next capture diagnostic uses only the already-created reference endpoint's
+fixed `keys.log` inside the same CI environment, via a held regular-file
+descriptor with a 1 MiB limit and no symlink traversal. This follows the pinned
+runner docker-compose SSLKEYLOGFILE contract; it does not add endpoint key
+logging, transmit keys or export a key file/hash/path. Numeric packet/frame,
+ACK and CRYPTO-length metadata remains the only report content. This allows
+Handshake/1-RTT numeric observations to separate missing Finished,
+HANDSHAKE_DONE and response delivery. A supplied key file is not itself proof
+of successful decryption. Missing/rejected files are disclosed, and raw
+payload/keys/stderr stay withheld. The endpoint executable and all test
+success conditions remain unchanged. Local Python tests: 66 passed.

@@ -302,6 +302,35 @@ class Diagnostics(unittest.TestCase):
             result = self.module.capture_observations(self.case, ('sim', 'trace_node_left.pcap'))
         self.assertEqual(result['state'], 'parsed')
 
+    def test_reference_keylog_stays_local_and_never_enters_report(self):
+        self.put('sim/trace_node_left.pcap', b'not a real pcap')
+        self.put('server/keys.log', b'PRIVATE_EPHEMERAL_TEST_KEY')
+        def run(command, **kwargs):
+            self.assertEqual(len(kwargs['pass_fds']), 2)
+            self.assertIn('tls.keylog_file:/proc/self/fd/' + str(kwargs['pass_fds'][1]), command)
+            self.assertEqual(os.read(kwargs['pass_fds'][1], 100), b'PRIVATE_EPHEMERAL_TEST_KEY')
+            return SimpleNamespace(returncode=0)
+        with patch.object(self.module.subprocess, 'run', side_effect=run):
+            result = self.module.capture_observations(self.case, ('sim', 'trace_node_left.pcap'), ('server', 'keys.log'))
+        self.assertEqual(result['reference_keylog'], 'supplied-locally')
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        self.assertNotIn('keys.log', json.dumps(result))
+
+    def test_reference_keylog_symlink_is_not_opened(self):
+        self.put('sim/trace_node_left.pcap', b'not a real pcap')
+        target = self.root / 'private-key'
+        target.write_bytes(b'PRIVATE_KEY')
+        (self.case / 'server').mkdir()
+        os.symlink(target, self.case / 'server/keys.log')
+        def run(command, **kwargs):
+            self.assertEqual(len(kwargs['pass_fds']), 1)
+            self.assertIn('tls.keylog_file:', command)
+            return SimpleNamespace(returncode=0)
+        with patch.object(self.module.subprocess, 'run', side_effect=run):
+            result = self.module.capture_observations(self.case, ('sim', 'trace_node_left.pcap'), ('server', 'keys.log'))
+        self.assertEqual(result['reference_keylog'], 'unavailable')
+        self.assertNotIn('PRIVATE', json.dumps(result))
+
     def test_capture_tool_failure_never_publishes_partial_output(self):
         self.put('sim/trace_node_left.pcap', b'not a real pcap')
         def run(command, **kwargs):
