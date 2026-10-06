@@ -29,13 +29,6 @@ impl From<Failure> for Error {
         Self::Crypto(e)
     }
 }
-fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(Error::Binding)
-    }
-}
 /// Caller-owned space for one complete TLS handshake message. No allocation,
 /// clone of secret-bearing buffers, or arbitrary message queue is introduced.
 pub struct MessageSlot<'a> {
@@ -166,48 +159,46 @@ pub async fn client_owner(
         slot,
         complete: false,
     };
-    let mut id = 0;
-    endpoint.send::<p::NeedHello>(&id).await?;
-    check(endpoint.recv::<p::Hello>().await?, id)?;
+    endpoint.send::<p::NeedHello>(&()).await?;
+    endpoint.recv::<p::Hello>().await?;
     let retry = slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_hello(m, false)))?;
     owner.tls.applied()?;
     slot.clear();
-    endpoint.send::<p::Applied>(&id).await?;
-    id += 1;
+    endpoint.send::<p::Applied>(&()).await?;
+
     if retry {
-        endpoint.send::<p::Retry>(&id).await?;
-        endpoint.send::<p::NeedRetryHello>(&id).await?;
-        check(endpoint.recv::<p::RetryHello>().await?, id)?;
+        endpoint.send::<p::Retry>(&()).await?;
+        endpoint.send::<p::NeedRetryHello>(&()).await?;
+        endpoint.recv::<p::RetryHello>().await?;
         if slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_hello(m, true)))? {
             return Err(Error::Binding);
         }
         owner.tls.applied()?;
         slot.clear();
-        endpoint.send::<p::Applied>(&id).await?;
-        id += 1;
+        endpoint.send::<p::Applied>(&()).await?;
     } else {
-        endpoint.send::<p::HelloReady>(&id).await?;
+        endpoint.send::<p::HelloReady>(&()).await?;
     }
-    endpoint.send::<p::NeedExtensions>(&id).await?;
-    check(endpoint.recv::<p::Extensions>().await?, id)?;
+    endpoint.send::<p::NeedExtensions>(&()).await?;
+    endpoint.recv::<p::Extensions>().await?;
     slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_extensions(m)))?;
     owner.tls.applied()?;
     slot.clear();
-    endpoint.send::<p::Applied>(&id).await?;
-    id += 1;
+    endpoint.send::<p::Applied>(&()).await?;
+
     if owner.tls.with_crypto(|tls| tls.resumed) {
-        endpoint.send::<p::Resumed>(&id).await?;
+        endpoint.send::<p::Resumed>(&()).await?;
     } else {
-        endpoint.send::<p::Full>(&id).await?;
-        endpoint.send::<p::NeedCertificate>(&id).await?;
-        check(endpoint.recv::<p::Certificate>().await?, id)?;
+        endpoint.send::<p::Full>(&()).await?;
+        endpoint.send::<p::NeedCertificate>(&()).await?;
+        endpoint.recv::<p::Certificate>().await?;
         slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_certificate(m)))?;
         owner.tls.applied()?;
         slot.clear();
-        endpoint.send::<p::Applied>(&id).await?;
-        id += 1;
-        endpoint.send::<p::NeedCertificateVerify>(&id).await?;
-        check(endpoint.recv::<p::CertificateVerify>().await?, id)?;
+        endpoint.send::<p::Applied>(&()).await?;
+
+        endpoint.send::<p::NeedCertificateVerify>(&()).await?;
+        endpoint.recv::<p::CertificateVerify>().await?;
         slot.apply(|m| {
             owner
                 .tls
@@ -215,18 +206,17 @@ pub async fn client_owner(
         })?;
         owner.tls.applied()?;
         slot.clear();
-        endpoint.send::<p::Applied>(&id).await?;
-        id += 1;
+        endpoint.send::<p::Applied>(&()).await?;
     }
-    endpoint.send::<p::NeedFinished>(&id).await?;
-    check(endpoint.recv::<p::Finished>().await?, id)?;
+    endpoint.send::<p::NeedFinished>(&()).await?;
+    endpoint.recv::<p::Finished>().await?;
     slot.apply(|m| owner.tls.with_crypto(|tls| tls.client_finished(m)))?;
     owner.tls.with_crypto(|tls| tls.record_verified_finished());
     owner.tls.applied()?;
     slot.clear();
-    endpoint.send::<p::Applied>(&id).await?;
-    id += 1;
-    endpoint.send::<p::Complete>(&id).await?;
+    endpoint.send::<p::Applied>(&()).await?;
+
+    endpoint.send::<p::Complete>(&()).await?;
     owner.complete = true;
     Ok(())
 }
@@ -244,37 +234,35 @@ pub async fn server_owner(
         slot,
         complete: false,
     };
-    let mut id = 0;
-    endpoint.send::<p::NeedHello>(&id).await?;
-    check(endpoint.recv::<p::Hello>().await?, id)?;
+    endpoint.send::<p::NeedHello>(&()).await?;
+    endpoint.recv::<p::Hello>().await?;
     let retry = slot.apply(|m| owner.tls.with_crypto(|tls| tls.server_hello(m, false)))?;
     owner.tls.applied()?;
     slot.clear();
-    endpoint.send::<p::Applied>(&id).await?;
-    id += 1;
+    endpoint.send::<p::Applied>(&()).await?;
+
     if retry {
-        endpoint.send::<p::Retry>(&id).await?;
-        endpoint.send::<p::NeedRetryHello>(&id).await?;
-        check(endpoint.recv::<p::RetryHello>().await?, id)?;
+        endpoint.send::<p::Retry>(&()).await?;
+        endpoint.send::<p::NeedRetryHello>(&()).await?;
+        endpoint.recv::<p::RetryHello>().await?;
         if slot.apply(|m| owner.tls.with_crypto(|tls| tls.server_hello(m, true)))? {
             return Err(Error::Binding);
         }
         owner.tls.applied()?;
         slot.clear();
-        endpoint.send::<p::Applied>(&id).await?;
-        id += 1;
+        endpoint.send::<p::Applied>(&()).await?;
     } else {
-        endpoint.send::<p::HelloReady>(&id).await?;
+        endpoint.send::<p::HelloReady>(&()).await?;
     }
-    endpoint.send::<p::NeedFinished>(&id).await?;
-    check(endpoint.recv::<p::Finished>().await?, id)?;
+    endpoint.send::<p::NeedFinished>(&()).await?;
+    endpoint.recv::<p::Finished>().await?;
     slot.apply(|m| owner.tls.with_crypto(|tls| tls.server_finished(m)))?;
     owner.tls.with_crypto(|tls| tls.record_verified_finished());
     owner.tls.applied()?;
     slot.clear();
-    endpoint.send::<p::Applied>(&id).await?;
-    id += 1;
-    endpoint.send::<p::Complete>(&id).await?;
+    endpoint.send::<p::Applied>(&()).await?;
+
+    endpoint.send::<p::Complete>(&()).await?;
     owner.complete = true;
     Ok(())
 }
@@ -284,89 +272,84 @@ pub async fn client_input(
     slot: &MessageSlot<'_>,
     io: &mut impl MessageInput,
 ) -> Result<(), Error> {
-    let mut id = 0;
-
-    check(endpoint.recv::<p::NeedHello>().await?, id)?;
+    endpoint.recv::<p::NeedHello>().await?;
     fill(slot, io, Level::Initial).await?;
-    endpoint.send::<p::Hello>(&id).await?;
-    check(endpoint.recv::<p::Applied>().await?, id)?;
-    id += 1;
+    endpoint.send::<p::Hello>(&()).await?;
+    endpoint.recv::<p::Applied>().await?;
+
     let route = endpoint.offer().await?;
     match route.label() {
         183 => {
-            check(route.recv::<p::Retry>().await?, id)?;
-            check(endpoint.recv::<p::NeedRetryHello>().await?, id)?;
+            route.recv::<p::Retry>().await?;
+            endpoint.recv::<p::NeedRetryHello>().await?;
             fill(slot, io, Level::Initial).await?;
-            endpoint.send::<p::RetryHello>(&id).await?;
-            check(endpoint.recv::<p::Applied>().await?, id)?;
-            id += 1;
+            endpoint.send::<p::RetryHello>(&()).await?;
+            endpoint.recv::<p::Applied>().await?;
         }
-        184 => check(route.recv::<p::HelloReady>().await?, id)?,
+        184 => route.recv::<p::HelloReady>().await?,
         _ => return Err(Error::Binding),
     }
 
-    check(endpoint.recv::<p::NeedExtensions>().await?, id)?;
+    endpoint.recv::<p::NeedExtensions>().await?;
     fill(slot, io, Level::Handshake).await?;
-    endpoint.send::<p::Extensions>(&id).await?;
-    check(endpoint.recv::<p::Applied>().await?, id)?;
-    id += 1;
+    endpoint.send::<p::Extensions>(&()).await?;
+    endpoint.recv::<p::Applied>().await?;
+
     let route = endpoint.offer().await?;
     match route.label() {
-        189 => check(route.recv::<p::Resumed>().await?, id)?,
+        189 => route.recv::<p::Resumed>().await?,
         190 => {
-            check(route.recv::<p::Full>().await?, id)?;
-            check(endpoint.recv::<p::NeedCertificate>().await?, id)?;
+            route.recv::<p::Full>().await?;
+            endpoint.recv::<p::NeedCertificate>().await?;
             fill(slot, io, Level::Handshake).await?;
-            endpoint.send::<p::Certificate>(&id).await?;
-            check(endpoint.recv::<p::Applied>().await?, id)?;
-            id += 1;
-            check(endpoint.recv::<p::NeedCertificateVerify>().await?, id)?;
+            endpoint.send::<p::Certificate>(&()).await?;
+            endpoint.recv::<p::Applied>().await?;
+
+            endpoint.recv::<p::NeedCertificateVerify>().await?;
             fill(slot, io, Level::Handshake).await?;
-            endpoint.send::<p::CertificateVerify>(&id).await?;
-            check(endpoint.recv::<p::Applied>().await?, id)?;
-            id += 1;
+            endpoint.send::<p::CertificateVerify>(&()).await?;
+            endpoint.recv::<p::Applied>().await?;
         }
         _ => return Err(Error::Binding),
     }
-    check(endpoint.recv::<p::NeedFinished>().await?, id)?;
+    endpoint.recv::<p::NeedFinished>().await?;
     fill(slot, io, Level::Handshake).await?;
-    endpoint.send::<p::Finished>(&id).await?;
-    check(endpoint.recv::<p::Applied>().await?, id)?;
-    id += 1;
-    check(endpoint.recv::<p::Complete>().await?, id)
+    endpoint.send::<p::Finished>(&()).await?;
+    endpoint.recv::<p::Applied>().await?;
+
+    endpoint.recv::<p::Complete>().await?;
+    Ok(())
 }
 pub async fn server_input(
     endpoint: &mut Endpoint<'_, { p::INPUT }>,
     slot: &MessageSlot<'_>,
     io: &mut impl MessageInput,
 ) -> Result<(), Error> {
-    let mut id = 0;
-
-    check(endpoint.recv::<p::NeedHello>().await?, id)?;
+    endpoint.recv::<p::NeedHello>().await?;
     fill(slot, io, Level::Initial).await?;
-    endpoint.send::<p::Hello>(&id).await?;
-    check(endpoint.recv::<p::Applied>().await?, id)?;
-    id += 1;
+    endpoint.send::<p::Hello>(&()).await?;
+    endpoint.recv::<p::Applied>().await?;
+
     let route = endpoint.offer().await?;
     match route.label() {
         183 => {
-            check(route.recv::<p::Retry>().await?, id)?;
-            check(endpoint.recv::<p::NeedRetryHello>().await?, id)?;
+            route.recv::<p::Retry>().await?;
+            endpoint.recv::<p::NeedRetryHello>().await?;
             fill(slot, io, Level::Initial).await?;
-            endpoint.send::<p::RetryHello>(&id).await?;
-            check(endpoint.recv::<p::Applied>().await?, id)?;
-            id += 1;
+            endpoint.send::<p::RetryHello>(&()).await?;
+            endpoint.recv::<p::Applied>().await?;
         }
-        184 => check(route.recv::<p::HelloReady>().await?, id)?,
+        184 => route.recv::<p::HelloReady>().await?,
         _ => return Err(Error::Binding),
     }
 
-    check(endpoint.recv::<p::NeedFinished>().await?, id)?;
+    endpoint.recv::<p::NeedFinished>().await?;
     fill(slot, io, Level::Handshake).await?;
-    endpoint.send::<p::Finished>(&id).await?;
-    check(endpoint.recv::<p::Applied>().await?, id)?;
-    id += 1;
-    check(endpoint.recv::<p::Complete>().await?, id)
+    endpoint.send::<p::Finished>(&()).await?;
+    endpoint.recv::<p::Applied>().await?;
+
+    endpoint.recv::<p::Complete>().await?;
+    Ok(())
 }
 
 // The adapter stays private: callers cannot borrow the combined TLS provider

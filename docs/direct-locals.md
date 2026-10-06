@@ -544,3 +544,36 @@ Final local full cargo tests, thumbv6m, all host tests, selected host strict
 Clippy and source/core audits pass; this checkpoint still needs its own remote
 qualification. Earlier intermittent losses are retained, and failed phases
 remain configured to preserve encrypted actual captures for diagnosis.
+
+## TLS and application progress counters removed
+
+The preceding fixed-zero checkpoint 43c0c48a passed every runtime step in
+37430945679 and all C1/L1/M/Z candidate cells in both directions, with unchanged
+passing quiche controls and six Lean/six Z3 groups, in
+37430945721/artifact11397292521. No phase failed, so that run did not produce a
+sealed failed capture. This does not explain the older intermittent loss cases.
+
+TLS INPUT/VERIFY transcript progress labels180–197 now carry unit. Both mirrored
+message ordinals and the fourth local echo-check helper are removed. Each
+message fill, direct send/recv, actual transcript verification and clear remains
+in the projected local order. The TLS Owner.complete cancellation guard remains:
+it controls secret clearing on dropped incomplete work, not protocol dispatch.
+
+Application datagram publication, its ACK-batch boundaries, and close/drain/
+retirement progress messages likewise carry unit. Four independent sender/peer
+sequence counters are removed. Stream delivery/reclaim IDs, packet loss IDs,
+scoped affine receipts, actual pending UDP ownership and all crypto/nonce
+validation remain. Two unused quiescence message declarations are deleted.
+
+The capacity-one stream_reset fixture uses the new typed progress messages
+while preserving every illegal-order, independent resolver, actual receipt and
+allocation assertion. The first aggregate compile identified obsolete integer
+payloads in this fixture; those were updated before the final aggregate run.
+No retry, deadline, capacity, wire format or acceptance criterion is changed.
+
+Final local qualification passes: all424 library tests and integration groups,
+26 doc/compile-fail contracts, 116 host tests, embedded thumbv6m core,29
+independent reference TLS tests, selected host lib/hq strict Clippy,69 Python
+tests and source/core snapshot audits. Broad pre-existing core Clippy warnings
+are not represented as a whole-workspace strict pass. This source still needs
+its own remote interoperability qualification before it is called qualified.

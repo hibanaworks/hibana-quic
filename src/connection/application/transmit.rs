@@ -255,17 +255,13 @@ pub(crate) async fn run<
     peer: &ConnectionId,
     clock: &impl Clock,
 ) -> Result<(), Error> {
-    let mut sequence = 0u64;
     let mut history_floor = book.application_history_floor();
     let publication_result = async {
         while !control.stopping() || !acknowledgments.pending.is_empty() {
             let revision = control.revision();
             if !acknowledgments.pending.is_empty() {
-                endpoint.send::<p::ApplyAcknowledgments>(&sequence).await?;
-                check(
-                    endpoint.recv::<p::AcknowledgmentsApplied>().await?,
-                    sequence,
-                )?;
+                endpoint.send::<p::ApplyAcknowledgments>(&()).await?;
+                endpoint.recv::<p::AcknowledgmentsApplied>().await?;
                 loop {
                     let offered = endpoint.offer().await?;
                     match offered.label() {
@@ -280,15 +276,13 @@ pub(crate) async fn run<
                             endpoint.send::<p::StreamDeliverySeen>(&id).await?;
                         }
                         183 => {
-                            check(offered.recv::<p::DeliveriesDone>().await?, sequence)?;
+                            offered.recv::<p::DeliveriesDone>().await?;
                             break;
                         }
                         label => return Err(Error::UnexpectedLabel(label)),
                     }
                 }
-                endpoint
-                    .send::<p::AcknowledgmentsSettled>(&sequence)
-                    .await?;
+                endpoint.send::<p::AcknowledgmentsSettled>(&()).await?;
             }
             if control.stopping() {
                 break;
@@ -348,16 +342,16 @@ pub(crate) async fn run<
                 cancel_prepared(pending, book, streams)?;
                 return Err(error);
             }
-            endpoint.send::<p::Datagram>(&sequence).await?;
+            endpoint.send::<p::Datagram>(&()).await?;
             let offered = endpoint.offer().await?;
             match offered.label() {
                 27 => {
-                    check(offered.recv::<p::Accepted>().await?, sequence)?;
+                    offered.recv::<p::Accepted>().await?;
                 }
                 28 => {
-                    check(offered.recv::<p::Rejected>().await?, sequence)?;
+                    offered.recv::<p::Rejected>().await?;
                     if !control.stopping() {
-                        endpoint.send::<p::Settled>(&sequence).await?;
+                        endpoint.send::<p::Settled>(&()).await?;
                         control.revoke()?;
                         return Err(Error::Connection(connection::Error::Io(
                             connection::IoError::Rejected,
@@ -366,15 +360,15 @@ pub(crate) async fn run<
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
             }
-            endpoint.send::<p::Settled>(&sequence).await?;
-            sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+            endpoint.send::<p::Settled>(&()).await?;
+
             crate::runtime::yield_now().await;
         }
         Ok::<(), Error>(())
     }
     .await;
-    endpoint.send::<p::StopPublication>(&sequence).await?;
-    check(endpoint.recv::<p::PublicationStopped>().await?, sequence)?;
+    endpoint.send::<p::StopPublication>(&()).await?;
+    endpoint.recv::<p::PublicationStopped>().await?;
     endpoint.send::<p::DeliveryReclaimsDone>(&0).await?;
     check(endpoint.recv::<p::DeliveryReclaimsClosed>().await?, 0)?;
     publication_result
@@ -781,12 +775,11 @@ pub(crate) async fn publish<
     reset_owner: &mut application_stream::FrameEffects<'streams, '_, '_, RX, CHUNK>,
     socket: &mut impl DatagramTx,
 ) -> Result<(), Error> {
-    let mut sequence = 0u64;
     loop {
         let offered = endpoint.offer().await?;
         match offered.label() {
             26 => {
-                check(offered.recv::<p::Datagram>().await?, sequence)?;
+                offered.recv::<p::Datagram>().await?;
                 let packet = state.take()?;
                 if packet.close_deadline.is_some() {
                     state.settle(packet, None)?;
@@ -820,12 +813,11 @@ pub(crate) async fn publish<
                     .decide()
                     .map_err(connection::Error::from)?
                 {
-                    DecisionArm::Left => endpoint.send::<p::Accepted>(&sequence).await?,
-                    DecisionArm::Right => endpoint.send::<p::Rejected>(&sequence).await?,
+                    DecisionArm::Left => endpoint.send::<p::Accepted>(&()).await?,
+                    DecisionArm::Right => endpoint.send::<p::Rejected>(&()).await?,
                 }
-                check(endpoint.recv::<p::Settled>().await?, sequence)?;
+                endpoint.recv::<p::Settled>().await?;
                 outcome.clear();
-                sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
             }
             202 => {
                 let id = offered.recv::<p::ReclaimStream>().await?;
@@ -846,18 +838,18 @@ pub(crate) async fn publish<
                 control.changed()?;
             }
             178 => {
-                let id = offered.recv::<p::ApplyAcknowledgments>().await?;
+                offered.recv::<p::ApplyAcknowledgments>().await?;
                 let grant = acknowledgments.pending.take().map_err(|_| Error::Binding)?;
                 reset_owner.acknowledge(grant)?;
-                endpoint.send::<p::AcknowledgmentsApplied>(&id).await?;
+                endpoint.send::<p::AcknowledgmentsApplied>(&()).await?;
                 while let Some(receipt) = reset_owner.take_delivery()? {
                     let stream = receipt.id();
                     state.delivery.put(receipt).map_err(|_| Error::Binding)?;
                     endpoint.send::<p::StreamDelivered>(&stream).await?;
                     check(endpoint.recv::<p::StreamDeliverySeen>().await?, stream)?;
                 }
-                endpoint.send::<p::DeliveriesDone>(&id).await?;
-                check(endpoint.recv::<p::AcknowledgmentsSettled>().await?, id)?;
+                endpoint.send::<p::DeliveriesDone>(&()).await?;
+                endpoint.recv::<p::AcknowledgmentsSettled>().await?;
                 acknowledgments.settled(control)?;
             }
             174 => {
@@ -882,12 +874,12 @@ pub(crate) async fn publish<
                 result?;
             }
             30 => {
-                check(offered.recv::<p::StopPublication>().await?, sequence)?;
+                offered.recv::<p::StopPublication>().await?;
                 if state.pending.borrow().is_some() {
                     return Err(Error::Binding);
                 }
                 reset.cancel_pending()?;
-                endpoint.send::<p::PublicationStopped>(&sequence).await?;
+                endpoint.send::<p::PublicationStopped>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),
@@ -945,13 +937,12 @@ pub(crate) async fn close<
         } else {
             deadline
         }));
-    let mut sequence = 0u64;
     let mut close_accepted = matches!(kind, CloseKind::Peer { .. });
     match kind {
         CloseKind::Peer { .. } | CloseKind::IdleExpired => {
             // Peer-initiated draining publishes no packets.
-            endpoint.send::<p::Drain>(&sequence).await?;
-            check(endpoint.recv::<p::Drained>().await?, sequence)?;
+            endpoint.send::<p::Drain>(&()).await?;
+            endpoint.recv::<p::Drained>().await?;
         }
         CloseKind::Local { application, code } => {
             let mut retry_at = started_at;
@@ -1023,28 +1014,28 @@ pub(crate) async fn close<
                     book.cancel(packet.sealed.into_parts().0)?;
                     return Err(error);
                 }
-                endpoint.send::<p::CloseDatagram>(&sequence).await?;
+                endpoint.send::<p::CloseDatagram>(&()).await?;
                 let offered = endpoint.offer().await?;
                 match offered.label() {
                     33 => {
-                        check(offered.recv::<p::CloseAccepted>().await?, sequence)?;
+                        offered.recv::<p::CloseAccepted>().await?;
                         close_accepted = true;
                     }
-                    34 => check(offered.recv::<p::CloseRejected>().await?, sequence)?,
+                    34 => offered.recv::<p::CloseRejected>().await?,
                     label => return Err(Error::UnexpectedLabel(label)),
                 }
-                endpoint.send::<p::CloseSettled>(&sequence).await?;
-                sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                endpoint.send::<p::CloseSettled>(&()).await?;
+
                 retry_at = clock.now().checked_add(pto).ok_or(Error::Capacity)?;
                 crate::runtime::yield_now().await;
             }
-            endpoint.send::<p::CloseFlightDone>(&sequence).await?;
-            check(endpoint.recv::<p::CloseFlightSettled>().await?, sequence)?;
+            endpoint.send::<p::CloseFlightDone>(&()).await?;
+            endpoint.recv::<p::CloseFlightSettled>().await?;
         }
     }
     keys.discard();
-    endpoint.send::<p::Retire>(&sequence).await?;
-    check(endpoint.recv::<p::Retired>().await?, sequence)?;
+    endpoint.send::<p::Retire>(&()).await?;
+    endpoint.recv::<p::Retired>().await?;
     if matches!(kind, CloseKind::IdleExpired) {
         return Ok(());
     }
@@ -1119,12 +1110,11 @@ pub(crate) async fn publish_close<
     socket: &mut impl DatagramTx,
     clock: &impl Clock,
 ) -> Result<(), Error> {
-    let mut sequence = 0u64;
     loop {
         let offered = endpoint.offer().await?;
         match offered.label() {
             32 => {
-                check(offered.recv::<p::CloseDatagram>().await?, sequence)?;
+                offered.recv::<p::CloseDatagram>().await?;
                 let packet = state.take()?;
                 let Some(deadline) = packet.close_deadline else {
                     state.settle(packet, None)?;
@@ -1158,36 +1148,35 @@ pub(crate) async fn publish_close<
                     .decide()
                     .map_err(connection::Error::from)?
                 {
-                    DecisionArm::Left => endpoint.send::<p::CloseAccepted>(&sequence).await?,
-                    DecisionArm::Right => endpoint.send::<p::CloseRejected>(&sequence).await?,
+                    DecisionArm::Left => endpoint.send::<p::CloseAccepted>(&()).await?,
+                    DecisionArm::Right => endpoint.send::<p::CloseRejected>(&()).await?,
                 }
-                check(endpoint.recv::<p::CloseSettled>().await?, sequence)?;
+                endpoint.recv::<p::CloseSettled>().await?;
                 outcome.clear();
-                sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
             }
             36 => {
-                check(offered.recv::<p::CloseFlightDone>().await?, sequence)?;
+                offered.recv::<p::CloseFlightDone>().await?;
                 let deadline = state.drain_deadline.get().ok_or(Error::Binding)?;
                 clock.wait_until(deadline).await;
-                endpoint.send::<p::CloseFlightSettled>(&sequence).await?;
+                endpoint.send::<p::CloseFlightSettled>(&()).await?;
                 break;
             }
             38 => {
-                check(offered.recv::<p::Drain>().await?, sequence)?;
+                offered.recv::<p::Drain>().await?;
                 let deadline = state.drain_deadline.get().ok_or(Error::Binding)?;
                 clock.wait_until(deadline).await;
-                endpoint.send::<p::Drained>(&sequence).await?;
+                endpoint.send::<p::Drained>(&()).await?;
                 break;
             }
             label => return Err(Error::UnexpectedLabel(label)),
         }
     }
-    check(endpoint.recv::<p::Retire>().await?, sequence)?;
+    endpoint.recv::<p::Retire>().await?;
     if state.pending.borrow().is_some() {
         return Err(Error::Binding);
     }
     state.retire_all();
-    endpoint.send::<p::Retired>(&sequence).await?;
+    endpoint.send::<p::Retired>(&()).await?;
     Ok(())
 }
 

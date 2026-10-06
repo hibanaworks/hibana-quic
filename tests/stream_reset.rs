@@ -65,7 +65,7 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
     let allocation = actor_test_allocator::NoAlloc::start();
     let mut all = pin!(join2(
         async {
-            tx.send::<p::Datagram>(&0).await?;
+            tx.send::<p::Datagram>(&()).await?;
             if illegal_at == 1 {
                 assert!(
                     tx.send::<p::ApplyStop>(&4).await.is_err(),
@@ -85,15 +85,15 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 return Ok(());
             }
             if illegal_at == 5 {
-                assert!(tx.send::<p::ApplyAcknowledgments>(&0).await.is_err());
+                assert!(tx.send::<p::ApplyAcknowledgments>(&()).await.is_err());
                 forbidden_rejected.set(true);
                 return Ok(());
             }
             let outcome = tx.offer().await?;
             if rejected {
-                assert_eq!(outcome.recv::<p::Rejected>().await?, 0);
+                outcome.recv::<p::Rejected>().await?;
             } else {
-                assert_eq!(outcome.recv::<p::Accepted>().await?, 0);
+                outcome.recv::<p::Accepted>().await?;
             }
             if illegal_at == 2 {
                 assert!(
@@ -114,11 +114,11 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 return Ok(());
             }
             if illegal_at == 6 {
-                assert!(tx.send::<p::ApplyAcknowledgments>(&0).await.is_err());
+                assert!(tx.send::<p::ApplyAcknowledgments>(&()).await.is_err());
                 forbidden_rejected.set(true);
                 return Ok(());
             }
-            tx.send::<p::Settled>(&0).await?;
+            tx.send::<p::Settled>(&()).await?;
             tx.send::<p::ApplyStop>(&4).await?;
             let outcome = tx.offer().await?;
             if reset_failed {
@@ -127,10 +127,10 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 assert_eq!(outcome.recv::<p::StopApplied>().await?, 4);
             }
             tx.send::<p::StopSettled>(&4).await?;
-            tx.send::<p::ApplyAcknowledgments>(&1).await?;
-            assert_eq!(tx.recv::<p::AcknowledgmentsApplied>().await?, 1);
+            tx.send::<p::ApplyAcknowledgments>(&()).await?;
+            tx.recv::<p::AcknowledgmentsApplied>().await?;
             if illegal_at == 7 {
-                assert!(tx.send::<p::Datagram>(&1).await.is_err());
+                assert!(tx.send::<p::Datagram>(&()).await.is_err());
                 forbidden_rejected.set(true);
                 return Ok(());
             }
@@ -139,12 +139,12 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 return Ok(());
             }
             tx.send::<p::StreamDeliverySeen>(&4).await?;
-            assert_eq!(tx.offer().await?.recv::<p::DeliveriesDone>().await?, 1);
-            tx.send::<p::AcknowledgmentsSettled>(&1).await?;
+            tx.offer().await?.recv::<p::DeliveriesDone>().await?;
+            tx.send::<p::AcknowledgmentsSettled>(&()).await?;
             tx.send::<p::ApplyLoss>(&7).await?;
             assert_eq!(tx.recv::<p::LossApplied>().await?, 7);
             if illegal_at == 11 {
-                assert!(tx.send::<p::Datagram>(&1).await.is_err());
+                assert!(tx.send::<p::Datagram>(&()).await.is_err());
                 forbidden_rejected.set(true);
                 return Ok(());
             }
@@ -152,29 +152,29 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
             tx.send::<p::ReclaimStream>(&4).await?;
             assert_eq!(tx.recv::<p::StreamReclaimed>().await?, 4);
             if illegal_at == 14 {
-                assert!(tx.send::<p::Datagram>(&2).await.is_err());
+                assert!(tx.send::<p::Datagram>(&()).await.is_err());
                 forbidden_rejected.set(true);
                 return Ok(());
             }
             tx.send::<p::ReclaimSettled>(&4).await?;
-            tx.send::<p::StopPublication>(&1).await?;
-            assert_eq!(tx.recv::<p::PublicationStopped>().await?, 1);
+            tx.send::<p::StopPublication>(&()).await?;
+            tx.recv::<p::PublicationStopped>().await?;
             Ok::<_, EndpointError>(())
         },
         async {
-            assert_eq!(adapter.offer().await?.recv::<p::Datagram>().await?, 0);
+            adapter.offer().await?.recv::<p::Datagram>().await?;
             if illegal_at == 1 || illegal_at == 5 || illegal_at == 9 || illegal_at == 12 {
                 return Ok(());
             }
             if rejected {
-                adapter.send::<p::Rejected>(&0).await?;
+                adapter.send::<p::Rejected>(&()).await?;
             } else {
-                adapter.send::<p::Accepted>(&0).await?;
+                adapter.send::<p::Accepted>(&()).await?;
             }
             if illegal_at == 2 || illegal_at == 6 || illegal_at == 10 || illegal_at == 13 {
                 return Ok(());
             }
-            assert_eq!(adapter.recv::<p::Settled>().await?, 0);
+            adapter.recv::<p::Settled>().await?;
             assert_eq!(adapter.offer().await?.recv::<p::ApplyStop>().await?, 4);
             if illegal_at == 3 || illegal_at == 4 {
                 let wrong = if reset_failed {
@@ -195,30 +195,27 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 adapter.send::<p::StopApplied>(&4).await?;
             }
             assert_eq!(adapter.recv::<p::StopSettled>().await?, 4);
-            assert_eq!(
-                adapter
-                    .offer()
-                    .await?
-                    .recv::<p::ApplyAcknowledgments>()
-                    .await?,
-                1
-            );
-            adapter.send::<p::AcknowledgmentsApplied>(&1).await?;
+            adapter
+                .offer()
+                .await?
+                .recv::<p::ApplyAcknowledgments>()
+                .await?;
+            adapter.send::<p::AcknowledgmentsApplied>(&()).await?;
             if illegal_at == 7 {
                 return Ok(());
             }
             adapter.send::<p::StreamDelivered>(&4).await?;
             if illegal_at == 8 {
                 assert!(
-                    adapter.send::<p::DeliveriesDone>(&1).await.is_err(),
+                    adapter.send::<p::DeliveriesDone>(&()).await.is_err(),
                     "completion batch bypassed the receiver's actual receipt edge"
                 );
                 forbidden_rejected.set(true);
                 return Ok(());
             }
             assert_eq!(adapter.recv::<p::StreamDeliverySeen>().await?, 4);
-            adapter.send::<p::DeliveriesDone>(&1).await?;
-            assert_eq!(adapter.recv::<p::AcknowledgmentsSettled>().await?, 1);
+            adapter.send::<p::DeliveriesDone>(&()).await?;
+            adapter.recv::<p::AcknowledgmentsSettled>().await?;
             assert_eq!(adapter.offer().await?.recv::<p::ApplyLoss>().await?, 7);
             adapter.send::<p::LossApplied>(&7).await?;
             if illegal_at == 11 {
@@ -231,11 +228,8 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
                 return Ok(());
             }
             assert_eq!(adapter.recv::<p::ReclaimSettled>().await?, 4);
-            assert_eq!(
-                adapter.offer().await?.recv::<p::StopPublication>().await?,
-                1
-            );
-            adapter.send::<p::PublicationStopped>(&1).await?;
+            adapter.offer().await?.recv::<p::StopPublication>().await?;
+            adapter.send::<p::PublicationStopped>(&()).await?;
             Ok(())
         }
     ));

@@ -13,24 +13,24 @@ use hibana::{
 
 pub const INPUT: u8 = 0;
 pub const VERIFY: u8 = 1;
-pub type NeedHello = g::Msg<180, u64>;
-pub type Hello = g::Msg<181, u64>;
-pub type Applied = g::Msg<182, u64>;
-pub type Retry = g::Msg<183, u64>;
-pub type HelloReady = g::Msg<184, u64>;
-pub type NeedRetryHello = g::Msg<185, u64>;
-pub type RetryHello = g::Msg<186, u64>;
-pub type NeedExtensions = g::Msg<187, u64>;
-pub type Extensions = g::Msg<188, u64>;
-pub type Resumed = g::Msg<189, u64>;
-pub type Full = g::Msg<190, u64>;
-pub type NeedCertificate = g::Msg<191, u64>;
-pub type Certificate = g::Msg<192, u64>;
-pub type NeedCertificateVerify = g::Msg<193, u64>;
-pub type CertificateVerify = g::Msg<194, u64>;
-pub type NeedFinished = g::Msg<195, u64>;
-pub type Finished = g::Msg<196, u64>;
-pub type Complete = g::Msg<197, u64>;
+pub type NeedHello = g::Msg<180, ()>;
+pub type Hello = g::Msg<181, ()>;
+pub type Applied = g::Msg<182, ()>;
+pub type Retry = g::Msg<183, ()>;
+pub type HelloReady = g::Msg<184, ()>;
+pub type NeedRetryHello = g::Msg<185, ()>;
+pub type RetryHello = g::Msg<186, ()>;
+pub type NeedExtensions = g::Msg<187, ()>;
+pub type Extensions = g::Msg<188, ()>;
+pub type Resumed = g::Msg<189, ()>;
+pub type Full = g::Msg<190, ()>;
+pub type NeedCertificate = g::Msg<191, ()>;
+pub type Certificate = g::Msg<192, ()>;
+pub type NeedCertificateVerify = g::Msg<193, ()>;
+pub type CertificateVerify = g::Msg<194, ()>;
+pub type NeedFinished = g::Msg<195, ()>;
+pub type Finished = g::Msg<196, ()>;
+pub type Complete = g::Msg<197, ()>;
 
 pub type Receive<N, D> = g::Seq<
     g::Send<VERIFY, INPUT, N>,
@@ -63,7 +63,7 @@ pub type ClientFlow = g::Seq<
 pub type ServerFlow =
     g::Seq<HelloFlow, g::Seq<Receive<NeedFinished, Finished>, g::Send<VERIFY, INPUT, Complete>>>;
 
-fn receive<N: g::Message<Payload = u64>, D: g::Message<Payload = u64>>() -> g::Program<Receive<N, D>>
+fn receive<N: g::Message<Payload = ()>, D: g::Message<Payload = ()>>() -> g::Program<Receive<N, D>>
 {
     g::seq(
         g::send::<VERIFY, INPUT, N>(),

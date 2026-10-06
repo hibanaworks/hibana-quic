@@ -1,6 +1,6 @@
 {
-  "request": "Qualify literal fixed-zero progress edges without check helpers",
-  "requested_at": "2026-10-06T07:37:00Z",
+  "request": "Qualify direct TLS and application progress without mirrored ordinals",
+  "requested_at": "2026-10-06T08:13:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions",
@@ -19,6 +19,6 @@
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Parent 5d49dfe passed all runtime steps and C1/L1/M/Z both directions with passing quiche controls and six Lean/six Z3 groups in 37428242367. Fixed-zero TLS start, receive handoff, Initial retirement notification and early-prefix control edges now carry unit; three duplicate local check helpers are deleted. Actual Initial retirement receipt scope/event, pending native IO settlement, key destruction and all numeric wire checks remain. Final local full cargo, thumbv6m, host tests, selected host strict Clippy and source/core audits pass. Verify this source independently. Existing loss failures remain recorded; any failed phase retains authenticated encrypted actual captures, keylogs and endpoint logs without public plaintext. No entire audit or full matrix completion is claimed.",
+  "qualification": "Parent43c0c48a passed all runtime steps and C1/L1/M/Z both directions with unchanged quiche controls and six Lean/six Z3 groups. TLS transcript and application publication/ACK-batch/close progress now carry unit; mirrored sequence counters and TLS echo-check helper are removed. Real stream/packet identities, affine receipts, actual IO settlement and cancellation secret-clearing guards remain. Local full cargo, host116, referenceTLS29, thumbv6m, selected host Clippy, Python69 and source/core audits pass. Verify this exact source independently. Older intermittent L1 failures remain unresolved; failed phases retain authenticated encrypted actual captures and keylogs privately. No full audit or matrix completion claim.",
   "formal_models": true
 }

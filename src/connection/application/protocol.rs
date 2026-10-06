@@ -62,25 +62,23 @@ pub type Expired = g::Msg<22, ()>;
 pub type TimerTaken = g::Msg<23, ()>;
 pub type ClockRetired = g::Msg<24, ()>;
 pub type ClockAcknowledged = g::Msg<25, ()>;
-pub type Datagram = g::Msg<26, u64>;
-pub type Accepted = g::Msg<27, u64>;
-pub type Rejected = g::Msg<28, u64>;
-pub type Settled = g::Msg<29, u64>;
-pub type StopPublication = g::Msg<30, u64>;
-pub type PublicationStopped = g::Msg<31, u64>;
-pub type CloseDatagram = g::Msg<32, u64>;
-pub type CloseAccepted = g::Msg<33, u64>;
-pub type CloseRejected = g::Msg<34, u64>;
-pub type CloseSettled = g::Msg<35, u64>;
-pub type CloseFlightDone = g::Msg<36, u64>;
-pub type CloseFlightSettled = g::Msg<37, u64>;
-pub type Drain = g::Msg<38, u64>;
-pub type Drained = g::Msg<39, u64>;
-pub type Retire = g::Msg<40, u64>;
-pub type Retired = g::Msg<41, u64>;
+pub type Datagram = g::Msg<26, ()>;
+pub type Accepted = g::Msg<27, ()>;
+pub type Rejected = g::Msg<28, ()>;
+pub type Settled = g::Msg<29, ()>;
+pub type StopPublication = g::Msg<30, ()>;
+pub type PublicationStopped = g::Msg<31, ()>;
+pub type CloseDatagram = g::Msg<32, ()>;
+pub type CloseAccepted = g::Msg<33, ()>;
+pub type CloseRejected = g::Msg<34, ()>;
+pub type CloseSettled = g::Msg<35, ()>;
+pub type CloseFlightDone = g::Msg<36, ()>;
+pub type CloseFlightSettled = g::Msg<37, ()>;
+pub type Drain = g::Msg<38, ()>;
+pub type Drained = g::Msg<39, ()>;
+pub type Retire = g::Msg<40, ()>;
+pub type Retired = g::Msg<41, ()>;
 // Parallel terminal observations join before connection retirement.
-pub type Quiesce = g::Msg<42, u64>;
-pub type Quiesced = g::Msg<43, u64>;
 pub type PeerClose = g::Msg<44, ()>;
 pub type PeerFailed = g::Msg<45, ()>;
 pub type PeerCancelled = g::Msg<46, ()>;
@@ -317,12 +315,12 @@ pub type ResetApply = g::Seq<
         g::Send<TRANSMIT, ADAPTER, StopSettled>,
     >,
 >;
-pub type ApplyAcknowledgments = g::Msg<178, u64>;
-pub type AcknowledgmentsApplied = g::Msg<179, u64>;
-pub type AcknowledgmentsSettled = g::Msg<180, u64>;
+pub type ApplyAcknowledgments = g::Msg<178, ()>;
+pub type AcknowledgmentsApplied = g::Msg<179, ()>;
+pub type AcknowledgmentsSettled = g::Msg<180, ()>;
 pub type StreamDelivered = g::Msg<181, u64>;
 pub type StreamDeliverySeen = g::Msg<182, u64>;
-pub type DeliveriesDone = g::Msg<183, u64>;
+pub type DeliveriesDone = g::Msg<183, ()>;
 pub type Deliveries = g::Roll<
     g::Route<
         g::Seq<
