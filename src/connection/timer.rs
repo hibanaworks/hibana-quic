@@ -12,8 +12,7 @@ pub(super) async fn run<const N: usize, const P: usize>(
     book: &mut recovery::Clock<'_, '_, N>,
     clock: &impl Clock,
 ) -> Result<(), Error> {
-    let mut sequence = 0u64;
-    let stop_id = {
+    {
         let mut stopping = pin!(stop.recv::<p::StopTimer>());
         loop {
             let revision = slots.schedule.revision.get();
@@ -48,7 +47,7 @@ pub(super) async fn run<const N: usize, const P: usize>(
                 .await?
             };
             match event {
-                core::ops::ControlFlow::Break(id) => break id,
+                core::ops::ControlFlow::Break(()) => break,
                 core::ops::ControlFlow::Continue(false) => continue,
                 core::ops::ControlFlow::Continue(true) => {}
             }
@@ -60,24 +59,19 @@ pub(super) async fn run<const N: usize, const P: usize>(
                     // slot needed by TimerTaken. Retain and finish the exact
                     // expiry future before consuming retirement; never cancel
                     // a half-completed projected exchange or manufacture ACK.
-                    let expiry_sequence = sequence;
                     let mut expiry = pin!(async {
-                        endpoint.send::<p::TimerExpired>(&expiry_sequence).await?;
-                        if endpoint.recv::<p::TimerTaken>().await? != expiry_sequence {
-                            return Err(Error::Binding);
-                        }
+                        endpoint.send::<p::TimerExpired>(&()).await?;
+                        endpoint.recv::<p::TimerTaken>().await?;
                         Ok::<(), Error>(())
                     });
                     match crate::runtime::select(stopping.as_mut(), expiry.as_mut()).await {
-                        core::ops::ControlFlow::Break(id) => {
-                            let id = id?;
+                        core::ops::ControlFlow::Break(result) => {
+                            result?;
                             expiry.await?;
-                            sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
-                            break id;
+                            break;
                         }
                         core::ops::ControlFlow::Continue(result) => result?,
                     }
-                    sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
                 }
                 Ok(None) | Err(recovery::Error::StaleDeadline) => {}
                 Err(error) => return Err(error.into()),
@@ -85,11 +79,9 @@ pub(super) async fn run<const N: usize, const P: usize>(
             crate::runtime::yield_now().await;
         }
     };
-    endpoint.send::<p::TimerRetired>(&sequence).await?;
-    if endpoint.recv::<p::TimerAcknowledged>().await? != sequence {
-        return Err(Error::Binding);
-    }
-    stop.send::<p::TimerStopped>(&stop_id).await?;
+    endpoint.send::<p::TimerRetired>(&()).await?;
+    endpoint.recv::<p::TimerAcknowledged>().await?;
+    stop.send::<p::TimerStopped>(&()).await?;
     Ok(())
 }
 
@@ -104,13 +96,13 @@ pub(super) async fn receive(
         let branch = endpoint.offer().await?;
         match branch.label() {
             label if label == p::TimerExpired::LOGICAL_LABEL => {
-                let sequence = branch.recv::<p::TimerExpired>().await?;
-                endpoint.send::<p::TimerTaken>(&sequence).await?;
+                branch.recv::<p::TimerExpired>().await?;
+                endpoint.send::<p::TimerTaken>(&()).await?;
                 schedule.changed()?;
             }
             label if label == p::TimerRetired::LOGICAL_LABEL => {
-                let sequence = branch.recv::<p::TimerRetired>().await?;
-                endpoint.send::<p::TimerAcknowledged>(&sequence).await?;
+                branch.recv::<p::TimerRetired>().await?;
+                endpoint.send::<p::TimerAcknowledged>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),
@@ -217,10 +209,8 @@ mod tests {
         ));
         let mut receiver = pin!(receive(&mut receiver_endpoint, &storage.schedule));
         let mut sender = pin!(async {
-            sender_endpoint.send::<p::StopTimer>(&91).await?;
-            if sender_endpoint.recv::<p::TimerStopped>().await? != 91 {
-                return Err(Error::Binding);
-            }
+            sender_endpoint.send::<p::StopTimer>(&()).await?;
+            sender_endpoint.recv::<p::TimerStopped>().await?;
             Ok::<(), Error>(())
         });
         let mut udp = PendingUdp;
@@ -316,10 +306,8 @@ mod tests {
             &clock
         ));
         let mut sender = pin!(async {
-            sender_endpoint.send::<p::StopTimer>(&91).await?;
-            if sender_endpoint.recv::<p::TimerStopped>().await? != 91 {
-                return Err(Error::Binding);
-            }
+            sender_endpoint.send::<p::StopTimer>(&()).await?;
+            sender_endpoint.recv::<p::TimerStopped>().await?;
             Ok::<(), Error>(())
         });
         let mut cx = Context::from_waker(Waker::noop());
@@ -328,15 +316,16 @@ mod tests {
         // the single carrier slot before its physical acknowledgement is sent.
         {
             let mut expired = pin!(receiver_endpoint.recv::<p::TimerExpired>());
-            assert!(matches!(expired.as_mut().poll(&mut cx), Poll::Ready(Ok(0))));
+            assert!(matches!(
+                expired.as_mut().poll(&mut cx),
+                Poll::Ready(Ok(()))
+            ));
         }
         assert!(sender.as_mut().poll(&mut cx).is_pending());
         let mut receiver = pin!(async {
-            receiver_endpoint.send::<p::TimerTaken>(&0).await?;
-            let sequence = receiver_endpoint.recv::<p::TimerRetired>().await?;
-            receiver_endpoint
-                .send::<p::TimerAcknowledged>(&sequence)
-                .await?;
+            receiver_endpoint.send::<p::TimerTaken>(&()).await?;
+            receiver_endpoint.recv::<p::TimerRetired>().await?;
+            receiver_endpoint.send::<p::TimerAcknowledged>(&()).await?;
             Ok::<(), Error>(())
         });
         let mut tasks = pin!(crate::runtime::TaskSet::new([
@@ -383,24 +372,21 @@ mod tests {
         let mut udp = PendingUdp;
         let mut publication = pin!(udp.send(&[0]));
         let mut producer = pin!(async {
-            for sequence in 0..3u64 {
+            for _ in 0..3 {
                 producer_endpoint
-                    .send::<p::TimerExpired>(&sequence)
+                    .send::<p::TimerExpired>(&())
                     .await
                     .unwrap();
-                assert_eq!(
-                    producer_endpoint.recv::<p::TimerTaken>().await.unwrap(),
-                    sequence
-                );
+                producer_endpoint.recv::<p::TimerTaken>().await.unwrap();
             }
-            producer_endpoint.send::<p::TimerRetired>(&3).await.unwrap();
-            assert_eq!(
-                producer_endpoint
-                    .recv::<p::TimerAcknowledged>()
-                    .await
-                    .unwrap(),
-                3
-            );
+            producer_endpoint
+                .send::<p::TimerRetired>(&())
+                .await
+                .unwrap();
+            producer_endpoint
+                .recv::<p::TimerAcknowledged>()
+                .await
+                .unwrap();
         });
         let mut receiver = pin!(receive(&mut receiver_endpoint, &schedule));
         let mut cx = Context::from_waker(Waker::noop());

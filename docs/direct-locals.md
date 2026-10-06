@@ -454,3 +454,29 @@ remain authoritative evidence against stable qualification. The next diagnostic
 is narrowed to candidate client L1 plus unchanged quiche control to capture
 that remaining failure with the now-verified numeric dissection. No product
 source or timer changes accompany that measurement.
+
+## Timer local progress belongs to Hibana
+
+The last numeric-diagnostic series 37420065430 passed its unchanged quiche
+control and candidate-client cell in all three attempts (artifacts11393326131,
+11392694935,11393308585). Each actual final report has fifty successful client
+terminals, zero idle expiry, closed lifecycle and resources retired. Endpoint
+durations were 55.402,46.141,62.983 seconds. This does not erase the earlier
+intermittent failures or establish their cause. Repeating only this same cell
+is not treated as completion of the all-file local audit.
+
+The finite timer's six progress messages now carry unit rather than mirrored
+u64 counters: TimerExpired/Taken, TimerRetired/Acknowledged and
+StopTimer/Stopped. Their real send/recv and projected ordering remain; the
+extra sequence increments and echo equality checks are removed. Real numeric
+deadlines, recovery accounting, actual native waits and ownership remain.
+The capacity-one overlapping stop/expiry regression still passes without an
+auxiliary progress flag or new communication helper. The exact pending expiry
+is retained until acknowledgement before retirement.
+
+Local final checks pass: all424 library plus integration/doc groups, thumbv6m,
+all116 host tests and selected host lib/hq strict Clippy (dependency warnings
+remain separately visible). The changed timer file is formatted; no global
+formatting cleanup or complete all-file migration is claimed. The next remote
+request rechecks C1/L1/M/Z in both directions and the existing formal models,
+rather than using another isolated L1 pass to declare root resolution.

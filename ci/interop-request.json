@@ -1,19 +1,24 @@
 {
-  "request": "Capture remaining client loss failure with numeric decrypted metadata",
-  "requested_at": "2026-10-06T05:44:00Z",
+  "request": "Regress direct unit timer progress and real stop/expiry join",
+  "requested_at": "2026-10-06T06:24:00Z",
   "scope": [
-    "unchanged quiche control",
-    "candidate client remaining loss boundary"
+    "unchanged quiche controls",
+    "both candidate directions",
+    "existing local formal models"
   ],
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
   "local_evidence": "docs/direct-locals.md",
   "cases": [
-    "handshakeloss"
+    "handshakecorruption",
+    "handshakeloss",
+    "multiplexing",
+    "zerortt"
   ],
   "candidate_directions": [
-    "client"
+    "client",
+    "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Endpoint executable remains397acc54. Diagnostic d15cded runtime37418902557 and interop37418902751 passed all actual steps. Artifact11393080404 verifies local reference-key numeric dissection works; both directions passed, client50 terminals with zero idle. Earlier client fail/pass/fail remains recorded, not overwritten. Narrow this diagnostic to the unresolved client L1 failure, keeping the unchanged quiche control. No server code, product deadline or acceptance condition changes. This run is for failure evidence, not proof by repetition or full qualification.",
-  "formal_models": false
+  "qualification": "Six finite timer progress Msg payloads are unit; duplicated expiry counters and echo checks removed. Actual send/recv, pending expiry ACK completion, StopTimer receipt and retirement join preserved; no numeric deadline, capacity or resource guarantee changed. Local full cargo424library plus all integration/docs, thumbv6m,116host and selected host lib/hq strict Clippy passed. Prior397acc54 L1 failures and later passes all retained; root cause of earlier intermittent client expiry remains unconfirmed. Recheck C1/L1/M/Z both directions and existing formal models. Do not claim entire local audit or full runner matrix complete.",
+  "formal_models": true
 }

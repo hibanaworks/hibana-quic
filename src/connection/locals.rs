@@ -1575,8 +1575,8 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     // timer/adapter retirement can prolong that finite receive ownership.
     output.send::<p::StopReceive>(&id).await?;
     check(output.recv::<p::ReceiveStopped>().await?, id)?;
-    output.send::<p::StopTimer>(&id).await?;
-    check(output.recv::<p::TimerStopped>().await?, id)?;
+    output.send::<p::StopTimer>(&()).await?;
+    output.recv::<p::TimerStopped>().await?;
     endpoint.send::<p::TransmitComplete>(&id).await?;
     check(endpoint.recv::<p::TransmitContinuation>().await?, id)?;
     output.send::<p::AdapterComplete>(&id).await?;

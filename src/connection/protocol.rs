@@ -174,10 +174,12 @@ pub type TransmitComplete = g::Msg<137, u64>;
 pub type TransmitContinuation = g::Msg<138, u64>;
 pub type AdapterComplete = g::Msg<139, u64>;
 pub type AdapterRetired = g::Msg<140, u64>;
-pub type TimerExpired = g::Msg<141, u64>;
-pub type TimerTaken = g::Msg<142, u64>;
-pub type TimerRetired = g::Msg<143, u64>;
-pub type TimerAcknowledged = g::Msg<144, u64>;
+// These edges carry only progress. The projected continuation supplies order;
+// no mirrored expiry counter or echo check is protocol authority.
+pub type TimerExpired = g::Msg<141, ()>;
+pub type TimerTaken = g::Msg<142, ()>;
+pub type TimerRetired = g::Msg<143, ()>;
+pub type TimerAcknowledged = g::Msg<144, ()>;
 type Publish<P> = g::Seq<
     g::Send<TX_WIRE, UDP, <P as Publication>::Datagram>,
     g::Seq<
@@ -303,8 +305,8 @@ pub type DrainFlow = g::Roll<
 >;
 pub const TIMER_STOP: u8 = 20;
 pub const RECEIVE_STOP: u8 = 21;
-pub type StopTimer = g::Msg<222, u64>;
-pub type TimerStopped = g::Msg<223, u64>;
+pub type StopTimer = g::Msg<222, ()>;
+pub type TimerStopped = g::Msg<223, ()>;
 pub type StopReceive = g::Msg<225, u64>;
 pub type ReceiveStopped = g::Msg<226, u64>;
 pub type CompleteFlow = g::Seq<
