@@ -324,3 +324,22 @@ Its immutable native binary is
 A four-connection lossy native smoke passed with all files and retirement;
 actual requested/returned clock samples parsed for all four sessions on each
 side. No new full fifty-connection or official pass is inferred from that smoke.
+
+
+The e2d97dc runtime CI 37409859375 passed every actual step. In Neqo run
+37409859215 (artifact 11388839882), the unchanged Neqo self-control and candidate
+server L1 passed. Candidate client L1 failed with 26/50 length-complete files.
+All fifty candidate handshakes were confirmed; 26 records completed and closed,
+while 24 recorded idle expiry with zero completed streams and closed=false.
+All fifty clock futures returned. This is a different symptom from the earlier
+quiche Initial-phase stall; expiry is not relabelled completion.
+
+The unchanged pinned Neqo ff4f4c61 HTTP/0.9 server owns read_state and write_state
+maps keyed only by StreamId (a u64), while process_events iterates all active
+connections. Its multiconnect client uses download_in_series. Thus its sequential
+self-control does not exercise the same cross-connection state overlap as fifty
+parallel candidate clients. An earlier native diagnostic also recorded responses
+with another request's numeric size. These observations identify a reference
+application isolation concern, not a proven attribution of every official failure.
+The next run returns to quiche to observe the originally failing Initial-phase
+connection's clock deadlines with the same e2d97dc executable source.

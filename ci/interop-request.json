@@ -1,8 +1,8 @@
 {
-  "request": "Separate extreme-loss timer waits from stalled Initial progress",
-  "requested_at": "2026-10-06T03:31:00Z",
+  "request": "Read clock deadlines on the original quiche Initial-phase stall",
+  "requested_at": "2026-10-06T03:58:00Z",
   "scope": [
-    "unchanged Neqo controls",
+    "unchanged quiche controls",
     "both candidate directions"
   ],
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
@@ -14,7 +14,7 @@
     "client",
     "server"
   ],
-  "reference_implementation": "neqo",
-  "qualification": "Targeted unchanged L1 with the pinned Neqo reference and mandatory self-control. Run 37406336212 attempt 1 passed quiche control and both directions; attempt 2 failed its quiche control after 12/50 files and candidate client after 49/50. The latter remained at InitialIdle/InitialTaken, with no timer deadline recorded. Add read-only host timing evidence using the same physical clock and fault owner, without new timers, phase state, retries or deadline changes. The native timer ownership/cancellation test passes. The local fixture additionally models 25 queued packets, 15 ms delay, 333 ms initial RTT, actual tickets and fragmented certificates. Its three-packet burst diagnostic explicitly uses a 300-second simulation bound, while existing tests keep 30 seconds; a recorded first-nine-packets-lost case exceeded 30 seconds with a real PTO at 30.969 seconds, not a missing wake. This diagnostic change is not a product fix or a changed runner criterion. Core remains unmodified c3d89f78; canonical branch and historical 30/44 inventory are unchanged. The existing formal groups passed in run 37403324082 and are not rerun for host-only observation and fixture edits. No root cause, full qualification or repeatable success is claimed.",
+  "reference_implementation": "quiche",
+  "qualification": "Same executable source as e2d97dc; runtime CI 37409859375 passed all actual steps. Neqo run 37409859215 passed its self-control and candidate server L1, while candidate client had 26 successful transfers and 24 actual idle expiries after all 50 handshakes confirmed. Do not relabel expiry as completion. The pinned Neqo HTTP/0.9 server has connection-independent StreamId maps and its own multiconnect client is sequential, so that comparison does not settle the earlier quiche Initial-stage failure. Return to unchanged quiche L1 control and both candidate directions, retaining actual clock requested/returned deadlines and bounded committed-operation traces. No executable, timer, protocol or runner criterion changes in this request-only follow-up. No root fix, complete matrix or new historical unique cell is claimed.",
   "formal_models": false
 }
