@@ -18,6 +18,8 @@ mod host_files;
 mod parallel_server;
 #[path = "../pem.rs"]
 mod pem;
+#[path = "support/retry_admission.rs"]
+mod retry_admission;
 use cli::{Options, USAGE, options};
 use direct_wire::{
     HostClock, HostReactor, HostSocket, Receive, Statistics, Transmit, before_deadline,
@@ -55,10 +57,11 @@ fn parameters(
     local: &[u8],
     original: Option<&[u8]>,
     application_limits: Option<hibana_quic::streams::Limits>,
+    retry_source: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut encoded = [0; 8];
-    for (kind, value) in [(15, Some(local)), (0, original)] {
+    for (kind, value) in [(15, Some(local)), (0, original), (16, retry_source)] {
         if let Some(value) = value {
             let len = encode_varint(kind, &mut encoded).map_err(|e| format!("parameter: {e:?}"))?;
             bytes.extend_from_slice(&encoded[..len]);
@@ -745,6 +748,7 @@ async fn run_async<const S: usize, const T: usize>(
                     &local,
                     None,
                     files.as_ref().map(direct_bootstrap::Files::local_limits),
+                    None,
                 )?;
                 let mut buffers = TlsBuffers::new();
                 let now = UnixTime::since_unix_epoch(
@@ -809,6 +813,7 @@ async fn run_async<const S: usize, const T: usize>(
                         side: Side::Client,
                         local_connection_id: &local,
                         original_destination_id: &original,
+                        retry_source_id: None,
                         peer_connection_id: &original,
                     },
                     tls,
@@ -860,6 +865,7 @@ async fn run_async<const S: usize, const T: usize>(
             previous.ok_or_else(|| "no client connection executed".into())
         }
         Options::Server {
+            require_retry,
             listen,
             cert,
             cipher,
@@ -913,6 +919,18 @@ async fn run_async<const S: usize, const T: usize>(
             .map_err(|e| format!("ticket key: {e:?}"))?;
             let ticket_clock = WallTicketClock;
             let mut entropy = OsRng;
+            let mut retry_tokens = if require_retry {
+                Some(
+                    hibana_quic::retry::RetryTokens::<64>::generate(
+                        &mut entropy,
+                        u32::from_be_bytes(random::<4>()?),
+                        hibana_quic::retry::DEFAULT_TOKEN_LIFETIME_US,
+                    )
+                    .map_err(|e| format!("Retry issuer: {e:?}"))?,
+                )
+            } else {
+                None
+            };
             let mut previous: Option<Report> = None;
             for connection_index in 0..connections {
                 if std::env::var_os("HIBANA_QUIC_DIAGNOSTICS").is_some() {
@@ -937,13 +955,32 @@ async fn run_async<const S: usize, const T: usize>(
                         })
                     })
                     .transpose()?;
+                let retried = if let Some(tokens) = retry_tokens.as_mut() {
+                    Some(retry_admission::receive(&socket, clock, tokens).await?)
+                } else {
+                    None
+                };
                 let mut first = vec![0; direct_bootstrap::DATAGRAM];
-                let (address, original, peer, len) = admit_initial(&socket, &mut first).await?;
+                let (address, original, peer, len) = if let Some(admitted) = retried.as_ref() {
+                    first[..admitted.datagram.len()].copy_from_slice(&admitted.datagram);
+                    (
+                        admitted.address,
+                        admitted.token.original_destination_id().to_vec(),
+                        admitted.token.client_source_id().to_vec(),
+                        admitted.datagram.len(),
+                    )
+                } else {
+                    admit_initial(&socket, &mut first).await?
+                };
+                let retry_source = retried
+                    .as_ref()
+                    .map(|admitted| admitted.token.retry_source_id());
                 let local = random::<8>()?;
                 let parameters = parameters(
                     &local,
                     Some(&original),
                     files.as_ref().map(direct_bootstrap::Files::local_limits),
+                    retry_source,
                 )?;
                 let mut buffers = TlsBuffers::new();
                 let config = ServerConfig {
@@ -1005,6 +1042,7 @@ async fn run_async<const S: usize, const T: usize>(
                         side: Side::Server,
                         local_connection_id: &local,
                         original_destination_id: &original,
+                        retry_source_id: retry_source,
                         peer_connection_id: &peer,
                     },
                     tls,

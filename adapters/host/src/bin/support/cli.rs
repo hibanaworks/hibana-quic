@@ -35,6 +35,7 @@ pub enum Options {
         resumption: bool,
         connections: usize,
         early: bool,
+        require_retry: bool,
         files: Option<ServerFiles>,
     },
 }
@@ -226,7 +227,13 @@ pub fn options(args: &[String]) -> Result<Options> {
             } else {
                 1
             };
+            let require_retry = match flags.remove("--retry").unwrap_or("off") {
+                "off" => false,
+                "required" if connections == 1 && !early => true,
+                _ => return Err("--retry required supports one non-early connection".into()),
+            };
             Options::Server {
+                require_retry,
                 early,
                 listen,
                 cert,

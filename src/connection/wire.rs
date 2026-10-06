@@ -308,6 +308,7 @@ mod initial_ack_tests {
             side: Side::Server,
             local_connection_id: b"serverid",
             original_destination_id: b"original",
+            retry_source_id: None,
             peer_connection_id: b"peerpeer",
         };
         let peer = ConnectionId::new(b"peerpeer").unwrap();

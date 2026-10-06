@@ -680,3 +680,54 @@ Only CI requests/docs change during this sweep. The first additional Neqo
 H/DC/LR/C20/6 group is run37446541784. Next are Neqo L2/C2/R/B/U and quiche A,
 all both directions with actual unchanged reference controls. Previous failures
 remain in the evidence and do not become passes because a later trial succeeds.
+
+## Current-code thirty-cell sweep complete
+
+The added Neqo groups37446541784/artifact11404332356 and37447499432/
+artifact11406595653 passed all ten cells each with matching controls. Quiche A
+run37448935891 initially failed only server A: right capture has just two
+Initial UDP packets and no Handshake, while left has56 UDP packets and
+decrypted server CRYPTO end9925. The pinned A check requires end7500 before
+testing byte amplification, so this saved trace cannot pass. Both peers
+actually completed the5120-byte file and closed. Capture truncation's mechanism
+is not established; the result is retained as failed.
+
+A single unchanged repeat of that same run passed all controls and both A
+directions, artifact11406629356, with server Handshake CRYPTO end9920 in both
+captures. Together with the eight selected cells, the same product source now
+has30/44 actual controlled passes. Continue to the remaining14 as requested.
+
+## Server Retry admission candidate
+
+The remaining-capability work starts with server-required Retry. A separate
+three-role admission graph receives an actual UDP observation, issues or
+validates the bounded address token, and publishes one actual response. Sent/
+Rejected is bound to the physical send result; ignored observations notify the
+output role without execution. Successful admission consumes Stop/Stopped and
+Joined before the token and retained Initial enter the normal TLS connection.
+No independent retry phase flag or progress counter is added.
+
+Retry SCID is retained separately from original DCID in Config, used for Initial
+key derivation and incoming CID matching, and emitted as the server Retry
+transport parameter. The address-token issuer remains alive for admission;
+invalid/corrupt tokens do not create TLS or connection owners. Stateless
+reserved-version readiness responses use the same actual publication path.
+The current host policy supports required Retry for one non-early connection.
+Client Retry acceptance/rekey/recovery continuation is still unimplemented;
+do not qualify that direction or reset TLS/packet numbers as a workaround.
+
+Two real projected capacity-one tests and a real loopback UDP test pass,
+including corrupt token rejection, VN readiness, valid token admission and
+native resource cleanup. An unchanged Neqo client completed2/3/5MiB files with
+matching hashes after required Retry; the server's actual final report confirms
+TLS Finished, clean close, all streams ACKed and resources retired. Native
+diagnostics are not the official Retry trace verdict. Initial unprojectable
+and invalid terminal-arm prototypes were rejected and corrected before these
+tests; no Hibana vendor changes were made.
+
+Final native qualification repeats the unchanged Neqo client with the strengthened
+terminal-checking fixture: all three file hashes match, lifecycle is closed and
+resources are retired, with 6.050 seconds total. Independent reference TLS tests
+pass all 29 cases; Python tests pass all 70. Full core, thumb, host, selected host
+strict Clippy and source/control/vendor audits pass. The official server-only
+Retry run is requested separately; no official Retry pass is claimed here.

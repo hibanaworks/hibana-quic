@@ -30,6 +30,12 @@ class EndpointCommand(unittest.TestCase):
         self.assertEqual(args.count('--request'), 2)
         self.assertEqual(args[args.index('--ca')+1], '/certs/ca.pem')
         self.assertEqual(args[args.index('--server-name')+1], 'server')
+    def test_retry_requires_server_admission_without_extra_shell_parameters(self):
+        args=module.command({'ROLE':'server','TESTCASE':'retry'},resolve)
+        self.assertEqual(args[args.index('--retry')+1],'required')
+        with self.assertRaises(module.Unsupported):
+            module.command({'ROLE':'client','TESTCASE':'retry'},resolve)
+
     def test_server_real_chain_and_files(self):
         args = module.command({'ROLE':'server', 'TESTCASE':'handshake'}, resolve)
         self.assertIn('/certs/priv.key', args)

@@ -420,5 +420,79 @@
   ],
   "historical_unique_passes": 30,
   "full_latest_commit_matrix_passed": false,
-  "inventory_updated_through_commit": "4fdc24a716f5e854f7df603f8c312f789984cf57"
+  "inventory_updated_through_commit": "4fdc24a716f5e854f7df603f8c312f789984cf57",
+  "current_product_code_qualification": {
+    "product_commit": "29ba476cd1e40a30ecbcfeb9879fb9bde114cf52",
+    "cells_passed": 30,
+    "registered_cells": 44,
+    "scope": "same product source; only CI requests and evidence docs differ across executions; not a failure-free repeated full matrix",
+    "groups": [
+      {
+        "cases": [
+          "handshakecorruption",
+          "handshakeloss",
+          "multiplexing",
+          "zerortt"
+        ],
+        "directions": [
+          "client",
+          "server"
+        ],
+        "peer": "quiche",
+        "run": 37440190467,
+        "passing_artifacts": [
+          11400534954,
+          11402098198
+        ],
+        "failed_repeat_artifact": 11403970827
+      },
+      {
+        "cases": [
+          "handshake",
+          "transfer",
+          "longrtt",
+          "chacha20",
+          "ipv6"
+        ],
+        "directions": [
+          "client",
+          "server"
+        ],
+        "peer": "neqo",
+        "run": 37446541784,
+        "artifact": 11404332356
+      },
+      {
+        "cases": [
+          "transferloss",
+          "transfercorruption",
+          "resumption",
+          "blackhole",
+          "keyupdate"
+        ],
+        "directions": [
+          "client",
+          "server"
+        ],
+        "peer": "neqo",
+        "run": 37447499432,
+        "artifact": 11406595653
+      },
+      {
+        "cases": [
+          "amplificationlimit"
+        ],
+        "directions": [
+          "client",
+          "server"
+        ],
+        "peer": "quiche",
+        "run": 37448935891,
+        "passing_artifact": 11406629356,
+        "failed_capture_incomplete_artifact": 11405632656
+      }
+    ],
+    "all_passing_results_have_passing_controls": true,
+    "prior_failures_retained": true
+  }
 }

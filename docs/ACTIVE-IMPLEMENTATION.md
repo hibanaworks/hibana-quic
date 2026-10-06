@@ -2,28 +2,33 @@
 
 ## Current qualification boundary (2026-10-06)
 
-The historical matrix remains 30/44 unique candidate cells, not a complete
-latest-commit matrix. Experimental 562338f7cd292b982b8293f51b2a50e3b458368a
-passed all runtime CI37437645856 steps. Official CI37437645847/artifact11400961525
-passed unchanged quiche C1/L1/M/Z controls and all eight candidate direction/case
-cells, plus the existing six Lean and six Z3 model groups. Client C1 and L1 each
-have fifty actual successful terminals, zero idle expiry, closed lifecycle and
-resources retired. M transferred1999 files; Z transferred40 across two
-connections with actual resumption. This is a checkpoint, not the full matrix.
+The30 historically qualified case/direction cells have now all passed on
+product code29ba476cd1e40a30ecbcfeb9879fb9bde114cf52. Only CI request/evidence
+files differ between sweep commits. This is30/44 current-code coverage, not
+all44 cells or a failure-free repeated full matrix. Exact groups and artifacts
+are in interop/qualification.json.
 
-Earlier intermittent L1 client failures remain recorded in direct-locals.md;
-their cause is not established by later passes. The timer stop/expiry deadlock
-was separately reproduced pre-fix and corrected without dropping the actual
-expiry acknowledgement. Failed phases now preserve sealed authenticated
-capture/keylog/log evidence for private diagnosis; the later33c83f4e trial supplied the first actual failed capsule. See
-[direct locals](direct-locals.md) for exact boundaries. Earlier evidence sections
-below are historical checkpoints, not current claims.
+- Quiche C1/L1/M/Z both directions:37440190467 attempts1/2, artifacts11400534954
+  and11402098198. Attempt3 server C1 failure11403970827 remains recorded.
+- Neqo H/DC/LR/C20/6 both directions:37446541784/artifact11404332356.
+- Neqo L2/C2/R/B/U both directions:37447499432/artifact11406595653.
+- Quiche A both directions:37448935891 attempt2/artifact11406629356.
+  Attempt1 server failure11405632656 remains recorded; its server-side capture
+  lacks the Handshake packets present in the client's capture. The unchanged
+  retry has server Handshake end9920 in both captures and passes the original
+  criterion. No product, runner, deadline or peer change was used for this retry.
 
-The earlier33c83f4e trial passed runtime37434925495 but failed server L1 in
-37434925514. Its actual encrypted capture was recovered: the1490-byte
-ClientHello lacked its357-byte tail at the server, while all three server ACKs
-were absent at the client. Other selected cells and controls passed. This trial
-is not a full pass; see the captured-evidence section in direct-locals.md.
+All counted results have passing unchanged reference controls. Runtime37440190411
+passed every step. Existing six Lean/six Z3 groups passed in the focused suite.
+Earlier intermittent failures are retained and do not become passes. Two actual
+server C1/L1 failures were diagnosed from privately decrypted captures showing
+the ClientHello tail missing at the server and its ACKs missing at the client.
+This does not establish the cause of different historical client failures.
+
+The user's direction is now to proceed to the remaining14 cells and inspect
+actual captures on failure, rather than indefinitely repeat the same eight.
+Retry is the next endpoint capability under investigation. Earlier evidence
+sections below remain historical checkpoints.
 
 ## Architecture
 

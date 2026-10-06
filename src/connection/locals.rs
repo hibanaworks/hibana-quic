@@ -65,7 +65,10 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                 if destination_id != config.local_connection_id
                     && !(config.side == Side::Server
                         && matches!(kind, LongType::Initial | LongType::ZeroRtt)
-                        && destination_id == config.original_destination_id)
+                        && destination_id
+                            == config
+                                .retry_source_id
+                                .unwrap_or(config.original_destination_id))
                 {
                     return Ok(true);
                 }
@@ -346,7 +349,11 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
                 } else {
                     None
                 },
-                None,
+                if config.side == Side::Client {
+                    config.retry_source_id
+                } else {
+                    None
+                },
             )
             .map_err(|_| Error::Binding)?;
         // Keep the projected stop receive alive across every packet poll. A

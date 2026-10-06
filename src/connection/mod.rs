@@ -53,6 +53,8 @@ pub struct Config<'a> {
     pub side: Side,
     pub local_connection_id: &'a [u8],
     pub original_destination_id: &'a [u8],
+    /// Actual Retry SCID, retained separately from the original destination.
+    pub retry_source_id: Option<&'a [u8]>,
     pub peer_connection_id: &'a [u8],
 }
 impl Config<'_> {
@@ -60,6 +62,9 @@ impl Config<'_> {
         if self.local_connection_id.len() > 20
             || self.peer_connection_id.len() > 20
             || self.original_destination_id.len() > 20
+            || self.retry_source_id.is_some_and(|id| {
+                id.is_empty() || id.len() > 20 || id == self.original_destination_id
+            })
             || (self.side == Side::Client && self.original_destination_id.len() < 8)
         {
             return Err(Error::Binding);
@@ -431,7 +436,11 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     let _clear = Clear(storage);
     let scope = source.scope();
     let integrity = source.take_integrity_budget()?;
-    let initial = crypto::initial_keys(config.original_destination_id)?;
+    let initial = crypto::initial_keys(
+        config
+            .retry_source_id
+            .unwrap_or(config.original_destination_id),
+    )?;
     let (read, write) = match config.side {
         Side::Client => (initial.server, initial.client),
         Side::Server => (initial.client, initial.server),

@@ -853,7 +853,10 @@ fn old<'book, 'scope, const N: usize>(
     if destination_id != config.local_connection_id
         && !(config.side == Side::Server
             && kind == LongType::Initial
-            && destination_id == config.original_destination_id)
+            && destination_id
+                == config
+                    .retry_source_id
+                    .unwrap_or(config.original_destination_id))
     {
         return Ok(None);
     }

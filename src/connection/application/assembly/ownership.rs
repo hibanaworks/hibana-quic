@@ -73,7 +73,11 @@ pub(crate) async fn transfer<'source, 'scope, 'cfg, 'buf, const P: usize>(
                 } else {
                     None
                 },
-                None,
+                if config.side == Side::Client {
+                    config.retry_source_id
+                } else {
+                    None
+                },
             )?;
             finished_slot
                 .put((Received { material, peer }, transmitted))

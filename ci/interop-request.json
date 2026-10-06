@@ -1,21 +1,20 @@
 {
-  "request": "Complete historical30 sweep: amplification limit both directions",
-  "requested_at": "2026-10-06T10:17:00Z",
+  "request": "Qualify server Retry admission through direct Hibana roles",
+  "requested_at": "2026-10-06T11:32:00Z",
   "scope": [
-    "unchanged quiche controls",
-    "both candidate directions",
-    "existing local formal models"
+    "unchanged Neqo self-control",
+    "candidate server Retry only",
+    "actual Retry token and packet-number trace verdict"
   ],
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
   "local_evidence": "docs/direct-locals.md",
   "cases": [
-    "amplificationlimit"
+    "retry"
   ],
   "candidate_directions": [
-    "client",
     "server"
   ],
-  "reference_implementation": "quiche",
-  "qualification": "Current product code29ba476 unchanged. Already actual-artifact verified18 historical cells: C1/L1/M/Z8 and Neqo H/DC/LR/C20/6 ten in37446541784/artifact11404332356 with all controls passing. Neqo L2/C2/R/B/U ten cells are running in37447499432. This last group covers quiche amplificationlimit both directions. User requests30 current passes then remaining14, and capture diagnosis on failure, not indefinite subset retries. Earlier server C1/L1 failures and raw encrypted evidence retained. Failed controls or incomplete cells are not current passes. No product/runner/deadline changes.",
+  "reference_implementation": "neqo",
+  "qualification": "Prior product29ba476 completed the historical30-cell sweep with exact artifacts recorded. This candidate adds only server-required Retry admission via literal projected INPUT/OWNER/OUTPUT roles, actual token/UDP result, Stop/Stopped/Joined and immutableRetrySCID binding. Client Retry is not implemented and is not requested. Actual loopback VN/corrupt-token/valid-token admission and unchanged Neqo native2/3/5MiB transfers pass with all hashes and actualTLS/close/resource terminal. Local fullcore/thumb/host/selectedClippy/Python70 pass; independentTLS verification recorded separately. Run unchanged Neqo self-control and candidate server Retry with actualtrace/token/PN/file criteria. Preserve failure captures and do not count unsupportedclient direction.",
   "formal_models": false
 }
