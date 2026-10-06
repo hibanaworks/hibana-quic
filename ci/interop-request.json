@@ -1,6 +1,6 @@
 {
-  "request": "Qualify direct publication locals without mirrored progress IDs",
-  "requested_at": "2026-10-06T07:10:00Z",
+  "request": "Qualify literal fixed-zero progress edges without check helpers",
+  "requested_at": "2026-10-06T07:37:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions",
@@ -19,6 +19,6 @@
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Initial, Handshake and Application publication and finite handoff progress, plus early publication, now carry unit with direct send/recv. Duplicate TX/TLS-source echo counters and the publisher early ordinal are removed. Actual Idle schedule revisions, stream/packet IDs, scope checks, acceptance and affine reservations are preserved. Final local checks passed: 424 library tests, all integrations, 26 doc tests, 116 host tests, thumbv6m, selected host strict Clippy, 69 Python tests and source/core audit. Parent dfbd9763 passed runtime 37424357298 and C1/L1/M/Z both directions with six Lean and six Z3 groups in 37424357565. Earlier intermittent losses remain unresolved history. Failed phases retain authenticated sealed pcaps, keylogs and logs without public plaintext. Verify this source independently; no full matrix or all-files completion is claimed.",
+  "qualification": "Parent 5d49dfe passed all runtime steps and C1/L1/M/Z both directions with passing quiche controls and six Lean/six Z3 groups in 37428242367. Fixed-zero TLS start, receive handoff, Initial retirement notification and early-prefix control edges now carry unit; three duplicate local check helpers are deleted. Actual Initial retirement receipt scope/event, pending native IO settlement, key destruction and all numeric wire checks remain. Final local full cargo, thumbv6m, host tests, selected host strict Clippy and source/core audits pass. Verify this source independently. Existing loss failures remain recorded; any failed phase retains authenticated encrypted actual captures, keylogs and endpoint logs without public plaintext. No entire audit or full matrix completion is claimed.",
   "formal_models": true
 }

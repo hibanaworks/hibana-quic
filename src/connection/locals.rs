@@ -10,13 +10,6 @@ use crate::{
 };
 use core::{future::Future, pin::pin};
 use hibana::g::Message;
-fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(Error::Binding)
-    }
-}
 struct ReceiveWire<'keys, 'scope, 'buf, const N: usize> {
     initial: &'keys initial::Keys<'scope>,
     handshake: Option<ReceivePacketKey<'scope>>,
@@ -260,15 +253,13 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
                         exchange.event.put(evidence)?;
                         match event {
                             recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-                                endpoint.send::<p::ClientInitialRetire>(&0).await?
+                                endpoint.send::<p::ClientInitialRetire>(&()).await?
                             }
                             recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-                                endpoint.send::<p::ServerInitialRetire>(&0).await?
+                                endpoint.send::<p::ServerInitialRetire>(&()).await?
                             }
                         }
-                        if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                            return Err(Error::Binding);
-                        }
+                        endpoint.recv::<p::InitialRetired>().await?;
                         let proof = exchange.retired.take()?;
                         if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                             return Err(Error::Binding);
@@ -292,13 +283,13 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
                 let selected = endpoint.offer().await?;
                 match config.side {
                     Side::Client => {
-                        check(selected.recv::<tls::ClientStart>().await?, 0)?;
+                        selected.recv::<tls::ClientStart>().await?;
                         direct::client_input(endpoint, message, &mut input)
                             .await
                             .map_err(Error::Transcript)?;
                     }
                     Side::Server => {
-                        check(selected.recv::<tls::ServerStart>().await?, 0)?;
+                        selected.recv::<tls::ServerStart>().await?;
                         direct::server_input(endpoint, message, &mut input)
                             .await
                             .map_err(Error::Transcript)?;
@@ -384,15 +375,13 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -434,15 +423,13 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
                 exchange.event.put(evidence)?;
                 match event {
                     recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-                        endpoint.send::<p::ClientInitialRetire>(&0).await?
+                        endpoint.send::<p::ClientInitialRetire>(&()).await?
                     }
                     recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-                        endpoint.send::<p::ServerInitialRetire>(&0).await?
+                        endpoint.send::<p::ServerInitialRetire>(&()).await?
                     }
                 }
-                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                    return Err(Error::Binding);
-                }
+                endpoint.recv::<p::InitialRetired>().await?;
                 let proof = exchange.retired.take()?;
                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                     return Err(Error::Binding);
@@ -452,10 +439,9 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
             .await?;
         }
     }
-    let id = 0;
     stop.send::<p::ReceiveStopped>(&()).await?;
-    endpoint.send::<p::ReceiveComplete>(&id).await?;
-    check(endpoint.recv::<p::ReceiveContinuation>().await?, id)?;
+    endpoint.send::<p::ReceiveComplete>(&()).await?;
+    endpoint.recv::<p::ReceiveContinuation>().await?;
     // Recovery reconciliation: the last pre-loss peer field is now initialized.
     // This and the bounded packet-loop yields above require fresh validation.
     let verified_consumed = [wire.reassembly[0].consumed(), wire.reassembly[1].consumed()];
@@ -677,8 +663,6 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     book: &mut recovery::Tx<'book, 'scope, N>,
     clock: &impl Clock,
 ) -> Result<TransmitContinuation<'scope>, Error> {
-
-
     // InitialTransmit: the projected source and publication exchanges are explicit.
     'initial: {
         loop {
@@ -1598,15 +1582,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -1680,15 +1662,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -1762,15 +1742,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -1864,15 +1842,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -1946,15 +1922,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -2028,15 +2002,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -2130,15 +2102,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -2212,15 +2182,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -2294,15 +2262,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                                 exchange.event.put(evidence)?;
                                 match event {
         recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-            endpoint.send::<p::ClientInitialRetire>(&0).await?
+            endpoint.send::<p::ClientInitialRetire>(&()).await?
         }
         recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-            endpoint.send::<p::ServerInitialRetire>(&0).await?
+            endpoint.send::<p::ServerInitialRetire>(&()).await?
         }
     }
-                                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                    return Err(Error::Binding);
-                                }
+                                endpoint.recv::<p::InitialRetired>().await?;
                                 let proof = exchange.retired.take()?;
                                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                     return Err(Error::Binding);
@@ -2393,15 +2359,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                             exchange.event.put(evidence)?;
                             match event {
                                 recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-                                    endpoint.send::<p::ClientInitialRetire>(&0).await?
+                                    endpoint.send::<p::ClientInitialRetire>(&()).await?
                                 }
                                 recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-                                    endpoint.send::<p::ServerInitialRetire>(&0).await?
+                                    endpoint.send::<p::ServerInitialRetire>(&()).await?
                                 }
                             }
-                            if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                return Err(Error::Binding);
-                            }
+                            endpoint.recv::<p::InitialRetired>().await?;
                             let proof = exchange.retired.take()?;
                             if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                 return Err(Error::Binding);
@@ -2471,15 +2435,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                             exchange.event.put(evidence)?;
                             match event {
                                 recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-                                    endpoint.send::<p::ClientInitialRetire>(&0).await?
+                                    endpoint.send::<p::ClientInitialRetire>(&()).await?
                                 }
                                 recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-                                    endpoint.send::<p::ServerInitialRetire>(&0).await?
+                                    endpoint.send::<p::ServerInitialRetire>(&()).await?
                                 }
                             }
-                            if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                                return Err(Error::Binding);
-                            }
+                            endpoint.recv::<p::InitialRetired>().await?;
                             let proof = exchange.retired.take()?;
                             if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                                 return Err(Error::Binding);

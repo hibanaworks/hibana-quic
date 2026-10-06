@@ -132,7 +132,7 @@ fn run_publications(publications: &[u8], combined: bool) {
         .map(|program| rendezvous.enter(session, program).unwrap());
     let start = async {
         if let Some(endpoint) = starter.as_mut() {
-            endpoint.send::<p::EarlySkip>(&0).await?;
+            endpoint.send::<p::EarlySkip>(&()).await?;
         }
         Ok::<_, hibana::EndpointError>(())
     };
@@ -144,8 +144,8 @@ fn run_publications(publications: &[u8], combined: bool) {
     let parked = Cell::new(0);
     let send = async {
         if combined {
-            assert_eq!(sender.offer().await?.recv::<p::EarlySkip>().await?, 0);
-            sender.send::<p::EarlySkip>(&0).await?;
+            sender.offer().await?.recv::<p::EarlySkip>().await?;
+            sender.send::<p::EarlySkip>(&()).await?;
         }
         macro_rules! publish {
             ($pub:ty, $id:expr) => {{
@@ -177,7 +177,7 @@ fn run_publications(publications: &[u8], combined: bool) {
     };
     let receive = async {
         if combined {
-            assert_eq!(receiver.offer().await?.recv::<p::EarlySkip>().await?, 0);
+            receiver.offer().await?.recv::<p::EarlySkip>().await?;
         }
         macro_rules! accept {
             ($pub:ty, $id:expr) => {{

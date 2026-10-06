@@ -137,8 +137,8 @@ pub fn server_programs() -> Programs {
     }
 }
 
-pub type ClientStart = g::Msg<198, u64>;
-pub type ServerStart = g::Msg<199, u64>;
+pub type ClientStart = g::Msg<198, ()>;
+pub type ServerStart = g::Msg<199, ()>;
 pub type Flow = g::Route<
     g::Seq<g::Send<VERIFY, INPUT, ClientStart>, ClientFlow>,
     g::Seq<g::Send<VERIFY, INPUT, ServerStart>, ServerFlow>,

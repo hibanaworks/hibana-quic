@@ -3,8 +3,8 @@
 ## Current qualification boundary (2026-10-06)
 
 The historical matrix remains 30/44 unique candidate cells, not a complete
-latest-commit matrix. Experimental dfbd97631e842beb61c0f785b7bd1d6cff235cce
-passed all runtime CI37424357298 steps. Official CI37424357565/artifact11394432987
+latest-commit matrix. Experimental 5d49dfe8299a0cd0d9082f847c6f62b71a2eb0d3
+passed all runtime CI37428242291 steps. Official CI37428242367/artifact11396232861
 passed unchanged quiche C1/L1/M/Z controls and all eight candidate direction/case
 cells, plus the existing six Lean and six Z3 model groups. Client C1 and L1 each
 have fifty actual successful terminals, zero idle expiry, closed lifecycle and

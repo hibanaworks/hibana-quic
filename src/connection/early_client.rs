@@ -401,14 +401,6 @@ use crate::{
 use core::pin::pin;
 use hibana::{g::Message, runtime::resolver::DecisionArm};
 
-fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(Error::Binding)
-    }
-}
-
 /// One finite projected prefix. Normal handshakes traverse the explicit Skip
 /// edges; an enabled client sends ClientHello before any early datagram.
 #[allow(clippy::too_many_arguments)]
@@ -431,8 +423,8 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
     let scope = source.scope();
     let mut prepare = pin!(async {
         if !enabled {
-            roles.tls_tx.send::<p::EarlySkip>(&0).await?;
-            roles.tls_tx.send::<p::EarlyContinue>(&0).await?;
+            roles.tls_tx.send::<p::EarlySkip>(&()).await?;
+            roles.tls_tx.send::<p::EarlyContinue>(&()).await?;
             return Ok(());
         }
         if config.side != Side::Client || source.early_status() != EarlyStatus::Offered {
@@ -446,25 +438,25 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             return Err(Error::Binding);
         }
         prepared.put((flight, key))?;
-        roles.tls_tx.send::<p::EarlyStart>(&0).await?;
-        check(roles.tls_tx.recv::<p::EarlyDone>().await?, 0)?;
-        roles.tls_tx.send::<p::EarlyContinue>(&0).await?;
+        roles.tls_tx.send::<p::EarlyStart>(&()).await?;
+        roles.tls_tx.recv::<p::EarlyDone>().await?;
+        roles.tls_tx.send::<p::EarlyContinue>(&()).await?;
         Ok(())
     });
     let mut wire = pin!(async {
         let edge = roles.tx_wire.offer().await?;
         if edge.label() == p::EarlySkip::LOGICAL_LABEL {
-            check(edge.recv::<p::EarlySkip>().await?, 0)?;
-            roles.tx_wire.send::<p::EarlySkip>(&0).await?;
+            edge.recv::<p::EarlySkip>().await?;
+            roles.tx_wire.send::<p::EarlySkip>(&()).await?;
             return Ok(());
         }
-        check(edge.recv::<p::EarlyStart>().await?, 0)?;
+        edge.recv::<p::EarlyStart>().await?;
         let requests = requests.ok_or(Error::Binding)?;
         if !core::ptr::eq(requests.scope, scope) {
             return Err(Error::Binding);
         }
         let (flight, mut key) = prepared.take()?;
-        roles.tx_wire.send::<p::EarlyStart>(&0).await?;
+        roles.tx_wire.send::<p::EarlyStart>(&()).await?;
         let flight_id = tx.store_crypto(Level::Initial, flight.offset(), flight.bytes())?;
         let peer = super::ConnectionId::new(config.peer_connection_id)?;
         let plain = wire::PlainPacket::<N>::new(
@@ -578,16 +570,17 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             plaintext.zeroize();
         }
         drop(key);
-        roles.tx_wire.send::<p::EarlyEnd>(&0).await?;
-        roles.tx_wire.send::<p::EarlyDone>(&0).await?;
+        roles.tx_wire.send::<p::EarlyEnd>(&()).await?;
+        roles.tx_wire.send::<p::EarlyDone>(&()).await?;
         Ok(())
     });
     let mut publish = pin!(async {
         let edge = roles.udp.offer().await?;
         if edge.label() == p::EarlySkip::LOGICAL_LABEL {
-            return check(edge.recv::<p::EarlySkip>().await?, 0);
+            edge.recv::<p::EarlySkip>().await?;
+            return Ok(());
         }
-        check(edge.recv::<p::EarlyStart>().await?, 0)?;
+        edge.recv::<p::EarlyStart>().await?;
         roles.udp.recv::<p::EarlyInitialDatagram>().await?;
         async {
             let endpoint = &mut roles.udp;
@@ -634,7 +627,8 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
         loop {
             let edge = roles.udp.offer().await?;
             if edge.label() == p::EarlyEnd::LOGICAL_LABEL {
-                return check(edge.recv::<p::EarlyEnd>().await?, 0);
+                edge.recv::<p::EarlyEnd>().await?;
+                return Ok(());
             }
             edge.recv::<p::EarlyPacketDatagram>().await?;
             async {
@@ -681,7 +675,10 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             .await?;
         }
     });
-    let mut resume = pin!(async { check(roles.tx.recv::<p::EarlyContinue>().await?, 0) });
+    let mut resume = pin!(async {
+        roles.tx.recv::<p::EarlyContinue>().await?;
+        Ok::<(), Error>(())
+    });
     crate::runtime::TaskSet::new([
         prepare.as_mut(),
         wire.as_mut(),

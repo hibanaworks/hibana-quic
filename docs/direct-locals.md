@@ -526,3 +526,21 @@ Clippy, 69 Python tests, source audit and unmodified 1193-file core snapshot.
 This candidate is not remote-qualified until its own C1/L1/M/Z results arrive.
 The last qualified parent dfbd9763 passed all eight candidate cells and six
 Lean/six Z3 groups in 37424357565; older intermittent L1 failures remain retained.
+
+## Fixed-zero progress checks removed
+
+After the publication-ID checkpoint passed runtime37428242291 and all eight
+C1/L1/M/Z candidate cells with passing controls and existing formal groups in
+37428242367/artifact11396232861, the remaining fixed-zero edges were reviewed.
+TLS ClientStart/ServerStart, receive handoff, Initial-key retirement notification
+and early-prefix start/skip/end/continue now carry unit. The three local `check`
+helper functions in connection locals/transcript/early_client are deleted;
+these operations remain direct typed send/recv, with no replacement wrapper.
+
+The actual InitialRetirement receipt, its scope and event comparison, physical
+pending-send cancellation/settlement and owned key destruction are unchanged.
+No arbitrary numeric validation was removed. Changed files are rustfmt-clean.
+Final local full cargo tests, thumbv6m, all host tests, selected host strict
+Clippy and source/core audits pass; this checkpoint still needs its own remote
+qualification. Earlier intermittent losses are retained, and failed phases
+remain configured to preserve encrypted actual captures for diagnosis.

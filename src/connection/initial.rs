@@ -118,15 +118,11 @@ pub(super) async fn retire<'scope, const N: usize>(
     })?;
     let event = match offered.label() {
         label if label == p::ClientInitialRetire::LOGICAL_LABEL && side == Side::Client => {
-            if offered.recv::<p::ClientInitialRetire>().await? != 0 {
-                return Err(Error::Binding);
-            }
+            offered.recv::<p::ClientInitialRetire>().await?;
             recovery::InitialRetirementEvent::ClientHandshakeAccepted
         }
         label if label == p::ServerInitialRetire::LOGICAL_LABEL && side == Side::Server => {
-            if offered.recv::<p::ServerInitialRetire>().await? != 0 {
-                return Err(Error::Binding);
-            }
+            offered.recv::<p::ServerInitialRetire>().await?;
             recovery::InitialRetirementEvent::ServerHandshakeAuthenticated
         }
         label => return Err(Error::UnexpectedLabel(label)),
@@ -152,7 +148,7 @@ pub(super) async fn retire<'scope, const N: usize>(
     };
     schedule.changed()?;
     exchange.retired.put(proof)?;
-    endpoint.send::<p::InitialRetired>(&0).await?;
+    endpoint.send::<p::InitialRetired>(&()).await?;
     Ok(())
 }
 
@@ -378,15 +374,13 @@ mod tests {
                 exchange.event.put(evidence)?;
                 match event {
                     recovery::InitialRetirementEvent::ClientHandshakeAccepted => {
-                        endpoint.send::<p::ClientInitialRetire>(&0).await?
+                        endpoint.send::<p::ClientInitialRetire>(&()).await?
                     }
                     recovery::InitialRetirementEvent::ServerHandshakeAuthenticated => {
-                        endpoint.send::<p::ServerInitialRetire>(&0).await?
+                        endpoint.send::<p::ServerInitialRetire>(&()).await?
                     }
                 }
-                if endpoint.recv::<p::InitialRetired>().await? != 0 {
-                    return Err(Error::Binding);
-                }
+                endpoint.recv::<p::InitialRetired>().await?;
                 let proof = exchange.retired.take()?;
                 if !core::ptr::eq(proof.scope(), scope) || proof.event() != event {
                     return Err(Error::Binding);

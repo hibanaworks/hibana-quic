@@ -13,8 +13,8 @@ pub const TIMER: u8 = 5;
 pub const TIMER_TX: u8 = 6;
 pub const TX_WIRE: u8 = 7;
 pub const ADAPTER_RESULT: u16 = 1001;
-pub type ReceiveComplete = g::Msg<20, u64>;
-pub type ReceiveContinuation = g::Msg<21, u64>;
+pub type ReceiveComplete = g::Msg<20, ()>;
+pub type ReceiveContinuation = g::Msg<21, ()>;
 pub trait Publication {
     type Datagram: g::Message<Payload = ()>;
     type Accepted: g::Message<Payload = ()>;
@@ -283,9 +283,9 @@ fn tx_work<P: TransmitPhase>() -> g::Program<TxWork<P>> {
 /// publication (client) or authenticated Handshake receipt (server).
 pub const INITIAL_EVENT: u8 = 18;
 pub const INITIAL_OWNER: u8 = 19;
-pub type ClientInitialRetire = g::Msg<145, u64>;
-pub type ServerInitialRetire = g::Msg<146, u64>;
-pub type InitialRetired = g::Msg<147, u64>;
+pub type ClientInitialRetire = g::Msg<145, ()>;
+pub type ServerInitialRetire = g::Msg<146, ()>;
+pub type InitialRetired = g::Msg<147, ()>;
 pub type InitialRetirementFlow = g::Seq<
     g::Route<
         g::Send<INITIAL_EVENT, INITIAL_OWNER, ClientInitialRetire>,
@@ -350,11 +350,11 @@ pub type TimerFlow = g::Roll<
         g::Seq<g::Send<TIMER, TIMER_TX, TimerRetired>, g::Send<TIMER_TX, TIMER, TimerAcknowledged>>,
     >,
 >;
-pub type EarlyStart = g::Msg<148, u64>;
-pub type EarlySkip = g::Msg<149, u64>;
-pub type EarlyEnd = g::Msg<150, u64>;
-pub type EarlyDone = g::Msg<151, u64>;
-pub type EarlyContinue = g::Msg<160, u64>;
+pub type EarlyStart = g::Msg<148, ()>;
+pub type EarlySkip = g::Msg<149, ()>;
+pub type EarlyEnd = g::Msg<150, ()>;
+pub type EarlyDone = g::Msg<151, ()>;
+pub type EarlyContinue = g::Msg<160, ()>;
 pub type EarlyInitial = Emission<152, 153, 154, 155>;
 pub type EarlyPacket = Emission<156, 157, 158, 159>;
 pub type EarlyInitialDatagram = <EarlyInitial as Publication>::Datagram;

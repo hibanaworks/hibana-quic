@@ -61,13 +61,6 @@ impl<'source, 'scope, 'cfg, 'buf> Numbers<'source, 'scope, 'cfg, 'buf> {
         self.source.borrow().state() == State::Connected
     }
 }
-fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(Error::Binding)
-    }
-}
 struct NumericOwner<'a, 'source, 'scope, 'cfg, 'buf, 'book, const N: usize, const P: usize> {
     numbers: &'a Numbers<'source, 'scope, 'cfg, 'buf>,
     slots: &'a Storage<'scope, 'book, N, P>,
@@ -105,20 +98,20 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     };
     match side {
         Side::Client => {
-            endpoint.send::<tls::ClientStart>(&0).await?;
+            endpoint.send::<tls::ClientStart>(&()).await?;
             locals::client_owner(endpoint, &owner, message)
                 .await
                 .map_err(Error::Transcript)?;
         }
         Side::Server => {
-            endpoint.send::<tls::ServerStart>(&0).await?;
+            endpoint.send::<tls::ServerStart>(&()).await?;
             locals::server_owner(endpoint, &owner, message)
                 .await
                 .map_err(Error::Transcript)?;
         }
     }
-    check(endpoint.recv::<p::ReceiveComplete>().await?, 0)?;
-    endpoint.send::<p::ReceiveContinuation>(&0).await?;
+    endpoint.recv::<p::ReceiveComplete>().await?;
+    endpoint.send::<p::ReceiveContinuation>(&()).await?;
     Ok(())
 }
 pub(super) async fn transmit<'scope, const N: usize, const P: usize>(
