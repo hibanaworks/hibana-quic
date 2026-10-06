@@ -263,6 +263,54 @@ class Diagnostics(unittest.TestCase):
         os.mkfifo(self.case / 'client/client.log')
         self.assertEqual(self.collect()['client_log']['state'], 'rejected-nonregular-or-linked')
 
+    def test_capture_numeric_fields_preserve_coalescing_without_payload(self):
+        values = ['1', '283.130335', '50000', '443', '7', '0,2', '19,4',
+                  '0x02,0x06', '0', '90', '18', '0', '', '']
+        result = self.module.numeric_capture_rows(('\t'.join(values) + '\n').encode())
+        self.assertEqual(result['state'], 'parsed')
+        self.assertEqual(result['rows'][0]['time_us'], 283130335)
+        self.assertEqual(result['rows'][0]['quic.long.packet_type'], [0, 2])
+        self.assertEqual(result['rows'][0]['quic.frame_type'], [2, 6])
+        self.assertTrue(result['coalesced_fields_are_independent_lists'])
+
+    def test_capture_rejects_strings_overflow_and_excess_rows(self):
+        values = [''] * len(self.module.CAPTURE_FIELDS)
+        for field, value in [(0, 'PRIVATE_SECRET'), (0, str(1 << 62)),
+                             (1, 'nan'), (1, '-1'), (0, ','.join(['1'] * 65))]:
+            row = values.copy()
+            row[field] = value
+            result = self.module.numeric_capture_rows(('\t'.join(row) + '\n').encode())
+            self.assertNotEqual(result['state'], 'parsed')
+            self.assertNotIn('PRIVATE_SECRET', json.dumps(result))
+        with patch.object(self.module, 'MAX_CAPTURE_ROWS', 1):
+            raw = ('\t'.join(values) + '\n') * 2
+            self.assertEqual(self.module.numeric_capture_rows(raw.encode())['state'], 'too-many-rows')
+        self.assertEqual(self.module.numeric_capture_rows(b'1\t2\n')['state'], 'invalid-fields')
+
+    def test_capture_tool_reads_held_descriptor_with_fixed_field_allowlist(self):
+        self.put('sim/trace_node_left.pcap', b'not a real pcap')
+        def run(command, **kwargs):
+            self.assertEqual(command[:3], ['tshark', '-n', '-r'])
+            self.assertEqual(command[3], '/proc/self/fd/' + str(kwargs['pass_fds'][0]))
+            self.assertIn('tls.keylog_file:', command)
+            fields = [command[i + 1] for i, item in enumerate(command) if item == '-e']
+            self.assertEqual(fields, list(self.module.CAPTURE_FIELDS))
+            self.assertEqual(kwargs['timeout'], 20)
+            kwargs['stdout'].write(('\t'.join(['1'] + [''] * (len(fields) - 1)) + '\n').encode())
+            return SimpleNamespace(returncode=0)
+        with patch.object(self.module.subprocess, 'run', side_effect=run):
+            result = self.module.capture_observations(self.case, ('sim', 'trace_node_left.pcap'))
+        self.assertEqual(result['state'], 'parsed')
+
+    def test_capture_tool_failure_never_publishes_partial_output(self):
+        self.put('sim/trace_node_left.pcap', b'not a real pcap')
+        def run(command, **kwargs):
+            kwargs['stdout'].write(b'PRIVATE_SECRET')
+            return SimpleNamespace(returncode=1)
+        with patch.object(self.module.subprocess, 'run', side_effect=run):
+            result = self.module.capture_observations(self.case, ('sim', 'trace_node_left.pcap'))
+        self.assertEqual(result, {'state': 'dissector-failed'})
+
     def test_only_known_capture_names_metadata_and_hash_are_exported(self):
         self.put('sim/trace_node_left.pcap', b'PRIVATE_PACKET_CONTENT')
         self.put('sim/SECRET_NAME.pcap', b'PRIVATE_PACKET_CONTENT')

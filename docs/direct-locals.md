@@ -343,3 +343,31 @@ with another request's numeric size. These observations identify a reference
 application isolation concern, not a proven attribution of every official failure.
 The next run returns to quiche to observe the originally failing Initial-phase
 connection's clock deadlines with the same e2d97dc executable source.
+
+
+## Actual clock boundary: quiche L1 run 37411717036
+
+The unchanged quiche control passed, and the candidate server passed the runner
+cell (49 sampled terminal returns and one outstanding at runner shutdown, not
+50 clean retirements). The candidate client failed the unchanged 300-second
+case limit with 49 length-complete files and one incomplete handshake. Session
+3257275226 had actually sent 19 and received 12 datagrams. Its latest clock
+request at 283130335 us specified deadline 560572808 us. Its latest committed
+trace reached TimerTaken at ordinal 581. This establishes a real backed-off
+future deadline beyond the case budget; it does not establish why handshake
+progress failed or prove that every prior receive/retransmission was correct.
+Artifact 11389169979 retains this failed result. No production deadline was
+changed, and no root repair is claimed.
+
+The next diagnostic exports only a bounded numeric whitelist from the runner's
+existing captures: relative times, ports, connection indices, packet/frame
+numbers, CRYPTO offsets/lengths and ACK range numbers. It supplies no key log
+and exports no payload, CID, hostname, address, raw log or capture. Coalesced
+fields remain independent lists and must not be zipped into invented packet
+associations. Input file descriptors reject links, the native dissector has a
+20-second limit and an 8192-frame scan cap, and failed/oversized/malformed
+output is withheld. This observes existing runner traffic without altering the
+runner or endpoint; complete capture coverage is explicitly not claimed.
+Local parser/privacy fixtures cover the whitelist and failure boundaries.
+The local workspace has no tshark binary, so actual dissection is still a CI
+verification requirement, not a locally verified result.

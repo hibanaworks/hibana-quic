@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import time
+import tempfile
 import traceback
 
 ROOT = Path(os.environ['ROOT']).resolve()
@@ -401,6 +402,89 @@ def directory_sizes(root, parts):
         if fd is not None:
             os.close(fd)
 
+# Public numeric dissector fields only; no TLS keys, payload, CID, address,
+# hostname or arbitrary protocol text is exported. Field names verified against
+# https://www.wireshark.org/docs/dfref/q/quic.html . Coalesced values are kept as
+# independent lists: their positions do not imply cross-field correspondence.
+CAPTURE_FIELDS = (
+    'frame.number', 'frame.time_relative', 'udp.srcport', 'udp.dstport',
+    'quic.connection.number', 'quic.long.packet_type', 'quic.packet_number',
+    'quic.frame_type', 'quic.crypto.offset', 'quic.crypto.length',
+    'quic.ack.largest_acknowledged', 'quic.ack.first_ack_range',
+    'quic.ack.gap', 'quic.ack.ack_range',
+)
+MAX_CAPTURE_ROWS = 8192
+
+def numeric_capture_rows(raw):
+    state, lines = diagnostic_lines(raw)
+    if state != 'parsed':
+        return {'state': state}
+    if len(lines) > MAX_CAPTURE_ROWS:
+        return {'state': 'too-many-rows'}
+    rows = []
+    for line in lines:
+        values = line.split('\t')
+        if len(values) != len(CAPTURE_FIELDS):
+            return {'state': 'invalid-fields'}
+        row = {}
+        for field, value in zip(CAPTURE_FIELDS, values):
+            if not value:
+                continue
+            if field == 'frame.time_relative':
+                if not re.fullmatch(r'[0-9]{1,5}(?:\.[0-9]{1,9})?', value):
+                    return {'state': 'invalid-time'}
+                seconds, _, fraction = value.partition('.')
+                row['time_us'] = int(seconds) * 1000000 + int((fraction + '000000')[:6])
+                continue
+            items = value.split(',')
+            if len(items) > 64 or any(not re.fullmatch(r'(?:[0-9]{1,19}|0x[0-9a-fA-F]{1,16})', item) for item in items):
+                return {'state': 'invalid-number'}
+            numbers = [int(item, 16 if item.startswith('0x') else 10) for item in items]
+            if any(number > (1 << 62) - 1 for number in numbers):
+                return {'state': 'number-out-of-range'}
+            row[field] = numbers
+        rows.append(row)
+    return {'state': 'parsed', 'rows': rows,
+            'scope': 'numeric long-header observations; no TLS key log supplied',
+            'frame_scan_limit': MAX_CAPTURE_ROWS,
+            'complete_capture_not_claimed': True,
+            'coalesced_fields_are_independent_lists': True}
+
+def capture_observations(root, parts):
+    fd = None
+    try:
+        fd = _open_beneath(root, parts)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > MAX_CAPTURE_BYTES:
+            return {'state': 'rejected-capture'}
+        command = ['tshark', '-n', '-r', '/proc/self/fd/' + str(fd),
+                   '-c', str(MAX_CAPTURE_ROWS), '-o', 'tls.keylog_file:',
+                   '-Y', 'quic.long.packet_type',
+                   '-T', 'fields', '-E', 'separator=/t', '-E', 'occurrence=a']
+        for field in CAPTURE_FIELDS:
+            command.extend(['-e', field])
+        # A bounded capture plus a finite native tool timeout; output remains
+        # private even on tool failure. Never export stderr or partial output.
+        with tempfile.TemporaryFile() as output:
+            result = subprocess.run(command, stdout=output, stderr=subprocess.DEVNULL,
+                                    pass_fds=(fd,), timeout=20, check=False)
+            if result.returncode != 0:
+                return {'state': 'dissector-failed'}
+            if output.tell() > MAX_LOG_BYTES:
+                return {'state': 'too-large'}
+            after = os.fstat(fd)
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                return {'state': 'changed-capture'}
+            output.seek(0)
+            return numeric_capture_rows(output.read(MAX_LOG_BYTES + 1))
+    except subprocess.TimeoutExpired:
+        return {'state': 'dissector-timeout'}
+    except (OSError, ValueError) as error:
+        return {'state': _file_error(error)}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
 def collect_case_diagnostics(logs, client, server):
     if client not in IMPLEMENTATIONS or server not in IMPLEMENTATIONS:
         return {'state': 'invalid-matrix-identifiers'}
@@ -416,6 +500,8 @@ def collect_case_diagnostics(logs, client, server):
         record['captures'] = {}
         for side in ('left', 'right'):
             metadata, _ = diagnostic_file(logs, prefix + ('sim', 'trace_node_' + side + '.pcap'), limit=MAX_CAPTURE_BYTES, content=False)
+            if metadata.get('state') == 'present':
+                metadata['long_header_observations'] = capture_observations(logs, prefix + ('sim', 'trace_node_' + side + '.pcap'))
             record['captures'][side] = metadata
         record['application_files'] = {}
         for source_role, destination_role in (('server', 'client'), ('client', 'server')):
