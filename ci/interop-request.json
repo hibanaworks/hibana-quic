@@ -1,9 +1,9 @@
 {
-  "request": "Disambiguate remaining Handshake loss with locally retained reference keys",
-  "requested_at": "2026-10-06T05:30:00Z",
+  "request": "Capture remaining client loss failure with numeric decrypted metadata",
+  "requested_at": "2026-10-06T05:44:00Z",
   "scope": [
-    "unchanged quiche controls",
-    "both candidate directions"
+    "unchanged quiche control",
+    "candidate client remaining loss boundary"
   ],
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
   "local_evidence": "docs/direct-locals.md",
@@ -11,10 +11,9 @@
     "handshakeloss"
   ],
   "candidate_directions": [
-    "client",
-    "server"
+    "client"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Same endpoint executable as397acc54. Three measurements retain client fail/pass/fail, control and server pass throughout. Third37417448473/artifact11392143204 has one actual client idle expiry48.089s, all futures returned. Not stable qualification. Use only existing fixed reference keys.log locally within CI for numeric ACK/CRYPTO/frame observations; no key material, payload, raw logs or capture exported. This adds no product key logging or timeout change. Python66 tests passed. Missing keys or incomplete parsing must not be treated as successful decryption. Diagnose before making further production recovery changes.",
+  "qualification": "Endpoint executable remains397acc54. Diagnostic d15cded runtime37418902557 and interop37418902751 passed all actual steps. Artifact11393080404 verifies local reference-key numeric dissection works; both directions passed, client50 terminals with zero idle. Earlier client fail/pass/fail remains recorded, not overwritten. Narrow this diagnostic to the unresolved client L1 failure, keeping the unchanged quiche control. No server code, product deadline or acceptance condition changes. This run is for failure evidence, not proof by repetition or full qualification.",
   "formal_models": false
 }

@@ -444,3 +444,13 @@ HANDSHAKE_DONE and response delivery. A supplied key file is not itself proof
 of successful decryption. Missing/rejected files are disclosed, and raw
 payload/keys/stderr stay withheld. The endpoint executable and all test
 success conditions remain unchanged. Local Python tests: 66 passed.
+
+Numeric reference-key dissection was actually verified in 37418902751:
+artifact11393080404 reports locally supplied reference keys and parsed numeric
+ACK/CRYPTO/HANDSHAKE_DONE fields on both capture sides. Control and both
+candidate L1 directions passed, with fifty client terminals and zero idle
+expiry. Runtime37418902557 passed all actual steps. Earlier failing outcomes
+remain authoritative evidence against stable qualification. The next diagnostic
+is narrowed to candidate client L1 plus unchanged quiche control to capture
+that remaining failure with the now-verified numeric dissection. No product
+source or timer changes accompany that measurement.
