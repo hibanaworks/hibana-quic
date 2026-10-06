@@ -1,6 +1,6 @@
 {
-  "request": "Qualify unit retirement notifications with real receipt identities retained",
-  "requested_at": "2026-10-06T09:00:00Z",
+  "request": "Revalidate historical30 cells: unchanged Neqo basic transport group",
+  "requested_at": "2026-10-06T09:55:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions",
@@ -9,16 +9,17 @@
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
   "local_evidence": "docs/direct-locals.md",
   "cases": [
-    "handshakecorruption",
-    "handshakeloss",
-    "multiplexing",
-    "zerortt"
+    "handshake",
+    "transfer",
+    "longrtt",
+    "chacha20",
+    "ipv6"
   ],
   "candidate_directions": [
     "client",
     "server"
   ],
-  "reference_implementation": "quiche",
-  "qualification": "Parent562338f7 passed all runtime steps and C1/L1/M/Z both directions with unchanged quiche controls and six Lean/six Z3 groups. Receive retirement and three reclaim-done/closed progress pairs now carry unit instead of fixed-zero echo checks. Actual stream IDs and independent affine reclaim receipts remain. Full cargo including synthetic missing-tail regression, host116, referenceTLS29, thumb, selectedhostClippy, Python69 and audits pass locally. Earlier33c83f4e server L1 failed with actual captured missing ClientHello tail and lost ACKs; retained and explained only for that flow. Older candidate-client failures unresolved. No changed deadlines, loss or peer source; no full matrix claim.",
-  "formal_models": true
+  "reference_implementation": "neqo",
+  "qualification": "User requested one latest-code sweep of the30 historically qualified direction cells, then proceed to the14 remaining cells and diagnose any new failure from its actual captures. Product code is unchanged from29ba476cd1e40a30ecbcfeb9879fb9bde114cf52. Its C1/L1/M/Z8 cells already passed twice; the third previously-started run is finishing and will be the last focused repeat. This group covers10 additional historical cells against unchanged Neqo controls. Later groups cover Neqo L2/C2/R/B/U10 cells and quiche A2 cells. Do not count a failed control or prior-revision result as a current pass. Preserve any failed encrypted captures. No protocol/runner/deadline/source changes.",
+  "formal_models": false
 }

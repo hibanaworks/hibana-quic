@@ -18,12 +18,23 @@ matrix has not run.
 
 ## Current priority
 
-Complete the user-requested whole-codebase direct-local control audit and
-replacement, while requalifying changed paths against existing interop cases.
-Multiplexing has already passed both official directions. Then resume the
-remaining interop capabilities. The
-[15-second performance requirement and evidence](performance-follow-up.md)
-remain open, with further optimization experiments deferred.
+The user's2026-10-06 direction is to revalidate the30 historically qualified
+case/direction cells on the current product code once, then advance to the14
+remaining cells. New failures are diagnosed from their actual packet captures
+and endpoint logs. Do not keep repeating only the selected eight cells.
+
+Product code29ba476cd1e40a30ecbcfeb9879fb9bde114cf52 passed C1/L1/M/Z in both
+directions twice. The already-started third run finishes without further
+focused repeats. The remaining current-code sweep is ten Neqo cases
+(handshake, transfer, longrtt, chacha20, ipv6, transferloss, transfercorruption,
+resumption, blackhole, keyupdate), both directions, plus quiche
+amplificationlimit both directions. Run bounded groups without increasing
+existing case or phase deadlines. Count each cell only with its actual passing
+control and result. Whole-file direct-local cleanup remains relevant but
+does not justify indefinitely deferring this sweep.
+
+The [15-second performance requirement and evidence](performance-follow-up.md)
+remain open; speed tuning is not the current gate.
 
 ## Architecture work
 
