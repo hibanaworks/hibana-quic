@@ -59,6 +59,38 @@ impl<const S: usize, const T: usize> Clock for HostClock<'_, S, T> {
         }
     }
 }
+/// Read-only host timing evidence for one projected session. This view borrows
+/// the same physical clock and fault owner, registers no extra timer, and never
+/// selects a protocol route or changes a deadline.
+pub struct ObservedClock<'a, 'r, const S: usize, const T: usize> {
+    pub physical: &'a HostClock<'r, S, T>,
+    pub session: u32,
+}
+impl<const S: usize, const T: usize> Clock for ObservedClock<'_, '_, S, T> {
+    fn now(&self) -> u64 {
+        self.physical.now()
+    }
+    async fn wait_until(&self, deadline: u64) {
+        if std::env::var("HIBANA_QUIC_DIAGNOSTICS").as_deref() == Ok("1") {
+            eprintln!(
+                "connection-clock session={} now_us={} deadline_us={} stage=requested",
+                self.session,
+                self.now(),
+                deadline
+            );
+        }
+        self.physical.wait_until(deadline).await;
+        if std::env::var("HIBANA_QUIC_DIAGNOSTICS").as_deref() == Ok("1") {
+            eprintln!(
+                "connection-clock session={} now_us={} deadline_us={} stage=returned",
+                self.session,
+                self.now(),
+                deadline
+            );
+        }
+    }
+}
+
 /// The operation and its absolute deadline are pinned once. A Pending
 /// datagram is never recreated, and hard expiry wins before another syscall.
 pub async fn before_deadline<T, const S: usize, const N: usize>(
@@ -182,6 +214,28 @@ impl<const S: usize, const T: usize> DatagramTx for Transmit<'_, '_, S, T> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn observed_clock_uses_one_physical_timer_and_cancels_that_same_timer() {
+        use super::*;
+        use std::task::{Context, Waker};
+        let reactor = HostReactor::<1, 2>::new().unwrap();
+        let physical = HostClock::new(&reactor, Instant::now());
+        let observed = ObservedClock {
+            physical: &physical,
+            session: 7,
+        };
+        let mut wait = Box::pin(observed.wait_until(physical.now() + 1_000_000));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(reactor.active_resources(), (0, 1));
+        drop(wait);
+        assert_eq!(reactor.active_resources(), (0, 0));
+        let mut expired = Box::pin(observed.wait_until(0));
+        assert!(expired.as_mut().poll(&mut cx).is_ready());
+        drop(expired);
+        assert_eq!(reactor.active_resources(), (0, 0));
+        assert!(physical.take_fault().is_none());
+    }
     use super::*;
     use std::net::UdpSocket;
     #[test]

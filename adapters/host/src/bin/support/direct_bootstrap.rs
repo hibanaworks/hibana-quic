@@ -242,6 +242,10 @@ pub async fn files<'scope, const S: usize, const T: usize>(
         delivery_collector: enter!(programs.delivery_collector),
     };
     let statistics = receive.statistics;
+    let observed_clock = super::direct_wire::ObservedClock {
+        physical: clock,
+        session: generation as u32,
+    };
     let mut application = Box::pin(async {
         match files {
             Files::Client(client) => {
@@ -267,7 +271,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
                                 setup,
                                 receive,
                                 transmit,
-                                clock,
+                                &observed_clock,
                                 issuer,
                                 stop,
                                 book,
@@ -289,7 +293,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
                                 setup,
                                 receive,
                                 transmit,
-                                clock,
+                                &observed_clock,
                                 issuer,
                                 stop,
                                 book,
@@ -323,8 +327,17 @@ pub async fn files<'scope, const S: usize, const T: usize>(
                     { application_storage::RECEIVE_BYTES },
                     { application_storage::CHUNK_BYTES },
                 >(
-                    &mut roles, source, setup, receive, transmit, clock, issuer, stop, book,
-                    &outcomes, server,
+                    &mut roles,
+                    source,
+                    setup,
+                    receive,
+                    transmit,
+                    &observed_clock,
+                    issuer,
+                    stop,
+                    book,
+                    &outcomes,
+                    server,
                 ))
                 .await
             }

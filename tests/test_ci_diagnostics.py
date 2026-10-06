@@ -115,6 +115,12 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(len(bounded['latest_connection_frontiers']), 64)
         self.assertEqual(bounded['frontier_samples_omitted_for_capacity'], 6)
 
+    def test_native_clock_reports_actual_deadline_without_a_completion_inference(self):
+        raw = b'connection-clock session=8 now_us=25000000 deadline_us=500000000 stage=requested\nconnection-clock session=9 now_us=2 deadline_us=1 stage=returned\nconnection-clock session=8 now_us=3 deadline_us=4 stage=PRIVATE\nconnection-clock session=8 now_us=3 deadline_us=99999999999999 stage=requested\n'
+        result = self.module.summarize_log(raw, endpoint=True)
+        self.assertEqual(result['latest_connection_clocks'], [dict(session=8, now_us=25000000, deadline_us=500000000, stage='requested'), dict(session=9, now_us=2, deadline_us=1, stage='returned')])
+        self.assertNotIn('PRIVATE', json.dumps(result))
+
     def test_native_trace_keeps_only_bounded_numeric_tails(self):
         raw = b''.join(f'connection-trace session=7 ordinal={i} event=515 metadata=50357248\n'.encode() for i in range(30))
         raw += b'connection-trace session=7 ordinal=31 event=515 metadata=PRIVATE\nconnection-trace-capacity session=7\n'

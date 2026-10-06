@@ -289,9 +289,15 @@ def summarize_log(raw, endpoint=False):
         # Fixed native diagnostic grammar only. Retain the latest actual tap
         # sample per session and exact successful terminal fields, never raw
         # error strings, peer-controlled paths, or arbitrary JSON metadata.
-        frontiers, terminals, traces, trace_capacities = {}, [], {}, []
+        frontiers, terminals, traces, trace_capacities, clocks = {}, [], {}, [], {}
         frontier_count = terminal_count = frontier_samples_omitted = trace_count = 0
         for line in lines:
+            match = re.fullmatch(r'connection-clock session=([0-9]{1,10}) now_us=([0-9]{1,13}) deadline_us=([0-9]{1,13}) stage=(requested|returned)', line)
+            if match:
+                session, now, deadline, stage = match.groups()
+                if int(session) <= 0xffffffff and max(int(now), int(deadline)) <= 3600000000000:
+                    if session in clocks or len(clocks) < 64:
+                        clocks[session] = dict(session=int(session), now_us=int(now), deadline_us=int(deadline), stage=stage)
             match = re.fullmatch(r'connection-trace session=([0-9]{1,10}) ordinal=([0-9]{1,10}) event=(514|515|516) metadata=([0-9]{1,10})', line)
             if match:
                 session, ordinal, event, metadata = map(int, match.groups())
@@ -321,6 +327,7 @@ def summarize_log(raw, endpoint=False):
                     terminal_count += 1
                     if len(terminals) < 64:
                         terminals.append(dict(index=int(index), idle=int(idle), confirmed=confirmed == 'true', completed=int(completed), submitted=int(submitted), acked=acked == 'true', closed=closed == 'true', elapsed_ms=int(elapsed)))
+        record['latest_connection_clocks'] = list(clocks.values())
         record['connection_trace_records'] = trace_count
         record['connection_trace_tails'] = [dict(session=session, events=events) for session, events in traces.items()]
         record['connection_trace_capacity_sessions'] = trace_capacities

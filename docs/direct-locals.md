@@ -276,3 +276,51 @@ is not evidence of the official unfinished-handshake fault and is not counted
 as a successful full-network simulation. Whole-connection ACK/close loss remains
 covered separately by the existing explicit cases; these fixtures do not replace
 an unchanged runner verdict.
+
+
+## Repeated extreme-loss observations
+
+Run 37406336212 attempt 1 on fe49d4c passed the unchanged L1 control and both
+candidate directions. Client 50/50 files, actual terminals and resource retirement
+were observed (64.082 seconds). The server runner passed, but it was killed by
+the runner with only 49 finished session samples; fifty clean server retirements
+are not claimed. Attempt 2 failed: the quiche self-control exited 255 after
+12/50 length-complete files; the diagnostic candidate client timed out after
+49/50; the diagnostic candidate server passed. These results do not establish
+repeatable qualification or a root fix.
+
+The unfinished candidate client's last committed sequence was InitialRequest,
+InitialIdle, InitialTaken, an accepted Initial ACK publication, then another
+InitialRequest/Idle/Taken. It remained in the first key-exchange phase, with
+15 sent and 6 received datagrams, last sampled at 25.946 seconds. Its timer
+state was not in the tap. The following host-only observation borrows the same
+physical clock and fault owner, records requested and returned deadlines, and
+adds no timer or protocol decision. The reactor test confirms one physical timer
+while pending and zero after cancellation; an expired wait registers no timer.
+A returned clock future is not treated as evidence of successful packet delivery.
+
+The local duplex fixture now also covers a 25-packet queue, 15 ms one-way delay,
+333 ms initial RTT, real ticket issuance and a public 3265-byte certificate that
+forces multiple CRYPTO fragments. Independent loss masks passed all 20 connected
+tests. Three-packet burst masks expose a limitation in the earlier fixture's
+30-second budget: seed 16 drops the first nine client datagrams, delivers none to
+the server, and leaves the next real PTO armed at 30.969 seconds. That is not a
+lost wake. The new extreme-loss diagnostic explicitly uses the runner's 300-second
+outer bound; existing cases retain their 30-second bound. This changes no product
+or runner timeout and is not a fix for the observed reference-peer failure.
+All 32 burst histories complete under that diagnostic bound. Prior 30-second
+failure evidence remains recorded and is not reclassified as a pass.
+
+Because the repeated quiche control failed, the next targeted diagnostic uses
+the already pinned Neqo reference with its own mandatory self-control. A failed
+control invalidates qualification even when candidate diagnostics are collected.
+No additional historical cell, whole-stack conformance or causal repair is claimed.
+
+The host-clock observation candidate passes 116 host tests (including actual
+single-timer retention/cancellation), selected host strict Clippy, 20 connected
+tests with the explicitly documented diagnostic bounds, and 60 Python tests.
+Its immutable native binary is
+`105cafac4c27c0b4f4962689c98f00d44247a1df22ca6884afdfc16880e6e454`.
+A four-connection lossy native smoke passed with all files and retirement;
+actual requested/returned clock samples parsed for all four sessions on each
+side. No new full fifty-connection or official pass is inferred from that smoke.

@@ -1,8 +1,8 @@
 {
-  "request": "Diagnose extreme handshake loss with preceding committed-operation evidence",
-  "requested_at": "2026-10-06T02:50:00Z",
+  "request": "Separate extreme-loss timer waits from stalled Initial progress",
+  "requested_at": "2026-10-06T03:31:00Z",
   "scope": [
-    "unchanged quiche controls",
+    "unchanged Neqo controls",
     "both candidate directions"
   ],
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
@@ -14,7 +14,7 @@
     "client",
     "server"
   ],
-  "reference_implementation": "quiche",
-  "qualification": "Diagnostic repeat of unchanged L1 in both candidate directions, requiring a passing quiche control. Previous 44a05cb run 37403324082 passed controls and client C1/L1/M/Z plus server C1/M/Z, but server L1 failed after 11/50 files with client exit 255. The last unfinished server tap was TLS_TX receiving ApplicationTaken. No root cause or fix is claimed. Add bounded preceding actual tap records to distinguish Flight from Idle; no protocol changes, retry, deadline extension or fabricated completion. 128 additional deterministic paired TLS loss histories pass in 20 connected tests. The selected core remains unmodified c3d89f78. The existing six Lean and six Z3 groups passed on 44a05cb and are not rerun in this targeted diagnostic; no formal scope is weakened or new formal success claimed. The canonical branch and historical 30/44 unique inventory remain unchanged.",
+  "reference_implementation": "neqo",
+  "qualification": "Targeted unchanged L1 with the pinned Neqo reference and mandatory self-control. Run 37406336212 attempt 1 passed quiche control and both directions; attempt 2 failed its quiche control after 12/50 files and candidate client after 49/50. The latter remained at InitialIdle/InitialTaken, with no timer deadline recorded. Add read-only host timing evidence using the same physical clock and fault owner, without new timers, phase state, retries or deadline changes. The native timer ownership/cancellation test passes. The local fixture additionally models 25 queued packets, 15 ms delay, 333 ms initial RTT, actual tickets and fragmented certificates. Its three-packet burst diagnostic explicitly uses a 300-second simulation bound, while existing tests keep 30 seconds; a recorded first-nine-packets-lost case exceeded 30 seconds with a real PTO at 30.969 seconds, not a missing wake. This diagnostic change is not a product fix or a changed runner criterion. Core remains unmodified c3d89f78; canonical branch and historical 30/44 inventory are unchanged. The existing formal groups passed in run 37403324082 and are not rerun for host-only observation and fixture edits. No root cause, full qualification or repeatable success is claimed.",
   "formal_models": false
 }
