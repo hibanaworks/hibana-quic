@@ -1,6 +1,6 @@
 {
-  "request": "Experimental parallel client retirement C1/L1 qualification",
-  "requested_at": "2026-10-05T23:31:00Z",
+  "request": "Qualify direct response-completion and owned control publication",
+  "requested_at": "2026-10-06T01:05:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions"
@@ -9,13 +9,15 @@
   "local_evidence": "docs/direct-locals.md",
   "cases": [
     "handshakecorruption",
-    "handshakeloss"
+    "handshakeloss",
+    "multiplexing",
+    "zerortt"
   ],
   "candidate_directions": [
     "client",
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Experimental branch only; do not advance development/rolled-route-runtime until regressions are resolved. Keep unchanged quiche controls and runner verdicts. Independent client sessions now run concurrently and join actual terminal results. Local completion waits retained control flights; authenticated peer close can retire complete responses while missing request ACKs remain false. Closing observes native incoming packets until the original3PTO deadline, with progressive response rate and per-response3x input-byte bound. Core422+integration/16connected/Clippy/thumb pass; nativeM/Z latestpublishedf160 alreadyofficiallypassed; candidate0RTT40both passed. Candidate self50clean/loss passed; selfcorruption deliveredall50/clientclosed butserveroneactualidleexpiry, retained as a known failure of the strict all-clean diagnostic. Parallel nativeNeqo failed; its globalStreamId-only HTTP09 partial-request maps are a source-backed suspected cause, not a fabricated control pass. No criteria or historicalcounts change.",
+  "qualification": "Isolated candidate; canonical branch unchanged. Previous d5b308ff passed official quiche C1/L1 in both directions (run37389272661). This follow-up removes duplicate initial control-send bookkeeping through actual flight references. New explicit global ResponsesComplete route and direct local send/offer/recv permit application close after complete authenticated response FINs without inventing lost request ACKs. A persistent-server encrypted ACK-loss fixture failed before this fix and now passes with all_streams_acked false. All423 core tests,17 connected tests and integration/doc groups, host tests, selected host Clippy and thumbv6m pass. Closing keeps the original3PTO deadline and gives a due timer priority over continuously ready input. Recheck C1/L1/M/Z with unchanged quiche controls and runner verdicts. Self-corruption has shown real server idle expiry and remains a diagnostic failure; no complete termination fix, full audit or full matrix claim. Speed tuning is deferred under the latest user instruction. Selected upstream is now c3d89f787aa1a8e066b310a5307fdf7cb076ee26; eleven Git blobs and full1193-file snapshot verified. Consumer423/all integration+17connected+4capacity-one histories, host Clippy and thumbv6m pass. Initial admission now checks actual packet integrity before committing source CID and worker ownership; corrupted-CID rejection followed by intact admission is tested. Upstream CI is still pending; no success is inferred.",
   "formal_models": true
 }

@@ -62,7 +62,7 @@ def main():
             for raw in [client.stdout, out]:
                 report = json.loads(raw)
                 assert report["connections"] == 2 and report["resumed"] is True, report
-                assert report["files_completed"] == args.files and report["all_streams_acked"] and report["lifecycle_closed"], report
+                assert report["files_completed"] == args.files and report["http_transfer_complete"] and report["lifecycle_closed"] and report["resources_retired"], report
         finally:
             if server.poll() is None:
                 server.kill()

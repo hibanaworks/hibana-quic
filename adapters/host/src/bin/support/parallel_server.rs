@@ -281,6 +281,11 @@ pub async fn run<const S: usize, const T: usize>(
             {
                 continue;
             }
+            // Do not pin a damaged plaintext source CID or spend an admission
+            // slot before checking the Initial's authenticated associated data.
+            if initial_integrity(&packet).is_none() {
+                continue;
+            }
             // A previous NEW_TOKEN is checked only for a new admission. Routing
             // above handles repeated Initials for an already-owned connection.
             // Even a valid token currently retains the conservative amplification

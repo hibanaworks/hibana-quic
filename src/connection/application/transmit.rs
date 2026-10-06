@@ -60,7 +60,6 @@ struct Pending<'book, 'streams, const N: usize> {
     stream: Option<application_stream::Transmission<'streams>>,
     acknowledgment: Option<recovery::AckSnapshot<'book>>,
     close_deadline: Option<u64>,
-    initial_handshake_done: bool,
 }
 
 /// The slot transfers the actual packet on the declared Datagram edge. It
@@ -213,7 +212,6 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
         stream,
         acknowledgment,
         close_deadline: _,
-        initial_handshake_done: _,
     } = packet;
     let (reservation, long_ack) = sealed.into_parts();
     // Complete both numeric owners in this synchronous turn even if one owner
@@ -252,7 +250,6 @@ pub(crate) async fn run<
     reset: &super::reset::Exchange<'streams>,
     reclaim: &super::reclaim::Exchange<'streams>,
     acknowledgments: &super::acknowledgments::Exchange<'scope>,
-    mut handshake_done: Option<FlightId>,
     config: Config<'_>,
     peer: &ConnectionId,
     clock: &impl Clock,
@@ -341,20 +338,11 @@ pub(crate) async fn run<
                 streams.forget_lost(history_floor)?;
                 history_floor += 1;
             }
-            let pending = prepare(
-                keys,
-                book,
-                streams,
-                handshake_done,
-                config,
-                peer,
-                clock.now(),
-            )?;
+            let pending = prepare(keys, book, streams, config, peer, clock.now())?;
             let Some(pending) = pending else {
                 control.wait(4, revision).await;
                 continue;
             };
-            let sent_handshake_done = pending.initial_handshake_done;
             if let Err((error, pending)) = state.put(pending) {
                 cancel_prepared(pending, book, streams)?;
                 return Err(error);
@@ -364,9 +352,6 @@ pub(crate) async fn run<
             match offered.label() {
                 27 => {
                     check(offered.recv::<p::Accepted>().await?, sequence)?;
-                    if sent_handshake_done {
-                        handshake_done = None;
-                    }
                 }
                 28 => {
                     check(offered.recv::<p::Rejected>().await?, sequence)?;
@@ -415,7 +400,6 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     keys: &keys::KeyOwner<'scope>,
     book: &mut recovery::Tx<'book, 'scope, N>,
     streams: &mut application_stream::Tx<'streams, '_, 'scope, RX, CHUNK>,
-    handshake_done: Option<FlightId>,
     config: Config<'_>,
     peer: &ConnectionId,
     now: u64,
@@ -461,21 +445,20 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
                 stream: None,
                 acknowledgment: None,
                 close_deadline: None,
-                initial_handshake_done: false,
             }));
         }
     }
-    // A newly appended control flight has never been sent and is neither
-    // lost nor PTO eligible yet. Keep its actual FlightId until acceptance.
-    if let Some(flight) = handshake_done {
+    // Initial publication comes from the retained flight and its actual packet
+    // references. The Accepted continuation commits that reference; rejection
+    // cancels it. There is no copied initial-send phase in the pending slot.
+    if let Some(flight) = book.unsent_control() {
         let mut plaintext = Zeroizing::new([0; N]);
         let data = book.flight_data(flight)?;
         let len = data.bytes().len();
         plaintext[..len].copy_from_slice(data.bytes());
-        if let Some(mut pending) =
+        if let Some(pending) =
             application_control_packet(keys, book, peer, &plaintext[..len], flight, false, now)?
         {
-            pending.initial_handshake_done = true;
             return Ok(Some(pending));
         }
     }
@@ -634,7 +617,6 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
             stream: transmission,
             acknowledgment,
             close_deadline: None,
-            initial_handshake_done: false,
         })),
         Err((error, reservation)) => {
             let recovery_result = book.cancel(reservation);
@@ -684,7 +666,6 @@ fn long_packet<'book, 'scope, const N: usize>(
             stream: None,
             acknowledgment: None,
             close_deadline: None,
-            initial_handshake_done: false,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -726,7 +707,6 @@ fn application_control_packet<'book, 'streams, 'scope, const N: usize>(
             stream: None,
             acknowledgment: None,
             close_deadline: None,
-            initial_handshake_done: false,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -991,10 +971,15 @@ pub(crate) async fn close<
                         if clock.now() >= deadline {
                             return Poll::Ready(None);
                         }
+                        // Due publication must not be starved by continuously
+                        // ready (possibly invalid) input during closing.
+                        if timer.as_mut().poll(cx).is_ready() {
+                            return Poll::Ready(None);
+                        }
                         if let Poll::Ready(result) = input.as_mut().poll(cx) {
                             return Poll::Ready(Some(result));
                         }
-                        timer.as_mut().poll(cx).map(|()| None)
+                        Poll::Pending
                     })
                     .await
                 };
@@ -1117,7 +1102,6 @@ fn close_packet<'book, 'streams, const N: usize>(
             stream: None,
             acknowledgment: None,
             close_deadline: Some(deadline),
-            initial_handshake_done: false,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -1322,7 +1306,6 @@ mod tests {
             stream: Some(stream),
             acknowledgment: None,
             close_deadline: None,
-            initial_handshake_done: false,
         }
     }
 
@@ -1501,7 +1484,6 @@ mod tests {
                 stream: None,
                 acknowledgment: None,
                 close_deadline: None,
-                initial_handshake_done: false,
             };
             let mut pending = InFlight {
                 packet: Some(packet),

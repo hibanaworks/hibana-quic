@@ -295,6 +295,22 @@ impl<const F: usize, const B: usize, const R: usize> FlightStore<F, B, R> {
             }
         }
     }
+    /// Retained control bytes with no reserved or accepted packet reference.
+    /// Publication/cancellation changes the actual reference table; callers do
+    /// not maintain a second initial-send flag alongside that ownership.
+    pub(crate) fn unsent_control(&self) -> Option<FlightId> {
+        self.flights.iter().enumerate().find_map(|(slot, f)| {
+            let id = FlightId {
+                slot,
+                generation: f.generation,
+            };
+            (f.active
+                && f.control
+                && !f.acknowledged
+                && !self.references.iter().flatten().any(|r| r.flight == id))
+            .then_some(id)
+        })
+    }
     pub fn next_lost(&self) -> Option<FlightId> {
         self.flights.iter().enumerate().find_map(|(slot, f)| {
             let id = FlightId {
@@ -438,6 +454,49 @@ mod tests {
         assert_ne!(id, next);
         assert!(s.data(id).is_err());
     }
+    #[test]
+    fn initial_control_publication_uses_actual_reference_ownership() {
+        let mut s = FlightStore::<2, 32, 4>::new();
+        s.append(Level::Handshake, 0, b"crypto").unwrap();
+        assert_eq!(s.unsent_control(), None);
+        let id = s.append_handshake_done().unwrap();
+        assert_eq!(s.unsent_control(), Some(id));
+        let packet = PacketNumber {
+            space: PacketNumberSpace::ApplicationData,
+            value: 0,
+        };
+        let pending = s.reserve(id, packet).unwrap();
+        assert_eq!(
+            s.unsent_control(),
+            None,
+            "a pending adapter owns the reference"
+        );
+        s.cancelled(pending).unwrap();
+        assert_eq!(s.unsent_control(), Some(id));
+        let packet = PacketNumber {
+            space: PacketNumberSpace::ApplicationData,
+            value: 1,
+        };
+        let accepted = s.reserve(id, packet).unwrap();
+        s.accepted(accepted, 10).unwrap();
+        assert_eq!(s.unsent_control(), None);
+        s.mark_lost(packet);
+        assert_eq!(
+            s.unsent_control(),
+            None,
+            "loss uses the retransmission ledger"
+        );
+        assert_eq!(s.next_lost(), Some(id));
+        s.acknowledge(
+            PacketNumberSpace::ApplicationData,
+            &[AckRange { start: 1, end: 1 }],
+        );
+        assert_eq!(s.unsent_control(), None);
+        let next = s.append_handshake_done().unwrap();
+        assert_ne!(id, next);
+        assert_eq!(s.unsent_control(), Some(next));
+    }
+
     #[test]
     fn cancellation_preserves_unsent_data_and_duplicate_callbacks_fail() {
         let mut s = FlightStore::<1, 8, 1>::new();

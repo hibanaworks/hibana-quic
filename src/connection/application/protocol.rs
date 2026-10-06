@@ -86,6 +86,9 @@ pub type PeerFailed = g::Msg<45, u64>;
 pub type PeerCancelled = g::Msg<46, u64>;
 pub type PeerSeen = g::Msg<47, u64>;
 pub type FilesComplete = g::Msg<48, u64>;
+/// The client consumed every authenticated response FIN. This is application
+/// completion, not a fabricated ACK of its outbound request packets.
+pub type ResponsesComplete = g::Msg<220, u64>;
 pub type ApplicationFailed = g::Msg<49, u64>;
 pub type CompletionCancelled = g::Msg<50, u64>;
 pub type CompletionSeen = g::Msg<51, u64>;
@@ -397,7 +400,10 @@ pub type PeerTerminal = g::Seq<
 >;
 pub type FilesTerminal = g::Seq<
     g::Route<
-        g::Send<FILES_EVENT, FILES_CLOSE, FilesComplete>,
+        g::Route<
+            g::Send<FILES_EVENT, FILES_CLOSE, FilesComplete>,
+            g::Send<FILES_EVENT, FILES_CLOSE, ResponsesComplete>,
+        >,
         g::Route<
             g::Send<FILES_EVENT, FILES_CLOSE, ApplicationFailed>,
             g::Route<
@@ -764,7 +770,10 @@ pub fn choreography() -> g::Program<Flow> {
     );
     let files = g::seq(
         g::route(
-            g::send::<FILES_EVENT, FILES_CLOSE, FilesComplete>(),
+            g::route(
+                g::send::<FILES_EVENT, FILES_CLOSE, FilesComplete>(),
+                g::send::<FILES_EVENT, FILES_CLOSE, ResponsesComplete>(),
+            ),
             g::route(
                 g::send::<FILES_EVENT, FILES_CLOSE, ApplicationFailed>(),
                 g::route(

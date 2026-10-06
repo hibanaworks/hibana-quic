@@ -1162,6 +1162,9 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     pub fn is_handshake_done(&self, id: FlightId) -> Result<bool, Error> {
         Ok(self.book.numbers.borrow().flights.is_handshake_done(id)?)
     }
+    pub(crate) fn unsent_control(&self) -> Option<FlightId> {
+        self.book.numbers.borrow().flights.unsent_control()
+    }
     pub fn flight_data(&self, id: FlightId) -> Result<Flight<B>, Error> {
         let n = self.book.numbers.borrow();
         n.ordinary()?;

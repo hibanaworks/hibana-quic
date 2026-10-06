@@ -1,5 +1,19 @@
 # Direct local continuations
 
+## Current audit continuation
+
+The next local candidate removes `Pending.initial_handshake_done` and the
+transmitter's duplicate optional initial-flight tracker. Initial control
+publication is selected from the actual retained flight and its reservation
+references. A pending native submission owns a reference; cancellation removes
+it; the existing Hibana Accepted exchange commits it. Loss and authenticated
+ACK continue to use the same recovery records. No new stored flag, phase enum,
+communication wrapper or queue was added. A focused reference-ownership test
+covers pending, cancellation, acceptance, loss, ACK and slot reuse.
+
+This is still a candidate under regression testing, not a whole-file audit
+completion or a claim that impairment-induced termination is solved.
+
 The design criterion is a direct local spelling of the Hibana global contract.
 Do not replace progression flags with renamed state or communication wrappers.
 Numerical/cryptographic/I/O operations may be separate components; they do not

@@ -583,6 +583,7 @@ impl DatagramRx for Rx<'_> {
 enum Loss {
     None,
     ServerApplicationAcks,
+    ServerApplicationAcksPersistentServer,
     FirstServerOneRtt,
     ServerHandshakeAck,
     HandshakeDone,
@@ -612,7 +613,7 @@ impl DatagramTx for Tx<'_, '_> {
             // The two frame-specific cases below require authenticated parsing.
             let selected = match self.loss {
                 Loss::None => false,
-                Loss::ServerApplicationAcks => {
+                Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer => {
                     classification.as_ref().is_some_and(|p| p.application_ack)
                 }
                 Loss::FirstServerOneRtt => bytes[0] & 0x80 == 0,
@@ -624,8 +625,10 @@ impl DatagramTx for Tx<'_, '_> {
                     .is_some_and(|packet| packet.handshake_done),
             };
             if selected
-                && (matches!(self.loss, Loss::ServerApplicationAcks)
-                    || self.path.dropped.get() == 0)
+                && (matches!(
+                    self.loss,
+                    Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer
+                ) || self.path.dropped.get() == 0)
             {
                 self.path.dropped.set(self.path.dropped.get() + 1);
                 return Poll::Ready(Ok(self.clock.now()));
@@ -1279,7 +1282,10 @@ fn connection_case_with_failure(
     assert_eq!(client.submitted_streams, count);
     assert_eq!(client.completed_streams, count);
     assert_eq!(server.completed_streams, count);
-    if matches!(loss, Loss::ServerApplicationAcks) {
+    if matches!(
+        loss,
+        Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer
+    ) {
         assert!(
             !client.all_streams_acked,
             "lost request ACK must not be invented"
@@ -1310,7 +1316,10 @@ fn connection_case_with_failure(
     assert!(to_client.accepted.get() >= to_client.delivered.get());
     assert!(to_server.accepted.get() >= to_server.delivered.get());
     assert_eq!(to_server.dropped.get(), 0);
-    if matches!(loss, Loss::ServerApplicationAcks) {
+    if matches!(
+        loss,
+        Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer
+    ) {
         assert!(to_client.dropped.get() > 0);
     } else {
         assert_eq!(
@@ -1332,4 +1341,9 @@ fn connection_case_with_failure(
 #[test]
 fn authenticated_peer_close_after_complete_response_does_not_invent_lost_request_ack() {
     connection_case(1, Loss::ServerApplicationAcks);
+}
+
+#[test]
+fn complete_responses_can_close_when_request_ack_is_lost_and_server_stays_open() {
+    connection_case(1, Loss::ServerApplicationAcksPersistentServer);
 }

@@ -285,7 +285,8 @@ def main():
                             resumed_report = next(json.loads(line) for line in actual_text.splitlines() if line.startswith('{'))
                             assert resumed_report['connections'] == 1, resumed_report
                             assert resumed_report['files_completed'] == 1999, resumed_report
-                            assert resumed_report['resources_retired'] and resumed_report['lifecycle_closed'] and resumed_report['all_streams_acked'], resumed_report
+                            assert resumed_report['resources_retired'] and resumed_report['lifecycle_closed'] and resumed_report['http_transfer_complete'], resumed_report
+                            assert isinstance(resumed_report['all_streams_acked'], bool), resumed_report
                             report['transfer_observations'][-1]['retirement_verified'] = True
                             save()
                         if args.scenario in ('resumption', 'zerortt', 'multiconnect') and direction != 'baseline' and returncode == 0:
@@ -314,7 +315,11 @@ def main():
                                 assert resumed_report['lifecycle_closed'], resumed_report
                             report['transfer_observations'][-1]['retirement_verified'] = resumed_report.get('resources_retired', False)
                             if direction == 'forward':
-                                assert resumed_report['all_streams_acked'], resumed_report
+                                # ResponsesComplete is an actual FIN-based application terminal.
+                                # Keep the ACK observation distinct; never fabricate true.
+                                assert resumed_report['http_transfer_complete'], resumed_report
+                                assert resumed_report['files_completed'] == len(names), resumed_report
+                                assert isinstance(resumed_report['all_streams_acked'], bool), resumed_report
                             if args.scenario == 'zerortt':
                                 if args.client_early_reject:
                                     assert resumed_report['early_accepted_packets'] == 0, resumed_report

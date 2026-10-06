@@ -181,3 +181,102 @@ fn intrinsic_choice_can_start_with_either_nested_arm_and_reenter() {
         }
     });
 }
+
+#[test]
+fn nested_roll_failure_ack_retains_the_actual_connected_prefix() {
+    let global = g::route(
+        g::seq(
+            g::send::<0, 1, Msg<128, ()>>(),
+            g::seq(
+                g::send::<1, 0, Msg<129, ()>>(),
+                g::route(
+                    g::seq(
+                        g::send::<0, 1, Msg<110, u16>>(),
+                        g::send::<1, 0, Msg<111, u16>>(),
+                    ),
+                    g::seq(
+                        g::send::<0, 1, Msg<130, u16>>(),
+                        g::send::<1, 0, Msg<131, u16>>(),
+                    ),
+                )
+                .roll(),
+            ),
+        ),
+        g::seq(
+            g::send::<0, 1, Msg<134, u16>>(),
+            g::send::<1, 0, Msg<135, u16>>(),
+        ),
+    )
+    .roll();
+    let p0: RoleProgram<0> = project(&global);
+    let p1: RoleProgram<1> = project(&global);
+    for samples in [0, 1, 3] {
+        let carrier = CarrierStorage::<1, 16, 8>::new();
+        let mut slab = [0; 65536];
+        let mut storage = SessionKitStorage::uninit();
+        let sid = SessionId::new(41);
+        let kit = storage
+            .init()
+            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+            .unwrap();
+        let mut source = kit.enter(sid, &p0).unwrap();
+        let mut receiver = kit.enter(sid, &p1).unwrap();
+        run(async {
+            for visit in 0..2 {
+                source.send::<Msg<128, ()>>(&()).await.unwrap();
+                receiver
+                    .offer()
+                    .await
+                    .unwrap()
+                    .recv::<Msg<128, ()>>()
+                    .await
+                    .unwrap();
+                receiver.send::<Msg<129, ()>>(&()).await.unwrap();
+                source.recv::<Msg<129, ()>>().await.unwrap();
+                for sample in 0..samples {
+                    source.send::<Msg<110, u16>>(&sample).await.unwrap();
+                    assert_eq!(
+                        receiver
+                            .offer()
+                            .await
+                            .unwrap()
+                            .recv::<Msg<110, u16>>()
+                            .await
+                            .unwrap(),
+                        sample
+                    );
+                    receiver.send::<Msg<111, u16>>(&sample).await.unwrap();
+                    assert_eq!(source.recv::<Msg<111, u16>>().await.unwrap(), sample);
+                }
+                source.send::<Msg<130, u16>>(&visit).await.unwrap();
+                assert_eq!(
+                    receiver
+                        .offer()
+                        .await
+                        .unwrap()
+                        .recv::<Msg<130, u16>>()
+                        .await
+                        .unwrap(),
+                    visit
+                );
+                receiver.send::<Msg<131, u16>>(&visit).await.unwrap();
+                assert_eq!(source.recv::<Msg<131, u16>>().await.unwrap(), visit);
+                source.send::<Msg<134, u16>>(&visit).await.unwrap();
+                assert_eq!(
+                    receiver
+                        .offer()
+                        .await
+                        .unwrap()
+                        .recv::<Msg<134, u16>>()
+                        .await
+                        .unwrap(),
+                    visit
+                );
+                receiver.send::<Msg<135, u16>>(&visit).await.unwrap();
+                assert_eq!(source.recv::<Msg<135, u16>>().await.unwrap(), visit);
+            }
+            assert!(receiver.send::<Msg<131, u16>>(&0).await.is_err());
+        });
+        assert_eq!(carrier.queued(), 0);
+    }
+}

@@ -68,7 +68,10 @@ impl<'a, 'gate, 'scope> Exchange<'a, 'gate, 'scope> {
 
 /// Observe completion independently of UDP receive and publication. A client
 /// finishes only when its source retired, at least one request was submitted,
-/// each sink consumed FIN, and no retransmittable request chunks remain.
+/// each sink consumed FIN, and pending native publications have settled.
+/// Missing request ACKs remain missing: response completion permits an explicit
+/// application close, not a transport acknowledgment. Servers still require
+/// acknowledgment of their response chunks before locally finishing.
 pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::FILES_EVENT }>,
     source_join: &mut Endpoint<'_, { p::SOURCE_JOIN }>,
@@ -111,7 +114,10 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
                     .try_borrow()
                     .map_err(|_| Error::Binding)?
                     .queued_chunks()?;
-                if queued == 0 && book.handshake_confirmed()? && book.ordinary_settled()? {
+                if (side == Side::Client || queued == 0)
+                    && book.handshake_confirmed()?
+                    && book.ordinary_settled()?
+                {
                     return Ok(Some(CloseKind::Local {
                         application: true,
                         code: 0,
@@ -187,9 +193,10 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
         Some(CloseKind::Local {
             application: true,
             code: 0,
-        }) => {
-            endpoint.send::<p::FilesComplete>(&sequence).await?;
-        }
+        }) => match side {
+            Side::Client => endpoint.send::<p::ResponsesComplete>(&sequence).await?,
+            Side::Server => endpoint.send::<p::FilesComplete>(&sequence).await?,
+        },
         Some(CloseKind::Local {
             application: true,
             code: 0x100,
@@ -289,6 +296,21 @@ pub(crate) async fn receive<'scope>(
         async {
             let offered = files.offer().await?;
             let permission = match offered.label() {
+                220 => {
+                    check(offered.recv::<p::ResponsesComplete>().await?, sequence)?;
+                    let permission = exchange.files.take().map_err(|_| Error::Binding)?;
+                    if !matches!(
+                        permission.kind,
+                        CloseKind::Local {
+                            application: true,
+                            code: 0
+                        }
+                    ) {
+                        return Err(Error::Binding);
+                    }
+                    exchange.apply(&permission)?;
+                    Some(permission)
+                }
                 48 => {
                     check(offered.recv::<p::FilesComplete>().await?, sequence)?;
                     let permission = exchange.files.take().map_err(|_| Error::Binding)?;

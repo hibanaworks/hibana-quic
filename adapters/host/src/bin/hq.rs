@@ -466,6 +466,48 @@ async fn respond_unsupported_version<const S: usize, const T: usize>(
     }
     Ok(true)
 }
+/// Stateless integrity check before committing routing identities or a worker.
+/// Initial keys are public: this is not TLS peer authentication. The untouched
+/// datagram still enters the ordinary Hibana receive/authentication contract.
+fn initial_integrity(packet: &hibana_quic::packet::Packet<'_>) -> Option<()> {
+    let Header::Long {
+        kind: LongType::Initial,
+        destination_id,
+        packet_number_offset,
+        ..
+    } = packet.header
+    else {
+        return None;
+    };
+    if packet.bytes.len() > direct_bootstrap::DATAGRAM {
+        return None;
+    }
+    let key = hibana_quic::crypto::initial_keys(destination_id)
+        .ok()?
+        .client;
+    let mut bytes = packet.bytes.to_vec();
+    let pn_len = key
+        .unprotect_header(&mut bytes, packet_number_offset)
+        .ok()?;
+    let (truncated, _) = hibana_quic::packet::decode_truncated_packet_number(
+        bytes[0],
+        bytes.get(packet_number_offset..packet_number_offset.checked_add(pn_len)?)?,
+    )
+    .ok()?;
+    let pn = hibana_quic::packet::restore_packet_number(truncated, pn_len as u8, None).ok()?;
+    let first = bytes[0];
+    let (aad, ciphertext) = bytes.split_at_mut(packet_number_offset + pn_len);
+    key.open(
+        pn,
+        aad,
+        ciphertext,
+        &mut hibana_quic::crypto::IntegrityBudget::new(),
+    )
+    .ok()?;
+    hibana_quic::packet::validate_reserved_bits(first).ok()?;
+    Some(())
+}
+
 async fn admit_initial<const S: usize, const T: usize>(
     socket: &HostSocket<'_, S, T>,
     first: &mut [u8],
@@ -503,9 +545,10 @@ async fn admit_initial<const S: usize, const T: usize>(
             } = packet.header
             && destination_id.len() >= 8
             && token.is_empty()
+            && initial_integrity(&packet).is_some()
         {
-            // These are untrusted routing bytes; the direct core must still
-            // authenticate the preserved encrypted Initial packet itself.
+            // Routing bytes have passed packet integrity. The direct core still
+            // authenticates the preserved Initial within its own scoped keys.
             return Ok((
                 Address {
                     local: metadata.local,
@@ -1048,6 +1091,55 @@ mod admission_tests {
         task::{Context, Waker},
         time::Duration,
     };
+
+    #[test]
+    fn damaged_initial_source_id_cannot_become_the_connection_identity() {
+        let mut bytes = [0; direct_bootstrap::DATAGRAM];
+        let header = hibana_quic::packet::LongHeader {
+            kind: LongType::Initial,
+            destination_id: b"original",
+            source_id: b"client01",
+            token: &[],
+            packet_number: 0,
+            packet_number_len: 4,
+        };
+        let hlen = hibana_quic::packet::encode_long_header(&header, 1176, &mut bytes).unwrap();
+        let mut key = hibana_quic::crypto::initial_keys(b"original")
+            .unwrap()
+            .client;
+        let (aad, payload) = bytes[..hlen + 1176].split_at_mut(hlen);
+        key.seal(0, aad, payload, 1160).unwrap();
+        key.protect_header(&mut bytes[..hlen + 1176], hlen - 4)
+            .unwrap();
+        // The source CID is plaintext but authenticated associated data.
+        bytes[15] ^= 1;
+        let reactor = HostReactor::<4, 8>::new().unwrap();
+        let socket = reactor
+            .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
+            .unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.send_to(&bytes[..hlen + 1176], socket.local_addr().unwrap())
+            .unwrap();
+        let mut first = vec![0; direct_bootstrap::DATAGRAM];
+        let mut admission = Box::pin(admit_initial(&socket, &mut first));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(admission.as_mut().poll(&mut context).is_pending());
+        assert!(
+            admission.as_mut().poll(&mut context).is_pending(),
+            "an unauthenticated source CID was committed as the peer identity"
+        );
+        bytes[15] ^= 1;
+        peer.send_to(&bytes[..hlen + 1176], socket.local_addr().unwrap())
+            .unwrap();
+        let std::task::Poll::Ready(Ok((_, original, source, len))) =
+            admission.as_mut().poll(&mut context)
+        else {
+            panic!("the following intact Initial was not admitted");
+        };
+        assert_eq!(original, b"original");
+        assert_eq!(source, b"client01");
+        assert_eq!(len, hlen + 1176);
+    }
 
     #[test]
     fn unknown_version_probe_gets_reversed_cids_and_v1_without_initial_admission() {

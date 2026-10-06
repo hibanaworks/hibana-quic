@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--impairment', choices=('none','loss','corruption'), default='none')
     parser.add_argument('--timeout-seconds', type=int, default=120)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--private-log-dir', type=Path)
     args = parser.parse_args()
     if not 1 <= args.connections <= 64: parser.error('connections must be 1..64')
     binary = args.binary.resolve(strict=True)
@@ -53,6 +54,13 @@ def main():
                 server_out,_=server.communicate(timeout=args.timeout_seconds+5)
                 server_err=(root/'server.stderr').read_text()
                 elapsed=time.monotonic()-started
+            if args.private_log_dir:
+                args.private_log_dir.mkdir(parents=True, exist_ok=False)
+                for name, data in [('client.stdout', client.stdout),
+                                   ('client.stderr', client.stderr),
+                                   ('server.stdout', server_out),
+                                   ('server.stderr', server_err)]:
+                    (args.private_log_dir/name).write_text(data)
             files=[]
             for name in names:
                 source=root/'www'/name;dest=root/'downloads'/name

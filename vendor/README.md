@@ -1,9 +1,12 @@
 # Selected upstream snapshot
 
 `hibana/` is the tracked source of `development/rolled-route-ownership`
-at `12383a07f7a198031762e3092f6de0e72d8ee68f`, without local patches.
+at `c3d89f787aa1a8e066b310a5307fdf7cb076ee26`, without local patches.
 The update removes the intrinsic send-preview scan of unselected descendant
 contracts, so an interior matching send cannot hide the real outer entry.
+It also preserves an already completed containing prefix when only a nested
+rolled route reenters. The prepared commit's actual fresh suffix bounds the
+reset; completion alone does not authorize resetting a retained ancestor.
 It also includes the upstream cleanup of source-spelling and fixed-count audits.
 No public API, stored runtime field or capacity is added by the entry repair.
 All changed files were checked against the upstream Git blob identities.

@@ -308,11 +308,9 @@ async fn connected<
     let (mut book_tx, mut book_rx, mut book_clock, book_publication, mut retirement) =
         book.split()?;
     let completion_book = book_tx.completion_observer();
-    let handshake_done = if config.side == Side::Server {
-        Some(book_tx.store_handshake_done_token(peer.finished(), server_token)?)
-    } else {
-        None
-    };
+    if config.side == Side::Server {
+        book_tx.store_handshake_done_token(peer.finished(), server_token)?;
+    }
     let early_received = super::early::receive::<N, RX, CHUNK>(
         roles,
         transcript,
@@ -468,7 +466,6 @@ async fn connected<
             &reset_exchange,
             &reclaim_exchange,
             &acknowledgments,
-            handshake_done,
             config,
             &peer_id,
             clock
@@ -605,13 +602,13 @@ async fn connected<
     // An authenticated peer close ends retransmission (RFC 9000 section10.2.2).
     // Complete response delivery is still mandatory. A missing request ACK
     // stays false in the report; peer close must never fabricate that receipt.
-    // Local normal completion still requires every request chunk acknowledged.
+    // The explicit ResponsesComplete edge also permits a local application
+    // close after every response FIN. It does not assert request transport ACKs.
     if config.side == Side::Client
         && !matches!(close_kind, super::CloseKind::IdleExpired)
         && (!before_close.handshake_confirmed
             || completed_streams == 0
-            || completed_streams != state.submitted_count()
-            || (!matches!(close_kind, super::CloseKind::Peer { code: 0 }) && !all_streams_acked))
+            || completed_streams != state.submitted_count())
     {
         return Err(Error::Incomplete);
     }

@@ -328,7 +328,12 @@ pub async fn files<'scope, const S: usize, const T: usize>(
         }
     }
     .map_err(|e| format!("direct application: {e:?}"));
-    if result.is_err() && std::env::var("HIBANA_QUIC_DIAGNOSTICS").as_deref() == Ok("1") {
+    if (result.is_err()
+        || result
+            .as_ref()
+            .is_ok_and(|report| report.termination == application::Termination::IdleExpired))
+        && std::env::var("HIBANA_QUIC_DIAGNOSTICS").as_deref() == Ok("1")
+    {
         for event in rendezvous.tap() {
             eprintln!("direct Hibana runtime: {event:?}");
         }
