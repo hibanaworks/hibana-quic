@@ -1,6 +1,6 @@
 {
-  "request": "Qualify direct response-completion and owned control publication",
-  "requested_at": "2026-10-06T01:05:00Z",
+  "request": "Observe stalled handshake-loss connection with direct-local executor cleanup",
+  "requested_at": "2026-10-06T02:15:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions"
@@ -18,6 +18,6 @@
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Isolated candidate; canonical branch unchanged. Previous d5b308ff passed official quiche C1/L1 in both directions (run37389272661). This follow-up removes duplicate initial control-send bookkeeping through actual flight references. New explicit global ResponsesComplete route and direct local send/offer/recv permit application close after complete authenticated response FINs without inventing lost request ACKs. A persistent-server encrypted ACK-loss fixture failed before this fix and now passes with all_streams_acked false. All423 core tests,17 connected tests and integration/doc groups, host tests, selected host Clippy and thumbv6m pass. Closing keeps the original3PTO deadline and gives a due timer priority over continuously ready input. Recheck C1/L1/M/Z with unchanged quiche controls and runner verdicts. Self-corruption has shown real server idle expiry and remains a diagnostic failure; no complete termination fix, full audit or full matrix claim. Speed tuning is deferred under the latest user instruction. Selected upstream is now c3d89f787aa1a8e066b310a5307fdf7cb076ee26; eleven Git blobs and full1193-file snapshot verified. Consumer423/all integration+17connected+4capacity-one histories, host Clippy and thumbv6m pass. Initial admission now checks actual packet integrity before committing source CID and worker ownership; corrupted-CID rejection followed by intact admission is tested. Upstream CI is still pending; no success is inferred.",
+  "qualification": "Isolated candidate; canonical branch unchanged. Previous130c864 runtime37398933045 passed; official37398932952 had passing quiche C1/L1/M/Z controls, candidate server4/4 and clientC1/M/Z passes, but clientL1 timed out300s with49/50 length-complete files. No root cause or content/termination success is inferred. This candidate separates direct locals from executor assembly, removes redundant unit-message counters/checks, and retains legitimate pin/join at execution boundaries. Actual Hibana tap samples and native packet counts are bounded read-only diagnostics, with no new protocol timers, verdict changes or raw-log publication. Local423 core units/all integration/doc groups,115 host,29 reference TLS tests,58 Python,14 impairment fixture tests,thumbv6m and selected host Clippy passed. Core all-targets strict Clippy failed47 diagnostics and is not claimed successful. Native50-connection loss/corruption and unchanged Neqo40-file0RTT/1999-file multiplexing passed both directions; native fixtures do not qualify official L1. Recheck unchanged C1/L1/M/Z controls and candidate directions. Corec3d89f78 is unmodified and its upstream full CI37396155673 passed. Speed tuning and other new interop cases remain deferred until the correctness failure is resolved.",
   "formal_models": true
 }
