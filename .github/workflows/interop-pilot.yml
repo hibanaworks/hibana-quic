@@ -3,36 +3,63 @@ name: QUIC interoperability pilot
 on:
   push:
     branches: [development/rolled-route-runtime, ci/parallel-client-retirement]
-    paths: [ci/interop-request.json]
+    paths: [ci/interop-request.json, ci/run-interop.sh, ci/run_in_tools.py, .github/workflows/interop-pilot.yml]
   workflow_dispatch:
     inputs:
       source_ref:
         description: Audited test branch or exact commit to test
         required: true
-        default: ci/interop-pilot-20261002
+        default: ci/parallel-client-retirement
         type: string
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: quic-interop-pilot
   cancel-in-progress: false
 
 jobs:
-  pilot:
+  plan:
     if: github.event.repository.private == false
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '2'
-      PUBLIC_REPOSITORY: ${{ !github.event.repository.private }}
+    timeout-minutes: 5
+    outputs:
+      groups: ${{ steps.plan.outputs.groups }}
+      source_commit: ${{ steps.plan.outputs.source_commit }}
     steps:
       - name: Check out the selected audited source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Validate all 34 cells and freeze the source commit
+        id: plan
+        run: |
+          python3 ci/audit_source.py --check
+          groups=$(ROOT="$PWD" python3 ci/run_in_tools.py --matrix)
+          echo "groups=$groups" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  pilot:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.groups) }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      PUBLIC_REPOSITORY: ${{ !github.event.repository.private }}
+      INTEROP_GROUP: ${{ matrix.group }}
+    steps:
+      - name: Check out the exact qualification commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.plan.outputs.source_commit }}
           persist-credentials: false
           fetch-depth: 1
       - name: Run the pinned baseline and explicit subset
@@ -42,7 +69,40 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: interop-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          name: interop-pilot-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
+          path: ci-safe-results/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 9
+          include-hidden-files: false
+
+  qualification:
+    needs: [plan, pilot]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
+    steps:
+      - name: Check out the exact qualification commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.plan.outputs.source_commit }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Collect every group from this run and attempt
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern "interop-pilot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-*" \
+            --dir .ci-work/matrix-artifacts
+      - name: Require 34 actual candidate passes and 17 passing controls on one commit
+        run: ROOT="$PWD" python3 ci/run_in_tools.py --verify-matrix .ci-work/matrix-artifacts
+      - name: Upload the verified qualification matrix
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: interop-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: ci-safe-results/
           if-no-files-found: warn
           retention-days: 1

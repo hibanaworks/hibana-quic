@@ -796,6 +796,10 @@ def phase(name, client, server, candidate):
             if metadata['state'] == 'present']
         record['private_failure_capture'] = preserve_failed_capture(logs, client, server, name, record['status'])
         write(name + '.json', record)
+        write(name + '-verdict.json', {key: record[key] for key in (
+            'phase', 'client', 'server', 'status', 'exit_code', 'cleanup_exit_code',
+            'passed', 'results', 'non_null_case_results', 'unexecuted_case_results',
+            'original_json_sha256') if key in record})
         print(name + ': ' + record['status'], flush=True)
     return record
 
@@ -815,9 +819,139 @@ def requested_reference(value):
     require(isinstance(value, str) and value in {'neqo', 'quiche'}, 'unknown reference implementation')
     return value
 
+def qualification_groups(request):
+    directions = requested_directions(request.get('candidate_directions'))
+    require(directions == {'client', 'server'}, 'matrix requires both candidate directions')
+    groups = request.get('groups')
+    require(isinstance(groups, list) and groups, 'missing qualification groups')
+    names, cases = set(), set()
+    for group in groups:
+        require(isinstance(group, dict), 'invalid qualification group')
+        name = group.get('name')
+        require(isinstance(name, str) and re.fullmatch(r'[a-z][a-z0-9-]{0,47}', name), 'invalid qualification group name')
+        require(name not in names, 'duplicate qualification group')
+        names.add(name)
+        requested_reference(group.get('reference_implementation'))
+        selected = requested_cases(group.get('cases'))
+        require(not cases & selected, 'duplicate matrix case')
+        cases.update(selected)
+    require(cases == set(CASE_ABBREVIATIONS), 'incomplete qualification matrix')
+    require(len(cases) * len(directions) == request.get('candidate_case_direction_results') == 34,
+            'qualification matrix must contain 34 candidate results')
+    return groups
+
+def selected_request(request, group_name):
+    if 'groups' not in request:
+        require(group_name is None, 'group supplied for a single pilot')
+        return request
+    groups = qualification_groups(request)
+    selected = [group for group in groups if group['name'] == group_name]
+    require(len(selected) == 1, 'unknown qualification group')
+    return dict(request, **selected[0])
+
+def verify_matrix(directory, source_commit, run_id, run_attempt):
+    request = json.loads((ROOT / 'ci/interop-request.json').read_text())
+    groups = qualification_groups(request)
+    require(re.fullmatch(r'[0-9a-f]{40}', source_commit or ''), 'invalid source commit')
+    require(re.fullmatch(r'[0-9]+', run_id or '') and re.fullmatch(r'[0-9]+', run_attempt or ''), 'invalid run identity')
+    SAFE.mkdir(exist_ok=True)
+    write('summary.json', {'status': 'NOT_PASSED', 'source_commit': source_commit,
+                          'run_id': run_id, 'run_attempt': run_attempt,
+                          'expected_candidate_results': 34, 'same_commit_all_34_executed': False})
+    expected_pins = dict(line.split('=', 1) for line in (ROOT / 'ci/pins.env').read_text().splitlines()
+                         if line and not line.startswith('#'))
+    cells, controls, verified_groups = [], [], []
+    simulator, quiche_image = None, None
+    all_passed = True
+    for group in groups:
+        artifact = 'interop-pilot-' + run_id + '-' + run_attempt + '-' + group['name']
+        def read(name):
+            metadata, raw = diagnostic_file(directory, (artifact, name), limit=MAX_JSON_BYTES)
+            require(raw is not None, 'missing or invalid matrix artifact')
+            value = strict_json(raw, allow_floats=True)
+            require(isinstance(value, dict), 'invalid matrix artifact schema')
+            return value
+        environment, pins, summary = read('environment.json'), read('pins.json'), read('summary.json')
+        require(environment.get('source_commit') == source_commit, 'matrix source commit mismatch')
+        require(str(environment.get('run_id')) == run_id and str(environment.get('run_attempt')) == run_attempt, 'matrix run identity mismatch')
+        require(environment.get('interop_group') == group['name'] and summary.get('interop_group') == group['name'], 'matrix group identity mismatch')
+        reference = group['reference_implementation']
+        require(pins.get('REFERENCE_IMPLEMENTATION') == reference, 'matrix reference mismatch')
+        for key in ('RUNNER_REVISION', 'HIBANA_REVISION', 'RUST_IMAGE', 'ENDPOINT_IMAGE', 'UBUNTU_IMAGE',
+                    'PYTHON_IMAGE', 'DOCKER_ENGINE_VERSION', 'DOCKER_CLI_DEB_SHA256', 'DOCKER_ENGINE_DEB_SHA256'):
+            require(pins.get(key) == expected_pins[key], 'matrix pin mismatch')
+        if reference == 'neqo':
+            require(pins.get('NEQO_REVISION') == expected_pins['NEQO_REVISION'], 'matrix Neqo pin mismatch')
+        else:
+            image = pins.get('REFERENCE_IMAGE')
+            require(isinstance(image, str) and re.fullmatch(r'cloudflare/quiche-qns@sha256:[0-9a-f]{64}', image), 'matrix quiche image invalid')
+            if quiche_image is None:
+                quiche_image = image
+            require(image == quiche_image, 'matrix quiche image changed')
+        image = pins.get('SIM_IMAGE')
+        require(isinstance(image, str) and re.fullmatch(r'martenseemann/quic-network-simulator@sha256:[0-9a-f]{64}', image), 'matrix simulator image invalid')
+        if simulator is None:
+            simulator = image
+        require(image == simulator, 'matrix simulator image changed')
+        expected = requested_cases(group['cases'])
+        require(summary.get('selected_cases') == sorted(expected), 'matrix case scope mismatch')
+        require(summary.get('candidate_directions') == ['client', 'server'], 'matrix direction scope mismatch')
+        require(summary.get('reference_implementation') == reference and summary.get('runner_source_unchanged') is True, 'matrix runner or reference mismatch')
+        phases = [reference + '-baseline', 'bounded-client', 'bounded-server']
+        require(summary.get('phases') == phases, 'matrix missing execution phase')
+        phase_passed, baseline_passed, non_null = [], False, 0
+        for phase, client, server in [(phases[0], reference, reference), ('bounded-client', 'hibana-quic', reference), ('bounded-server', reference, 'hibana-quic')]:
+            result = read(phase + '-verdict.json')
+            require(result.get('phase') == phase and result.get('client') == client and result.get('server') == server, 'matrix phase direction mismatch')
+            rows = result.get('results')
+            require(isinstance(rows, list), 'missing matrix result rows')
+            seen = set()
+            for row in rows:
+                require(isinstance(row, dict), 'invalid matrix result row')
+                case, outcome = row.get('name'), row.get('result')
+                require(case in expected and case not in seen, 'unexpected or duplicate matrix result')
+                require(row.get('abbr') == CASE_ABBREVIATIONS[case], 'matrix case abbreviation mismatch')
+                require(outcome in (None, 'succeeded', 'failed', 'unsupported'), 'unknown matrix case result')
+                seen.add(case)
+                non_null += outcome is not None
+                cell = {'case': case, 'direction': phase.removeprefix('bounded-'), 'reference': reference, 'result': outcome, 'group': group['name']}
+                (cells if phase.startswith('bounded-') else controls).append(cell)
+            require(seen == expected, 'missing matrix case result')
+            passed = all(row['result'] == 'succeeded' for row in rows)
+            require(result.get('passed') is passed, 'matrix phase pass flag mismatch')
+            require(result.get('non_null_case_results') == sum(row['result'] is not None for row in rows)
+                    and result.get('unexecuted_case_results') == sum(row['result'] is None for row in rows), 'matrix phase result counts mismatch')
+            require(re.fullmatch(r'[0-9a-f]{64}', result.get('original_json_sha256', '')), 'invalid matrix result hash')
+            completed = all(type(result.get(key)) is int and result[key] == 0 for key in ('exit_code', 'cleanup_exit_code'))
+            passed = passed and completed and result.get('status') == 'PASSED'
+            phase_passed.append(passed)
+            if phase == phases[0]:
+                baseline_passed = passed
+        require(summary.get('case_results') == len(expected) * 3 and summary.get('non_null_case_results') == non_null
+                and summary.get('unexecuted_case_results') == len(expected) * 3 - non_null, 'matrix summary result counts mismatch')
+        require(summary.get('baseline_passed') is baseline_passed, 'matrix baseline pass flag mismatch')
+        passed = all(phase_passed) and summary.get('status') == 'PASSED' and summary.get('candidate_diagnostic_after_failed_control') is False
+        all_passed = all_passed and passed
+        verified_groups.append({'name': group['name'], 'reference': reference, 'cases': sorted(expected), 'status': 'PASSED' if passed else 'NOT_PASSED'})
+    require(len(cells) == 34 and len({(cell['case'], cell['direction']) for cell in cells}) == 34, 'matrix candidate coverage mismatch')
+    report = {'status': 'PASSED' if all_passed else 'NOT_PASSED', 'source_commit': source_commit,
+              'run_id': run_id, 'run_attempt': run_attempt, 'same_commit_all_34_executed': all(cell['result'] is not None for cell in cells),
+              'expected_candidate_results': 34, 'candidate_results': len(cells),
+              'candidate_passed': sum(cell['result'] == 'succeeded' for cell in cells),
+              'candidate_unexecuted': sum(cell['result'] is None for cell in cells),
+              'control_results': len(controls), 'control_passed': sum(cell['result'] == 'succeeded' for cell in controls),
+              'runner_source_unchanged': True, 'simulator_image': simulator, 'groups': verified_groups,
+              'candidate_cells': cells, 'control_cells': controls, 'full_44_case_direction_matrix': False}
+    output = SAFE
+    output.mkdir(exist_ok=True)
+    (output / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps({key: value for key, value in report.items() if key not in ('candidate_cells', 'control_cells')}, indent=2))
+    return 0 if all_passed else 1
+
 def main():
     global EXPECTED, REFERENCE
     request=json.loads((ROOT / 'ci/interop-request.json').read_text())
+    request=selected_request(request, os.environ.get('INTEROP_GROUP'))
     REFERENCE=requested_reference(request.get('reference_implementation', 'neqo'))
     EXPECTED=requested_cases(request.get('cases', ['handshake', 'transfer']))
     directions=requested_directions(request.get('candidate_directions', ['client', 'server']))
@@ -855,6 +989,7 @@ def main():
     write('summary.json', {'status': 'PASSED' if passed else 'NOT_PASSED',
         'scope': 'one unmodified runner pilot: selected reference baseline plus explicitly selected cases and candidate directions',
         'reference_implementation': REFERENCE,
+        'interop_group': os.environ.get('INTEROP_GROUP'),
         'candidate_directions': sorted(directions),
         'baseline_passed': baseline['status'] == 'PASSED',
         'candidate_diagnostic_after_failed_control': control_completed and baseline['status'] != 'PASSED',
@@ -870,6 +1005,13 @@ def main():
 
 if __name__ == '__main__':
     try:
+        if sys.argv[1:] == ['--matrix']:
+            request = json.loads((ROOT / 'ci/interop-request.json').read_text())
+            print(json.dumps({'include': [{'group': group['name']} for group in qualification_groups(request)]}, separators=(',', ':')))
+            raise SystemExit(0)
+        if len(sys.argv) == 3 and sys.argv[1] == '--verify-matrix':
+            raise SystemExit(verify_matrix(Path(sys.argv[2]), os.environ.get('SOURCE_COMMIT'), os.environ.get('GITHUB_RUN_ID'), os.environ.get('GITHUB_RUN_ATTEMPT')))
+        require(len(sys.argv) == 1, 'unknown pilot arguments')
         raise SystemExit(main())
     except Exception as error:
         write('infrastructure-failure.json', {'status': 'NOT_PASSED', 'error_type': type(error).__name__,

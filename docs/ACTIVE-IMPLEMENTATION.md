@@ -1,13 +1,23 @@
 # Active implementation and qualification
 
-## Current qualification boundary (2026-10-06)
+## Current qualification boundary (2026-10-07)
 
-The current ECN candidate passed native unmodified Neqo in BOTH directions
-before requesting paired CI. Each side transferred2/3/5MiB with exact hashes,
-actual ECN send/receive, authenticated ACK_ECN feedback and joined retirement.
-Its official ECN trace verdict remains pending. Cumulative official coverage
-is still32/44: baseline30 on29ba476 and paired Retry2 on159ed009. Do not turn
-native success into an official pass or claim a same-head32-cell sweep.
+ECN run37546867484/artifact11450514076 on source d25b9cb passed the unchanged
+Neqo control and both candidate directions with the actual official E verdict.
+Direct runtime37546867490 passed core554, selected independent TLS29, host119,
+Python72 and impairment14, plus thumb no_std and source/control/vendor audits.
+Cumulative official coverage is34/44. These historical passes do not establish
+that all34 cells pass on the current ECN source.
+
+The user requested all34 cells in one CI run. The qualification plan now runs
+six groups on one frozen source commit, preserving each previously qualified
+peer: Neqo H/DC/LR/C20/6 and L2/C2/R/B/U, quiche C1/L1/M/Z and A, Neqo S and E.
+All34 candidate cells and all17 unchanged-reference controls must pass; every
+artifact must identify that same commit/run/attempt and the unchanged pins.
+The existing runner case deadlines,600-second phase deadlines, capacities and
+criteria are unchanged. Only the generated PASSED aggregate establishes all34
+cells for its exact source commit. The remaining10 cells and broad unselected legacy TLS
+failures remain unqualified.
 
 Paired Retry run37472936094/artifact11417713931 passed the unchanged Neqo
 control and both directions; runtime37472936275 passed. Early-data plus Retry

@@ -1,21 +1,73 @@
 {
-  "request": "Qualify ECN only after both native directions pass locally",
-  "requested_at": "2026-10-06T16:35:00Z",
+  "request": "Requalify all 34 previously passed case/direction cells on one source commit",
+  "requested_at": "2026-10-06T23:54:31Z",
   "scope": [
-    "unchanged Neqo self-control",
-    "candidate ECN client and server",
-    "actual ECT and ACK_ECN trace verdict"
+    "same source commit across all qualification groups",
+    "17 mandatory unchanged reference self-controls",
+    "34 actual candidate client/server verdicts"
   ],
-  "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
+  "approval": "User explicitly requested all 34 cases in this CI run.",
   "local_evidence": "docs/direct-locals.md",
-  "cases": [
-    "ecn"
-  ],
   "candidate_directions": [
     "client",
     "server"
   ],
-  "reference_implementation": "neqo",
-  "qualification": "Both native directions passed before this CI request using the same release SHA448f1aab511e1df775c7d786765418f4e00d579549d9d560b714a412ce1269c2. Each transferred2/3/5MiB with exact hashes and actual retirement. Client ECT accepted/validated26/26, received7340, ACK_ECN93; server10244/10244, received6839, ACK_ECN210; no feedback errors, both unchanged Neqo peers reported capable. Core554, host119, selected host strictClippy and thumb passed; selected independent TLS29 and Python71 passed. Broader legacy certificate_depth3 failures are separately retained and not counted as passes. Policy lives in projected role31 and existing physical publisher17, common request/settled, no phase flag/FSM/relay wrappers. Preserve failures; no reference, runner, deadline or capacity changes.",
-  "formal_models": false
+  "qualification": "All groups preserve their previously qualified reference peer and pinned unmodified runner. ECN source and Hibana vendor are unchanged from d25b9cb. The group phase deadlines, runner case deadlines, capacities, controls and criteria are unchanged. Every artifact must identify the same source commit and CI run. The aggregate requires all 34 distinct candidate results and all 17 reference controls; failed, unsupported and null results never qualify. Broad unselected legacy certificate_depth failures remain unqualified.",
+  "formal_models": false,
+  "candidate_case_direction_results": 34,
+  "groups": [
+    {
+      "name": "neqo-basic",
+      "reference_implementation": "neqo",
+      "cases": [
+        "handshake",
+        "transfer",
+        "longrtt",
+        "chacha20",
+        "ipv6"
+      ]
+    },
+    {
+      "name": "neqo-recovery",
+      "reference_implementation": "neqo",
+      "cases": [
+        "transferloss",
+        "transfercorruption",
+        "resumption",
+        "blackhole",
+        "keyupdate"
+      ]
+    },
+    {
+      "name": "quiche-loss-early",
+      "reference_implementation": "quiche",
+      "cases": [
+        "handshakeloss",
+        "handshakecorruption",
+        "multiplexing",
+        "zerortt"
+      ]
+    },
+    {
+      "name": "quiche-amplification",
+      "reference_implementation": "quiche",
+      "cases": [
+        "amplificationlimit"
+      ]
+    },
+    {
+      "name": "neqo-retry",
+      "reference_implementation": "neqo",
+      "cases": [
+        "retry"
+      ]
+    },
+    {
+      "name": "neqo-ecn",
+      "reference_implementation": "neqo",
+      "cases": [
+        "ecn"
+      ]
+    }
+  ]
 }

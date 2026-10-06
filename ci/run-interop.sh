@@ -9,7 +9,9 @@ export ROOT
 source ci/pins.env
 REFERENCE_IMPLEMENTATION=$(python3 - <<'REFERENCE'
 import json
-value=json.load(open('ci/interop-request.json')).get('reference_implementation', 'neqo')
+import os
+from ci.run_in_tools import selected_request
+value=selected_request(json.load(open('ci/interop-request.json')), os.environ.get('INTEROP_GROUP')).get('reference_implementation', 'neqo')
 assert isinstance(value,str) and value in {'neqo','quiche'}, 'unknown reference implementation'
 print(value)
 REFERENCE
@@ -25,7 +27,7 @@ import json,os,platform,subprocess
 from pathlib import Path
 Path('ci-safe-results/environment.json').write_text(json.dumps({
  'github_sha':os.environ.get('GITHUB_SHA'),'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
- 'run_id':os.environ.get('GITHUB_RUN_ID'),'run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
+ 'run_id':os.environ.get('GITHUB_RUN_ID'),'run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),'interop_group':os.environ.get('INTEROP_GROUP'),
  'runner_os':os.environ.get('RUNNER_OS'),'runner_image':os.environ.get('ImageVersion'),
  'machine':platform.machine(),'public_repository':True,'scope':'one explicitly requested pilot; baseline plus explicitly selected registered cases',
  'not_claimed':['full 40-cell matrix','three release repetitions','Pico hardware','whole-host zero allocation']},indent=2)+'\n')
@@ -163,6 +165,6 @@ docker run --rm --cpus=2 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /tmp:/tmp -v "$ROOT:$ROOT" -w "$ROOT" \
   -e "HOME=$ROOT/.ci-work/tools-home" \
-  -e ROOT -e SIM_IMAGE -e REFERENCE_IMAGE -e BOUNDED_IMAGE \
+  -e ROOT -e INTEROP_GROUP -e SIM_IMAGE -e REFERENCE_IMAGE -e BOUNDED_IMAGE \
   -e RUNNER_REVISION -e NEQO_REVISION \
   "$TOOLS_IMAGE" python3 ci/run_in_tools.py

@@ -849,3 +849,20 @@ the fixed historical DER fixture is absent, and two synchronous Provider-driver
 cases did not reach their expected terminal. These are retained as unqualified
 legacy coverage, not folded into the passing selected async TLS suite. No CI
 selection was narrowed and no failing test was converted into a pass.
+
+## Same-commit 34-cell CI request (2026-10-07)
+
+ECN official run37546867484/artifact11450514076 passed unchanged Neqo control,
+candidate client and candidate server on d25b9cb. The actual E verdicts are
+succeeded, with zero unexecuted results and successful cleanup. Runtime
+37546867490 also passed every selected step. This establishes34/44 cumulative
+coverage, while preserving the separate unselected legacy TLS failures above.
+
+The next request tests all17 historically qualified cases in both directions
+in one CI run. Six groups preserve the original reference peers and unchanged
+per-case/per-phase limits. The plan freezes one source commit before any group
+starts. The aggregate consumes bounded canonical verdict records, validates
+all34 distinct case/direction cells, all17 mandatory controls, unchanged pins,
+run/attempt/group identities and actual exit/cleanup. Missing, failed,
+unsupported, null or mixed-commit evidence cannot qualify. Runtime source and
+Hibana vendor are unchanged; the request itself is not a passing matrix result.

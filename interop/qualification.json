@@ -3,7 +3,7 @@
   "registered_quic_cases": 22,
   "directions": 2,
   "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
-  "current_cleanup_commit_qualification": "32/44 cumulative distinct official case/direction passes:30 baseline29ba476 plus Retry2 on159ed009. ECN native pair is implemented and locally qualified only; its official paired trace verdict is pending. Not all32 have been rerun on the new ECN source.",
+  "current_cleanup_commit_qualification": "34/44 cumulative distinct official case/direction passes:30 baseline29ba476, paired Retry2 on159ed009, and ECN2 on d25b9cb in run37546867484/artifact11450514076. The generated qualification artifact is the authority for the exact-source 34-cell matrix; historical passes are not substituted for this run.",
   "cases": [
     {
       "case": "handshake",
@@ -230,8 +230,26 @@
     {
       "case": "ecn",
       "abbreviation": "E",
-      "client_vs_neqo": "not-run",
-      "server_vs_neqo": "not-run"
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37546867484,
+        "artifact": 11450514076,
+        "commit": "d25b9cbefb4de2d801578caa11e7fbb466e92106",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37546867484"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37546867484,
+        "artifact": 11450514076,
+        "commit": "d25b9cbefb4de2d801578caa11e7fbb466e92106",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37546867484"
+      }
     },
     {
       "case": "amplificationlimit",
@@ -599,7 +617,7 @@
   "cumulative_distinct_cells": 32,
   "cumulative_scope": "baseline30 on29ba476 plus Retry2 on159ed009; not a full current-head sweep",
   "ecn_pair_candidate": {
-    "official_qualified": false,
+    "official_qualified": true,
     "native_binary_sha256": "448f1aab511e1df775c7d786765418f4e00d579549d9d560b714a412ce1269c2",
     "native_scope": "unchanged Neqo, localhost,2/3/5MiB; not ns-3 or official capture verdict",
     "native_client": {
@@ -684,6 +702,22 @@
       "failed": 3,
       "ignored": 1,
       "scope": "Outside unchanged selected CI suite. One fixed historical public-certificate fixture is missing; two old synchronous Provider-driver tests did not reach the expected terminal. They remain unqualified; no passing claim or test/deadline relaxation."
+    },
+    "official_evidence": {
+      "peer": "neqo",
+      "run": 37546867484,
+      "artifact": 11450514076,
+      "commit": "d25b9cbefb4de2d801578caa11e7fbb466e92106",
+      "control": "passed",
+      "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37546867484"
     }
+  },
+  "same_commit_34_matrix": {
+    "status": "verification-required",
+    "candidate_results": 34,
+    "reference_controls": 17,
+    "groups": "ci/interop-request.json",
+    "all_results_required_on_one_source_commit": true,
+    "result_location": "interop-qualification-<run_id>-<run_attempt>/summary.json"
   }
 }

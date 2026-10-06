@@ -594,6 +594,13 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].args[0][-2:], ['-f', 'true'])
         saved = json.loads((m.SAFE / 'bounded-client.json').read_text())
         self.assertEqual(saved['status'], 'FAILED')
+        canonical = json.loads((m.SAFE / 'bounded-client-verdict.json').read_text())
+        self.assertEqual(canonical['status'], 'FAILED')
+        self.assertFalse(canonical['passed'])
+        self.assertEqual(canonical['results'], result['results'])
+        self.assertEqual(canonical['original_json_sha256'], result['original_json_sha256'])
+        self.assertNotIn('case_diagnostics', canonical)
+        self.assertLess((m.SAFE / 'bounded-client-verdict.json').stat().st_size, m.MAX_JSON_BYTES)
 
 
 if __name__ == '__main__':
