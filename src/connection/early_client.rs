@@ -496,19 +496,18 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             let endpoint = &mut roles.tx_wire;
             let slot = &datagrams;
             let packet = initial_packet;
-            let id = 0;
 
             slot.put(packet)?;
-            endpoint.send::<p::EarlyInitialDatagram>(&id).await?;
+            endpoint.send::<p::EarlyInitialDatagram>(&()).await?;
             let edge = endpoint.offer().await?;
             let accepted = if edge.label() == p::EarlyInitialAccepted::LOGICAL_LABEL {
-                check(edge.recv::<p::EarlyInitialAccepted>().await?, id)?;
+                edge.recv::<p::EarlyInitialAccepted>().await?;
                 true
             } else {
-                check(edge.recv::<p::EarlyInitialRejected>().await?, id)?;
+                edge.recv::<p::EarlyInitialRejected>().await?;
                 false
             };
-            endpoint.send::<p::EarlyInitialSettled>(&id).await?;
+            endpoint.send::<p::EarlyInitialSettled>(&()).await?;
             if accepted {
                 Ok::<(), Error>(())
             } else {
@@ -556,19 +555,18 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 let endpoint = &mut roles.tx_wire;
                 let slot = &datagrams;
                 let packet = wire::Datagram::from_early(sealed);
-                let id = index as u64 + 1;
 
                 slot.put(packet)?;
-                endpoint.send::<p::EarlyPacketDatagram>(&id).await?;
+                endpoint.send::<p::EarlyPacketDatagram>(&()).await?;
                 let edge = endpoint.offer().await?;
                 let accepted = if edge.label() == p::EarlyPacketAccepted::LOGICAL_LABEL {
-                    check(edge.recv::<p::EarlyPacketAccepted>().await?, id)?;
+                    edge.recv::<p::EarlyPacketAccepted>().await?;
                     true
                 } else {
-                    check(edge.recv::<p::EarlyPacketRejected>().await?, id)?;
+                    edge.recv::<p::EarlyPacketRejected>().await?;
                     false
                 };
-                endpoint.send::<p::EarlyPacketSettled>(&id).await?;
+                endpoint.send::<p::EarlyPacketSettled>(&()).await?;
                 if accepted {
                     Ok::<(), Error>(())
                 } else {
@@ -590,14 +588,13 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             return check(edge.recv::<p::EarlySkip>().await?, 0);
         }
         check(edge.recv::<p::EarlyStart>().await?, 0)?;
-        check(roles.udp.recv::<p::EarlyInitialDatagram>().await?, 0)?;
+        roles.udp.recv::<p::EarlyInitialDatagram>().await?;
         async {
             let endpoint = &mut roles.udp;
             let slot = &datagrams;
             let io = &mut *io;
             let book = &mut *publication;
             let issuer = &mut *issuer;
-            let id = 0;
 
             let packet = slot.take()?;
             let permit = match issuer.begin() {
@@ -622,10 +619,10 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             ))?;
             outcome.set(accepted.is_some())?;
             match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
-                DecisionArm::Left => endpoint.send::<p::EarlyInitialAccepted>(&id).await?,
-                DecisionArm::Right => endpoint.send::<p::EarlyInitialRejected>(&id).await?,
+                DecisionArm::Left => endpoint.send::<p::EarlyInitialAccepted>(&()).await?,
+                DecisionArm::Right => endpoint.send::<p::EarlyInitialRejected>(&()).await?,
             }
-            check(endpoint.recv::<p::EarlyInitialSettled>().await?, id)?;
+            endpoint.recv::<p::EarlyInitialSettled>().await?;
             outcome.clear();
             match result {
                 Ok(Ok(_)) => Ok::<(), Error>(()),
@@ -634,20 +631,18 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             }
         }
         .await?;
-        let mut index = 1;
         loop {
             let edge = roles.udp.offer().await?;
             if edge.label() == p::EarlyEnd::LOGICAL_LABEL {
                 return check(edge.recv::<p::EarlyEnd>().await?, 0);
             }
-            check(edge.recv::<p::EarlyPacketDatagram>().await?, index)?;
+            edge.recv::<p::EarlyPacketDatagram>().await?;
             async {
                 let endpoint = &mut roles.udp;
                 let slot = &datagrams;
                 let io = &mut *io;
                 let book = &mut *publication;
                 let issuer = &mut *issuer;
-                let id = index;
 
                 let packet = slot.take()?;
                 let permit = match issuer.begin() {
@@ -672,10 +667,10 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 ))?;
                 outcome.set(accepted.is_some())?;
                 match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
-                    DecisionArm::Left => endpoint.send::<p::EarlyPacketAccepted>(&id).await?,
-                    DecisionArm::Right => endpoint.send::<p::EarlyPacketRejected>(&id).await?,
+                    DecisionArm::Left => endpoint.send::<p::EarlyPacketAccepted>(&()).await?,
+                    DecisionArm::Right => endpoint.send::<p::EarlyPacketRejected>(&()).await?,
                 }
-                check(endpoint.recv::<p::EarlyPacketSettled>().await?, id)?;
+                endpoint.recv::<p::EarlyPacketSettled>().await?;
                 outcome.clear();
                 match result {
                     Ok(Ok(_)) => Ok::<(), Error>(()),
@@ -684,7 +679,6 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 }
             }
             .await?;
-            index += 1;
         }
     });
     let mut resume = pin!(async { check(roles.tx.recv::<p::EarlyContinue>().await?, 0) });

@@ -1,6 +1,6 @@
 {
-  "request": "Retain sealed failure captures while qualifying direct timer progress",
-  "requested_at": "2026-10-06T06:31:00Z",
+  "request": "Qualify direct publication locals without mirrored progress IDs",
+  "requested_at": "2026-10-06T07:10:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions",
@@ -19,6 +19,6 @@
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Six finite timer progress Msg payloads are unit; duplicated expiry counters and echo checks removed. Actual send/recv, pending expiry ACK completion, StopTimer receipt and retirement join preserved; no numeric deadline, capacity or resource guarantee changed. Local full cargo424library plus all integration/docs, thumbv6m,116host and selected host lib/hq strict Clippy passed. Prior397acc54 L1 failures and later passes all retained; root cause of earlier intermittent client expiry remains unconfirmed. Recheck C1/L1/M/Z both directions and existing formal models. Do not claim entire local audit or full runner matrix complete. At explicit user request, failed phases now retain exact bounded pcaps/reference keylogs/endpoint logs only as authenticated encrypted CMS artifacts. The recipient private key stays outside repository and CI; plaintext is never uploaded. Actual local encryption/decryption/tamper rejection and all69 Python tests passed. A real failed encrypted capture is not yet acquired; do not claim otherwise.",
+  "qualification": "Initial, Handshake and Application publication and finite handoff progress, plus early publication, now carry unit with direct send/recv. Duplicate TX/TLS-source echo counters and the publisher early ordinal are removed. Actual Idle schedule revisions, stream/packet IDs, scope checks, acceptance and affine reservations are preserved. Final local checks passed: 424 library tests, all integrations, 26 doc tests, 116 host tests, thumbv6m, selected host strict Clippy, 69 Python tests and source/core audit. Parent dfbd9763 passed runtime 37424357298 and C1/L1/M/Z both directions with six Lean and six Z3 groups in 37424357565. Earlier intermittent losses remain unresolved history. Failed phases retain authenticated sealed pcaps, keylogs and logs without public plaintext. Verify this source independently; no full matrix or all-files completion is claimed.",
   "formal_models": true
 }

@@ -16,62 +16,62 @@ pub const ADAPTER_RESULT: u16 = 1001;
 pub type ReceiveComplete = g::Msg<20, u64>;
 pub type ReceiveContinuation = g::Msg<21, u64>;
 pub trait Publication {
-    type Datagram: g::Message<Payload = u64>;
-    type Accepted: g::Message<Payload = u64>;
-    type Rejected: g::Message<Payload = u64>;
-    type Settled: g::Message<Payload = u64>;
+    type Datagram: g::Message<Payload = ()>;
+    type Accepted: g::Message<Payload = ()>;
+    type Rejected: g::Message<Payload = ()>;
+    type Settled: g::Message<Payload = ()>;
 }
 pub struct Emission<const D: u8, const A: u8, const R: u8, const S: u8>;
 impl<const D: u8, const A: u8, const R: u8, const S: u8> Publication for Emission<D, A, R, S> {
-    type Datagram = g::Msg<D, u64>;
-    type Accepted = g::Msg<A, u64>;
-    type Rejected = g::Msg<R, u64>;
-    type Settled = g::Msg<S, u64>;
+    type Datagram = g::Msg<D, ()>;
+    type Accepted = g::Msg<A, ()>;
+    type Rejected = g::Msg<R, ()>;
+    type Settled = g::Msg<S, ()>;
 }
 pub trait TransmitPhase {
-    type Request: g::Message<Payload = u64>;
-    type Flight: g::Message<Payload = u64>;
+    type Request: g::Message<Payload = ()>;
+    type Flight: g::Message<Payload = ()>;
     type Idle: g::Message<Payload = u64>;
-    type Boundary: g::Message<Payload = u64>;
-    type Taken: g::Message<Payload = u64>;
-    type PhaseSettled: g::Message<Payload = u64>;
+    type Boundary: g::Message<Payload = ()>;
+    type Taken: g::Message<Payload = ()>;
+    type PhaseSettled: g::Message<Payload = ()>;
     type Ack: Publication;
     type Probe: Publication;
     type Data: Publication;
     type BatchAck: Publication;
     type BatchProbe: Publication;
-    type BatchEnd: g::Message<Payload = u64>;
-    type BatchSettled: g::Message<Payload = u64>;
-    type WireBoundary: g::Message<Payload = u64>;
-    type WireBoundarySeen: g::Message<Payload = u64>;
+    type BatchEnd: g::Message<Payload = ()>;
+    type BatchSettled: g::Message<Payload = ()>;
+    type WireBoundary: g::Message<Payload = ()>;
+    type WireBoundarySeen: g::Message<Payload = ()>;
 }
 macro_rules! tx_phase {
     ($name:ident,$b:literal) => {
         pub struct $name;
         impl TransmitPhase for $name {
-            type Request = g::Msg<{ $b }, u64>;
-            type Flight = g::Msg<{ $b + 1 }, u64>;
+            type Request = g::Msg<{ $b }, ()>;
+            type Flight = g::Msg<{ $b + 1 }, ()>;
             type Idle = g::Msg<{ $b + 2 }, u64>;
-            type Boundary = g::Msg<{ $b + 3 }, u64>;
-            type Taken = g::Msg<{ $b + 4 }, u64>;
-            type PhaseSettled = g::Msg<{ $b + 30 }, u64>;
+            type Boundary = g::Msg<{ $b + 3 }, ()>;
+            type Taken = g::Msg<{ $b + 4 }, ()>;
+            type PhaseSettled = g::Msg<{ $b + 30 }, ()>;
             type Ack = Emission<{ $b + 5 }, { $b + 6 }, { $b + 7 }, { $b + 8 }>;
             type Probe = Emission<{ $b + 9 }, { $b + 10 }, { $b + 11 }, { $b + 12 }>;
             type Data = Emission<{ $b + 13 }, { $b + 14 }, { $b + 15 }, { $b + 16 }>;
             type BatchAck = Emission<{ $b + 17 }, { $b + 18 }, { $b + 19 }, { $b + 20 }>;
             type BatchProbe = Emission<{ $b + 21 }, { $b + 22 }, { $b + 23 }, { $b + 24 }>;
-            type BatchEnd = g::Msg<{ $b + 25 }, u64>;
-            type BatchSettled = g::Msg<{ $b + 26 }, u64>;
-            type WireBoundary = g::Msg<{ $b + 27 }, u64>;
-            type WireBoundarySeen = g::Msg<{ $b + 28 }, u64>;
+            type BatchEnd = g::Msg<{ $b + 25 }, ()>;
+            type BatchSettled = g::Msg<{ $b + 26 }, ()>;
+            type WireBoundary = g::Msg<{ $b + 27 }, ()>;
+            type WireBoundarySeen = g::Msg<{ $b + 28 }, ()>;
         }
     };
 }
 tx_phase!(InitialTransmit, 32);
 tx_phase!(HandshakeTransmit, 64);
 tx_phase!(ApplicationTransmit, 96);
-pub type WriteHandshake = g::Msg<61, u64>;
-pub type WriteApplication = g::Msg<93, u64>;
+pub type WriteHandshake = g::Msg<61, ()>;
+pub type WriteApplication = g::Msg<93, ()>;
 pub type DrainAck = Emission<128, 129, 130, 131>;
 pub type DrainProbe = Emission<132, 133, 134, 135>;
 // Concrete message names keep each written local continuation directly readable.
@@ -169,11 +169,11 @@ pub type DrainProbeSettled = <DrainProbe as Publication>::Settled;
 pub type InitialWireBoundarySeen = <InitialTransmit as TransmitPhase>::WireBoundarySeen;
 pub type HandshakeWireBoundarySeen = <HandshakeTransmit as TransmitPhase>::WireBoundarySeen;
 pub type ApplicationWireBoundarySeen = <ApplicationTransmit as TransmitPhase>::WireBoundarySeen;
-pub type HandshakeRecoveryTransferred = g::Msg<136, u64>;
-pub type TransmitComplete = g::Msg<137, u64>;
-pub type TransmitContinuation = g::Msg<138, u64>;
-pub type AdapterComplete = g::Msg<139, u64>;
-pub type AdapterRetired = g::Msg<140, u64>;
+pub type HandshakeRecoveryTransferred = g::Msg<136, ()>;
+pub type TransmitComplete = g::Msg<137, ()>;
+pub type TransmitContinuation = g::Msg<138, ()>;
+pub type AdapterComplete = g::Msg<139, ()>;
+pub type AdapterRetired = g::Msg<140, ()>;
 // These edges carry only progress. The projected continuation supplies order;
 // no mirrored expiry counter or echo check is protocol authority.
 pub type TimerExpired = g::Msg<141, ()>;
@@ -307,8 +307,8 @@ pub const TIMER_STOP: u8 = 20;
 pub const RECEIVE_STOP: u8 = 21;
 pub type StopTimer = g::Msg<222, ()>;
 pub type TimerStopped = g::Msg<223, ()>;
-pub type StopReceive = g::Msg<225, u64>;
-pub type ReceiveStopped = g::Msg<226, u64>;
+pub type StopReceive = g::Msg<225, ()>;
+pub type ReceiveStopped = g::Msg<226, ()>;
 pub type CompleteFlow = g::Seq<
     g::Send<TX_WIRE, RECEIVE_STOP, StopReceive>,
     g::Seq<

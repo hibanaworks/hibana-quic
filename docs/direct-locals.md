@@ -501,3 +501,28 @@ encryption/decryption and exact synthetic-byte recovery, reject a modified
 ciphertext, and verify that unrequested files and plaintext never enter public
 output. All69 Python tests pass. This fixes evidence retention; it does not
 retroactively recover discarded failures or establish the remaining loss cause.
+
+## Handshake publication locals no longer mirror progress IDs
+
+The Initial/Handshake/Application publication exchanges, their finite handoff,
+and the early-data publication exchanges now use unit for pure progress edges.
+TX and TLS-source counters previously echoed solely to check the same projected
+order are removed. The publisher no longer maintains a second early packet
+ordinal just to echo that number. Every Datagram, actual Accepted/Rejected,
+Settled, boundary and retirement operation is still explicitly written in the
+same local body and projected global order.
+
+This is not a blanket numeric deletion: Idle still transfers the actual schedule
+revision used for waiting; request/stream IDs, packet numbers, ACK ranges,
+cryptographic scope checks, actual adapter acceptance time and affine
+reservation ownership remain intact. The publication-route fixture keeps its
+physical park/wake and exact label assertions on a capacity-one carrier; only
+obsolete payload equality assertions became direct typed receives.
+
+Final local verification passes: 424 library tests, all integration groups
+including 20 connected-application cases and the parked-publication regression,
+26 compile-fail/doc tests, 116 host tests, thumbv6m, selected host lib/hq strict
+Clippy, 69 Python tests, source audit and unmodified 1193-file core snapshot.
+This candidate is not remote-qualified until its own C1/L1/M/Z results arrive.
+The last qualified parent dfbd9763 passed all eight candidate cells and six
+Lean/six Z3 groups in 37424357565; older intermittent L1 failures remain retained.

@@ -282,7 +282,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
             }
         }
     });
-    let (stop_id, application, finished, peer) = {
+    let (application, finished, peer) = {
         // The stop role is independent and must receive from the beginning.
         // Otherwise its queued message can block the TLS completion message
         // needed by RX on a bounded carrier.
@@ -360,8 +360,8 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
             .map_err(|_| Error::Binding)?;
         // Keep the projected stop receive alive across every packet poll. A
         // pending native receive is cancelled only after that message is read.
-        let stop_id = match first {
-            core::ops::ControlFlow::Break(id) => id,
+        match first {
+            core::ops::ControlFlow::Break(()) => (),
             core::ops::ControlFlow::Continue(()) => {
                 let mut draining = pin!(async {
                     loop {
@@ -419,7 +419,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
                 .await?
             }
         };
-        (stop_id, application, finished, peer)
+        (application, finished, peer)
     };
     // A received stop cancels the next native wait, not bytes already owned
     // by this role. Preserve coalesced application ciphertext before handoff.
@@ -453,7 +453,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
         }
     }
     let id = 0;
-    stop.send::<p::ReceiveStopped>(&stop_id).await?;
+    stop.send::<p::ReceiveStopped>(&()).await?;
     endpoint.send::<p::ReceiveComplete>(&id).await?;
     check(endpoint.recv::<p::ReceiveContinuation>().await?, id)?;
     // Recovery reconciliation: the last pre-loss peer field is now initialized.
@@ -677,7 +677,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     book: &mut recovery::Tx<'book, 'scope, N>,
     clock: &impl Clock,
 ) -> Result<TransmitContinuation<'scope>, Error> {
-    let mut id = 0;
+
 
     // InitialTransmit: the projected source and publication exchanges are explicit.
     'initial: {
@@ -689,7 +689,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 match packet {
                     RecoveryPacket::Acknowledgment(space) => {
                         let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
-                        output.send::<p::InitialAckDatagram>(&id).await?;
+                        output.send::<p::InitialAckDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
                             expected_label: p::InitialAckAccepted::LOGICAL_LABEL,
@@ -697,16 +697,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         })?;
                         let accepted = match result.label() {
                             label if label == p::InitialAckAccepted::LOGICAL_LABEL => {
-                                check(result.recv::<p::InitialAckAccepted>().await?, id)?;
+                                result.recv::<p::InitialAckAccepted>().await?;
                                 true
                             }
                             label if label == p::InitialAckRejected::LOGICAL_LABEL => {
-                                check(result.recv::<p::InitialAckRejected>().await?, id)?;
+                                result.recv::<p::InitialAckRejected>().await?;
                                 false
                             }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
-                        output.send::<p::InitialAckSettled>(&id).await?;
+                        output.send::<p::InitialAckSettled>(&()).await?;
                         crate::runtime::yield_now().await;
                         if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
@@ -714,7 +714,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     }
                     RecoveryPacket::Probe(space) => {
                         let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
-                        output.send::<p::InitialProbeDatagram>(&id).await?;
+                        output.send::<p::InitialProbeDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
                             expected_label: p::InitialProbeAccepted::LOGICAL_LABEL,
@@ -722,16 +722,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         })?;
                         let accepted = match result.label() {
                             label if label == p::InitialProbeAccepted::LOGICAL_LABEL => {
-                                check(result.recv::<p::InitialProbeAccepted>().await?, id)?;
+                                result.recv::<p::InitialProbeAccepted>().await?;
                                 true
                             }
                             label if label == p::InitialProbeRejected::LOGICAL_LABEL => {
-                                check(result.recv::<p::InitialProbeRejected>().await?, id)?;
+                                result.recv::<p::InitialProbeRejected>().await?;
                                 false
                             }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
-                        output.send::<p::InitialProbeSettled>(&id).await?;
+                        output.send::<p::InitialProbeSettled>(&()).await?;
                         crate::runtime::yield_now().await;
                         if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
@@ -741,25 +741,25 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 continue;
             }
             let revision = slots.schedule.revision.get();
-            endpoint.send::<p::InitialRequest>(&id).await?;
+            endpoint.send::<p::InitialRequest>(&()).await?;
             let response = endpoint.offer().await.map_err(|error| Error::EndpointAt {
                 role: p::TX,
                 expected_label: p::InitialFlight::LOGICAL_LABEL,
                 error,
             })?;
             if response.label() == p::InitialBoundary::LOGICAL_LABEL {
-                check(response.recv::<p::InitialBoundary>().await?, id)?;
-                output.send::<p::InitialWireBoundary>(&id).await?;
-                check(output.recv::<p::InitialWireBoundarySeen>().await?, id)?;
-                endpoint.send::<p::InitialPhaseSettled>(&id).await?;
-                id = id.checked_add(1).ok_or(Error::Binding)?;
+                response.recv::<p::InitialBoundary>().await?;
+                output.send::<p::InitialWireBoundary>(&()).await?;
+                output.recv::<p::InitialWireBoundarySeen>().await?;
+                endpoint.send::<p::InitialPhaseSettled>(&()).await?;
+
                 break 'initial;
             }
             match response.label() {
                 label if label == p::InitialFlight::LOGICAL_LABEL => {
-                    check(response.recv::<p::InitialFlight>().await?, id)?;
+                    response.recv::<p::InitialFlight>().await?;
                     let flight = slots.flight.take()?;
-                    endpoint.send::<p::InitialTaken>(&id).await?;
+                    endpoint.send::<p::InitialTaken>(&()).await?;
                     let mut offset = 0;
                     while offset < flight.bytes().len() {
                         if flight.level() == Level::Initial && !initial.available() {
@@ -803,7 +803,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                 {
                                     let is_initial =
                                         space == crate::accounting::PacketNumberSpace::Initial;
-                                    output.send::<p::InitialDataDatagram>(&id).await?;
+                                    output.send::<p::InitialDataDatagram>(&()).await?;
                                     let result = output.offer().await.map_err(|error| {
                                         Error::EndpointAt {
                                             role: p::TX_WIRE,
@@ -813,22 +813,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     })?;
                                     let accepted = match result.label() {
                                         label if label == p::InitialDataAccepted::LOGICAL_LABEL => {
-                                            check(
-                                                result.recv::<p::InitialDataAccepted>().await?,
-                                                id,
-                                            )?;
+                                            result.recv::<p::InitialDataAccepted>().await?;
                                             true
                                         }
                                         label if label == p::InitialDataRejected::LOGICAL_LABEL => {
-                                            check(
-                                                result.recv::<p::InitialDataRejected>().await?,
-                                                id,
-                                            )?;
+                                            result.recv::<p::InitialDataRejected>().await?;
                                             false
                                         }
                                         label => return Err(Error::UnexpectedLabel(label)),
                                     };
-                                    output.send::<p::InitialDataSettled>(&id).await?;
+                                    output.send::<p::InitialDataSettled>(&()).await?;
                                     crate::runtime::yield_now().await;
                                     if !accepted && (!is_initial || initial.available()) {
                                         return Err(Error::Io(IoError::Rejected));
@@ -846,7 +840,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     RecoveryPacket::Acknowledgment(space) => {
                                         let is_initial =
                                             space == crate::accounting::PacketNumberSpace::Initial;
-                                        output.send::<p::InitialAckDatagram>(&id).await?;
+                                        output.send::<p::InitialAckDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
                                                 role: p::TX_WIRE,
@@ -860,25 +854,19 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                                 if label
                                                     == p::InitialAckAccepted::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result.recv::<p::InitialAckAccepted>().await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::InitialAckAccepted>().await?;
                                                 true
                                             }
                                             label
                                                 if label
                                                     == p::InitialAckRejected::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result.recv::<p::InitialAckRejected>().await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::InitialAckRejected>().await?;
                                                 false
                                             }
                                             label => return Err(Error::UnexpectedLabel(label)),
                                         };
-                                        output.send::<p::InitialAckSettled>(&id).await?;
+                                        output.send::<p::InitialAckSettled>(&()).await?;
                                         crate::runtime::yield_now().await;
                                         if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
@@ -887,7 +875,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     RecoveryPacket::Probe(space) => {
                                         let is_initial =
                                             space == crate::accounting::PacketNumberSpace::Initial;
-                                        output.send::<p::InitialProbeDatagram>(&id).await?;
+                                        output.send::<p::InitialProbeDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
                                                 role: p::TX_WIRE,
@@ -901,29 +889,19 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                                 if label
                                                     == p::InitialProbeAccepted::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result
-                                                        .recv::<p::InitialProbeAccepted>()
-                                                        .await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::InitialProbeAccepted>().await?;
                                                 true
                                             }
                                             label
                                                 if label
                                                     == p::InitialProbeRejected::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result
-                                                        .recv::<p::InitialProbeRejected>()
-                                                        .await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::InitialProbeRejected>().await?;
                                                 false
                                             }
                                             label => return Err(Error::UnexpectedLabel(label)),
                                         };
-                                        output.send::<p::InitialProbeSettled>(&id).await?;
+                                        output.send::<p::InitialProbeSettled>(&()).await?;
                                         crate::runtime::yield_now().await;
                                         if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
@@ -939,16 +917,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 }
                 label if label == p::InitialIdle::LOGICAL_LABEL => {
                     response.recv::<p::InitialIdle>().await?;
-                    endpoint.send::<p::InitialTaken>(&id).await?;
+                    endpoint.send::<p::InitialTaken>(&()).await?;
                     slots.schedule.wait_changed(1, revision).await;
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
             }
-            id = id.checked_add(1).ok_or(Error::Binding)?;
+
             crate::runtime::yield_now().await;
         }
     }
-    check(endpoint.recv::<p::WriteHandshake>().await?, id)?;
+    endpoint.recv::<p::WriteHandshake>().await?;
     let handshake = slots.write_handshake.take()?;
     if !core::ptr::eq(scope, handshake.scope()) {
         return Err(Error::Binding);
@@ -966,7 +944,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 match packet {
                     RecoveryPacket::Acknowledgment(space) => {
                         let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
-                        output.send::<p::HandshakeAckDatagram>(&id).await?;
+                        output.send::<p::HandshakeAckDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
                             expected_label: p::HandshakeAckAccepted::LOGICAL_LABEL,
@@ -974,16 +952,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         })?;
                         let accepted = match result.label() {
                             label if label == p::HandshakeAckAccepted::LOGICAL_LABEL => {
-                                check(result.recv::<p::HandshakeAckAccepted>().await?, id)?;
+                                result.recv::<p::HandshakeAckAccepted>().await?;
                                 true
                             }
                             label if label == p::HandshakeAckRejected::LOGICAL_LABEL => {
-                                check(result.recv::<p::HandshakeAckRejected>().await?, id)?;
+                                result.recv::<p::HandshakeAckRejected>().await?;
                                 false
                             }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
-                        output.send::<p::HandshakeAckSettled>(&id).await?;
+                        output.send::<p::HandshakeAckSettled>(&()).await?;
                         crate::runtime::yield_now().await;
                         if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
@@ -991,7 +969,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     }
                     RecoveryPacket::Probe(space) => {
                         let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
-                        output.send::<p::HandshakeProbeDatagram>(&id).await?;
+                        output.send::<p::HandshakeProbeDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
                             expected_label: p::HandshakeProbeAccepted::LOGICAL_LABEL,
@@ -999,16 +977,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         })?;
                         let accepted = match result.label() {
                             label if label == p::HandshakeProbeAccepted::LOGICAL_LABEL => {
-                                check(result.recv::<p::HandshakeProbeAccepted>().await?, id)?;
+                                result.recv::<p::HandshakeProbeAccepted>().await?;
                                 true
                             }
                             label if label == p::HandshakeProbeRejected::LOGICAL_LABEL => {
-                                check(result.recv::<p::HandshakeProbeRejected>().await?, id)?;
+                                result.recv::<p::HandshakeProbeRejected>().await?;
                                 false
                             }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
-                        output.send::<p::HandshakeProbeSettled>(&id).await?;
+                        output.send::<p::HandshakeProbeSettled>(&()).await?;
                         crate::runtime::yield_now().await;
                         if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
@@ -1018,25 +996,25 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 continue;
             }
             let revision = slots.schedule.revision.get();
-            endpoint.send::<p::HandshakeRequest>(&id).await?;
+            endpoint.send::<p::HandshakeRequest>(&()).await?;
             let response = endpoint.offer().await.map_err(|error| Error::EndpointAt {
                 role: p::TX,
                 expected_label: p::HandshakeFlight::LOGICAL_LABEL,
                 error,
             })?;
             if response.label() == p::HandshakeBoundary::LOGICAL_LABEL {
-                check(response.recv::<p::HandshakeBoundary>().await?, id)?;
-                output.send::<p::HandshakeWireBoundary>(&id).await?;
-                check(output.recv::<p::HandshakeWireBoundarySeen>().await?, id)?;
-                endpoint.send::<p::HandshakePhaseSettled>(&id).await?;
-                id = id.checked_add(1).ok_or(Error::Binding)?;
+                response.recv::<p::HandshakeBoundary>().await?;
+                output.send::<p::HandshakeWireBoundary>(&()).await?;
+                output.recv::<p::HandshakeWireBoundarySeen>().await?;
+                endpoint.send::<p::HandshakePhaseSettled>(&()).await?;
+
                 break 'handshake;
             }
             match response.label() {
                 label if label == p::HandshakeFlight::LOGICAL_LABEL => {
-                    check(response.recv::<p::HandshakeFlight>().await?, id)?;
+                    response.recv::<p::HandshakeFlight>().await?;
                     let flight = slots.flight.take()?;
-                    endpoint.send::<p::HandshakeTaken>(&id).await?;
+                    endpoint.send::<p::HandshakeTaken>(&()).await?;
                     let mut offset = 0;
                     while offset < flight.bytes().len() {
                         if flight.level() == Level::Initial && !initial.available() {
@@ -1080,7 +1058,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                 {
                                     let is_initial =
                                         space == crate::accounting::PacketNumberSpace::Initial;
-                                    output.send::<p::HandshakeDataDatagram>(&id).await?;
+                                    output.send::<p::HandshakeDataDatagram>(&()).await?;
                                     let result = output.offer().await.map_err(|error| {
                                         Error::EndpointAt {
                                             role: p::TX_WIRE,
@@ -1092,24 +1070,18 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                         label
                                             if label == p::HandshakeDataAccepted::LOGICAL_LABEL =>
                                         {
-                                            check(
-                                                result.recv::<p::HandshakeDataAccepted>().await?,
-                                                id,
-                                            )?;
+                                            result.recv::<p::HandshakeDataAccepted>().await?;
                                             true
                                         }
                                         label
                                             if label == p::HandshakeDataRejected::LOGICAL_LABEL =>
                                         {
-                                            check(
-                                                result.recv::<p::HandshakeDataRejected>().await?,
-                                                id,
-                                            )?;
+                                            result.recv::<p::HandshakeDataRejected>().await?;
                                             false
                                         }
                                         label => return Err(Error::UnexpectedLabel(label)),
                                     };
-                                    output.send::<p::HandshakeDataSettled>(&id).await?;
+                                    output.send::<p::HandshakeDataSettled>(&()).await?;
                                     crate::runtime::yield_now().await;
                                     if !accepted && (!is_initial || initial.available()) {
                                         return Err(Error::Io(IoError::Rejected));
@@ -1127,7 +1099,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     RecoveryPacket::Acknowledgment(space) => {
                                         let is_initial =
                                             space == crate::accounting::PacketNumberSpace::Initial;
-                                        output.send::<p::HandshakeAckDatagram>(&id).await?;
+                                        output.send::<p::HandshakeAckDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
                                                 role: p::TX_WIRE,
@@ -1141,29 +1113,19 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                                 if label
                                                     == p::HandshakeAckAccepted::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result
-                                                        .recv::<p::HandshakeAckAccepted>()
-                                                        .await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::HandshakeAckAccepted>().await?;
                                                 true
                                             }
                                             label
                                                 if label
                                                     == p::HandshakeAckRejected::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result
-                                                        .recv::<p::HandshakeAckRejected>()
-                                                        .await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::HandshakeAckRejected>().await?;
                                                 false
                                             }
                                             label => return Err(Error::UnexpectedLabel(label)),
                                         };
-                                        output.send::<p::HandshakeAckSettled>(&id).await?;
+                                        output.send::<p::HandshakeAckSettled>(&()).await?;
                                         crate::runtime::yield_now().await;
                                         if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
@@ -1172,7 +1134,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     RecoveryPacket::Probe(space) => {
                                         let is_initial =
                                             space == crate::accounting::PacketNumberSpace::Initial;
-                                        output.send::<p::HandshakeProbeDatagram>(&id).await?;
+                                        output.send::<p::HandshakeProbeDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
                                                 role: p::TX_WIRE,
@@ -1186,29 +1148,19 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                                 if label
                                                     == p::HandshakeProbeAccepted::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result
-                                                        .recv::<p::HandshakeProbeAccepted>()
-                                                        .await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::HandshakeProbeAccepted>().await?;
                                                 true
                                             }
                                             label
                                                 if label
                                                     == p::HandshakeProbeRejected::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result
-                                                        .recv::<p::HandshakeProbeRejected>()
-                                                        .await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::HandshakeProbeRejected>().await?;
                                                 false
                                             }
                                             label => return Err(Error::UnexpectedLabel(label)),
                                         };
-                                        output.send::<p::HandshakeProbeSettled>(&id).await?;
+                                        output.send::<p::HandshakeProbeSettled>(&()).await?;
                                         crate::runtime::yield_now().await;
                                         if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
@@ -1224,16 +1176,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 }
                 label if label == p::HandshakeIdle::LOGICAL_LABEL => {
                     response.recv::<p::HandshakeIdle>().await?;
-                    endpoint.send::<p::HandshakeTaken>(&id).await?;
+                    endpoint.send::<p::HandshakeTaken>(&()).await?;
                     slots.schedule.wait_changed(1, revision).await;
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
             }
-            id = id.checked_add(1).ok_or(Error::Binding)?;
+
             crate::runtime::yield_now().await;
         }
     }
-    check(endpoint.recv::<p::WriteApplication>().await?, id)?;
+    endpoint.recv::<p::WriteApplication>().await?;
     let application = slots.write_application.take()?;
     if !core::ptr::eq(scope, application.scope()) {
         return Err(Error::Binding);
@@ -1250,7 +1202,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 match packet {
                     RecoveryPacket::Acknowledgment(space) => {
                         let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
-                        output.send::<p::ApplicationAckDatagram>(&id).await?;
+                        output.send::<p::ApplicationAckDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
                             expected_label: p::ApplicationAckAccepted::LOGICAL_LABEL,
@@ -1258,16 +1210,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         })?;
                         let accepted = match result.label() {
                             label if label == p::ApplicationAckAccepted::LOGICAL_LABEL => {
-                                check(result.recv::<p::ApplicationAckAccepted>().await?, id)?;
+                                result.recv::<p::ApplicationAckAccepted>().await?;
                                 true
                             }
                             label if label == p::ApplicationAckRejected::LOGICAL_LABEL => {
-                                check(result.recv::<p::ApplicationAckRejected>().await?, id)?;
+                                result.recv::<p::ApplicationAckRejected>().await?;
                                 false
                             }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
-                        output.send::<p::ApplicationAckSettled>(&id).await?;
+                        output.send::<p::ApplicationAckSettled>(&()).await?;
                         crate::runtime::yield_now().await;
                         if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
@@ -1275,7 +1227,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     }
                     RecoveryPacket::Probe(space) => {
                         let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
-                        output.send::<p::ApplicationProbeDatagram>(&id).await?;
+                        output.send::<p::ApplicationProbeDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
                             expected_label: p::ApplicationProbeAccepted::LOGICAL_LABEL,
@@ -1283,16 +1235,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         })?;
                         let accepted = match result.label() {
                             label if label == p::ApplicationProbeAccepted::LOGICAL_LABEL => {
-                                check(result.recv::<p::ApplicationProbeAccepted>().await?, id)?;
+                                result.recv::<p::ApplicationProbeAccepted>().await?;
                                 true
                             }
                             label if label == p::ApplicationProbeRejected::LOGICAL_LABEL => {
-                                check(result.recv::<p::ApplicationProbeRejected>().await?, id)?;
+                                result.recv::<p::ApplicationProbeRejected>().await?;
                                 false
                             }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
-                        output.send::<p::ApplicationProbeSettled>(&id).await?;
+                        output.send::<p::ApplicationProbeSettled>(&()).await?;
                         crate::runtime::yield_now().await;
                         if !accepted && (!is_initial || initial.available()) {
                             return Err(Error::Io(IoError::Rejected));
@@ -1302,25 +1254,25 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 continue;
             }
             let revision = slots.schedule.revision.get();
-            endpoint.send::<p::ApplicationRequest>(&id).await?;
+            endpoint.send::<p::ApplicationRequest>(&()).await?;
             let response = endpoint.offer().await.map_err(|error| Error::EndpointAt {
                 role: p::TX,
                 expected_label: p::ApplicationFlight::LOGICAL_LABEL,
                 error,
             })?;
             if response.label() == p::ApplicationBoundary::LOGICAL_LABEL {
-                check(response.recv::<p::ApplicationBoundary>().await?, id)?;
-                output.send::<p::ApplicationWireBoundary>(&id).await?;
-                check(output.recv::<p::ApplicationWireBoundarySeen>().await?, id)?;
-                endpoint.send::<p::ApplicationPhaseSettled>(&id).await?;
-                id = id.checked_add(1).ok_or(Error::Binding)?;
+                response.recv::<p::ApplicationBoundary>().await?;
+                output.send::<p::ApplicationWireBoundary>(&()).await?;
+                output.recv::<p::ApplicationWireBoundarySeen>().await?;
+                endpoint.send::<p::ApplicationPhaseSettled>(&()).await?;
+
                 break 'application;
             }
             match response.label() {
                 label if label == p::ApplicationFlight::LOGICAL_LABEL => {
-                    check(response.recv::<p::ApplicationFlight>().await?, id)?;
+                    response.recv::<p::ApplicationFlight>().await?;
                     let flight = slots.flight.take()?;
-                    endpoint.send::<p::ApplicationTaken>(&id).await?;
+                    endpoint.send::<p::ApplicationTaken>(&()).await?;
                     let mut offset = 0;
                     while offset < flight.bytes().len() {
                         if flight.level() == Level::Initial && !initial.available() {
@@ -1364,7 +1316,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                 {
                                     let is_initial =
                                         space == crate::accounting::PacketNumberSpace::Initial;
-                                    output.send::<p::ApplicationDataDatagram>(&id).await?;
+                                    output.send::<p::ApplicationDataDatagram>(&()).await?;
                                     let result = output.offer().await.map_err(|error| {
                                         Error::EndpointAt {
                                             role: p::TX_WIRE,
@@ -1378,25 +1330,19 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                             if label
                                                 == p::ApplicationDataAccepted::LOGICAL_LABEL =>
                                         {
-                                            check(
-                                                result.recv::<p::ApplicationDataAccepted>().await?,
-                                                id,
-                                            )?;
+                                            result.recv::<p::ApplicationDataAccepted>().await?;
                                             true
                                         }
                                         label
                                             if label
                                                 == p::ApplicationDataRejected::LOGICAL_LABEL =>
                                         {
-                                            check(
-                                                result.recv::<p::ApplicationDataRejected>().await?,
-                                                id,
-                                            )?;
+                                            result.recv::<p::ApplicationDataRejected>().await?;
                                             false
                                         }
                                         label => return Err(Error::UnexpectedLabel(label)),
                                     };
-                                    output.send::<p::ApplicationDataSettled>(&id).await?;
+                                    output.send::<p::ApplicationDataSettled>(&()).await?;
                                     crate::runtime::yield_now().await;
                                     if !accepted && (!is_initial || initial.available()) {
                                         return Err(Error::Io(IoError::Rejected));
@@ -1414,7 +1360,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     RecoveryPacket::Acknowledgment(space) => {
                                         let is_initial =
                                             space == crate::accounting::PacketNumberSpace::Initial;
-                                        output.send::<p::ApplicationAckDatagram>(&id).await?;
+                                        output.send::<p::ApplicationAckDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
                                                 role: p::TX_WIRE,
@@ -1428,29 +1374,19 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                                 if label
                                                     == p::ApplicationAckAccepted::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result
-                                                        .recv::<p::ApplicationAckAccepted>()
-                                                        .await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::ApplicationAckAccepted>().await?;
                                                 true
                                             }
                                             label
                                                 if label
                                                     == p::ApplicationAckRejected::LOGICAL_LABEL =>
                                             {
-                                                check(
-                                                    result
-                                                        .recv::<p::ApplicationAckRejected>()
-                                                        .await?,
-                                                    id,
-                                                )?;
+                                                result.recv::<p::ApplicationAckRejected>().await?;
                                                 false
                                             }
                                             label => return Err(Error::UnexpectedLabel(label)),
                                         };
-                                        output.send::<p::ApplicationAckSettled>(&id).await?;
+                                        output.send::<p::ApplicationAckSettled>(&()).await?;
                                         crate::runtime::yield_now().await;
                                         if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
@@ -1459,7 +1395,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                     RecoveryPacket::Probe(space) => {
                                         let is_initial =
                                             space == crate::accounting::PacketNumberSpace::Initial;
-                                        output.send::<p::ApplicationProbeDatagram>(&id).await?;
+                                        output.send::<p::ApplicationProbeDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
                                                 role: p::TX_WIRE,
@@ -1470,16 +1406,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                                         })?;
                                         let accepted = match result.label() {
         label if label == p::ApplicationProbeAccepted::LOGICAL_LABEL => {
-            check(result.recv::<p::ApplicationProbeAccepted>().await?, id)?;
+            result.recv::<p::ApplicationProbeAccepted>().await?;
             true
         }
         label if label == p::ApplicationProbeRejected::LOGICAL_LABEL => {
-            check(result.recv::<p::ApplicationProbeRejected>().await?, id)?;
+            result.recv::<p::ApplicationProbeRejected>().await?;
             false
         }
         label => return Err(Error::UnexpectedLabel(label)),
     };
-                                        output.send::<p::ApplicationProbeSettled>(&id).await?;
+                                        output.send::<p::ApplicationProbeSettled>(&()).await?;
                                         crate::runtime::yield_now().await;
                                         if !accepted && (!is_initial || initial.available()) {
                                             return Err(Error::Io(IoError::Rejected));
@@ -1495,12 +1431,12 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 }
                 label if label == p::ApplicationIdle::LOGICAL_LABEL => {
                     response.recv::<p::ApplicationIdle>().await?;
-                    endpoint.send::<p::ApplicationTaken>(&id).await?;
+                    endpoint.send::<p::ApplicationTaken>(&()).await?;
                     slots.schedule.wait_changed(1, revision).await;
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
             }
-            id = id.checked_add(1).ok_or(Error::Binding)?;
+
             crate::runtime::yield_now().await;
         }
     }
@@ -1513,7 +1449,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
             match packet {
                 RecoveryPacket::Acknowledgment(space) => {
                     let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
-                    output.send::<p::DrainAckDatagram>(&id).await?;
+                    output.send::<p::DrainAckDatagram>(&()).await?;
                     let result = output.offer().await.map_err(|error| Error::EndpointAt {
                         role: p::TX_WIRE,
                         expected_label: p::DrainAckAccepted::LOGICAL_LABEL,
@@ -1521,16 +1457,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     })?;
                     let accepted = match result.label() {
                         label if label == p::DrainAckAccepted::LOGICAL_LABEL => {
-                            check(result.recv::<p::DrainAckAccepted>().await?, id)?;
+                            result.recv::<p::DrainAckAccepted>().await?;
                             true
                         }
                         label if label == p::DrainAckRejected::LOGICAL_LABEL => {
-                            check(result.recv::<p::DrainAckRejected>().await?, id)?;
+                            result.recv::<p::DrainAckRejected>().await?;
                             false
                         }
                         label => return Err(Error::UnexpectedLabel(label)),
                     };
-                    output.send::<p::DrainAckSettled>(&id).await?;
+                    output.send::<p::DrainAckSettled>(&()).await?;
                     crate::runtime::yield_now().await;
                     if !accepted && (!is_initial || initial.available()) {
                         return Err(Error::Io(IoError::Rejected));
@@ -1538,7 +1474,7 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 }
                 RecoveryPacket::Probe(space) => {
                     let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
-                    output.send::<p::DrainProbeDatagram>(&id).await?;
+                    output.send::<p::DrainProbeDatagram>(&()).await?;
                     let result = output.offer().await.map_err(|error| Error::EndpointAt {
                         role: p::TX_WIRE,
                         expected_label: p::DrainProbeAccepted::LOGICAL_LABEL,
@@ -1546,16 +1482,16 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                     })?;
                     let accepted = match result.label() {
                         label if label == p::DrainProbeAccepted::LOGICAL_LABEL => {
-                            check(result.recv::<p::DrainProbeAccepted>().await?, id)?;
+                            result.recv::<p::DrainProbeAccepted>().await?;
                             true
                         }
                         label if label == p::DrainProbeRejected::LOGICAL_LABEL => {
-                            check(result.recv::<p::DrainProbeRejected>().await?, id)?;
+                            result.recv::<p::DrainProbeRejected>().await?;
                             false
                         }
                         label => return Err(Error::UnexpectedLabel(label)),
                     };
-                    output.send::<p::DrainProbeSettled>(&id).await?;
+                    output.send::<p::DrainProbeSettled>(&()).await?;
                     crate::runtime::yield_now().await;
                     if !accepted && (!is_initial || initial.available()) {
                         return Err(Error::Io(IoError::Rejected));
@@ -1570,17 +1506,17 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
         }
         slots.schedule.wait_changed(1, revision).await;
     }
-    output.send::<p::HandshakeRecoveryTransferred>(&id).await?;
+    output.send::<p::HandshakeRecoveryTransferred>(&()).await?;
     // Stop prefix input at its explicit handoff boundary, before unrelated
     // timer/adapter retirement can prolong that finite receive ownership.
-    output.send::<p::StopReceive>(&id).await?;
-    check(output.recv::<p::ReceiveStopped>().await?, id)?;
+    output.send::<p::StopReceive>(&()).await?;
+    output.recv::<p::ReceiveStopped>().await?;
     output.send::<p::StopTimer>(&()).await?;
     output.recv::<p::TimerStopped>().await?;
-    endpoint.send::<p::TransmitComplete>(&id).await?;
-    check(endpoint.recv::<p::TransmitContinuation>().await?, id)?;
-    output.send::<p::AdapterComplete>(&id).await?;
-    check(output.recv::<p::AdapterRetired>().await?, id)?;
+    endpoint.send::<p::TransmitComplete>(&()).await?;
+    endpoint.recv::<p::TransmitContinuation>().await?;
+    output.send::<p::AdapterComplete>(&()).await?;
+    output.recv::<p::AdapterRetired>().await?;
     let (handshake, application) = {
         let mut owned = keys.borrow_mut();
         (
@@ -1617,7 +1553,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
             })?;
             match input.label() {
                 label if label == p::InitialAckDatagram::LOGICAL_LABEL => {
-                    let id = input.recv::<p::InitialAckDatagram>().await?;
+                    input.recv::<p::InitialAckDatagram>().await?;
                     {
                         let wire::Datagram {
                             sealed,
@@ -1682,13 +1618,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
                             DecisionArm::Left => {
-                                endpoint.send::<p::InitialAckAccepted>(&id).await?
+                                endpoint.send::<p::InitialAckAccepted>(&()).await?
                             }
                             DecisionArm::Right => {
-                                endpoint.send::<p::InitialAckRejected>(&id).await?
+                                endpoint.send::<p::InitialAckRejected>(&()).await?
                             }
                         };
-                        check(endpoint.recv::<p::InitialAckSettled>().await?, id)?;
+                        endpoint.recv::<p::InitialAckSettled>().await?;
                         outcome.clear();
                         match result {
                             None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -1699,7 +1635,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                 }
                 label if label == p::InitialProbeDatagram::LOGICAL_LABEL => {
-                    let id = input.recv::<p::InitialProbeDatagram>().await?;
+                    input.recv::<p::InitialProbeDatagram>().await?;
                     {
                         let wire::Datagram {
                             sealed,
@@ -1764,13 +1700,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
                             DecisionArm::Left => {
-                                endpoint.send::<p::InitialProbeAccepted>(&id).await?
+                                endpoint.send::<p::InitialProbeAccepted>(&()).await?
                             }
                             DecisionArm::Right => {
-                                endpoint.send::<p::InitialProbeRejected>(&id).await?
+                                endpoint.send::<p::InitialProbeRejected>(&()).await?
                             }
                         };
-                        check(endpoint.recv::<p::InitialProbeSettled>().await?, id)?;
+                        endpoint.recv::<p::InitialProbeSettled>().await?;
                         outcome.clear();
                         match result {
                             None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -1781,7 +1717,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                 }
                 label if label == p::InitialDataDatagram::LOGICAL_LABEL => {
-                    let id = input.recv::<p::InitialDataDatagram>().await?;
+                    input.recv::<p::InitialDataDatagram>().await?;
                     {
                         let wire::Datagram {
                             sealed,
@@ -1846,13 +1782,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
                             DecisionArm::Left => {
-                                endpoint.send::<p::InitialDataAccepted>(&id).await?
+                                endpoint.send::<p::InitialDataAccepted>(&()).await?
                             }
                             DecisionArm::Right => {
-                                endpoint.send::<p::InitialDataRejected>(&id).await?
+                                endpoint.send::<p::InitialDataRejected>(&()).await?
                             }
                         };
-                        check(endpoint.recv::<p::InitialDataSettled>().await?, id)?;
+                        endpoint.recv::<p::InitialDataSettled>().await?;
                         outcome.clear();
                         match result {
                             None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -1863,8 +1799,8 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                 }
                 label if label == p::InitialWireBoundary::LOGICAL_LABEL => {
-                    let id = input.recv::<p::InitialWireBoundary>().await?;
-                    endpoint.send::<p::InitialWireBoundarySeen>(&id).await?;
+                    input.recv::<p::InitialWireBoundary>().await?;
+                    endpoint.send::<p::InitialWireBoundarySeen>(&()).await?;
                     break 'initial;
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
@@ -1883,7 +1819,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
             })?;
             match input.label() {
                 label if label == p::HandshakeAckDatagram::LOGICAL_LABEL => {
-                    let id = input.recv::<p::HandshakeAckDatagram>().await?;
+                    input.recv::<p::HandshakeAckDatagram>().await?;
                     {
                         let wire::Datagram {
                             sealed,
@@ -1948,13 +1884,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
                             DecisionArm::Left => {
-                                endpoint.send::<p::HandshakeAckAccepted>(&id).await?
+                                endpoint.send::<p::HandshakeAckAccepted>(&()).await?
                             }
                             DecisionArm::Right => {
-                                endpoint.send::<p::HandshakeAckRejected>(&id).await?
+                                endpoint.send::<p::HandshakeAckRejected>(&()).await?
                             }
                         };
-                        check(endpoint.recv::<p::HandshakeAckSettled>().await?, id)?;
+                        endpoint.recv::<p::HandshakeAckSettled>().await?;
                         outcome.clear();
                         match result {
                             None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -1965,7 +1901,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                 }
                 label if label == p::HandshakeProbeDatagram::LOGICAL_LABEL => {
-                    let id = input.recv::<p::HandshakeProbeDatagram>().await?;
+                    input.recv::<p::HandshakeProbeDatagram>().await?;
                     {
                         let wire::Datagram {
                             sealed,
@@ -2030,13 +1966,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
                             DecisionArm::Left => {
-                                endpoint.send::<p::HandshakeProbeAccepted>(&id).await?
+                                endpoint.send::<p::HandshakeProbeAccepted>(&()).await?
                             }
                             DecisionArm::Right => {
-                                endpoint.send::<p::HandshakeProbeRejected>(&id).await?
+                                endpoint.send::<p::HandshakeProbeRejected>(&()).await?
                             }
                         };
-                        check(endpoint.recv::<p::HandshakeProbeSettled>().await?, id)?;
+                        endpoint.recv::<p::HandshakeProbeSettled>().await?;
                         outcome.clear();
                         match result {
                             None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -2047,7 +1983,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                 }
                 label if label == p::HandshakeDataDatagram::LOGICAL_LABEL => {
-                    let id = input.recv::<p::HandshakeDataDatagram>().await?;
+                    input.recv::<p::HandshakeDataDatagram>().await?;
                     {
                         let wire::Datagram {
                             sealed,
@@ -2112,13 +2048,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
                             DecisionArm::Left => {
-                                endpoint.send::<p::HandshakeDataAccepted>(&id).await?
+                                endpoint.send::<p::HandshakeDataAccepted>(&()).await?
                             }
                             DecisionArm::Right => {
-                                endpoint.send::<p::HandshakeDataRejected>(&id).await?
+                                endpoint.send::<p::HandshakeDataRejected>(&()).await?
                             }
                         };
-                        check(endpoint.recv::<p::HandshakeDataSettled>().await?, id)?;
+                        endpoint.recv::<p::HandshakeDataSettled>().await?;
                         outcome.clear();
                         match result {
                             None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -2129,8 +2065,8 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                 }
                 label if label == p::HandshakeWireBoundary::LOGICAL_LABEL => {
-                    let id = input.recv::<p::HandshakeWireBoundary>().await?;
-                    endpoint.send::<p::HandshakeWireBoundarySeen>(&id).await?;
+                    input.recv::<p::HandshakeWireBoundary>().await?;
+                    endpoint.send::<p::HandshakeWireBoundarySeen>(&()).await?;
                     break 'handshake;
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
@@ -2149,7 +2085,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
             })?;
             match input.label() {
                 label if label == p::ApplicationAckDatagram::LOGICAL_LABEL => {
-                    let id = input.recv::<p::ApplicationAckDatagram>().await?;
+                    input.recv::<p::ApplicationAckDatagram>().await?;
                     {
                         let wire::Datagram {
                             sealed,
@@ -2214,13 +2150,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
                             DecisionArm::Left => {
-                                endpoint.send::<p::ApplicationAckAccepted>(&id).await?
+                                endpoint.send::<p::ApplicationAckAccepted>(&()).await?
                             }
                             DecisionArm::Right => {
-                                endpoint.send::<p::ApplicationAckRejected>(&id).await?
+                                endpoint.send::<p::ApplicationAckRejected>(&()).await?
                             }
                         };
-                        check(endpoint.recv::<p::ApplicationAckSettled>().await?, id)?;
+                        endpoint.recv::<p::ApplicationAckSettled>().await?;
                         outcome.clear();
                         match result {
                             None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -2231,7 +2167,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                 }
                 label if label == p::ApplicationProbeDatagram::LOGICAL_LABEL => {
-                    let id = input.recv::<p::ApplicationProbeDatagram>().await?;
+                    input.recv::<p::ApplicationProbeDatagram>().await?;
                     {
                         let wire::Datagram {
                             sealed,
@@ -2296,13 +2232,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
                             DecisionArm::Left => {
-                                endpoint.send::<p::ApplicationProbeAccepted>(&id).await?
+                                endpoint.send::<p::ApplicationProbeAccepted>(&()).await?
                             }
                             DecisionArm::Right => {
-                                endpoint.send::<p::ApplicationProbeRejected>(&id).await?
+                                endpoint.send::<p::ApplicationProbeRejected>(&()).await?
                             }
                         };
-                        check(endpoint.recv::<p::ApplicationProbeSettled>().await?, id)?;
+                        endpoint.recv::<p::ApplicationProbeSettled>().await?;
                         outcome.clear();
                         match result {
                             None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -2313,7 +2249,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                 }
                 label if label == p::ApplicationDataDatagram::LOGICAL_LABEL => {
-                    let id = input.recv::<p::ApplicationDataDatagram>().await?;
+                    input.recv::<p::ApplicationDataDatagram>().await?;
                     {
                         let wire::Datagram {
                             sealed,
@@ -2378,13 +2314,13 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         outcome.set(accepted_at.is_some())?;
                         match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
                             DecisionArm::Left => {
-                                endpoint.send::<p::ApplicationDataAccepted>(&id).await?
+                                endpoint.send::<p::ApplicationDataAccepted>(&()).await?
                             }
                             DecisionArm::Right => {
-                                endpoint.send::<p::ApplicationDataRejected>(&id).await?
+                                endpoint.send::<p::ApplicationDataRejected>(&()).await?
                             }
                         };
-                        check(endpoint.recv::<p::ApplicationDataSettled>().await?, id)?;
+                        endpoint.recv::<p::ApplicationDataSettled>().await?;
                         outcome.clear();
                         match result {
                             None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -2395,8 +2331,8 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                 }
                 label if label == p::ApplicationWireBoundary::LOGICAL_LABEL => {
-                    let id = input.recv::<p::ApplicationWireBoundary>().await?;
-                    endpoint.send::<p::ApplicationWireBoundarySeen>(&id).await?;
+                    input.recv::<p::ApplicationWireBoundary>().await?;
+                    endpoint.send::<p::ApplicationWireBoundarySeen>(&()).await?;
                     break 'application;
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
@@ -2412,7 +2348,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
         })?;
         match input.label() {
             label if label == p::DrainAckDatagram::LOGICAL_LABEL => {
-                let id = input.recv::<p::DrainAckDatagram>().await?;
+                input.recv::<p::DrainAckDatagram>().await?;
                 {
                     let wire::Datagram {
                         sealed,
@@ -2476,10 +2412,10 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                     outcome.set(accepted_at.is_some())?;
                     match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
-                        DecisionArm::Left => endpoint.send::<p::DrainAckAccepted>(&id).await?,
-                        DecisionArm::Right => endpoint.send::<p::DrainAckRejected>(&id).await?,
+                        DecisionArm::Left => endpoint.send::<p::DrainAckAccepted>(&()).await?,
+                        DecisionArm::Right => endpoint.send::<p::DrainAckRejected>(&()).await?,
                     };
-                    check(endpoint.recv::<p::DrainAckSettled>().await?, id)?;
+                    endpoint.recv::<p::DrainAckSettled>().await?;
                     outcome.clear();
                     match result {
                         None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -2490,7 +2426,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                 }
             }
             label if label == p::DrainProbeDatagram::LOGICAL_LABEL => {
-                let id = input.recv::<p::DrainProbeDatagram>().await?;
+                input.recv::<p::DrainProbeDatagram>().await?;
                 {
                     let wire::Datagram {
                         sealed,
@@ -2554,10 +2490,10 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     }
                     outcome.set(accepted_at.is_some())?;
                     match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
-                        DecisionArm::Left => endpoint.send::<p::DrainProbeAccepted>(&id).await?,
-                        DecisionArm::Right => endpoint.send::<p::DrainProbeRejected>(&id).await?,
+                        DecisionArm::Left => endpoint.send::<p::DrainProbeAccepted>(&()).await?,
+                        DecisionArm::Right => endpoint.send::<p::DrainProbeRejected>(&()).await?,
                     };
-                    check(endpoint.recv::<p::DrainProbeSettled>().await?, id)?;
+                    endpoint.recv::<p::DrainProbeSettled>().await?;
                     outcome.clear();
                     match result {
                         None | Some(Ok(Ok(_))) => Ok::<(), Error>(()),
@@ -2574,7 +2510,7 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
             label => return Err(Error::UnexpectedLabel(label)),
         }
     }
-    let id = endpoint.recv::<p::AdapterComplete>().await?;
-    endpoint.send::<p::AdapterRetired>(&id).await?;
+    endpoint.recv::<p::AdapterComplete>().await?;
+    endpoint.send::<p::AdapterRetired>(&()).await?;
     Ok(())
 }

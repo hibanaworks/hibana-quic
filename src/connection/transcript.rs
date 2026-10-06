@@ -126,75 +126,68 @@ pub(super) async fn transmit<'scope, const N: usize, const P: usize>(
     source: &Numbers<'_, 'scope, '_, '_>,
     slots: &Storage<'scope, '_, N, P>,
 ) -> Result<(), Error> {
-    let mut id = 0;
     // Initial source local: each exchange is written here in contract order.
     loop {
-        check(endpoint.recv::<p::InitialRequest>().await?, id)?;
+        endpoint.recv::<p::InitialRequest>().await?;
         if !slots.write_handshake.is_empty() {
-            endpoint.send::<p::InitialBoundary>(&id).await?;
-            check(endpoint.recv::<p::InitialPhaseSettled>().await?, id)?;
-            id = id.checked_add(1).ok_or(Error::Binding)?;
+            endpoint.send::<p::InitialBoundary>(&()).await?;
+            endpoint.recv::<p::InitialPhaseSettled>().await?;
             break;
         }
         let flight = source.transmit::<N>()?;
         source.harvest(slots)?;
         if let Some(flight) = flight {
             slots.flight.put(flight)?;
-            endpoint.send::<p::InitialFlight>(&id).await?;
+            endpoint.send::<p::InitialFlight>(&()).await?;
         } else {
             endpoint
                 .send::<p::InitialIdle>(&slots.schedule.revision.get())
                 .await?;
         }
-        check(endpoint.recv::<p::InitialTaken>().await?, id)?;
-        id = id.checked_add(1).ok_or(Error::Binding)?;
+        endpoint.recv::<p::InitialTaken>().await?;
     }
-    endpoint.send::<p::WriteHandshake>(&id).await?;
+    endpoint.send::<p::WriteHandshake>(&()).await?;
     // Handshake source local: each exchange is written here in contract order.
     loop {
-        check(endpoint.recv::<p::HandshakeRequest>().await?, id)?;
+        endpoint.recv::<p::HandshakeRequest>().await?;
         if !slots.write_application.is_empty() {
-            endpoint.send::<p::HandshakeBoundary>(&id).await?;
-            check(endpoint.recv::<p::HandshakePhaseSettled>().await?, id)?;
-            id = id.checked_add(1).ok_or(Error::Binding)?;
+            endpoint.send::<p::HandshakeBoundary>(&()).await?;
+            endpoint.recv::<p::HandshakePhaseSettled>().await?;
             break;
         }
         let flight = source.transmit::<N>()?;
         source.harvest(slots)?;
         if let Some(flight) = flight {
             slots.flight.put(flight)?;
-            endpoint.send::<p::HandshakeFlight>(&id).await?;
+            endpoint.send::<p::HandshakeFlight>(&()).await?;
         } else {
             endpoint
                 .send::<p::HandshakeIdle>(&slots.schedule.revision.get())
                 .await?;
         }
-        check(endpoint.recv::<p::HandshakeTaken>().await?, id)?;
-        id = id.checked_add(1).ok_or(Error::Binding)?;
+        endpoint.recv::<p::HandshakeTaken>().await?;
     }
-    endpoint.send::<p::WriteApplication>(&id).await?;
+    endpoint.send::<p::WriteApplication>(&()).await?;
     loop {
-        check(endpoint.recv::<p::ApplicationRequest>().await?, id)?;
+        endpoint.recv::<p::ApplicationRequest>().await?;
         let flight = source.transmit::<N>()?;
         source.harvest(slots)?;
         if let Some(flight) = flight {
             slots.flight.put(flight)?;
-            endpoint.send::<p::ApplicationFlight>(&id).await?;
+            endpoint.send::<p::ApplicationFlight>(&()).await?;
         } else if source.connected() {
-            endpoint.send::<p::ApplicationBoundary>(&id).await?;
-            check(endpoint.recv::<p::ApplicationPhaseSettled>().await?, id)?;
-            id = id.checked_add(1).ok_or(Error::Binding)?;
+            endpoint.send::<p::ApplicationBoundary>(&()).await?;
+            endpoint.recv::<p::ApplicationPhaseSettled>().await?;
             break;
         } else {
             endpoint
                 .send::<p::ApplicationIdle>(&slots.schedule.revision.get())
                 .await?;
         }
-        check(endpoint.recv::<p::ApplicationTaken>().await?, id)?;
-        id = id.checked_add(1).ok_or(Error::Binding)?;
+        endpoint.recv::<p::ApplicationTaken>().await?;
         crate::runtime::yield_now().await;
     }
-    check(endpoint.recv::<p::TransmitComplete>().await?, id)?;
-    endpoint.send::<p::TransmitContinuation>(&id).await?;
+    endpoint.recv::<p::TransmitComplete>().await?;
+    endpoint.send::<p::TransmitContinuation>(&()).await?;
     Ok(())
 }

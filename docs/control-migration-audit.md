@@ -1,5 +1,10 @@
 # Direct-control audit and feature boundary
 
+The inventory below records earlier migration checkpoints. For the latest
+qualified commit, see ACTIVE-IMPLEMENTATION.md; whole-codebase completion is
+not claimed. Current finite-handshake work removes pure progress echo IDs while
+retaining actual schedule revisions, packet numbers and scope-bound resources.
+
 This audit separates protocol-control authority from arithmetic, observed facts
 and resource occupancy. A boolean search alone cannot establish migration.
 The static guard in ci/audit_control.py only prevents the specifically deleted

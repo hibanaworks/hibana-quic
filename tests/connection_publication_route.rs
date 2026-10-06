@@ -150,14 +150,11 @@ fn run_publications(publications: &[u8], combined: bool) {
         macro_rules! publish {
             ($pub:ty, $id:expr) => {{
                 sender
-                    .send::<<$pub as p::Publication>::Datagram>(&$id)
+                    .send::<<$pub as p::Publication>::Datagram>(&())
                     .await?;
-                assert_eq!(
-                    sender.recv::<<$pub as p::Publication>::Accepted>().await?,
-                    $id
-                );
+                sender.recv::<<$pub as p::Publication>::Accepted>().await?;
                 sender
-                    .send::<<$pub as p::Publication>::Settled>(&$id)
+                    .send::<<$pub as p::Publication>::Settled>(&())
                     .await?;
                 // The receiver must actually park before the next route choice.
                 while parked.get() <= $id {
@@ -174,9 +171,8 @@ fn run_publications(publications: &[u8], combined: bool) {
                 _ => unreachable!(),
             }
         }
-        let end = publications.len() as u64;
-        sender.send::<Boundary>(&end).await?;
-        assert_eq!(sender.recv::<Seen>().await?, end);
+        sender.send::<Boundary>(&()).await?;
+        sender.recv::<Seen>().await?;
         Ok::<_, hibana::EndpointError>(())
     };
     let receive = async {
@@ -199,19 +195,13 @@ fn run_publications(publications: &[u8], combined: bool) {
                         branch.label(),
                         <$pub as p::Publication>::Datagram::LOGICAL_LABEL
                     );
-                    assert_eq!(
-                        branch.recv::<<$pub as p::Publication>::Datagram>().await?,
-                        $id
-                    );
+                    branch.recv::<<$pub as p::Publication>::Datagram>().await?;
                 }
                 result.set(Some(DecisionArm::Left));
                 receiver
-                    .send::<<$pub as p::Publication>::Accepted>(&$id)
+                    .send::<<$pub as p::Publication>::Accepted>(&())
                     .await?;
-                assert_eq!(
-                    receiver.recv::<<$pub as p::Publication>::Settled>().await?,
-                    $id
-                );
+                receiver.recv::<<$pub as p::Publication>::Settled>().await?;
                 result.set(None);
             }};
         }
@@ -236,9 +226,9 @@ fn run_publications(publications: &[u8], combined: bool) {
             })
             .await?;
             assert_eq!(branch.label(), Boundary::LOGICAL_LABEL);
-            assert_eq!(branch.recv::<Boundary>().await?, end);
+            branch.recv::<Boundary>().await?;
         }
-        receiver.send::<Seen>(&end).await?;
+        receiver.send::<Seen>(&()).await?;
         Ok::<_, hibana::EndpointError>(())
     };
     let wake = Arc::new(WakeFlag(std::sync::atomic::AtomicBool::new(true)));

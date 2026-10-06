@@ -2,13 +2,23 @@
 
 ## Current qualification boundary (2026-10-06)
 
-The historical matrix is 30/44 unique candidate cells, not a complete matrix
-on this candidate. Experimental 130c864 passed runtime CI37398933045. Official
-CI37398932952 passed quiche C1/L1/M/Z controls, all four candidate server cells,
-and candidate client C1/M/Z. Client L1 timed out at 300 seconds with 49/50
-length-complete files. The missing response and retirement remain unresolved.
-See [direct locals](direct-locals.md) for the current implementation and evidence.
-Earlier evidence sections below are historical checkpoints, not current claims.
+The historical matrix remains 30/44 unique candidate cells, not a complete
+latest-commit matrix. Experimental dfbd97631e842beb61c0f785b7bd1d6cff235cce
+passed all runtime CI37424357298 steps. Official CI37424357565/artifact11394432987
+passed unchanged quiche C1/L1/M/Z controls and all eight candidate direction/case
+cells, plus the existing six Lean and six Z3 model groups. Client C1 and L1 each
+have fifty actual successful terminals, zero idle expiry, closed lifecycle and
+resources retired. M transferred1999 files; Z transferred40 across two
+connections with actual resumption. This is a checkpoint, not the full matrix.
+
+Earlier intermittent L1 client failures remain recorded in direct-locals.md;
+their cause is not established by later passes. The timer stop/expiry deadlock
+was separately reproduced pre-fix and corrected without dropping the actual
+expiry acknowledgement. Failed phases now preserve sealed authenticated
+capture/keylog/log evidence for private diagnosis; no real failed ciphertext
+has yet been obtained on this retention-enabled revision. See
+[direct locals](direct-locals.md) for exact boundaries. Earlier evidence sections
+below are historical checkpoints, not current claims.
 
 ## Architecture
 
