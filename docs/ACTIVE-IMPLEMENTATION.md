@@ -2,9 +2,20 @@
 
 ## Current qualification boundary (2026-10-06)
 
+The working candidate now implements ordinary Retry in both directions. Its
+same native release binary passed actual unmodified Neqo client and server
+2/3/5 MiB transfers, with exact hashes and actual TLS/close/resource terminals.
+The prior server-only CI passed but was premature: every capability must first
+pass BOTH directions locally before paired CI. The paired official Retry verdict
+is pending; do not transfer the older baseline's complete matrix claim onto this
+new source. See docs/direct-locals.md for local results and rejected prototypes.
+Early-data plus Retry is not qualified by the ordinary Retry profile.
+
+### Completed thirty-cell baseline
+
 The30 historically qualified case/direction cells have now all passed on
 product code29ba476cd1e40a30ecbcfeb9879fb9bde114cf52. Only CI request/evidence
-files differ between sweep commits. This is30/44 current-code coverage, not
+files differ between sweep commits. This is30/44 coverage for that exact baseline code, not
 all44 cells or a failure-free repeated full matrix. Exact groups and artifacts
 are in interop/qualification.json.
 

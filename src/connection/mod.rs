@@ -14,6 +14,7 @@ mod locals;
 pub mod parameters;
 pub mod protocol;
 pub mod recovery;
+mod retry_client;
 #[cfg(test)]
 mod scheduler_tests;
 mod timer;
@@ -55,11 +56,14 @@ pub struct Config<'a> {
     pub original_destination_id: &'a [u8],
     /// Actual Retry SCID, retained separately from the original destination.
     pub retry_source_id: Option<&'a [u8]>,
+    /// Actual server-issued token, repeated in subsequent client Initials.
+    pub initial_token: &'a [u8],
     pub peer_connection_id: &'a [u8],
 }
 impl Config<'_> {
     fn validate(&self) -> Result<(), Error> {
-        if self.local_connection_id.len() > 20
+        if self.initial_token.len() > 512
+            || self.local_connection_id.len() > 20
             || self.peer_connection_id.len() > 20
             || self.original_destination_id.len() > 20
             || self.retry_source_id.is_some_and(|id| {
@@ -435,7 +439,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     storage.claim()?;
     let _clear = Clear(storage);
     let scope = source.scope();
-    let integrity = source.take_integrity_budget()?;
+    let mut integrity = source.take_integrity_budget()?;
     let initial = crypto::initial_keys(
         config
             .retry_source_id
@@ -460,6 +464,38 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         .map_err(|_| Error::Binding)?;
     let message_slot = crate::bounded_tls::locals::MessageSlot::new(message_buffer);
     let (mut tx, mut rx, mut clock_book, mut publication, mut retirement) = book.split()?;
+    let first_response = retry_client::run(
+        &mut roles.tls_tx,
+        &mut roles.udp,
+        source,
+        config,
+        early.is_some(),
+        &initial,
+        &mut tx,
+        &mut rx,
+        &mut clock_book,
+        &mut publication,
+        receive_io,
+        send_io,
+        clock,
+        issuer,
+        &mut integrity,
+    )
+    .await?;
+    let config = if let Some(retry) = first_response
+        .as_ref()
+        .and_then(|first| first.retry.as_ref())
+    {
+        *storage.peer.borrow_mut() = retry.source;
+        Config {
+            retry_source_id: Some(retry.source.bytes()),
+            initial_token: retry.token(),
+            peer_connection_id: retry.source.bytes(),
+            ..config
+        }
+    } else {
+        config
+    };
     early_client::run(
         roles,
         source,
@@ -496,6 +532,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
                     &initial_exchange,
                     receive_initial.as_deref_mut(),
                     integrity,
+                    first_response.as_ref(),
                     reassembly,
                     &mut rx,
                     clock,

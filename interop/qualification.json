@@ -494,5 +494,95 @@
     ],
     "all_passing_results_have_passing_controls": true,
     "prior_failures_retained": true
+  },
+  "retry_pair_candidate": {
+    "official_pair_pass": false,
+    "required_workflow": "both native directions locally before any new CI",
+    "native_binary_sha256": "7c16ab3c29bd65bdd08f3dce33c8fc6ed806b464f3a325e85b77d9eef8256493",
+    "same_binary_both_directions": true,
+    "native_client": {
+      "direction": "forward",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.202,
+      "post_client_verification_and_retirement_seconds": 0.038,
+      "elapsed_seconds": 0.241,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        },
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5",
+          "received_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5"
+        },
+        {
+          "name": "5242880",
+          "bytes": 5242880,
+          "expected_sha256": "c036cbb7553a909f8b8877d4461924307f27ecb66cff928eeeafd569c3887e29",
+          "received_sha256": "c036cbb7553a909f8b8877d4461924307f27ecb66cff928eeeafd569c3887e29"
+        }
+      ],
+      "proxy": null,
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0
+    },
+    "native_server": {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 5.735,
+      "post_client_verification_and_retirement_seconds": 0.035,
+      "elapsed_seconds": 5.77,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a",
+          "received_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a"
+        },
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7",
+          "received_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7"
+        },
+        {
+          "name": "5242880",
+          "bytes": 5242880,
+          "expected_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0",
+          "received_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0"
+        }
+      ],
+      "proxy": null,
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0
+    },
+    "actual_reference_retry_log_checked": true,
+    "native_scope": "unchanged Neqo; localhost without ns-3 impairment or official trace verdict",
+    "earlier_server_only": {
+      "commit": "f7a3ec8c6622b4d9501f6d76240374b2557dccc3",
+      "run": 37458099916,
+      "artifact": 11410573260,
+      "result": "passed",
+      "workflow_boundary": "premature one-sided run; no additional CI until local pair qualified"
+    },
+    "coverage_gap": "early-data plus Retry not qualified"
   }
 }

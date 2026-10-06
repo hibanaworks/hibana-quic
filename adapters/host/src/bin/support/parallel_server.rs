@@ -182,6 +182,7 @@ pub async fn run<const S: usize, const T: usize>(
                         local_connection_id: &admission.local,
                         original_destination_id: &admission.original,
                         retry_source_id: None,
+                        initial_token: &[],
                         peer_connection_id: &admission.peer,
                     },
                     tls,

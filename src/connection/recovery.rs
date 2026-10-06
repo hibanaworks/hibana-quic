@@ -1091,6 +1091,47 @@ impl<'scope, const B: usize> InitialRetirementOwner<'_, 'scope, B> {
 }
 
 impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
+    /// Numerical effect of the projected client Retry join. The caller must
+    /// consume its one-shot Retry branch and settle every actual publication
+    /// before invoking this effect. No TLS input/output or PN allocator is reset.
+    pub(super) fn retry_initial(&mut self, now: u64) -> Result<(), Error> {
+        let mut n = self.book.numbers.borrow_mut();
+        n.ordinary()?;
+        if n.side != Side::Client
+            || n.received.iter().any(|received| received.len != 0)
+            || n.retired_space.iter().any(|retired| *retired)
+            || n.ledger.next_packet_number(PacketNumberSpace::Handshake) != Some(0)
+            || n.ledger
+                .next_packet_number(PacketNumberSpace::ApplicationData)
+                != Some(0)
+        {
+            return Err(Error::Binding);
+        }
+        if n.pending.iter().any(|count| *count != 0) {
+            return Err(Error::PendingInitialPublication);
+        }
+        // Validate fallible arithmetic before detaching accepted references.
+        let revision = n.revision.checked_add(1).ok_or(AccountingError::Overflow)?;
+        let congestion = NewReno::new(n.max_datagram_size)?;
+        n.check_time(now)?;
+        n.ledger.discard_space(PacketNumberSpace::Initial)?;
+        n.flights.requeue_space(PacketNumberSpace::Initial)?;
+        n.congestion = congestion;
+        n.timer = RecoveryTimer::new();
+        n.largest_acked.fill(None);
+        n.loss_time.fill(None);
+        n.last_ack_eliciting.fill(None);
+        n.epochs.fill(None);
+        n.lost.fill(None);
+        n.floor[0] = n
+            .ledger
+            .next_packet_number(PacketNumberSpace::Initial)
+            .unwrap_or(accounting::MAX_PACKET_NUMBER + 1);
+        n.probe_space = None;
+        n.probe_credits = 0;
+        n.revision = revision;
+        Ok(())
+    }
     pub fn snapshot(&self) -> Snapshot {
         self.book.snapshot()
     }
@@ -2659,6 +2700,64 @@ mod tests {
         assert_eq!(snapshot.available_bytes, 2400);
         retirement.disarm();
         guard.finish();
+    }
+
+    #[test]
+    fn retry_numeric_join_preserves_crypto_pn_and_actual_path_bytes() {
+        book!(book, scope, installation, arena, Side::Client, 730);
+        let (mut tx, mut rx, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let flight = tx
+            .store_crypto(Level::Initial, 0, b"same ClientHello")
+            .unwrap();
+        let first = tx
+            .reserve(Level::Initial, 1200, Some(flight), true, true, false, 0)
+            .unwrap();
+        publication
+            .settle(Completion::from_adapter(first, Some(0)))
+            .unwrap();
+        rx.received_datagram(160).unwrap();
+        let deadline = clock.update(0, [true, false]).unwrap().unwrap();
+        let before = tx.snapshot();
+        tx.retry_initial(100).unwrap();
+        let after = tx.snapshot();
+        assert_eq!(after.next_packet_number, before.next_packet_number);
+        assert_eq!(after.received_bytes, 160);
+        assert_eq!(after.accepted_bytes, 1200);
+        assert_eq!(after.bytes_in_flight, 0);
+        assert_eq!(after.active_flights, 1);
+        assert_eq!(after.pto_count, 0);
+        assert_eq!(tx.flight_data(flight).unwrap().bytes(), b"same ClientHello");
+        assert_eq!(tx.next_retransmit(), Some((flight, false)));
+        assert!(matches!(
+            clock.expire(deadline, 100),
+            Err(Error::StaleDeadline)
+        ));
+        let next = tx
+            .reserve(Level::Initial, 1200, Some(flight), true, true, false, 100)
+            .unwrap();
+        assert_eq!(next.packet().value, 1);
+        publication
+            .settle(Completion::from_adapter(next, Some(100)))
+            .unwrap();
+        retirement.disarm();
+    }
+
+    #[test]
+    fn retry_numeric_join_rejects_pending_publication_without_mutation() {
+        book!(book, scope, installation, arena, Side::Client, 731);
+        let (mut tx, _, _, mut publication, mut retirement) = book.split().unwrap();
+        let flight = tx.store_crypto(Level::Initial, 0, b"retained").unwrap();
+        let pending = tx
+            .reserve(Level::Initial, 1200, Some(flight), true, true, false, 0)
+            .unwrap();
+        let before = tx.snapshot();
+        assert_eq!(tx.retry_initial(100), Err(Error::PendingInitialPublication));
+        assert_eq!(tx.snapshot(), before);
+        publication.cancel(pending).unwrap();
+        tx.retry_initial(100).unwrap();
+        assert_eq!(tx.flight_data(flight).unwrap().bytes(), b"retained");
+        assert_eq!(tx.snapshot().next_packet_number[0], Some(1));
+        retirement.disarm();
     }
 
     #[test]

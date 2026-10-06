@@ -132,6 +132,12 @@ fn run_publications(publications: &[u8], combined: bool) {
         .map(|program| rendezvous.enter(session, program).unwrap());
     let start = async {
         if let Some(endpoint) = starter.as_mut() {
+            endpoint
+                .send::<hibana_quic::retry::client_protocol::Skip>(&())
+                .await?;
+            endpoint
+                .recv::<hibana_quic::retry::client_protocol::Skipped>()
+                .await?;
             endpoint.send::<p::EarlySkip>(&()).await?;
         }
         Ok::<_, hibana::EndpointError>(())
@@ -177,6 +183,14 @@ fn run_publications(publications: &[u8], combined: bool) {
     };
     let receive = async {
         if combined {
+            receiver
+                .offer()
+                .await?
+                .recv::<hibana_quic::retry::client_protocol::Skip>()
+                .await?;
+            receiver
+                .send::<hibana_quic::retry::client_protocol::Skipped>(&())
+                .await?;
             receiver.offer().await?.recv::<p::EarlySkip>().await?;
         }
         macro_rules! accept {

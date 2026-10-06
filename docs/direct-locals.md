@@ -713,8 +713,9 @@ transport parameter. The address-token issuer remains alive for admission;
 invalid/corrupt tokens do not create TLS or connection owners. Stateless
 reserved-version readiness responses use the same actual publication path.
 The current host policy supports required Retry for one non-early connection.
-Client Retry acceptance/rekey/recovery continuation is still unimplemented;
-do not qualify that direction or reset TLS/packet numbers as a workaround.
+At this server-only checkpoint, client Retry acceptance/rekey/recovery was
+unimplemented; the later paired-candidate section records its implementation.
+Resetting TLS or packet numbers is never a workaround.
 
 Two real projected capacity-one tests and a real loopback UDP test pass,
 including corrupt token rejection, VN readiness, valid token admission and
@@ -731,3 +732,48 @@ resources are retired, with 6.050 seconds total. Independent reference TLS tests
 pass all 29 cases; Python tests pass all 70. Full core, thumb, host, selected host
 strict Clippy and source/control/vendor audits pass. The official server-only
 Retry run is requested separately; no official Retry pass is claimed here.
+
+## Client Retry: literal one-shot branch and local pair qualification
+
+The client now runs a finite Initial prefix before ordinary handshake parallel
+roles. Actual publication and receive/deadline effects remain explicit local
+send/recv/offer operations. A quiescent native join precedes the optional Retry
+branch; that branch is outside both work rolls. Distinct pre/post-Retry messages
+identify their key context, and a second Rekey selection is rejected by Hibana.
+There is no retry-seen flag or second connection state machine. Retained TLS
+CRYPTO and packet-number allocation continue; the old accepted packet references,
+congestion and loss timer reset only after pending publications are absent.
+Actual Retry CID/token flow into Initial framing and final transport-parameter
+validation. A prefetched authenticated server Initial is not counted twice.
+
+The first prototypes misused offer at mandatory recv points and reused identical
+work selectors across the nested Retry branch; those failed tests are retained
+outside the source. Correct direct locals and distinct key-context selectors pass
+the normal, Retry and repeated-Retry refusal paths. No Hibana snapshot patch was
+made. The composed constant projection needs Rust's long-running-const-eval lint
+allowed; actual projection validation still executes.
+
+The first integrated connected test overflowed the standard debug test stack.
+Directly pinning both local futures at their execution boundary and polling a
+TaskSet removes the large moving aggregate; the same test then passed without
+raising stack size. All 20 connected cases passed, followed by 117 host cases.
+
+The same release binary (SHA256
+7c16ab3c29bd65bdd08f3dce33c8fc6ed806b464f3a325e85b77d9eef8256493)
+passed native unmodified Neqo in BOTH directions. Client: 2/3/5 MiB exact hashes,
+actual reference Retry issued, actual TLS/close/resource terminal, 0.241s total.
+Server: 2/3/5 MiB exact hashes, token-admission join, actual TLS/close/resource
+terminal. These native diagnostics are not the official runner's trace verdict.
+Early-data plus Retry is not qualified by this ordinary Retry profile.
+
+The earlier server-only run37458099916/artifact11410573260 passed its control
+and server cell, with runtime37458099909 success, but was started prematurely.
+The required workflow is now BOTH directions locally for each capability, then
+one paired CI request. Do not initiate another CI for a partially checked side.
+
+Final paired-candidate local checks: 543 core/integration/doc cases, 117 host cases,
+29 independent TLS cases, thumb no_std check, selected host strict Clippy and
+70 Python cases passed. The combined publication-route fixture was updated to
+consume the real new prefix Skip/Skipped before its existing changing-arm
+exercise; its old missing-prefix failure was not treated as a product pass.
+Source/control audits and all 1193 pinned Hibana snapshot hashes match.

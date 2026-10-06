@@ -40,6 +40,7 @@ fn fixed_connection_preflight_bounds_original_id_without_banning_zero_peer_id() 
             local_connection_id: &[],
             original_destination_id: &ids[..length],
             retry_source_id: None,
+            initial_token: &[],
             peer_connection_id: &[],
         };
         assert_eq!(config.validate().is_ok(), (8..=20).contains(&length));
@@ -49,6 +50,7 @@ fn fixed_connection_preflight_bounds_original_id_without_banning_zero_peer_id() 
         local_connection_id: &[],
         original_destination_id: &ids[..8],
         retry_source_id: None,
+        initial_token: &[],
         peer_connection_id: &[],
     };
     assert!(valid.validate().is_ok());

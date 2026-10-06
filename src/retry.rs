@@ -23,6 +23,7 @@
 //! is deliberately separate: Retry MUST NOT reset any packet-number allocator,
 //! restart TLS, or erase retained CRYPTO bytes (RFC 9002 §6.3).
 
+pub mod client_protocol;
 pub mod protocol;
 
 use crate::{

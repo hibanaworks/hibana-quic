@@ -74,7 +74,7 @@ pub(crate) async fn transfer<'source, 'scope, 'cfg, 'buf, const P: usize>(
                     None
                 },
                 if config.side == Side::Client {
-                    config.retry_source_id
+                    material.retry_source_id()
                 } else {
                     None
                 },

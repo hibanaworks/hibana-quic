@@ -33,8 +33,10 @@ class EndpointCommand(unittest.TestCase):
     def test_retry_requires_server_admission_without_extra_shell_parameters(self):
         args=module.command({'ROLE':'server','TESTCASE':'retry'},resolve)
         self.assertEqual(args[args.index('--retry')+1],'required')
-        with self.assertRaises(module.Unsupported):
-            module.command({'ROLE':'client','TESTCASE':'retry'},resolve)
+        env=self.env();env['TESTCASE']='retry'
+        client=module.command(env,resolve)
+        self.assertEqual(client[1],'client')
+        self.assertNotIn('--retry',client)
 
     def test_server_real_chain_and_files(self):
         args = module.command({'ROLE':'server', 'TESTCASE':'handshake'}, resolve)
@@ -91,7 +93,7 @@ class EndpointCommand(unittest.TestCase):
                 self.assertEqual(args.count('--request'), 2)
 
     def test_unsupported_is_explicit(self):
-        for case in ('retry', 'http3', 'unknown'):
+        for case in ('http3', 'unknown'):
             with self.assertRaises(module.Unsupported):
                 module.command({'ROLE':'client', 'TESTCASE':case}, resolve)
     def test_extra_params_not_evaluated(self):

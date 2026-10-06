@@ -1,9 +1,9 @@
 {
-  "request": "Qualify server Retry admission through direct Hibana roles",
-  "requested_at": "2026-10-06T11:32:00Z",
+  "request": "Qualify Retry only after both native directions pass locally",
+  "requested_at": "2026-10-06T13:03:00Z",
   "scope": [
     "unchanged Neqo self-control",
-    "candidate server Retry only",
+    "candidate Retry client and server",
     "actual Retry token and packet-number trace verdict"
   ],
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
@@ -12,9 +12,10 @@
     "retry"
   ],
   "candidate_directions": [
+    "client",
     "server"
   ],
   "reference_implementation": "neqo",
-  "qualification": "Prior product29ba476 completed the historical30-cell sweep with exact artifacts recorded. This candidate adds only server-required Retry admission via literal projected INPUT/OWNER/OUTPUT roles, actual token/UDP result, Stop/Stopped/Joined and immutableRetrySCID binding. Client Retry is not implemented and is not requested. Actual loopback VN/corrupt-token/valid-token admission and unchanged Neqo native2/3/5MiB transfers pass with all hashes and actualTLS/close/resource terminal. Local fullcore/thumb/host/selectedClippy/Python70 pass; independentTLS verification recorded separately. Run unchanged Neqo self-control and candidate server Retry with actualtrace/token/PN/file criteria. Preserve failure captures and do not count unsupportedclient direction.",
+  "qualification": "Both directions of this same native binary passed actual unmodified Neqo: required-Retry server2/3/5MiB and Retry-receiving client2/3/5MiB, all hashes, TLS/close/resource terminals; actual reference Send retry for log confirmed. One-shot client branch and second-Retry rejection use direct Hibana locals without retry_seen flags, separate FSM or send wrappers. TLS CRYPTO and packet numbers survive Retry; pending actual sends refuse numeric reset. Full validation recorded in docs/direct-locals.md. No new CI until both local directions pass, per user instruction. Preserve actual failures, no runner/reference/deadline changes.",
   "formal_models": false
 }

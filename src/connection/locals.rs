@@ -174,6 +174,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     exchange: &initial::Exchange<'scope>,
     mut initial_endpoint: Option<&mut Endpoint<'_, { p::INITIAL_EVENT }>>,
     integrity: IntegrityBudget,
+    first_response: Option<&retry_client::Response<N>>,
     reassembly: [CryptoBuffer<'_>; 2],
     book: &mut recovery::Rx<'_, 'scope, N>,
     clock: &impl Clock,
@@ -189,6 +190,13 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
         offset: 0,
         opened: [0; N],
     };
+    if let Some(first) = first_response {
+        if first.len > N {
+            return Err(Error::Capacity);
+        }
+        wire.datagram[..first.len].copy_from_slice(&first.bytes[..first.len]);
+        wire.len = first.len;
+    }
     use crate::bounded_tls::{locals as direct, protocol as tls};
     struct Input<F>(F);
     impl<F> direct::MessageInput for Input<F>
@@ -453,6 +461,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     // This and the bounded packet-loop yields above require fresh validation.
     let verified_consumed = [wire.reassembly[0].consumed(), wire.reassembly[1].consumed()];
     Ok(ReceiveContinuation {
+        retry_source: config.retry_source_id.map(ConnectionId::new).transpose()?,
         verified_consumed,
         initial: None,
         handshake: wire.handshake.ok_or(Error::Binding)?,
@@ -471,7 +480,7 @@ fn limited(error: &recovery::Error) -> bool {
     )
 }
 #[allow(clippy::too_many_arguments)]
-fn prepare<'book, 'scope, const N: usize>(
+pub(super) fn prepare<'book, 'scope, const N: usize>(
     keys: &mut WriteKeys<'_, 'scope>,
     book: &mut recovery::Tx<'book, 'scope, N>,
     config: Config<'_>,
@@ -756,7 +765,8 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         if flight.level() == Level::Initial && !initial.available() {
                             break;
                         }
-                        let count = (flight.bytes().len() - offset).min(N - 128);
+                        let count = (flight.bytes().len() - offset)
+                            .min(N.saturating_sub(128 + config.initial_token.len()));
                         let at = flight.offset() + offset as u64;
                         let bytes = &flight.bytes()[offset..offset + count];
                         let retained = book.store_crypto(flight.level(), at, bytes)?;
@@ -1011,7 +1021,8 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         if flight.level() == Level::Initial && !initial.available() {
                             break;
                         }
-                        let count = (flight.bytes().len() - offset).min(N - 128);
+                        let count = (flight.bytes().len() - offset)
+                            .min(N.saturating_sub(128 + config.initial_token.len()));
                         let at = flight.offset() + offset as u64;
                         let bytes = &flight.bytes()[offset..offset + count];
                         let retained = book.store_crypto(flight.level(), at, bytes)?;
@@ -1269,7 +1280,8 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                         if flight.level() == Level::Initial && !initial.available() {
                             break;
                         }
-                        let count = (flight.bytes().len() - offset).min(N - 128);
+                        let count = (flight.bytes().len() - offset)
+                            .min(N.saturating_sub(128 + config.initial_token.len()));
                         let at = flight.offset() + offset as u64;
                         let bytes = &flight.bytes()[offset..offset + count];
                         let retained = book.store_crypto(flight.level(), at, bytes)?;

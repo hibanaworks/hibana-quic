@@ -21,9 +21,7 @@ def command(env, resolve=socket.getaddrinfo):
     if env.get('CLIENT_PARAMS', '') or env.get('SERVER_PARAMS', ''):
         raise ValueError('extra parameter strings are not accepted or evaluated')
     args = ['/usr/local/bin/hibana-quic-hq', role]
-    if case == 'retry':
-        if role != 'server':
-            raise Unsupported('retry is a server admission testcase')
+    if case == 'retry' and role == 'server':
         args += ['--retry', 'required']
     if case == 'keyupdate' and role == 'client':
         args += ['--key-update', 'once']

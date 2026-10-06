@@ -408,7 +408,10 @@ pub fn early_prefix() -> g::Program<EarlyFlow> {
 }
 pub type MainFlow =
     g::Par<ReceiveFlow, g::Par<TransmitFlow, g::Par<TimerFlow, InitialRetirementFlow>>>;
-pub type Flow = g::Seq<EarlyFlow, g::Seq<g::Send<TLS_TX, TX, EarlyContinue>, MainFlow>>;
+pub type Flow = g::Seq<
+    crate::retry::client_protocol::Prefix,
+    g::Seq<EarlyFlow, g::Seq<g::Send<TLS_TX, TX, EarlyContinue>, MainFlow>>,
+>;
 
 pub fn choreography() -> g::Program<Flow> {
     let receive = g::seq(
@@ -480,10 +483,13 @@ pub fn choreography() -> g::Program<Flow> {
         g::send::<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>(),
     );
     g::seq(
-        early_prefix(),
+        crate::retry::client_protocol::prefix(),
         g::seq(
-            g::send::<TLS_TX, TX, EarlyContinue>(),
-            g::par(receive, g::par(transmit, g::par(timer, initial))),
+            early_prefix(),
+            g::seq(
+                g::send::<TLS_TX, TX, EarlyContinue>(),
+                g::par(receive, g::par(transmit, g::par(timer, initial))),
+            ),
         ),
     )
 }

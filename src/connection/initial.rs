@@ -27,6 +27,15 @@ impl<'scope> Keys<'scope> {
             publication_waker: RefCell::new(None),
         })
     }
+    /// Called only after the projected pre-Retry publication join. Both actual
+    /// key directions are replaced together; no outstanding native send exists.
+    pub(super) fn replace_for_retry(&self, destination: &[u8]) -> Result<(), Error> {
+        let material = crypto::initial_keys(destination)?;
+        let read = ReceivePacketKey::from_initial(self.scope, material.server)?;
+        *self.read.borrow_mut() = Some(read);
+        *self.write.borrow_mut() = Some(material.client);
+        Ok(())
+    }
     pub fn available(&self) -> bool {
         self.write.borrow().is_some()
     }

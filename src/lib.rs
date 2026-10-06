@@ -1,5 +1,5 @@
 #![no_std]
-#![cfg_attr(test, allow(long_running_const_eval))]
+#![allow(long_running_const_eval)]
 #![forbid(unsafe_code)]
 //! Experimental bounded QUIC v1 with direct Hibana choreography and async locals.
 //! Core storage is caller-owned. See the qualification inventory for tested

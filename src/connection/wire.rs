@@ -8,6 +8,7 @@ use crate::{
 /// A successful prefix has already consumed actual Initial retirement evidence.
 /// Handshake keys remain owned here until authenticated confirmation.
 pub struct ReceiveContinuation<'scope, const P: usize> {
+    pub(super) retry_source: Option<ConnectionId>,
     pub initial: Option<ReceivePacketKey<'scope>>,
     pub handshake: ReceivePacketKey<'scope>,
     pub application: ApplicationReadKeys<'scope>,
@@ -24,6 +25,7 @@ impl<'scope, const P: usize> ReceiveContinuation<'scope, P> {
     pub fn into_parts(self) -> (ReceiveMaterial<'scope>, Finished<'scope, P>) {
         (
             ReceiveMaterial {
+                retry_source: self.retry_source,
                 initial: self.initial,
                 handshake: self.handshake,
                 application: self.application,
@@ -36,6 +38,7 @@ impl<'scope, const P: usize> ReceiveContinuation<'scope, P> {
     }
 }
 pub struct ReceiveMaterial<'scope> {
+    pub(super) retry_source: Option<ConnectionId>,
     pub initial: Option<ReceivePacketKey<'scope>>,
     pub handshake: ReceivePacketKey<'scope>,
     pub application: ApplicationReadKeys<'scope>,
@@ -44,6 +47,9 @@ pub struct ReceiveMaterial<'scope> {
     pub(super) peer: ConnectionId,
 }
 impl ReceiveMaterial<'_> {
+    pub(crate) fn retry_source_id(&self) -> Option<&[u8]> {
+        self.retry_source.as_ref().map(ConnectionId::bytes)
+    }
     pub fn peer_connection_id(&self) -> &[u8] {
         self.peer.bytes()
     }
@@ -152,7 +158,11 @@ impl<const N: usize> PlainPacket<N> {
             kind,
             destination_id: peer.bytes(),
             source_id: config.local_connection_id,
-            token: &[],
+            token: if level == Level::Initial {
+                config.initial_token
+            } else {
+                &[]
+            },
             packet_number: 0,
             packet_number_len: 4,
         };
@@ -309,6 +319,7 @@ mod initial_ack_tests {
             local_connection_id: b"serverid",
             original_destination_id: b"original",
             retry_source_id: None,
+            initial_token: &[],
             peer_connection_id: b"peerpeer",
         };
         let peer = ConnectionId::new(b"peerpeer").unwrap();

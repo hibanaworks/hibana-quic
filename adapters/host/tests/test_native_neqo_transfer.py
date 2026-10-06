@@ -89,6 +89,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect', 'multiplexing'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
+    parser.add_argument('--client-retry', action='store_true', help='native Retry reception, forward clean direction only')
     parser.add_argument('--server-retry', action='store_true', help='native Retry admission, reverse clean direction only')
     parser.add_argument('--direction', choices=('all', 'baseline', 'forward', 'reverse'), default='all')
     parser.add_argument('--timeout-seconds', type=int, default=60)
@@ -110,6 +111,8 @@ def main():
         parser.error('--client-keyupdate requires --scenario keyupdate')
     if args.expect_idle_expiry and (args.scenario != 'multiconnect' or args.direction != 'reverse' or args.multi_impairment == 'none'):
         parser.error('--expect-idle-expiry requires impaired reverse multiconnect')
+    if args.client_retry and (args.direction != 'forward' or args.scenario != 'clean'):
+        parser.error('--client-retry requires --direction forward --scenario clean')
     if args.server_retry and (args.direction != 'reverse' or args.scenario != 'clean'):
         parser.error('--server-retry requires --direction reverse --scenario clean')
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
@@ -146,7 +149,7 @@ def main():
                    'burst': args.multi_burst}
     report = {
         'scope': 'native-peer-diagnostics', 'official_interop_pass': False,
-        'scenario': args.scenario, 'server_retry': args.server_retry, 'impairment': options, 'ordinary_files': len(sizes),
+        'scenario': args.scenario, 'server_retry': args.server_retry, 'client_retry': args.client_retry, 'impairment': options, 'ordinary_files': len(sizes),
         'coverage_gaps': ['not ns-3 topology or exact stochastic impairment', 'no packet-trace verdicts', 'forward ordinary-Neqo generated-zero payloads'],
         'binaries': {name: sha(path) for name, path in [('hq', hq), ('neqo-client', nc), ('neqo-server', ns)]},
         'runs': [],
@@ -210,6 +213,8 @@ def main():
                 server_command = [str(hq), 'server', '--listen', server_address, '--cert', str(root / 'server.pem'), '--key', str(root / 'server.key'), '--www', str(www), '--max-requests', str(64 if args.scenario in ('resumption', 'zerortt') else len(names)), '--timeout-seconds', str(args.timeout_seconds)]
             else:
                 server_command = [str(ns), '-a', 'hq-interop', '-Q', '1', '-d', str(db), '-k', 'native-peer', '--idle', str(args.timeout_seconds), server_address]
+            if args.client_retry:
+                server_command += ['--retry']
             if args.server_retry:
                 server_command += ['--retry', 'required']
             if args.scenario == 'zerortt' and direction != 'reverse':
@@ -358,6 +363,14 @@ def main():
                                 assert actual['key_generation'] >= 1 and actual['lifecycle_closed'], actual
                             else:
                                 assert 'Initiating key update' in result.stderr, 'reference never actually initiated key update'
+                        if args.client_retry and returncode == 0:
+                            assert 'Send retry for' in log_path.read_text(), 'reference never actually issued Retry'
+                            terminal = next(json.loads(line) for line in reversed(result.stdout.splitlines()) if line.startswith('{'))
+                            assert terminal['tls_finished_authenticated'] and terminal['http_transfer_complete'], terminal
+                            assert terminal['resources_retired'] and terminal['lifecycle_closed'], terminal
+                            assert terminal['files_completed'] == len(names) and terminal['idle_expired_connections'] == 0, terminal
+                            row.update(resources_retired=terminal['resources_retired'], lifecycle_closed=terminal['lifecycle_closed'])
+                            report['transfer_observations'][-1]['retirement_verified'] = True
                         if args.server_retry and returncode == 0:
                             server.wait(timeout=5)
                             server_text = log_path.read_text()
