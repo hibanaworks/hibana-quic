@@ -38,6 +38,13 @@ class EndpointCommand(unittest.TestCase):
         self.assertEqual(client[1],'client')
         self.assertNotIn('--retry',client)
 
+    def test_ecn_uses_the_same_real_endpoint_without_extra_marking_flags(self):
+        for role in ('client', 'server'):
+            env = self.env(); env.update(ROLE=role, TESTCASE='ecn')
+            actual = module.command(env, resolve)
+            env['TESTCASE'] = 'transfer'
+            self.assertEqual(actual, module.command(env, resolve))
+
     def test_server_real_chain_and_files(self):
         args = module.command({'ROLE':'server', 'TESTCASE':'handshake'}, resolve)
         self.assertIn('/certs/priv.key', args)

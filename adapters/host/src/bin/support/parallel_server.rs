@@ -70,6 +70,7 @@ struct Admission {
     peer: Vec<u8>,
     local: [u8; 8],
     first: Vec<u8>,
+    ecn: Option<hibana_quic::ecn::Codepoint>,
     new_token: [u8; hibana_quic::new_token::TOKEN_LEN],
     receiver: Receiver<BYTES>,
 }
@@ -186,7 +187,7 @@ pub async fn run<const S: usize, const T: usize>(
                         peer_connection_id: &admission.peer,
                     },
                     tls,
-                    Some(&admission.first),
+                    Some((&admission.first, admission.ecn)),
                     Some(files),
                     None,
                     0,
@@ -261,7 +262,7 @@ pub async fn run<const S: usize, const T: usize>(
                 }
                 _ => continue,
             };
-            match routes.deliver(address, destination, &bytes[..metadata.len]) {
+            match routes.deliver(address, destination, &bytes[..metadata.len], metadata.ecn) {
                 Delivery::Queued | Delivery::Full | Delivery::Oversized => continue,
                 Delivery::Unknown => {}
             }
@@ -312,6 +313,7 @@ pub async fn run<const S: usize, const T: usize>(
                     peer: source_id.to_vec(),
                     local,
                     first: bytes[..metadata.len].to_vec(),
+                    ecn: metadata.ecn,
                     new_token,
                     receiver,
                 })

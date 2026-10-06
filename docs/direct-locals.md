@@ -777,3 +777,75 @@ Final paired-candidate local checks: 543 core/integration/doc cases, 117 host ca
 consume the real new prefix Skip/Skipped before its existing changing-arm
 exercise; its old missing-prefix failure was not treated as a product pass.
 Source/control audits and all 1193 pinned Hibana snapshot hashes match.
+
+Paired official result: commit159ed00980efd15e5bd63f3428120b8917bf2a51,
+run37472936094/artifact11417713931. Unchanged Neqo control, client Retry and
+server Retry all succeeded, three non-null results and zero unexecuted cells.
+Runtime37472936275 also succeeded. Cumulative distinct coverage is32/44; the
+remaining12 cells and a same-head full release matrix remain unqualified.
+
+
+## ECN direct-local candidate (2026-10-06, official verdict pending)
+
+ReceivedDatagram keeps the actual optional ECN metadata with its bytes through
+native receive, routed receive, first admission, Retry retention and early-data
+quarantine. Missing metadata is never fabricated as Not-ECT. Only authenticated,
+fully processed, nonduplicate packets update per-space counts; unavailable
+metadata suppresses ACK_ECN for that space. ACK_ECN uses the retained snapshot.
+
+The existing physical publication local17 keeps the socket and affine packet
+reservation. Dedicated policy role31 occupies the previously unused role slot;
+there is no endpoint/storage-capacity increase. Its probing, validated and
+failed continuations are in the Hibana global. Common Request/Settled messages
+advance the current projected continuation, and the received permit selects
+only the current datagram's marking. No phase enum, progress flag, wire relay,
+manager, or per-send wrapper was added. Ordinary Accepted/Rejected now follows
+the actual IO result directly, without copied outcome/resolver bookkeeping.
+The independent reset verdict and all real settlement checks remain.
+
+Actual UDP acceptance records its chosen codepoint. Rejected sends do not count.
+Authenticated ACKs that advance Largest Acknowledged validate feedback before
+CE affects congestion. Reordered ACKs cannot fail ECN validation. Exact first
+feedback discrepancies remain as evidence for the projected failed branch;
+failed marking has no automatic re-enable edge. Probing marks at most ten
+ack-eliciting application packets and stops marking after three current PTOs
+while awaiting feedback. Missing metadata and bleaching are complete-delivery
+regressions: neither may fabricate validation or keep probing indefinitely.
+
+Earlier integration proposals were rejected before CI: missing causal handoffs,
+ambiguous concurrent selectors, and unordered readiness arrivals under the
+existing Q=1 carrier. The final design removes those handoffs and relay roles,
+uses disjoint policy selectors100..127, and occupies fresh role31. No Hibana
+vendor patch, capacity increase, deadline relaxation, or scheduler-order
+workaround was used. Isolated endpoint and combined-publication experiments
+preceded the complete connected regression.
+
+Qualified native release SHA256:
+448f1aab511e1df775c7d786765418f4e00d579549d9d560b714a412ce1269c2.
+Unchanged Neqo peer, localhost2/3/5MiB, exact file hashes and actual close/resource
+retirement in each direction:
+
+- Candidate client:26 ECT packets accepted and26 validated;7340 received marked
+  packets;93 accepted nonzero ACK_ECN frames;0.307s total.
+- Candidate server:10244 accepted and10244 validated;6839 received marked
+  packets;210 accepted nonzero ACK_ECN frames;9.764s total.
+- Both had no feedback error, and both peer logs reported ECN-capable paths.
+  These elapsed times are finite diagnostics, not a controlled benchmark.
+
+554 core/integration/doc tests,119 host tests, selected host strict Clippy and
+thumb no_std passed. The old stream-reset fixture's registration of the removed
+ordinary-publication resolver was removed; all reset-verdict, pre-settlement,
+ACK, loss and reclaim refusal assertions remain and pass. Host IPv4/IPv6 actual
+metadata tests verify marking is per datagram, and reject sender-generated CE
+before send. Existing dual-stack metadata checks remain in the host suite.
+
+Official coverage remains32/44 until the unchanged paired runner returns an
+actual ECN verdict. Migration/path replacement and the remaining capabilities
+are not implied by this fixed-path ECN candidate.
+
+Selected independent TLS29 and Python71 also passed. A broader, unselected
+legacy certificate_depth invocation returned3 passes,3 failures and1 ignored:
+the fixed historical DER fixture is absent, and two synchronous Provider-driver
+cases did not reach their expected terminal. These are retained as unqualified
+legacy coverage, not folded into the passing selected async TLS suite. No CI
+selection was narrowed and no failing test was converted into a pass.

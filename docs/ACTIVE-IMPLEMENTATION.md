@@ -2,14 +2,17 @@
 
 ## Current qualification boundary (2026-10-06)
 
-The working candidate now implements ordinary Retry in both directions. Its
-same native release binary passed actual unmodified Neqo client and server
-2/3/5 MiB transfers, with exact hashes and actual TLS/close/resource terminals.
-The prior server-only CI passed but was premature: every capability must first
-pass BOTH directions locally before paired CI. The paired official Retry verdict
-is pending; do not transfer the older baseline's complete matrix claim onto this
-new source. See docs/direct-locals.md for local results and rejected prototypes.
-Early-data plus Retry is not qualified by the ordinary Retry profile.
+The current ECN candidate passed native unmodified Neqo in BOTH directions
+before requesting paired CI. Each side transferred2/3/5MiB with exact hashes,
+actual ECN send/receive, authenticated ACK_ECN feedback and joined retirement.
+Its official ECN trace verdict remains pending. Cumulative official coverage
+is still32/44: baseline30 on29ba476 and paired Retry2 on159ed009. Do not turn
+native success into an official pass or claim a same-head32-cell sweep.
+
+Paired Retry run37472936094/artifact11417713931 passed the unchanged Neqo
+control and both directions; runtime37472936275 passed. Early-data plus Retry
+remains unqualified. Every capability must pass BOTH directions locally before
+paired CI. See docs/direct-locals.md for the exact ECN checks and limitations.
 
 ### Completed thirty-cell baseline
 
@@ -36,9 +39,9 @@ server C1/L1 failures were diagnosed from privately decrypted captures showing
 the ClientHello tail missing at the server and its ACKs missing at the client.
 This does not establish the cause of different historical client failures.
 
-The user's direction is now to proceed to the remaining14 cells and inspect
+The user's direction is now to proceed to the remaining12 cells and inspect
 actual captures on failure, rather than indefinitely repeat the same eight.
-Retry is the next endpoint capability under investigation. Earlier evidence
+ECN is the current paired candidate awaiting its official verdict. Earlier evidence
 sections below remain historical checkpoints.
 
 ## Architecture

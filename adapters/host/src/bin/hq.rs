@@ -211,6 +211,23 @@ impl Report {
                 .sent_bytes
                 .checked_add(old.sent_bytes)
                 .ok_or("report counter overflow")?;
+            current.ecn_accepted_packets = current
+                .ecn_accepted_packets
+                .checked_add(old.ecn_accepted_packets)
+                .ok_or("report counter overflow")?;
+            current.ecn_validated_packets = current
+                .ecn_validated_packets
+                .checked_add(old.ecn_validated_packets)
+                .ok_or("report counter overflow")?;
+            current.ecn_received_packets = current
+                .ecn_received_packets
+                .checked_add(old.ecn_received_packets)
+                .ok_or("report counter overflow")?;
+            current.ecn_acknowledgments_sent = current
+                .ecn_acknowledgments_sent
+                .checked_add(old.ecn_acknowledgments_sent)
+                .ok_or("report counter overflow")?;
+            current.ecn_feedback_error = current.ecn_feedback_error.or(old.ecn_feedback_error);
         }
         Ok(self)
     }
@@ -218,7 +235,7 @@ impl Report {
         let stats = reactor.statistics();
         let transfer = if let Some(report) = self.application {
             format!(
-                "\"scope\":\"{}\",\"key_generation\":{},\"early_accepted_packets\":{},\"early_stream_bytes\":{},\"early_finished_streams\":{},\"quic_handshake_confirmed\":{},\"http_transfer_complete\":{},\"resources_retired\":true,\"idle_expired_connections\":{},\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{}",
+                "\"scope\":\"{}\",\"key_generation\":{},\"early_accepted_packets\":{},\"early_stream_bytes\":{},\"early_finished_streams\":{},\"quic_handshake_confirmed\":{},\"http_transfer_complete\":{},\"resources_retired\":true,\"idle_expired_connections\":{},\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{},\"ecn_accepted_packets\":{},\"ecn_validated_packets\":{},\"ecn_received_packets\":{},\"ecn_acknowledgments_sent\":{},\"ecn_feedback_error\":{}",
                 if self.idle_expired_connections == 0 {
                     "authenticated-file-transfer"
                 } else {
@@ -237,7 +254,14 @@ impl Report {
                 report.completed_streams,
                 self.body_bytes,
                 report.received_bytes,
-                report.sent_bytes
+                report.sent_bytes,
+                report.ecn_accepted_packets,
+                report.ecn_validated_packets,
+                report.ecn_received_packets,
+                report.ecn_acknowledgments_sent,
+                report
+                    .ecn_feedback_error
+                    .map_or_else(|| "null".to_owned(), |error| format!("\"{error:?}\"")),
             )
         } else {
             "\"scope\":\"authenticated-handshake-prefix\",\"owned_application_continuations\":true,\"quic_handshake_confirmed\":false,\"http_transfer_complete\":false,\"lifecycle_closed\":false".to_owned()
@@ -277,7 +301,7 @@ async fn connected<const S: usize, const T: usize>(
     address: Address,
     config: Config<'_>,
     tls: BoundedTls<'_, '_>,
-    first: Option<&[u8]>,
+    first: Option<(&[u8], Option<hibana_quic::ecn::Codepoint>)>,
     mut files: Option<direct_bootstrap::Files>,
     early: Option<application_storage::EarlyStorage>,
     key_update_target: u64,
@@ -514,7 +538,13 @@ fn initial_integrity(packet: &hibana_quic::packet::Packet<'_>) -> Option<()> {
 async fn admit_initial<const S: usize, const T: usize>(
     socket: &HostSocket<'_, S, T>,
     first: &mut [u8],
-) -> Result<(Address, Vec<u8>, Vec<u8>, usize)> {
+) -> Result<(
+    Address,
+    Vec<u8>,
+    Vec<u8>,
+    usize,
+    Option<hibana_quic::ecn::Codepoint>,
+)> {
     loop {
         // Every rejection returns through this guaranteed Pending yield,
         // bounding admission to one datagram per root poll, including a flood
@@ -560,6 +590,7 @@ async fn admit_initial<const S: usize, const T: usize>(
                 destination_id.to_vec(),
                 source_id.to_vec(),
                 metadata.len,
+                metadata.ecn,
             ));
         }
     }
@@ -962,13 +993,14 @@ async fn run_async<const S: usize, const T: usize>(
                     None
                 };
                 let mut first = vec![0; direct_bootstrap::DATAGRAM];
-                let (address, original, peer, len) = if let Some(admitted) = retried.as_ref() {
+                let (address, original, peer, len, ecn) = if let Some(admitted) = retried.as_ref() {
                     first[..admitted.datagram.len()].copy_from_slice(&admitted.datagram);
                     (
                         admitted.address,
                         admitted.token.original_destination_id().to_vec(),
                         admitted.token.client_source_id().to_vec(),
                         admitted.datagram.len(),
+                        admitted.ecn,
                     )
                 } else {
                     admit_initial(&socket, &mut first).await?
@@ -1048,7 +1080,7 @@ async fn run_async<const S: usize, const T: usize>(
                         peer_connection_id: &peer,
                     },
                     tls,
-                    Some(&first[..len]),
+                    Some((&first[..len], ecn)),
                     files,
                     early_storage,
                     0,
@@ -1171,11 +1203,12 @@ mod admission_tests {
         bytes[15] ^= 1;
         peer.send_to(&bytes[..hlen + 1176], socket.local_addr().unwrap())
             .unwrap();
-        let std::task::Poll::Ready(Ok((_, original, source, len))) =
+        let std::task::Poll::Ready(Ok((_, original, source, len, ecn))) =
             admission.as_mut().poll(&mut context)
         else {
             panic!("the following intact Initial was not admitted");
         };
+        assert_eq!(ecn, Some(hibana_quic::ecn::Codepoint::NotEct));
         assert_eq!(original, b"original");
         assert_eq!(source, b"client01");
         assert_eq!(len, hlen + 1176);

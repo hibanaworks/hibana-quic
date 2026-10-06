@@ -183,16 +183,24 @@ pub fn open<'scope, const N: usize>(
 
 /// Caller-backed retention of untrusted packets while the finite TLS prefix
 /// runs. Capacity exhaustion drops a whole packet; no authentication is claimed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PacketEnd {
+    end: usize,
+    ecn: Option<crate::ecn::Codepoint>,
+}
+impl PacketEnd {
+    pub const EMPTY: Self = Self { end: 0, ecn: None };
+}
 pub struct PendingPackets<'a> {
     bytes: &'a mut [u8],
-    ends: &'a mut [usize],
+    ends: &'a mut [PacketEnd],
     count: usize,
     used: usize,
 }
 impl<'a> PendingPackets<'a> {
-    pub fn new(bytes: &'a mut [u8], ends: &'a mut [usize]) -> Self {
+    pub fn new(bytes: &'a mut [u8], ends: &'a mut [PacketEnd]) -> Self {
         bytes.fill(0);
-        ends.fill(0);
+        ends.fill(PacketEnd::EMPTY);
         Self {
             bytes,
             ends,
@@ -210,10 +218,20 @@ impl<'a> PendingPackets<'a> {
         if index >= self.count {
             return None;
         }
-        let start = if index == 0 { 0 } else { self.ends[index - 1] };
-        Some(&self.bytes[start..self.ends[index]])
+        let start = if index == 0 {
+            0
+        } else {
+            self.ends[index - 1].end
+        };
+        Some(&self.bytes[start..self.ends[index].end])
     }
-    pub(super) fn retain(&mut self, packet: &[u8]) -> bool {
+    pub fn ecn(&self, index: usize) -> Option<crate::ecn::Codepoint> {
+        self.ends
+            .get(index)
+            .filter(|_| index < self.count)
+            .and_then(|entry| entry.ecn)
+    }
+    pub(super) fn retain(&mut self, packet: &[u8], ecn: Option<crate::ecn::Codepoint>) -> bool {
         if packet.is_empty()
             || self.count == self.ends.len()
             || packet.len() > self.bytes.len() - self.used
@@ -222,7 +240,7 @@ impl<'a> PendingPackets<'a> {
         }
         let end = self.used + packet.len();
         self.bytes[self.used..end].copy_from_slice(packet);
-        self.ends[self.count] = end;
+        self.ends[self.count] = PacketEnd { end, ecn };
         self.count += 1;
         self.used = end;
         true
@@ -231,7 +249,7 @@ impl<'a> PendingPackets<'a> {
 impl Drop for PendingPackets<'_> {
     fn drop(&mut self) {
         self.bytes.zeroize();
-        self.ends.fill(0);
+        self.ends.fill(PacketEnd::EMPTY);
     }
 }
 #[cfg(test)]
@@ -240,27 +258,30 @@ mod tests {
     #[test]
     fn pending_packets_are_bounded_whole_and_wiped() {
         let mut bytes = [7; 9];
-        let mut ends = [9; 2];
+        let mut ends = [PacketEnd::EMPTY; 2];
         {
             let mut pending = PendingPackets::new(&mut bytes, &mut ends);
-            assert!(pending.retain(b"first"));
-            assert!(!pending.retain(b"second"));
-            assert!(pending.retain(b"next"));
-            assert!(!pending.retain(b"x"));
+            assert!(pending.retain(b"first", Some(crate::ecn::Codepoint::Ect0)));
+            assert!(!pending.retain(b"second", Some(crate::ecn::Codepoint::Ce)));
+            assert!(pending.retain(b"next", None));
+            assert!(!pending.retain(b"x", Some(crate::ecn::Codepoint::Ce)));
             assert_eq!(pending.packet(0), Some(&b"first"[..]));
             assert_eq!(pending.packet(1), Some(&b"next"[..]));
             assert_eq!(pending.packet(2), None);
+            assert_eq!(pending.ecn(0), Some(crate::ecn::Codepoint::Ect0));
+            assert_eq!(pending.ecn(1), None);
+            assert_eq!(pending.ecn(2), None);
         }
         assert_eq!(bytes, [0; 9]);
-        assert_eq!(ends, [0; 2]);
+        assert_eq!(ends, [PacketEnd::EMPTY; 2]);
     }
 }
 
 pub(super) trait RetainPackets {
-    fn retain_packet(&mut self, packet: &[u8]) -> bool;
+    fn retain_packet(&mut self, packet: &[u8], ecn: Option<crate::ecn::Codepoint>) -> bool;
 }
 impl RetainPackets for PendingPackets<'_> {
-    fn retain_packet(&mut self, packet: &[u8]) -> bool {
-        self.retain(packet)
+    fn retain_packet(&mut self, packet: &[u8], ecn: Option<crate::ecn::Codepoint>) -> bool {
+        self.retain(packet, ecn)
     }
 }

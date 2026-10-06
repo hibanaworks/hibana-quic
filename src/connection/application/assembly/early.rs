@@ -142,6 +142,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
                     receipt,
                     claim,
                     opened.plaintext(),
+                    early.packets.ecn(index),
                 )?;
                 exchange.store_input(input)?;
                 roles.handshake.rx.send::<p::Packet>(&pn).await?;

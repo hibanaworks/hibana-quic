@@ -7,7 +7,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit
 
-SUPPORTED = {'handshake', 'transfer', 'chacha20', 'resumption', 'zerortt', 'keyupdate', 'multiconnect', 'retry'}
+SUPPORTED = {'handshake', 'transfer', 'chacha20', 'resumption', 'zerortt', 'keyupdate', 'multiconnect', 'retry', 'ecn'}
 
 class Unsupported(ValueError):
     pass

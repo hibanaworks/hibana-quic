@@ -21,7 +21,7 @@ impl RetryData {
 }
 pub(super) struct Response<const N: usize> {
     pub bytes: [u8; N],
-    pub len: usize,
+    pub received: ReceivedDatagram,
     pub retry: Option<RetryData>,
 }
 
@@ -89,7 +89,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
     integrity: &mut IntegrityBudget,
 ) -> Result<Option<Response<N>>, Error> {
     let datagram = Inbox::<wire::Datagram<'book, N>>::new();
-    let observation = Inbox::<([u8; N], usize)>::new();
+    let observation = Inbox::<([u8; N], ReceivedDatagram)>::new();
     let deadline_at = Inbox::<u64>::new();
     let mut response = None;
     {
@@ -202,7 +202,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 deadline_at.put(deadline.at())?;
                 owner.send::<p::Listen>(&()).await?;
                 let verdict = owner.offer().await?;
-                let (bytes, len) = match verdict.label() {
+                let (bytes, received) = match verdict.label() {
                     label if label == p::Observed::LOGICAL_LABEL => {
                         verdict.recv::<p::Observed>().await?;
                         let result = observation.take()?;
@@ -217,6 +217,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                     }
                     label => return Err(Error::UnexpectedLabel(label)),
                 };
+                let len = received.len;
                 rx.received_datagram(len as u64)?;
                 let mut scratch = [0; N];
                 if let Ok(checked) = retry::validate_retry(
@@ -243,7 +244,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                     owner.recv::<p::Joined>().await?;
                     response = Some(Response {
                         bytes,
-                        len,
+                        received,
                         retry: None,
                     });
                     return Ok(());
@@ -262,7 +263,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 peer_connection_id: retry.source.bytes(),
                 ..config
             };
-            let (bytes, len) = loop {
+            let (bytes, received) = loop {
                 while let Some((id, probe)) = tx.next_retransmit() {
                     let flight = tx.flight_data(id)?;
                     if flight.level() != Level::Initial {
@@ -306,7 +307,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 deadline_at.put(deadline.at())?;
                 owner.send::<p::RetriedListen>(&()).await?;
                 let verdict = owner.offer().await?;
-                let (bytes, len) = match verdict.label() {
+                let (bytes, received) = match verdict.label() {
                     label if label == p::RetriedObserved::LOGICAL_LABEL => {
                         verdict.recv::<p::RetriedObserved>().await?;
                         let result = observation.take()?;
@@ -321,9 +322,10 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                     }
                     label => return Err(Error::UnexpectedLabel(label)),
                 };
+                let len = received.len;
                 rx.received_datagram(len as u64)?;
                 if authenticated_initial::<N>(&bytes[..len], config, initial, integrity)? {
-                    break (bytes, len);
+                    break (bytes, received);
                 }
                 // There is no Retry branch in this projected continuation.
             };
@@ -333,7 +335,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             owner.recv::<p::Joined>().await?;
             response = Some(Response {
                 bytes,
-                len,
+                received,
                 retry: Some(retry),
             });
             Ok(())
@@ -358,7 +360,9 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 publication.cancel(packet.reservation)?;
                 return Err(Error::Binding);
             }
-            let result = permit.submit(send_io.send(packet.sealed.bytes())).await;
+            let result = permit
+                .submit(send_io.send(packet.sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                .await;
             let accepted = match result {
                 Ok(Ok(at)) => Some(at),
                 _ => None,
@@ -366,6 +370,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             publication.settle(recovery::Completion::from_adapter(
                 packet.reservation,
                 accepted,
+                crate::ecn::Codepoint::NotEct,
             ))?;
             if accepted.is_some() {
                 native.send::<p::Accepted>(&()).await?;
@@ -390,7 +395,11 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                             publication.cancel(packet.reservation)?;
                             return Err(Error::Binding);
                         }
-                        let result = permit.submit(send_io.send(packet.sealed.bytes())).await;
+                        let result = permit
+                            .submit(
+                                send_io.send(packet.sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                            )
+                            .await;
                         let accepted = match result {
                             Ok(Ok(at)) => Some(at),
                             _ => None,
@@ -398,6 +407,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                         publication.settle(recovery::Completion::from_adapter(
                             packet.reservation,
                             accepted,
+                            crate::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted.is_some() {
                             native.send::<p::Accepted>(&()).await?;
@@ -417,11 +427,11 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                         .await
                         {
                             ControlFlow::Break(result) => {
-                                let len = result?;
-                                if len > N {
+                                let received = result?;
+                                if received.len > N {
                                     return Err(Error::Capacity);
                                 }
-                                observation.put((bytes, len))?;
+                                observation.put((bytes, received))?;
                                 native.send::<p::Observed>(&()).await?;
                             }
                             ControlFlow::Continue(()) => {
@@ -461,7 +471,12 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                                     return Err(Error::Binding);
                                 }
                                 let result =
-                                    permit.submit(send_io.send(packet.sealed.bytes())).await;
+                                    permit
+                                        .submit(send_io.send(
+                                            packet.sealed.bytes(),
+                                            crate::ecn::Codepoint::NotEct,
+                                        ))
+                                        .await;
                                 let accepted = match result {
                                     Ok(Ok(at)) => Some(at),
                                     _ => None,
@@ -469,6 +484,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                                 publication.settle(recovery::Completion::from_adapter(
                                     packet.reservation,
                                     accepted,
+                                    crate::ecn::Codepoint::NotEct,
                                 ))?;
                                 if accepted.is_some() {
                                     native.send::<p::RetriedAccepted>(&()).await?;
@@ -488,11 +504,11 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                                 .await
                                 {
                                     ControlFlow::Break(result) => {
-                                        let len = result?;
-                                        if len > N {
+                                        let received = result?;
+                                        if received.len > N {
                                             return Err(Error::Capacity);
                                         }
-                                        observation.put((bytes, len))?;
+                                        observation.put((bytes, received))?;
                                         native.send::<p::RetriedObserved>(&()).await?;
                                     }
                                     ControlFlow::Continue(()) => {

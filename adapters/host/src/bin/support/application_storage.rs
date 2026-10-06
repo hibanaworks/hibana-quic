@@ -95,14 +95,14 @@ impl<const RX: usize> Storage<RX> {
 /// connected quarantine owner; it is never substituted by an unbacked limit.
 pub struct EarlyStorage {
     bytes: Vec<u8>,
-    ends: Vec<usize>,
+    ends: Vec<hibana_quic::connection::early_wire::PacketEnd>,
     pub slots: Vec<hibana_quic::early_data::QuarantineSlot<RECEIVE_BYTES>>,
 }
 impl EarlyStorage {
     pub fn new() -> Self {
         Self {
             bytes: vec![0; STREAMS * super::direct_bootstrap::DATAGRAM],
-            ends: vec![0; STREAMS],
+            ends: vec![hibana_quic::connection::early_wire::PacketEnd::EMPTY; STREAMS],
             slots: (0..STREAMS)
                 .map(|_| hibana_quic::early_data::QuarantineSlot::EMPTY)
                 .collect(),

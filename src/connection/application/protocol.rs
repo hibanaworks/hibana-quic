@@ -1,6 +1,7 @@
 //! The connected global: actual affine startup, concurrent ordinary roles,
 //! complete ordinary retirement, then closing or draining.
 use crate::connection::protocol::{RX as PREFIX_RX, TLS_RX as PREFIX_TLS_RX, TX as PREFIX_TX};
+use crate::ecn::protocol as e;
 use hibana::{
     g,
     runtime::program::{RoleProgram, project},
@@ -273,10 +274,7 @@ pub type TimerFlow = g::Roll<
 pub type Publish = g::Seq<
     g::Send<TRANSMIT, ADAPTER, Datagram>,
     g::Seq<
-        g::Resolve<
-            g::Route<g::Send<ADAPTER, TRANSMIT, Accepted>, g::Send<ADAPTER, TRANSMIT, Rejected>>,
-            SUBMISSION_RESULT,
-        >,
+        g::Route<g::Send<ADAPTER, TRANSMIT, Accepted>, g::Send<ADAPTER, TRANSMIT, Rejected>>,
         g::Send<TRANSMIT, ADAPTER, Settled>,
     >,
 >;
@@ -413,10 +411,11 @@ pub type FilesTerminal = g::Seq<
     g::Send<FILES_CLOSE, FILES_EVENT, CompletionSeen>,
 >;
 pub type Terminal = g::Par<PeerTerminal, FilesTerminal>;
-pub type Active = g::Par<
+pub type BaseActive = g::Par<
     SourceFlow,
     g::Par<ReceiveFlow, g::Par<KeyFlow, g::Par<TimerFlow, g::Par<PublicationFlow, Terminal>>>>,
 >;
+pub type Active = g::Par<BaseActive, e::Flow>;
 pub type Retirement = g::Seq<
     g::Par<
         g::Send<TRANSMIT, CLOSE_JOIN, PublicationRetired>,
@@ -608,8 +607,7 @@ pub fn publication_choreography() -> g::Program<PublicationFlow> {
             g::route(
                 g::send::<ADAPTER, TRANSMIT, Accepted>(),
                 g::send::<ADAPTER, TRANSMIT, Rejected>(),
-            )
-            .resolve::<SUBMISSION_RESULT>(),
+            ),
             g::send::<TRANSMIT, ADAPTER, Settled>(),
         ),
     );
@@ -786,13 +784,14 @@ pub fn choreography() -> g::Program<Flow> {
 
     // Each lane is an actual bounded IO/key/clock continuation. They all finish
     // before the closing capability and sole write key can be transferred.
-    let ordinary = g::par(
+    let ordinary_base = g::par(
         source,
         g::par(
             receive,
             g::par(keys, g::par(timer, g::par(publication, terminal))),
         ),
     );
+    let ordinary = g::par(ordinary_base, e::choreography());
     // The fresh close owner passes the actual accumulated grant to one
     // retired owner at a time. Each response requires consuming that grant;
     // no unsolicited input can occupy a capacity-one carrier ahead of it.
@@ -886,6 +885,7 @@ fn early_admission() -> g::Program<EarlyAdmission> {
 }
 
 pub struct Programs {
+    pub ecn_owner: RoleProgram<{ e::OWNER }>,
     pub handshake: crate::connection::protocol::Programs,
     pub source: RoleProgram<SOURCE>,
     pub source_join: RoleProgram<SOURCE_JOIN>,
@@ -922,6 +922,7 @@ pub fn programs() -> Programs {
         ),
     );
     Programs {
+        ecn_owner: project(&global),
         handshake: crate::connection::protocol::Programs {
             rx: project(&global),
             tls_rx: project(&global),

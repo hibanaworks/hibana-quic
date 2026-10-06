@@ -124,9 +124,18 @@ pub struct Report {
     pub received_bytes: u64,
     /// Actual UDP-accepted datagram bytes before closing starts.
     pub sent_bytes: u64,
+    /// Actual UDP-accepted ECT packets and authenticated successful feedback.
+    pub ecn_accepted_packets: u64,
+    pub ecn_validated_packets: u64,
+    /// Known authenticated receive markings and accepted ACK_ECN frames that
+    /// carried nonzero counts, observed before ordinary retirement.
+    pub ecn_received_packets: u64,
+    pub ecn_acknowledgments_sent: u64,
+    pub ecn_feedback_error: Option<crate::ecn::Error>,
 }
 
 pub struct Roles<'a> {
+    pub ecn_owner: Endpoint<'a, { crate::ecn::protocol::OWNER }>,
     pub handshake: super::Roles<'a>,
     pub source: Endpoint<'a, { protocol::SOURCE }>,
     pub source_join: Endpoint<'a, { protocol::SOURCE_JOIN }>,

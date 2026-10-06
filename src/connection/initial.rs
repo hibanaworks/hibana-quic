@@ -190,7 +190,11 @@ mod tests {
             .reserve(Level::Handshake, 32, None, true, false, false, 0)
             .unwrap();
         publication
-            .settle(recovery::Completion::from_adapter(reservation, Some(0)))
+            .settle(recovery::Completion::from_adapter(
+                reservation,
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         publication.take_initial_retirement().unwrap()
     }
@@ -278,6 +282,7 @@ mod tests {
             .settle(recovery::Completion::from_adapter(
                 reservation,
                 Some(accepted),
+                crate::ecn::Codepoint::NotEct,
             ))
             .unwrap();
         owner.retire_initial(event).unwrap();

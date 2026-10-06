@@ -23,8 +23,12 @@ struct Inner<const BYTES: usize> {
 pub struct Packet<const BYTES: usize> {
     bytes: [u8; BYTES],
     len: usize,
+    ecn: Option<hibana_quic::ecn::Codepoint>,
 }
 impl<const BYTES: usize> Packet<BYTES> {
+    pub fn ecn(&self) -> Option<hibana_quic::ecn::Codepoint> {
+        self.ecn
+    }
     pub fn bytes(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
@@ -103,7 +107,13 @@ impl<const BYTES: usize> Dispatcher<BYTES> {
     }
     /// The physical reader supplies the parsed destination CID. Authentication
     /// and every QUIC decision remain with the receiving Hibana connection.
-    pub fn deliver(&mut self, address: Address, destination: &[u8], bytes: &[u8]) -> Delivery {
+    pub fn deliver(
+        &mut self,
+        address: Address,
+        destination: &[u8],
+        bytes: &[u8],
+        ecn: Option<hibana_quic::ecn::Codepoint>,
+    ) -> Delivery {
         if bytes.len() > BYTES {
             return Delivery::Oversized;
         }
@@ -121,6 +131,7 @@ impl<const BYTES: usize> Dispatcher<BYTES> {
             let mut packet = Packet {
                 bytes: [0; BYTES],
                 len: bytes.len(),
+                ecn,
             };
             packet.bytes[..bytes.len()].copy_from_slice(bytes);
             entry.packets.push_back(packet);
@@ -199,7 +210,12 @@ mod tests {
         let mut cx = Context::from_waker(Waker::noop());
         assert!(old_read.as_mut().poll(&mut cx).is_pending());
         assert_eq!(
-            routes.deliver(address(1), b"new-local", b"new packet"),
+            routes.deliver(
+                address(1),
+                b"new-local",
+                b"new packet",
+                Some(hibana_quic::ecn::Codepoint::Ect1)
+            ),
             Delivery::Queued
         );
         let mut new_read = pin!(new.receive());
@@ -207,6 +223,7 @@ mod tests {
             panic!("new owner did not receive");
         };
         assert_eq!(packet.bytes(), b"new packet");
+        assert_eq!(packet.ecn(), Some(hibana_quic::ecn::Codepoint::Ect1));
         assert!(old_read.as_mut().poll(&mut cx).is_pending());
     }
     #[test]
@@ -234,18 +251,30 @@ mod tests {
             routes.register(address(2), &[b"other"]),
             Err(Error::Capacity)
         ));
-        assert_eq!(routes.deliver(address(2), b"cid", b"x"), Delivery::Unknown);
         assert_eq!(
-            routes.deliver(address(1), b"cid", b"123456789"),
+            routes.deliver(address(2), b"cid", b"x", None),
+            Delivery::Unknown
+        );
+        assert_eq!(
+            routes.deliver(address(1), b"cid", b"123456789", None),
             Delivery::Oversized
         );
-        assert_eq!(routes.deliver(address(1), b"cid", b"x"), Delivery::Queued);
-        assert_eq!(routes.deliver(address(1), b"cid", b"y"), Delivery::Full);
+        assert_eq!(
+            routes.deliver(address(1), b"cid", b"x", None),
+            Delivery::Queued
+        );
+        assert_eq!(
+            routes.deliver(address(1), b"cid", b"y", None),
+            Delivery::Full
+        );
         drop(receiver);
-        assert_eq!(routes.deliver(address(1), b"cid", b"z"), Delivery::Unknown);
+        assert_eq!(
+            routes.deliver(address(1), b"cid", b"z", None),
+            Delivery::Unknown
+        );
         let _new = routes.register(address(2), &[b"new"]).unwrap();
         assert_eq!(
-            routes.deliver(address(1), b"cid", b"old"),
+            routes.deliver(address(1), b"cid", b"old", None),
             Delivery::Unknown
         );
     }

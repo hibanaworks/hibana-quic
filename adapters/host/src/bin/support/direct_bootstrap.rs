@@ -207,6 +207,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
         };
     }
     let mut roles = application::Roles {
+        ecn_owner: enter!(programs.ecn_owner),
         handshake: Roles {
             rx: enter!(programs.handshake.rx),
             tls_rx: enter!(programs.handshake.tls_rx),

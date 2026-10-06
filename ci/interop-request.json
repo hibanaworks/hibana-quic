@@ -1,21 +1,21 @@
 {
-  "request": "Qualify Retry only after both native directions pass locally",
-  "requested_at": "2026-10-06T13:03:00Z",
+  "request": "Qualify ECN only after both native directions pass locally",
+  "requested_at": "2026-10-06T16:35:00Z",
   "scope": [
     "unchanged Neqo self-control",
-    "candidate Retry client and server",
-    "actual Retry token and packet-number trace verdict"
+    "candidate ECN client and server",
+    "actual ECT and ACK_ECN trace verdict"
   ],
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
   "local_evidence": "docs/direct-locals.md",
   "cases": [
-    "retry"
+    "ecn"
   ],
   "candidate_directions": [
     "client",
     "server"
   ],
   "reference_implementation": "neqo",
-  "qualification": "Both directions of this same native binary passed actual unmodified Neqo: required-Retry server2/3/5MiB and Retry-receiving client2/3/5MiB, all hashes, TLS/close/resource terminals; actual reference Send retry for log confirmed. One-shot client branch and second-Retry rejection use direct Hibana locals without retry_seen flags, separate FSM or send wrappers. TLS CRYPTO and packet numbers survive Retry; pending actual sends refuse numeric reset. Full validation recorded in docs/direct-locals.md. No new CI until both local directions pass, per user instruction. Preserve actual failures, no runner/reference/deadline changes.",
+  "qualification": "Both native directions passed before this CI request using the same release SHA448f1aab511e1df775c7d786765418f4e00d579549d9d560b714a412ce1269c2. Each transferred2/3/5MiB with exact hashes and actual retirement. Client ECT accepted/validated26/26, received7340, ACK_ECN93; server10244/10244, received6839, ACK_ECN210; no feedback errors, both unchanged Neqo peers reported capable. Core554, host119, selected host strictClippy and thumb passed; selected independent TLS29 and Python71 passed. Broader legacy certificate_depth3 failures are separately retained and not counted as passes. Policy lives in projected role31 and existing physical publisher17, common request/settled, no phase flag/FSM/relay wrappers. Preserve failures; no reference, runner, deadline or capacity changes.",
   "formal_models": false
 }

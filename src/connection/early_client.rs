@@ -601,7 +601,9 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 book.cancel(packet.reservation)?;
                 return Err(Error::Binding);
             }
-            let result = permit.submit(io.send(packet.sealed.bytes())).await;
+            let result = permit
+                .submit(io.send(packet.sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                .await;
             let accepted = match result {
                 Ok(Ok(time)) => Some(time),
                 _ => None,
@@ -609,6 +611,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             book.settle(recovery::Completion::from_adapter(
                 packet.reservation,
                 accepted,
+                crate::ecn::Codepoint::NotEct,
             ))?;
             outcome.set(accepted.is_some())?;
             match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {
@@ -650,7 +653,9 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                     book.cancel(packet.reservation)?;
                     return Err(Error::Binding);
                 }
-                let result = permit.submit(io.send(packet.sealed.bytes())).await;
+                let result = permit
+                    .submit(io.send(packet.sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                    .await;
                 let accepted = match result {
                     Ok(Ok(time)) => Some(time),
                     _ => None,
@@ -658,6 +663,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 book.settle(recovery::Completion::from_adapter(
                     packet.reservation,
                     accepted,
+                    crate::ecn::Codepoint::NotEct,
                 ))?;
                 outcome.set(accepted.is_some())?;
                 match outcome.resolver::<{ p::ADAPTER_RESULT }>().decide()? {

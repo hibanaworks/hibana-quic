@@ -25,11 +25,6 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
     let adapter: RoleProgram<{ p::ADAPTER }> = project(&global);
     let carrier = CarrierStorage::<1, 16, 8>::new();
     let mut slab = [0; 65536];
-    let decision = Cell::new(Some(if rejected {
-        DecisionArm::Right
-    } else {
-        DecisionArm::Left
-    }));
     let reset_decision = Cell::new(if illegal_at == 4 {
         None
     } else {
@@ -45,13 +40,6 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
         .init()
         .rendezvous(&mut slab, carrier.bind(id).unwrap())
         .unwrap();
-    rv.set_resolver(
-        &adapter,
-        ResolverRef::<{ p::SUBMISSION_RESULT }>::decision_state(&decision, |state| {
-            state.get().ok_or_else(ResolverError::reject)
-        }),
-    )
-    .unwrap();
     rv.set_resolver(
         &adapter,
         ResolverRef::<{ p::STOP_RESULT }>::decision_state(&reset_decision, |state| {
@@ -276,7 +264,7 @@ fn independent_reset_resolver_rejects_a_fabricated_opposite_outcome() {
 }
 
 #[test]
-fn missing_reset_verdict_cannot_reuse_the_udp_publication_result() {
+fn missing_reset_verdict_is_not_authorized_by_publication_result() {
     for rejected in [false, true] {
         run(4, rejected, false);
     }

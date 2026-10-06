@@ -24,10 +24,12 @@ use std::cell::{Cell, RefCell};
 pub struct AdmittedInitial {
     pub address: Address,
     pub datagram: Vec<u8>,
+    pub ecn: Option<Codepoint>,
     pub token: ValidatedToken,
 }
 struct Observation {
     address: Address,
+    ecn: Option<Codepoint>,
     datagram: Vec<u8>,
 }
 struct Reply {
@@ -94,6 +96,7 @@ pub async fn receive<const S: usize, const T: usize>(
                     return Err("Retry observed slot already occupied".into());
                 }
                 *slot = Some(Observation {
+                    ecn: metadata.ecn,
                     address: Address {
                         local: metadata.local,
                         remote: metadata.source,
@@ -326,6 +329,7 @@ pub async fn receive<const S: usize, const T: usize>(
                         *slot = Some(AdmittedInitial {
                             address: observation.address,
                             datagram: observation.datagram,
+                            ecn: observation.ecn,
                             token,
                         });
                     }

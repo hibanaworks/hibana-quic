@@ -18,6 +18,7 @@ struct ReceiveWire<'keys, 'scope, 'buf, const N: usize> {
     largest: [Option<u64>; 2],
     datagram: [u8; N],
     len: usize,
+    ecn: Option<crate::ecn::Codepoint>,
     offset: usize,
     opened: [u8; N],
 }
@@ -31,7 +32,9 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
         clock: &impl Clock,
     ) -> Result<bool, Error> {
         if self.offset >= self.len {
-            let len = io.receive(&mut self.datagram).await?;
+            let received = io.receive(&mut self.datagram).await?;
+            let len = received.len;
+            self.ecn = received.ecn;
             if len > N {
                 return Err(Error::Capacity);
             }
@@ -81,7 +84,7 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                         if source_id == slots.peer.borrow().bytes()
                             && let Some(pending) = slots.early_packets.borrow_mut().as_mut()
                         {
-                            pending.retain_packet(untrusted.bytes);
+                            pending.retain_packet(untrusted.bytes, self.ecn);
                         }
                         return Ok(true);
                     }
@@ -90,7 +93,7 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             }
             Header::Short { destination_id, .. } => {
                 if destination_id == config.local_connection_id {
-                    slots.retain_application(untrusted.bytes)?;
+                    slots.retain_application(untrusted.bytes, self.ecn)?;
                 }
                 return Ok(true);
             }
@@ -138,7 +141,7 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             *slots.peer.borrow_mut() = ConnectionId::new(source_id)?;
         }
         self.largest[index] = Some(self.largest[index].map_or(pn, |last| last.max(pn)));
-        let outcome = book.apply_packet(authentication, plaintext, clock.now())?;
+        let outcome = book.apply_packet(authentication, plaintext, clock.now(), self.ecn)?;
         slots.schedule.changed()?;
         if !outcome.duplicate {
             for frame in FrameIter::new(
@@ -187,15 +190,17 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
         largest: [None; 2],
         datagram: [0; N],
         len: 0,
+        ecn: None,
         offset: 0,
         opened: [0; N],
     };
     if let Some(first) = first_response {
-        if first.len > N {
+        if first.received.len > N {
             return Err(Error::Capacity);
         }
-        wire.datagram[..first.len].copy_from_slice(&first.bytes[..first.len]);
-        wire.len = first.len;
+        wire.datagram[..first.received.len].copy_from_slice(&first.bytes[..first.received.len]);
+        wire.len = first.received.len;
+        wire.ecn = first.received.ecn;
     }
     use crate::bounded_tls::{locals as direct, protocol as tls};
     struct Input<F>(F);
@@ -570,7 +575,7 @@ fn prepare_recovery_packet<'scope, 'book, const N: usize, const P: usize>(
             let frame = Frame::Ack {
                 delay: 0,
                 ranges: packet::AckRanges::new(ack.ranges())?,
-                ecn: None,
+                ecn: ack.ecn(),
             };
             // Initial ACK datagrams are already padded to 1200 bytes. Carry
             // retained ServerHello CRYPTO in that padding budget while the peer
@@ -1577,15 +1582,29 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         let is_initial = reservation.packet().space
                             == crate::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
-                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                            initial
+                                .submit(
+                                    permit.submit(
+                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                    ),
+                                )
+                                .await
                         } else {
-                            Some(permit.submit(io.send(sealed.bytes())).await)
+                            Some(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .await,
+                            )
                         };
                         let accepted_at = match result {
                             Some(Ok(Ok(at))) => Some(at),
                             _ => None,
                         };
-                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        book.settle(recovery::Completion::from_adapter(
+                            reservation,
+                            accepted_at,
+                            crate::ecn::Codepoint::NotEct,
+                        ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
                         {
@@ -1657,15 +1676,29 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         let is_initial = reservation.packet().space
                             == crate::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
-                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                            initial
+                                .submit(
+                                    permit.submit(
+                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                    ),
+                                )
+                                .await
                         } else {
-                            Some(permit.submit(io.send(sealed.bytes())).await)
+                            Some(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .await,
+                            )
                         };
                         let accepted_at = match result {
                             Some(Ok(Ok(at))) => Some(at),
                             _ => None,
                         };
-                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        book.settle(recovery::Completion::from_adapter(
+                            reservation,
+                            accepted_at,
+                            crate::ecn::Codepoint::NotEct,
+                        ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
                         {
@@ -1737,15 +1770,29 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         let is_initial = reservation.packet().space
                             == crate::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
-                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                            initial
+                                .submit(
+                                    permit.submit(
+                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                    ),
+                                )
+                                .await
                         } else {
-                            Some(permit.submit(io.send(sealed.bytes())).await)
+                            Some(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .await,
+                            )
                         };
                         let accepted_at = match result {
                             Some(Ok(Ok(at))) => Some(at),
                             _ => None,
                         };
-                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        book.settle(recovery::Completion::from_adapter(
+                            reservation,
+                            accepted_at,
+                            crate::ecn::Codepoint::NotEct,
+                        ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
                         {
@@ -1837,15 +1884,29 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         let is_initial = reservation.packet().space
                             == crate::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
-                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                            initial
+                                .submit(
+                                    permit.submit(
+                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                    ),
+                                )
+                                .await
                         } else {
-                            Some(permit.submit(io.send(sealed.bytes())).await)
+                            Some(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .await,
+                            )
                         };
                         let accepted_at = match result {
                             Some(Ok(Ok(at))) => Some(at),
                             _ => None,
                         };
-                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        book.settle(recovery::Completion::from_adapter(
+                            reservation,
+                            accepted_at,
+                            crate::ecn::Codepoint::NotEct,
+                        ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
                         {
@@ -1917,15 +1978,29 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         let is_initial = reservation.packet().space
                             == crate::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
-                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                            initial
+                                .submit(
+                                    permit.submit(
+                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                    ),
+                                )
+                                .await
                         } else {
-                            Some(permit.submit(io.send(sealed.bytes())).await)
+                            Some(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .await,
+                            )
                         };
                         let accepted_at = match result {
                             Some(Ok(Ok(at))) => Some(at),
                             _ => None,
                         };
-                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        book.settle(recovery::Completion::from_adapter(
+                            reservation,
+                            accepted_at,
+                            crate::ecn::Codepoint::NotEct,
+                        ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
                         {
@@ -1997,15 +2072,29 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         let is_initial = reservation.packet().space
                             == crate::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
-                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                            initial
+                                .submit(
+                                    permit.submit(
+                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                    ),
+                                )
+                                .await
                         } else {
-                            Some(permit.submit(io.send(sealed.bytes())).await)
+                            Some(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .await,
+                            )
                         };
                         let accepted_at = match result {
                             Some(Ok(Ok(at))) => Some(at),
                             _ => None,
                         };
-                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        book.settle(recovery::Completion::from_adapter(
+                            reservation,
+                            accepted_at,
+                            crate::ecn::Codepoint::NotEct,
+                        ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
                         {
@@ -2097,15 +2186,29 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         let is_initial = reservation.packet().space
                             == crate::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
-                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                            initial
+                                .submit(
+                                    permit.submit(
+                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                    ),
+                                )
+                                .await
                         } else {
-                            Some(permit.submit(io.send(sealed.bytes())).await)
+                            Some(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .await,
+                            )
                         };
                         let accepted_at = match result {
                             Some(Ok(Ok(at))) => Some(at),
                             _ => None,
                         };
-                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        book.settle(recovery::Completion::from_adapter(
+                            reservation,
+                            accepted_at,
+                            crate::ecn::Codepoint::NotEct,
+                        ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
                         {
@@ -2177,15 +2280,29 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         let is_initial = reservation.packet().space
                             == crate::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
-                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                            initial
+                                .submit(
+                                    permit.submit(
+                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                    ),
+                                )
+                                .await
                         } else {
-                            Some(permit.submit(io.send(sealed.bytes())).await)
+                            Some(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .await,
+                            )
                         };
                         let accepted_at = match result {
                             Some(Ok(Ok(at))) => Some(at),
                             _ => None,
                         };
-                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        book.settle(recovery::Completion::from_adapter(
+                            reservation,
+                            accepted_at,
+                            crate::ecn::Codepoint::NotEct,
+                        ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
                         {
@@ -2257,15 +2374,29 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                         let is_initial = reservation.packet().space
                             == crate::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
-                            initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                            initial
+                                .submit(
+                                    permit.submit(
+                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                    ),
+                                )
+                                .await
                         } else {
-                            Some(permit.submit(io.send(sealed.bytes())).await)
+                            Some(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .await,
+                            )
                         };
                         let accepted_at = match result {
                             Some(Ok(Ok(at))) => Some(at),
                             _ => None,
                         };
-                        book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                        book.settle(recovery::Completion::from_adapter(
+                            reservation,
+                            accepted_at,
+                            crate::ecn::Codepoint::NotEct,
+                        ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
                         {
@@ -2354,15 +2485,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     let is_initial =
                         reservation.packet().space == crate::accounting::PacketNumberSpace::Initial;
                     let result = if is_initial {
-                        initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        initial
+                            .submit(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct)),
+                            )
+                            .await
                     } else {
-                        Some(permit.submit(io.send(sealed.bytes())).await)
+                        Some(
+                            permit
+                                .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                .await,
+                        )
                     };
                     let accepted_at = match result {
                         Some(Ok(Ok(at))) => Some(at),
                         _ => None,
                     };
-                    book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                    book.settle(recovery::Completion::from_adapter(
+                        reservation,
+                        accepted_at,
+                        crate::ecn::Codepoint::NotEct,
+                    ))?;
                     if accepted_at.is_some()
                         && let Some(ack) = acknowledgment
                     {
@@ -2430,15 +2574,28 @@ pub(super) async fn publish<'scope, 'book, const N: usize, const P: usize>(
                     let is_initial =
                         reservation.packet().space == crate::accounting::PacketNumberSpace::Initial;
                     let result = if is_initial {
-                        initial.submit(permit.submit(io.send(sealed.bytes()))).await
+                        initial
+                            .submit(
+                                permit
+                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct)),
+                            )
+                            .await
                     } else {
-                        Some(permit.submit(io.send(sealed.bytes())).await)
+                        Some(
+                            permit
+                                .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                .await,
+                        )
                     };
                     let accepted_at = match result {
                         Some(Ok(Ok(at))) => Some(at),
                         _ => None,
                     };
-                    book.settle(recovery::Completion::from_adapter(reservation, accepted_at))?;
+                    book.settle(recovery::Completion::from_adapter(
+                        reservation,
+                        accepted_at,
+                        crate::ecn::Codepoint::NotEct,
+                    ))?;
                     if accepted_at.is_some()
                         && let Some(ack) = acknowledgment
                     {

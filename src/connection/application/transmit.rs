@@ -2,6 +2,9 @@
 //!
 //! A pending packet owns both numerical reservations and immutable sealed
 //! bytes. Key borrows finish before any endpoint or adapter is awaited.
+pub(crate) mod ecn;
+use crate::ecn::protocol as ep;
+
 use super::{CloseKind, Control, Error, assembly::ownership, keys, protocol as p};
 use crate::{
     accounting::AccountingError,
@@ -31,6 +34,12 @@ enum Sealed<'book, const N: usize> {
     Long(wire::Datagram<'book, N>),
 }
 impl<'book, const N: usize> Sealed<'book, N> {
+    fn reservation(&self) -> &recovery::Reservation<'book> {
+        match self {
+            Self::Application(packet) => packet.reservation(),
+            Self::Long(packet) => &packet.reservation,
+        }
+    }
     fn bytes(&self) -> &[u8] {
         match self {
             Self::Application(packet) => packet.bytes(),
@@ -133,10 +142,11 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         &self,
         packet: Pending<'book, 'streams, N>,
         accepted_at: Option<u64>,
+        ecn: crate::ecn::Codepoint,
     ) -> Result<(), Error> {
         let mut owners = self.owners.try_borrow_mut().map_err(|_| Error::Binding)?;
         let Owners { book, streams } = &mut *owners;
-        settle(packet, book, streams, accepted_at)
+        settle(packet, book, streams, accepted_at, ecn)
     }
     pub(crate) fn cancel_pending(&self) -> Result<(), Error> {
         let pending = self
@@ -145,7 +155,7 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
             .map_err(|_| Error::Binding)?
             .take();
         if let Some(pending) = pending {
-            self.settle(pending, None)?;
+            self.settle(pending, None, crate::ecn::Codepoint::NotEct)?;
         }
         Ok(())
     }
@@ -156,7 +166,7 @@ impl<const N: usize, const RX: usize, const CHUNK: usize> Drop
     fn drop(&mut self) {
         if let Some(packet) = self.pending.get_mut().take() {
             let Owners { book, streams } = self.owners.get_mut();
-            let _ = settle(packet, book, streams, None);
+            let _ = settle(packet, book, streams, None, crate::ecn::Codepoint::NotEct);
         }
     }
 }
@@ -186,9 +196,13 @@ impl<const N: usize, const RX: usize, const CHUNK: usize>
             .sealed
             .bytes()
     }
-    fn complete(&mut self, accepted_at: Option<u64>) -> Result<(), Error> {
+    fn complete(
+        &mut self,
+        accepted_at: Option<u64>,
+        ecn: crate::ecn::Codepoint,
+    ) -> Result<(), Error> {
         self.state
-            .settle(self.packet.take().ok_or(Error::Binding)?, accepted_at)
+            .settle(self.packet.take().ok_or(Error::Binding)?, accepted_at, ecn)
     }
 }
 impl<const N: usize, const RX: usize, const CHUNK: usize> Drop
@@ -196,7 +210,9 @@ impl<const N: usize, const RX: usize, const CHUNK: usize> Drop
 {
     fn drop(&mut self) {
         if let Some(packet) = self.packet.take() {
-            let _ = self.state.settle(packet, None);
+            let _ = self
+                .state
+                .settle(packet, None, crate::ecn::Codepoint::NotEct);
         }
     }
 }
@@ -206,6 +222,7 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
     book: &mut recovery::Publication<'book, '_, N>,
     streams: &mut application_stream::Publication<'_, '_, '_, RX, CHUNK>,
     accepted_at: Option<u64>,
+    ecn: crate::ecn::Codepoint,
 ) -> Result<(), Error> {
     let Pending {
         scope: _,
@@ -217,7 +234,11 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
     let (reservation, long_ack) = sealed.into_parts();
     // Complete both numeric owners in this synchronous turn even if one owner
     // reports an invariant failure. No peer ACK can interleave between them.
-    let recovery_result = book.settle(recovery::Completion::from_adapter(reservation, accepted_at));
+    let recovery_result = book.settle(recovery::Completion::from_adapter(
+        reservation,
+        accepted_at,
+        ecn,
+    ));
     let stream_result = match stream {
         Some(stream) if accepted_at.is_some() => streams.commit(stream),
         Some(stream) => streams.cancel(stream),
@@ -409,7 +430,7 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
         let frame = Frame::Ack {
             delay: 0,
             ranges: packet::AckRanges::new(ack.ranges())?,
-            ecn: None,
+            ecn: ack.ecn(),
         };
         let plain = wire::PlainPacket::<N>::new(config, peer, ack.level(), frame)?;
         let reservation = match book.reserve(
@@ -548,7 +569,7 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
             &Frame::Ack {
                 delay: 0,
                 ranges: packet::AckRanges::new(ack.ranges())?,
-                ecn: None,
+                ecn: ack.ecn(),
             },
             &mut plaintext[..],
         )?;
@@ -766,8 +787,8 @@ pub(crate) async fn publish<
     endpoint: &mut Endpoint<'_, { p::ADAPTER }>,
     control: &Control<'_, 'scope>,
     state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
+    ecn_exchange: &ecn::Exchange,
     issuer: &mut publication_gate::Issuer<'_, 'scope>,
-    outcome: &Outcome,
     reset_outcome: &Outcome,
     reset: &super::reset::Exchange<'_>,
     reclaim: &super::reclaim::Exchange<'streams>,
@@ -782,7 +803,7 @@ pub(crate) async fn publish<
                 offered.recv::<p::Datagram>().await?;
                 let packet = state.take()?;
                 if packet.close_deadline.is_some() {
-                    state.settle(packet, None)?;
+                    state.settle(packet, None, crate::ecn::Codepoint::NotEct)?;
                     return Err(Error::Binding);
                 }
                 let accepted_at = {
@@ -792,32 +813,88 @@ pub(crate) async fn publish<
                         state,
                     };
                     if !core::ptr::eq(scope, issuer.scope()) {
-                        pending.complete(None)?;
+                        pending.complete(None, crate::ecn::Codepoint::NotEct)?;
                         return Err(Error::Binding);
                     }
+                    let reservation = pending
+                        .packet
+                        .as_ref()
+                        .ok_or(Error::Binding)?
+                        .sealed
+                        .reservation();
+                    ecn_exchange
+                        .requested
+                        .put(Some(ecn::Requested {
+                            packet: reservation.packet(),
+                            ack_eliciting: reservation.ack_eliciting(),
+                        }))
+                        .map_err(|_| Error::Binding)?;
+                    endpoint.send::<ep::Request>(&()).await?;
+                    let mark = loop {
+                        let granted = endpoint.offer().await.map_err(|error| {
+                            Error::Connection(connection::Error::EndpointAt {
+                                role: p::ADAPTER,
+                                expected_label: 100,
+                                error,
+                            })
+                        })?;
+                        let mark = match granted.label() {
+                            100 => granted.recv::<ep::ProbePermit>().await?,
+                            103 => granted.recv::<ep::Validated>().await?,
+                            106 => granted.recv::<ep::CapablePermit>().await?,
+                            107 => {
+                                granted.recv::<ep::ProbeFailed>().await?;
+                                0
+                            }
+                            110 => {
+                                granted.recv::<ep::ProbeFailedPermit>().await?;
+                                0
+                            }
+                            112 => {
+                                granted.recv::<ep::ValidationFailed>().await?;
+                                0
+                            }
+                            115 => {
+                                granted.recv::<ep::FailedPermit>().await?;
+                                0
+                            }
+                            120 => {
+                                granted.recv::<ep::ProbePause>().await?;
+                                endpoint.send::<ep::ProbePaused>(&()).await?;
+                                continue;
+                            }
+                            122 => {
+                                granted.recv::<ep::CapablePause>().await?;
+                                endpoint.send::<ep::CapablePaused>(&()).await?;
+                                continue;
+                            }
+                            label => return Err(Error::UnexpectedLabel(label)),
+                        };
+                        break match mark {
+                            0 => crate::ecn::Codepoint::NotEct,
+                            2 => crate::ecn::Codepoint::Ect0,
+                            _ => return Err(Error::Binding),
+                        };
+                    };
                     let result = match issuer.begin() {
-                        Ok(permit) => permit.submit(socket.send(pending.bytes())).await,
+                        Ok(permit) => permit.submit(socket.send(pending.bytes(), mark)).await,
                         Err(error) => Err(error),
                     };
                     let accepted_at = match result {
                         Ok(Ok(at)) => Some(at),
                         _ => None,
                     };
-                    pending.complete(accepted_at)?;
+                    pending.complete(accepted_at, mark)?;
+                    endpoint.send::<ep::Settled>(&()).await?;
                     accepted_at
                 };
                 control.changed()?;
-                outcome.set(accepted_at.is_some())?;
-                match outcome
-                    .resolver::<{ p::SUBMISSION_RESULT }>()
-                    .decide()
-                    .map_err(connection::Error::from)?
-                {
-                    DecisionArm::Left => endpoint.send::<p::Accepted>(&()).await?,
-                    DecisionArm::Right => endpoint.send::<p::Rejected>(&()).await?,
+                if accepted_at.is_some() {
+                    endpoint.send::<p::Accepted>(&()).await?;
+                } else {
+                    endpoint.send::<p::Rejected>(&()).await?;
                 }
                 endpoint.recv::<p::Settled>().await?;
-                outcome.clear();
             }
             202 => {
                 let id = offered.recv::<p::ReclaimStream>().await?;
@@ -878,6 +955,46 @@ pub(crate) async fn publish<
                 if state.pending.borrow().is_some() {
                     return Err(Error::Binding);
                 }
+                ecn_exchange
+                    .requested
+                    .put(None)
+                    .map_err(|_| Error::Binding)?;
+                endpoint.send::<ep::Request>(&()).await?;
+                loop {
+                    let ending = endpoint.offer().await?;
+                    match ending.label() {
+                        120 => {
+                            ending.recv::<ep::ProbePause>().await?;
+                            endpoint.send::<ep::ProbePaused>(&()).await?;
+                        }
+                        122 => {
+                            ending.recv::<ep::CapablePause>().await?;
+                            endpoint.send::<ep::CapablePaused>(&()).await?;
+                        }
+                        124 => {
+                            ending.recv::<ep::ProbeFailedPause>().await?;
+                            endpoint.send::<ep::ProbeFailedPaused>(&()).await?;
+                            endpoint.recv::<ep::ProbeFailedEnd>().await?;
+                            break;
+                        }
+                        126 => {
+                            ending.recv::<ep::FailedPause>().await?;
+                            endpoint.send::<ep::FailedPaused>(&()).await?;
+                            endpoint.recv::<ep::FailedEnd>().await?;
+                            break;
+                        }
+                        117 => {
+                            ending.recv::<ep::ProbeEnd>().await?;
+                            break;
+                        }
+                        118 => {
+                            ending.recv::<ep::CapableEnd>().await?;
+                            break;
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    }
+                }
+                endpoint.send::<ep::Joined>(&()).await?;
                 reset.cancel_pending()?;
                 endpoint.send::<p::PublicationStopped>(&()).await?;
                 return Ok(());
@@ -966,7 +1083,7 @@ pub(crate) async fn close<
                     core::ops::ControlFlow::Continue(result) => Some(result),
                 };
                 let reply_budget = match input {
-                    Some(Ok(len)) if len <= N => {
+                    Some(Ok(received)) if received.len <= N => {
                         // RFC9000 10.2.1 suggests progressively requiring more
                         // input packets, bounding close-response ping-pong.
                         received_since_reply =
@@ -977,7 +1094,7 @@ pub(crate) async fn close<
                         }
                         received_since_reply = 0;
                         packets_per_reply = packets_per_reply.saturating_mul(2);
-                        Some(len.checked_mul(3).ok_or(Error::Capacity)?)
+                        Some(received.len.checked_mul(3).ok_or(Error::Capacity)?)
                     }
                     Some(Ok(_)) => return Err(Error::Capacity),
                     Some(Err(_)) => {
@@ -1117,11 +1234,11 @@ pub(crate) async fn publish_close<
                 offered.recv::<p::CloseDatagram>().await?;
                 let packet = state.take()?;
                 let Some(deadline) = packet.close_deadline else {
-                    state.settle(packet, None)?;
+                    state.settle(packet, None, crate::ecn::Codepoint::NotEct)?;
                     return Err(Error::Binding);
                 };
                 if packet.stream.is_some() || packet.acknowledgment.is_some() {
-                    state.settle(packet, None)?;
+                    state.settle(packet, None, crate::ecn::Codepoint::NotEct)?;
                     return Err(Error::Binding);
                 }
                 let accepted_at = {
@@ -1130,7 +1247,7 @@ pub(crate) async fn publish_close<
                         state,
                     };
                     let accepted_at = match crate::runtime::select(
-                        socket.send(pending.bytes()),
+                        socket.send(pending.bytes(), crate::ecn::Codepoint::NotEct),
                         clock.wait_until(deadline),
                     )
                     .await
@@ -1139,7 +1256,7 @@ pub(crate) async fn publish_close<
                         core::ops::ControlFlow::Break(Err(_))
                         | core::ops::ControlFlow::Continue(()) => None,
                     };
-                    pending.complete(accepted_at)?;
+                    pending.complete(accepted_at, crate::ecn::Codepoint::NotEct)?;
                     accepted_at
                 };
                 outcome.set(accepted_at.is_some())?;
@@ -1344,7 +1461,11 @@ mod tests {
         dropped: &'a Cell<bool>,
     }
     impl DatagramTx for PendingSocket<'_> {
-        fn send(&mut self, bytes: &[u8]) -> impl Future<Output = Result<u64, IoError>> {
+        fn send(
+            &mut self,
+            bytes: &[u8],
+            _ecn: crate::ecn::Codepoint,
+        ) -> impl Future<Output = Result<u64, IoError>> {
             async move {
                 let _dropped = Dropped(self.dropped);
                 poll_fn(|_| {
@@ -1391,8 +1512,13 @@ mod tests {
                     packet: Some(state.take().unwrap()),
                     state: &state,
                 };
-                let accepted_at = socket.send(pending.bytes()).await.unwrap();
-                pending.complete(Some(accepted_at)).unwrap();
+                let accepted_at = socket
+                    .send(pending.bytes(), crate::ecn::Codepoint::NotEct)
+                    .await
+                    .unwrap();
+                pending
+                    .complete(Some(accepted_at), crate::ecn::Codepoint::NotEct)
+                    .unwrap();
             });
             let mut context = Context::from_waker(Waker::noop());
             assert!(send.as_mut().poll(&mut context).is_pending());
@@ -1409,7 +1535,9 @@ mod tests {
         assert!(!app.send_complete(stream).unwrap());
         let retry = stream_packet(&mut book_tx, &mut tx, &mut write);
         assert_eq!(retry.stream.as_ref().unwrap().packet_number(), 1);
-        state.settle(retry, None).unwrap();
+        state
+            .settle(retry, None, crate::ecn::Codepoint::NotEct)
+            .unwrap();
         assert_cancelled(book_tx.snapshot(), 2);
         drop(state);
         retirement.disarm();
@@ -1420,7 +1548,11 @@ mod tests {
         at: u64,
     }
     impl DatagramTx for AcceptedSocket {
-        fn send(&mut self, bytes: &[u8]) -> impl Future<Output = Result<u64, IoError>> {
+        fn send(
+            &mut self,
+            bytes: &[u8],
+            _ecn: crate::ecn::Codepoint,
+        ) -> impl Future<Output = Result<u64, IoError>> {
             assert!(!bytes.is_empty());
             core::future::ready(Ok(self.at))
         }
@@ -1465,14 +1597,16 @@ mod tests {
                 state: &state,
             };
             let accepted_at = {
-                let mut send = pin!(socket.send(pending.bytes()));
+                let mut send = pin!(socket.send(pending.bytes(), crate::ecn::Codepoint::NotEct));
                 let mut context = Context::from_waker(Waker::noop());
                 match send.as_mut().poll(&mut context) {
                     Poll::Ready(Ok(at)) => at,
                     _ => panic!("fixture adapter must accept immediately"),
                 }
             };
-            pending.complete(Some(accepted_at)).unwrap();
+            pending
+                .complete(Some(accepted_at), crate::ecn::Codepoint::NotEct)
+                .unwrap();
         }
         let next = recovery::ORDINARY_RECORD_CAPACITY as u64 + 3;
         let full = book_tx.snapshot();
@@ -1549,14 +1683,18 @@ mod tests {
         assert!(
             matches!(frame, Frame::ConnectionClose { error_code: 0, frame_type: None, reason } if reason.is_empty())
         );
-        state.settle(close, None).unwrap();
+        state
+            .settle(close, None, crate::ecn::Codepoint::NotEct)
+            .unwrap();
         assert_eq!(book_tx.snapshot().pending_publications, [0; 3]);
         assert_eq!(book_tx.snapshot().next_packet_number[2], Some(next + 1));
         let second = close_packet(&mut write, &mut book_tx, &peer, true, 0, 1000, 81)
             .unwrap()
             .expect("cancelled close burns its number");
         assert_eq!(write.last_sealed_packet_number(), Some(next + 1));
-        state.settle(second, Some(81)).unwrap();
+        state
+            .settle(second, Some(81), crate::ecn::Codepoint::NotEct)
+            .unwrap();
         assert_eq!(book_tx.snapshot().next_packet_number[2], Some(next + 2));
         drop(state);
         retirement.disarm();

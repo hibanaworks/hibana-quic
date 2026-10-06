@@ -343,6 +343,7 @@ async fn connected<
     )
     .await?;
     let publication_state = transmit::State::new(book_publication, publication);
+    let ecn_exchange = transmit::ecn::Exchange::new();
 
     let acknowledgments = super::acknowledgments::Exchange::new();
     let mut request_slots = [const { None }; io::REQUEST_CAPACITY];
@@ -471,8 +472,8 @@ async fn connected<
             &mut roles.adapter,
             &control,
             &publication_state,
+            &ecn_exchange,
             issuer,
-            &outcomes.application_adapter,
             &outcomes.application_reset,
             &reset_exchange,
             &reclaim_exchange,
@@ -480,6 +481,8 @@ async fn connected<
             &mut reset_owner,
             send_io,
         );
+        let marking =
+            transmit::ecn::owner(&mut roles.ecn_owner, &ecn_exchange, &completion_book, clock);
         let completion = termination::completion(
             &mut roles.files_event,
             &mut roles.source_join,
@@ -513,6 +516,7 @@ async fn connected<
             timer_receive,
             transmitting,
             publishing,
+            marking,
             completion,
             terminal_receive,
             source_collector,
@@ -529,6 +533,7 @@ async fn connected<
     }
 
     let before_close = book_tx.snapshot();
+    let ecn_before_close = completion_book.ecn_observation()?;
     let key_generation = owner.generation()?;
     let completed_streams = if config.side == Side::Client {
         state.completed_count()
@@ -624,5 +629,10 @@ async fn connected<
         close_completed: !matches!(close_kind, super::CloseKind::IdleExpired),
         received_bytes: before_close.received_bytes,
         sent_bytes: before_close.accepted_bytes,
+        ecn_accepted_packets: ecn_before_close.accepted,
+        ecn_validated_packets: ecn_before_close.validated,
+        ecn_received_packets: ecn_before_close.received,
+        ecn_acknowledgments_sent: ecn_before_close.acknowledgments_sent,
+        ecn_feedback_error: ecn_before_close.first_failure.map(|failure| failure.reason),
     })
 }

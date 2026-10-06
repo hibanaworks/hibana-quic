@@ -52,7 +52,7 @@ pub(crate) async fn run<
     termination: &termination::Exchange<'_, '_, 'scope>,
     initial_confirmation: Option<recovery::HandshakeConfirmed<'scope>>,
     key_update_target: u64,
-    mut pending_application: Option<([u8; N], usize)>,
+    mut pending_application: Option<([u8; N], connection::ReceivedDatagram)>,
 ) -> Result<(), Error> {
     let scope = material.application.scope();
     if !core::ptr::eq(scope, transcript.scope())
@@ -233,7 +233,8 @@ pub(crate) async fn run<
                     burst_started = clock.now();
                 }
                 burst += 1;
-                let len = result.map_err(connection::Error::from)?;
+                let received = result.map_err(connection::Error::from)?;
+                let len = received.len;
                 if len > N {
                     return Err(Error::Capacity);
                 }
@@ -341,6 +342,7 @@ pub(crate) async fn run<
                                     receipt,
                                     opened.plaintext(),
                                     clock.now(),
+                                    received.ecn,
                                 ) {
                                     Ok(outcome) => outcome,
                                     // Expired sent history is not evidence that the peer ACKed an unsent
@@ -596,6 +598,7 @@ pub(crate) async fn run<
                             transcript,
                             book,
                             clock.now(),
+                            received.ecn,
                         ),
                         _ => Ok(None),
                     };
@@ -839,6 +842,7 @@ fn old<'book, 'scope, const N: usize>(
     transcript: &Transcript<'scope, '_, '_>,
     book: &mut recovery::Rx<'book, 'scope, N>,
     now: u64,
+    ecn: Option<crate::ecn::Codepoint>,
 ) -> Result<Option<u64>, Error> {
     let Header::Long {
         kind,
@@ -916,7 +920,7 @@ fn old<'book, 'scope, const N: usize>(
     }
     material.largest_received[index] =
         Some(material.largest_received[index].map_or(pn, |last| last.max(pn)));
-    let outcome = match book.apply_packet(receipt, plaintext, now) {
+    let outcome = match book.apply_packet(receipt, plaintext, now, ecn) {
         Ok(outcome) => outcome,
         Err(recovery::Error::Accounting(AccountingError::HistoryUnavailable)) => return Ok(None),
         Err(error) => return Err(error.into()),

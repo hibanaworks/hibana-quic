@@ -48,6 +48,7 @@ pub enum Error {
     Recovery(kernel::RecoveryError),
     Packet(packet::Error),
     Flight(flights::Error),
+    Ecn(crate::ecn::Error),
     Binding,
     Capacity,
     UnsupportedLevel,
@@ -69,6 +70,11 @@ impl From<kernel::RecoveryError> for Error {
 impl From<packet::Error> for Error {
     fn from(e: packet::Error) -> Self {
         Self::Packet(e)
+    }
+}
+impl From<crate::ecn::Error> for Error {
+    fn from(error: crate::ecn::Error) -> Self {
+        Self::Ecn(error)
     }
 }
 impl From<flights::Error> for Error {
@@ -103,6 +109,32 @@ pub struct CompletionObserver<'book, 'scope, const B: usize> {
     book: &'book Recovery<'scope, B>,
 }
 impl<const B: usize> CompletionObserver<'_, '_, B> {
+    pub(crate) fn ecn_observation(&self) -> Result<EcnObservation, Error> {
+        let n = self.book.numbers.borrow();
+        n.ordinary()?;
+        let accepted = SPACES.into_iter().try_fold(0u64, |total, space| {
+            let sent = n.ledger.accepted_ecn_counts(space);
+            total
+                .checked_add(sent.ect0)
+                .and_then(|n| n.checked_add(sent.ect1))
+                .ok_or(AccountingError::Overflow)
+        })?;
+        Ok(EcnObservation {
+            accepted,
+            received: n.received_ecn.marked_packets()?,
+            acknowledgments_sent: n.ecn_acknowledgments_sent,
+            lost: n.lost_ecn_packets,
+            validated: n.validated_ecn_packets,
+            first_sent_at: n.first_ecn_sent_at,
+            first_failure: n.first_ecn_failure,
+            probe_period: n
+                .rtt
+                .pto_duration_us(n.max_ack_delay_us, 0)?
+                .checked_mul(3)
+                .ok_or(AccountingError::Overflow)?,
+        })
+    }
+
     pub fn idle_deadline(&self, local_timeout_ms: u64) -> Result<Option<u64>, Error> {
         let n = self.book.numbers.borrow();
         n.ordinary()?;
@@ -195,6 +227,10 @@ pub struct Reservation<'book> {
     plaintext: Option<PlaintextBinding>,
 }
 impl<'book> Reservation<'book> {
+    pub(super) fn ack_eliciting(&self) -> bool {
+        self.ack_eliciting
+    }
+
     pub fn packet(&self) -> PacketNumber {
         self.send.packet()
     }
@@ -250,12 +286,18 @@ impl<'book> Reservation<'book> {
 pub struct Completion<'book> {
     reservation: Reservation<'book>,
     accepted_at: Option<u64>,
+    ecn: crate::ecn::Codepoint,
 }
 impl<'book> Completion<'book> {
-    pub(super) fn from_adapter(reservation: Reservation<'book>, accepted_at: Option<u64>) -> Self {
+    pub(super) fn from_adapter(
+        reservation: Reservation<'book>,
+        accepted_at: Option<u64>,
+        ecn: crate::ecn::Codepoint,
+    ) -> Self {
         Self {
             reservation,
             accepted_at,
+            ecn,
         }
     }
 }
@@ -282,8 +324,12 @@ pub struct AckSnapshot<'book> {
     revision: u64,
     ranges: [packet::AckRange; ACK_CAPACITY],
     len: usize,
+    ecn: Option<packet::EcnCounts>,
 }
 impl AckSnapshot<'_> {
+    pub fn ecn(&self) -> Option<packet::EcnCounts> {
+        self.ecn
+    }
     pub fn level(&self) -> Level {
         LEVELS[self.index]
     }
@@ -435,6 +481,28 @@ struct Epoch {
     packet: PacketNumber,
     generation: u64,
 }
+/// Exact authenticated feedback discrepancy retained until connection retirement.
+/// This is evidence for the projected ECN owner, never a marking-policy state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EcnFailure {
+    pub space: PacketNumberSpace,
+    pub largest: u64,
+    pub previous: packet::EcnCounts,
+    pub reported: Option<packet::EcnCounts>,
+    pub newly: crate::ecn::MarkedPackets,
+    pub reason: crate::ecn::Error,
+}
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EcnObservation {
+    pub accepted: u64,
+    pub received: u64,
+    pub acknowledgments_sent: u64,
+    pub lost: u64,
+    pub validated: u64,
+    pub first_sent_at: Option<u64>,
+    pub first_failure: Option<EcnFailure>,
+    pub probe_period: u64,
+}
 struct Numbers<'scope, const B: usize> {
     side: Side,
     generation: u64,
@@ -446,6 +514,13 @@ struct Numbers<'scope, const B: usize> {
     congestion: NewReno,
     timer: RecoveryTimer,
     received: [Received; 3],
+    received_ecn: crate::ecn::RxCounts,
+    peer_ecn: [packet::EcnCounts; 3],
+    ecn_acknowledgments_sent: u64,
+    validated_ecn_packets: u64,
+    lost_ecn_packets: u64,
+    first_ecn_sent_at: Option<u64>,
+    first_ecn_failure: Option<EcnFailure>,
     ack_pending: [bool; 3],
     ack_revision: [u64; 3],
     revision: u64,
@@ -607,6 +682,17 @@ impl<'scope, const B: usize> Recovery<'scope, B> {
                 congestion: NewReno::new(max_datagram_size)?,
                 timer: RecoveryTimer::new(),
                 received: [Received::EMPTY; 3],
+                received_ecn: crate::ecn::RxCounts::new(),
+                peer_ecn: [packet::EcnCounts {
+                    ect0: 0,
+                    ect1: 0,
+                    ce: 0,
+                }; 3],
+                ecn_acknowledgments_sent: 0,
+                validated_ecn_packets: 0,
+                lost_ecn_packets: 0,
+                first_ecn_sent_at: None,
+                first_ecn_failure: None,
                 ack_pending: [false; 3],
                 ack_revision: [0; 3],
                 revision: 0,
@@ -953,6 +1039,15 @@ impl<const B: usize> Numbers<'_, B> {
                 bytes_removed_from_flight,
             } = self.ledger.declare_lost(packet.packet)?
             {
+                if matches!(
+                    packet.ecn,
+                    crate::ecn::Codepoint::Ect0 | crate::ecn::Codepoint::Ect1
+                ) {
+                    self.lost_ecn_packets = self
+                        .lost_ecn_packets
+                        .checked_add(1)
+                        .ok_or(AccountingError::Overflow)?;
+                }
                 self.flights.mark_lost(packet.packet);
                 if index == 2 {
                     let free = self
@@ -1518,7 +1613,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         )
     }
     pub fn cancel(&mut self, reservation: Reservation<'book>) -> Result<(), Error> {
-        settle(self.book, reservation, None)
+        settle(self.book, reservation, None, crate::ecn::Codepoint::NotEct)
     }
     pub fn has_outstanding_crypto(&self) -> bool {
         self.book.numbers.borrow().flights.active_flights() != 0
@@ -1579,6 +1674,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
                 revision: n.ack_revision[index],
                 ranges: n.received[index].ranges,
                 len: n.received[index].len,
+                ecn: n.received_ecn.ack_counts(SPACES[index]),
             })
     }
     pub fn acknowledgment_sent(&mut self, snapshot: AckSnapshot<'book>) -> Result<(), Error> {
@@ -1792,6 +1888,7 @@ fn settle<const B: usize>(
     book: &Recovery<'_, B>,
     reservation: Reservation<'_>,
     accepted_at: Option<u64>,
+    ecn: crate::ecn::Codepoint,
 ) -> Result<(), Error> {
     if !core::ptr::eq(&book.identity, reservation.identity)
         || !core::ptr::eq(book.scope, reservation.scope)
@@ -1815,7 +1912,13 @@ fn settle<const B: usize>(
         // Keep its exact send time; only the aggregate observation bound takes
         // the later of two observations of the same monotonic clock.
         let observed_at = n.last_now.map_or(at, |previous| previous.max(at));
-        n.ledger.adapter_accepted(reservation.send, at)?;
+        n.ledger.adapter_accepted_ecn(reservation.send, at, ecn)?;
+        if matches!(
+            ecn,
+            crate::ecn::Codepoint::Ect0 | crate::ecn::Codepoint::Ect1
+        ) {
+            n.first_ecn_sent_at = Some(n.first_ecn_sent_at.map_or(at, |old| old.min(at)));
+        }
         n.path.adapter_accepted(reservation.path)?;
         if let Some(reference) = reservation.flight {
             n.flights.accepted(reference, at)?;
@@ -1870,6 +1973,15 @@ fn ack_sent<const B: usize>(
     }
     let mut n = book.numbers.borrow_mut();
     n.active()?;
+    if snapshot
+        .ecn
+        .is_some_and(|counts| counts.ect0 != 0 || counts.ect1 != 0 || counts.ce != 0)
+    {
+        n.ecn_acknowledgments_sent = n
+            .ecn_acknowledgments_sent
+            .checked_add(1)
+            .ok_or(AccountingError::Overflow)?;
+    }
     if n.ack_revision[snapshot.index] == snapshot.revision {
         n.ack_pending[snapshot.index] = false;
         n.changed()?;
@@ -1878,10 +1990,15 @@ fn ack_sent<const B: usize>(
 }
 impl<'book, 'scope, const B: usize> Publication<'book, 'scope, B> {
     pub fn settle(&mut self, completion: Completion<'book>) -> Result<(), Error> {
-        settle(self.book, completion.reservation, completion.accepted_at)
+        settle(
+            self.book,
+            completion.reservation,
+            completion.accepted_at,
+            completion.ecn,
+        )
     }
     pub fn cancel(&mut self, reservation: Reservation<'book>) -> Result<(), Error> {
-        settle(self.book, reservation, None)
+        settle(self.book, reservation, None, crate::ecn::Codepoint::NotEct)
     }
     pub fn acknowledgment_sent(&mut self, snapshot: AckSnapshot<'book>) -> Result<(), Error> {
         ack_sent(self.book, snapshot)
@@ -1941,6 +2058,7 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
         receipt: AuthenticatedLevelRead<'scope>,
         plaintext: &[u8],
         now: u64,
+        ecn: Option<crate::ecn::Codepoint>,
     ) -> Result<PacketOutcome, Error> {
         if !core::ptr::eq(self.book.scope, receipt.scope())
             || !receipt.authenticates_plaintext(plaintext)
@@ -1962,6 +2080,7 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
             None,
             plaintext,
             now,
+            ecn,
         )?;
         if index == 1 && n.side == Side::Server {
             n.path.mark_validated()?;
@@ -2001,6 +2120,10 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
         let mut received = n.received[2];
         let duplicate = received.insert(packet.packet_number())?;
         commit_received(&mut n, 2, received, packet.ack_eliciting(), now)?;
+        if !duplicate {
+            n.received_ecn
+                .processed(PacketNumberSpace::ApplicationData, packet.ecn())?;
+        }
         Ok(PacketOutcome {
             duplicate,
             ack_eliciting: packet.ack_eliciting(),
@@ -2013,6 +2136,7 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
         receipt: AckEligible<'scope>,
         plaintext: &[u8],
         now: u64,
+        ecn: Option<crate::ecn::Codepoint>,
     ) -> Result<ApplicationOutcome<'scope>, Error> {
         if !core::ptr::eq(self.book.scope, receipt.scope())
             || !receipt.authenticates_plaintext(plaintext)
@@ -2028,10 +2152,12 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
             Some(receipt.opened().generation),
             plaintext,
             now,
+            ecn,
         )
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_packet<'scope, const B: usize>(
     n: &mut Numbers<'_, B>,
     scope: &'scope ApplicationKeyScope,
@@ -2040,6 +2166,7 @@ fn process_packet<'scope, const B: usize>(
     received_epoch: Option<u64>,
     plaintext: &[u8],
     now: u64,
+    ecn: Option<crate::ecn::Codepoint>,
 ) -> Result<ApplicationOutcome<'scope>, Error> {
     n.ordinary()?;
     if n.retired_space[index] {
@@ -2101,7 +2228,7 @@ fn process_packet<'scope, const B: usize>(
     };
     if !duplicate {
         for frame in frames(plaintext, level)? {
-            if let Frame::Ack { ranges, delay, .. } = frame? {
+            if let Frame::Ack { ranges, delay, ecn } = frame? {
                 let (ranges, len) = ack_ranges(ranges)?;
                 apply_ack(
                     n,
@@ -2109,6 +2236,7 @@ fn process_packet<'scope, const B: usize>(
                     space,
                     &ranges[..len],
                     delay,
+                    ecn,
                     received_epoch,
                     now,
                     &mut outcome,
@@ -2127,6 +2255,7 @@ fn process_packet<'scope, const B: usize>(
     // No frame effects are applied when the insertion reported it discarded.
     commit_received(n, index, received, ack_eliciting, now)?;
     if !duplicate {
+        n.received_ecn.processed(space, ecn)?;
         n.idle_activity.received(now);
     }
     outcome.history_floor = n.floor[2];
@@ -2164,6 +2293,7 @@ fn apply_ack<'scope, const B: usize>(
     space: PacketNumberSpace,
     ranges: &[AckRange],
     delay: u64,
+    peer_ecn: Option<packet::EcnCounts>,
     received_epoch: Option<u64>,
     now: u64,
     output: &mut ApplicationOutcome<'scope>,
@@ -2186,6 +2316,53 @@ fn apply_ack<'scope, const B: usize>(
     }) {
         packets[count] = Some(packet);
         count += 1;
+    }
+    // RFC 9000 13.4.2.1: reordered ACKs that do not increase Largest
+    // Acknowledged cannot fail validation or advance the ECN baseline.
+    if n.first_ecn_failure.is_none()
+        && n.largest_acked[index].is_none_or(|previous| largest > previous)
+    {
+        let newly = packets[..count].iter().flatten().fold(
+            crate::ecn::MarkedPackets::default(),
+            |mut counts, packet| {
+                match packet.ecn {
+                    crate::ecn::Codepoint::Ect0 => counts.ect0 += 1,
+                    crate::ecn::Codepoint::Ect1 => counts.ect1 += 1,
+                    _ => {}
+                }
+                counts
+            },
+        );
+        match crate::ecn::validate_feedback(
+            n.ledger.accepted_ecn_counts(space),
+            n.peer_ecn[index],
+            newly,
+            peer_ecn,
+        ) {
+            Ok(Some(delta)) => {
+                if delta.ce_increase != 0
+                    && let Some(sent_at) = n.ledger.congestion_sent_at_upper_bound(largest_packet)
+                {
+                    n.congestion.on_congestion_event(now, sent_at)?;
+                }
+                n.peer_ecn[index] = peer_ecn.ok_or(Error::Binding)?;
+                n.validated_ecn_packets = n
+                    .validated_ecn_packets
+                    .checked_add(delta.newly_validated)
+                    .ok_or(AccountingError::Overflow)?;
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                n.first_ecn_failure = Some(EcnFailure {
+                    space,
+                    largest,
+                    previous: n.peer_ecn[index],
+                    reported: peer_ecn,
+                    newly,
+                    reason,
+                });
+            }
+        }
     }
     // Save original sent epochs before ACK/loss reclamation removes history.
     if index == 2 {
@@ -2496,12 +2673,20 @@ mod tests {
         );
         assert_eq!(tx.snapshot(), before);
         publication
-            .settle(Completion::from_adapter(early, Some(1)))
+            .settle(Completion::from_adapter(
+                early,
+                Some(1),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let ordinary = tx.reserve_application(&[1], 0, 80, false, 2).unwrap();
         let ordinary_packet = ordinary.packet();
         publication
-            .settle(Completion::from_adapter(ordinary, Some(2)))
+            .settle(Completion::from_adapter(
+                ordinary,
+                Some(2),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let before = tx.snapshot();
         assert_eq!(tx.book.numbers.borrow_mut().reject_zero_rtt().unwrap(), 64);
@@ -2570,12 +2755,20 @@ mod tests {
         assert_eq!(early.packet().value, 1);
         assert_eq!(early.kind(), PacketKind::ZeroRtt);
         publication
-            .settle(Completion::from_adapter(early, Some(1)))
+            .settle(Completion::from_adapter(
+                early,
+                Some(1),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let ordinary = tx.reserve_application(&[1], 0, 64, false, 2).unwrap();
         assert_eq!(ordinary.packet().value, 2);
         publication
-            .settle(Completion::from_adapter(ordinary, Some(2)))
+            .settle(Completion::from_adapter(
+                ordinary,
+                Some(2),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let mut plain = [0; 128];
         let len = ack(1, &mut plain);
@@ -2587,7 +2780,7 @@ mod tests {
             10,
         );
         let outcome = rx
-            .apply_application_packet(receipt, &plain[..len], 10)
+            .apply_application_packet(receipt, &plain[..len], 10, None)
             .unwrap();
         assert_eq!(outcome.newly_acknowledged, 1);
         assert!(outcome.key_acks.iter().all(Option::is_none));
@@ -2601,7 +2794,7 @@ mod tests {
             11,
         );
         let outcome = rx
-            .apply_application_packet(receipt, &plain[..len], 11)
+            .apply_application_packet(receipt, &plain[..len], 11, None)
             .unwrap();
         assert!(outcome.key_acks.iter().any(Option::is_some));
         retirement.disarm();
@@ -2640,7 +2833,11 @@ mod tests {
             PacketNumberSpace::ApplicationData
         );
         publication
-            .settle(Completion::from_adapter(reservation, Some(0)))
+            .settle(Completion::from_adapter(
+                reservation,
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         assert!(!completion.ordinary_settled().unwrap());
         let wrong = packet::encode_frame(
@@ -2663,7 +2860,7 @@ mod tests {
             &plaintext[..len],
             10,
         );
-        rx.apply_application_packet(receipt, &plaintext[..len], 10)
+        rx.apply_application_packet(receipt, &plaintext[..len], 10, None)
             .unwrap();
         assert_eq!(tx.snapshot().active_flights, 0);
         assert!(completion.ordinary_settled().unwrap());
@@ -2686,12 +2883,18 @@ mod tests {
             .unwrap();
         let pn = reservation.packet().value;
         publication
-            .settle(Completion::from_adapter(reservation, Some(1)))
+            .settle(Completion::from_adapter(
+                reservation,
+                Some(1),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let mut plaintext = [0; 64];
         let len = ack(pn, &mut plaintext);
         let receipt = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 0, &plaintext[..len]);
-        let outcome = rx.apply_packet(receipt, &plaintext[..len], 100).unwrap();
+        let outcome = rx
+            .apply_packet(receipt, &plaintext[..len], 100, None)
+            .unwrap();
         assert_eq!(outcome.newly_acknowledged, 1);
         assert!(!tx.has_outstanding_crypto());
         let snapshot = tx.snapshot();
@@ -2700,6 +2903,245 @@ mod tests {
         assert_eq!(snapshot.available_bytes, 2400);
         retirement.disarm();
         guard.finish();
+    }
+
+    #[test]
+    fn ecn_feedback_uses_actual_marking_and_ignores_reordered_ack_counts() {
+        book!(book, scope, installation, arena, Side::Client, 194);
+        let scope = book.scope();
+        let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
+        let observer = tx.completion_observer();
+        for now in 0..4 {
+            let pending = tx
+                .reserve(Level::Initial, 1200, None, true, true, false, now)
+                .unwrap();
+            publication
+                .settle(Completion::from_adapter(
+                    pending,
+                    Some(now),
+                    crate::ecn::Codepoint::Ect0,
+                ))
+                .unwrap();
+        }
+        let mut peer_key = key(KeyKind::Initial, 7);
+        let mut plain = [0; 128];
+        for (incoming, largest, counts) in [
+            (
+                0,
+                2,
+                Some(packet::EcnCounts {
+                    ect0: 1,
+                    ect1: 0,
+                    ce: 0,
+                }),
+            ),
+            (1, 1, None),
+            (
+                2,
+                3,
+                Some(packet::EcnCounts {
+                    ect0: 3,
+                    ect1: 0,
+                    ce: 0,
+                }),
+            ),
+        ] {
+            let len = packet::encode_frame(
+                &Frame::Ack {
+                    delay: 0,
+                    ranges: packet::AckRanges::new(&[packet::AckRange {
+                        smallest: largest,
+                        largest,
+                    }])
+                    .unwrap(),
+                    ecn: counts,
+                },
+                &mut plain,
+            )
+            .unwrap();
+            let receipt = initial_receipt(scope, &mut peer_key, incoming, &plain[..len]);
+            rx.apply_packet(
+                receipt,
+                &plain[..len],
+                10 + incoming,
+                Some(crate::ecn::Codepoint::NotEct),
+            )
+            .unwrap();
+            assert!(observer.ecn_observation().unwrap().first_failure.is_none());
+        }
+        let evidence = observer.ecn_observation().unwrap();
+        assert_eq!(evidence.accepted, 4);
+        assert_eq!(evidence.validated, 2);
+        assert_eq!(evidence.first_sent_at, Some(0));
+        assert!(evidence.probe_period > 0);
+        let next = tx
+            .reserve(Level::Initial, 1200, None, true, true, false, 13)
+            .unwrap();
+        let pn = next.packet().value;
+        publication
+            .settle(Completion::from_adapter(
+                next,
+                Some(13),
+                crate::ecn::Codepoint::Ect0,
+            ))
+            .unwrap();
+        let len = ack(pn, &mut plain);
+        let receipt = initial_receipt(scope, &mut peer_key, 3, &plain[..len]);
+        rx.apply_packet(
+            receipt,
+            &plain[..len],
+            14,
+            Some(crate::ecn::Codepoint::NotEct),
+        )
+        .unwrap();
+        let evidence = observer.ecn_observation().unwrap();
+        assert_eq!(evidence.accepted, 5);
+        let failure = evidence.first_failure.unwrap();
+        assert_eq!(failure.largest, pn);
+        assert_eq!(
+            failure.reason,
+            crate::ecn::Error::Validation(crate::ecn::Failure::MissingCounts)
+        );
+        retirement.disarm();
+    }
+
+    #[test]
+    fn ecn_ce_reduces_congestion_once_but_reordered_counts_do_not() {
+        book!(book, scope, installation, arena, Side::Client, 195);
+        let scope = book.scope();
+        let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
+        for now in 0..4 {
+            let pending = tx
+                .reserve(Level::Initial, 1200, None, true, true, false, now)
+                .unwrap();
+            publication
+                .settle(Completion::from_adapter(
+                    pending,
+                    Some(now),
+                    crate::ecn::Codepoint::Ect0,
+                ))
+                .unwrap();
+        }
+        let before = tx.snapshot().congestion_window;
+        let mut peer_key = key(KeyKind::Initial, 7);
+        let mut plain = [0; 128];
+        for (incoming, largest, ect0, ce) in [(0, 2, 0, 1), (1, 1, 0, 999), (2, 3, 1, 1)] {
+            let len = packet::encode_frame(
+                &Frame::Ack {
+                    delay: 0,
+                    ranges: packet::AckRanges::new(&[packet::AckRange {
+                        smallest: largest,
+                        largest,
+                    }])
+                    .unwrap(),
+                    ecn: Some(packet::EcnCounts { ect0, ect1: 0, ce }),
+                },
+                &mut plain,
+            )
+            .unwrap();
+            let receipt = initial_receipt(scope, &mut peer_key, incoming, &plain[..len]);
+            rx.apply_packet(
+                receipt,
+                &plain[..len],
+                10 + incoming,
+                Some(crate::ecn::Codepoint::NotEct),
+            )
+            .unwrap();
+            assert!(
+                tx.completion_observer()
+                    .ecn_observation()
+                    .unwrap()
+                    .first_failure
+                    .is_none()
+            );
+            assert_eq!(tx.snapshot().congestion_window, before / 2);
+        }
+        retirement.disarm();
+    }
+
+    #[test]
+    fn authenticated_ecn_counts_once_and_missing_metadata_disables_ack_ecn() {
+        use crate::ecn::Codepoint;
+        book!(book, scope, installation, arena, Side::Client, 740);
+        let scope = book.scope();
+        let (tx, mut rx, _, _, mut retirement) = book.split().unwrap();
+        let plaintext = [1]; // PING is ACK-eliciting.
+        let first = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 0, &plaintext);
+        assert!(
+            !rx.apply_packet(first, &plaintext, 0, Some(Codepoint::Ect0))
+                .unwrap()
+                .duplicate
+        );
+        assert_eq!(
+            tx.pending_ack().unwrap().ecn(),
+            Some(packet::EcnCounts {
+                ect0: 1,
+                ect1: 0,
+                ce: 0
+            })
+        );
+        let replay = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 0, &plaintext);
+        assert!(
+            rx.apply_packet(replay, &plaintext, 1, Some(Codepoint::Ce))
+                .unwrap()
+                .duplicate
+        );
+        assert_eq!(
+            tx.pending_ack().unwrap().ecn(),
+            Some(packet::EcnCounts {
+                ect0: 1,
+                ect1: 0,
+                ce: 0
+            })
+        );
+        let next = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 1, &plaintext);
+        rx.apply_packet(next, &plaintext, 2, Some(Codepoint::Ce))
+            .unwrap();
+        assert_eq!(
+            tx.pending_ack().unwrap().ecn(),
+            Some(packet::EcnCounts {
+                ect0: 1,
+                ect1: 0,
+                ce: 1
+            })
+        );
+        let unknown = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 2, &plaintext);
+        rx.apply_packet(unknown, &plaintext, 3, None).unwrap();
+        assert_eq!(tx.pending_ack().unwrap().ecn(), None);
+        let known_again = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 3, &plaintext);
+        rx.apply_packet(known_again, &plaintext, 4, Some(Codepoint::Ect1))
+            .unwrap();
+        assert_eq!(
+            tx.pending_ack().unwrap().ecn(),
+            None,
+            "missing history must not become fabricated Not-ECT"
+        );
+        retirement.disarm();
+    }
+
+    #[test]
+    fn ecn_metadata_without_matching_authentication_cannot_create_an_ack_count() {
+        book!(book, scope, installation, arena, Side::Client, 741);
+        let scope = book.scope();
+        let (tx, mut rx, _, _, mut retirement) = book.split().unwrap();
+        let receipt = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 0, &[1]);
+        assert_eq!(
+            rx.apply_packet(receipt, &[0], 0, Some(crate::ecn::Codepoint::Ect0)),
+            Err(Error::Binding)
+        );
+        assert!(tx.pending_ack().is_none());
+        let valid = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 0, &[1]);
+        rx.apply_packet(valid, &[1], 1, Some(crate::ecn::Codepoint::Ect1))
+            .unwrap();
+        assert_eq!(
+            tx.pending_ack().unwrap().ecn(),
+            Some(packet::EcnCounts {
+                ect0: 0,
+                ect1: 1,
+                ce: 0
+            })
+        );
+        retirement.disarm();
     }
 
     #[test]
@@ -2713,7 +3155,11 @@ mod tests {
             .reserve(Level::Initial, 1200, Some(flight), true, true, false, 0)
             .unwrap();
         publication
-            .settle(Completion::from_adapter(first, Some(0)))
+            .settle(Completion::from_adapter(
+                first,
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         rx.received_datagram(160).unwrap();
         let deadline = clock.update(0, [true, false]).unwrap().unwrap();
@@ -2737,7 +3183,11 @@ mod tests {
             .unwrap();
         assert_eq!(next.packet().value, 1);
         publication
-            .settle(Completion::from_adapter(next, Some(100)))
+            .settle(Completion::from_adapter(
+                next,
+                Some(100),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         retirement.disarm();
     }
@@ -2769,7 +3219,11 @@ mod tests {
             .reserve(Level::Initial, 1200, Some(flight), true, true, false, 0)
             .unwrap();
         publication
-            .settle(Completion::from_adapter(first, Some(0)))
+            .settle(Completion::from_adapter(
+                first,
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let deadline = clock.update(0, [true, false]).unwrap().unwrap();
         let at = deadline.at();
@@ -2785,7 +3239,11 @@ mod tests {
             .unwrap();
         assert_eq!(rejected.packet().value, 1);
         publication
-            .settle(Completion::from_adapter(rejected, None))
+            .settle(Completion::from_adapter(
+                rejected,
+                None,
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         assert_eq!(tx.snapshot().probe_credits, credits);
         let retry = tx
@@ -2794,7 +3252,11 @@ mod tests {
         assert_eq!(retry.packet().value, 2);
         assert!(retry.matches_crypto(0, b"first"));
         publication
-            .settle(Completion::from_adapter(retry, Some(at)))
+            .settle(Completion::from_adapter(
+                retry,
+                Some(at),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         assert_eq!(tx.snapshot().bytes_in_flight, 2400);
         retirement.disarm();
@@ -2814,9 +3276,13 @@ mod tests {
         let packet = reservation.packet();
         let stale = clock.update(30, [true, false]).unwrap().unwrap();
         let receipt = initial_receipt(own_scope, &mut key(KeyKind::Initial, 7), 0, &[1]);
-        rx.apply_packet(receipt, &[1], 40).unwrap();
+        rx.apply_packet(receipt, &[1], 40, None).unwrap();
         publication
-            .settle(Completion::from_adapter(reservation, Some(20)))
+            .settle(Completion::from_adapter(
+                reservation,
+                Some(20),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         {
             let numbers = tx.book.numbers.borrow();
@@ -2850,7 +3316,11 @@ mod tests {
         clock.update(30, [true, false]).unwrap();
         let before = tx.snapshot();
         assert_eq!(
-            publication.settle(Completion::from_adapter(reservation, Some(9))),
+            publication.settle(Completion::from_adapter(
+                reservation,
+                Some(9),
+                crate::ecn::Codepoint::NotEct
+            )),
             Err(Error::Recovery(kernel::RecoveryError::TimeWentBackwards))
         );
         assert_eq!(tx.snapshot(), before);
@@ -2879,11 +3349,19 @@ mod tests {
             .unwrap();
         let second_packet = second.packet();
         publication
-            .settle(Completion::from_adapter(second, Some(20)))
+            .settle(Completion::from_adapter(
+                second,
+                Some(20),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         clock.update(30, [true, false]).unwrap();
         publication
-            .settle(Completion::from_adapter(first, Some(10)))
+            .settle(Completion::from_adapter(
+                first,
+                Some(10),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         {
             let numbers = tx.book.numbers.borrow();
@@ -2905,7 +3383,8 @@ mod tests {
             0,
             &plaintext[..len],
         );
-        rx.apply_packet(receipt, &plaintext[..len], 40).unwrap();
+        rx.apply_packet(receipt, &plaintext[..len], 40, None)
+            .unwrap();
         // RTT uses actual acceptance at 10, not callback processing after 30.
         assert_eq!(tx.book.numbers.borrow().rtt.latest_us(), 30);
         assert_eq!(tx.snapshot().bytes_in_flight, 1200);
@@ -2927,23 +3406,39 @@ mod tests {
         let third = tx.reserve_application(&[1], 0, 32, false, 2).unwrap();
         let fourth = tx.reserve_application(&[1], 0, 32, false, 3).unwrap();
         publication
-            .settle(Completion::from_adapter(second, Some(11)))
+            .settle(Completion::from_adapter(
+                second,
+                Some(11),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         publication
-            .settle(Completion::from_adapter(third, Some(12)))
+            .settle(Completion::from_adapter(
+                third,
+                Some(12),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         publication
-            .settle(Completion::from_adapter(fourth, Some(13)))
+            .settle(Completion::from_adapter(
+                fourth,
+                Some(13),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let mut plaintext = [0; 64];
         let len = ack(3, &mut plaintext);
         let receipt = app_receipt(&mut read, &mut peer, 0, &plaintext[..len], 20);
-        rx.apply_application_packet(receipt, &plaintext[..len], 20)
+        rx.apply_application_packet(receipt, &plaintext[..len], 20, None)
             .unwrap();
         assert_eq!(tx.take_lost_application().map(|grant| grant.packet()), None);
         assert_eq!(tx.snapshot().reserved_in_flight, 32);
         publication
-            .settle(Completion::from_adapter(delayed, Some(10)))
+            .settle(Completion::from_adapter(
+                delayed,
+                Some(10),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         // Only now does PN 0 carry actual accepted-send evidence; its three
         // genuinely accepted successors already establish packet-threshold loss.
@@ -2978,22 +3473,22 @@ mod tests {
         let len = ack(reservation.packet().value, &mut plaintext);
         let receipt = initial_receipt(own_scope, &mut peer, 0, &plaintext[..len]);
         assert_eq!(
-            rx.apply_packet(receipt, &plaintext[..len], 1),
+            rx.apply_packet(receipt, &plaintext[..len], 1, None),
             Err(Error::Accounting(AccountingError::UnsentPacket))
         );
         let before = tx.snapshot();
         let receipt = initial_receipt(&foreign, &mut peer, 1, &plaintext[..len]);
         assert_eq!(
-            rx.apply_packet(receipt, &plaintext[..len], 1),
+            rx.apply_packet(receipt, &plaintext[..len], 1, None),
             Err(Error::Binding)
         );
         let receipt = initial_receipt(own_scope, &mut peer, 2, &plaintext[..len]);
-        assert_eq!(rx.apply_packet(receipt, &[1], 1), Err(Error::Binding));
+        assert_eq!(rx.apply_packet(receipt, &[1], 1, None), Err(Error::Binding));
         assert_eq!(tx.snapshot(), before);
         tx.cancel(reservation).unwrap();
         let receipt = initial_receipt(own_scope, &mut peer, 3, &plaintext[..len]);
         assert_eq!(
-            rx.apply_packet(receipt, &plaintext[..len], 2),
+            rx.apply_packet(receipt, &plaintext[..len], 2, None),
             Err(Error::Accounting(AccountingError::UnsentPacket))
         );
         retirement.disarm();
@@ -3008,22 +3503,27 @@ mod tests {
             .reserve(Level::Initial, 1200, None, true, true, false, 0)
             .unwrap();
         publication
-            .settle(Completion::from_adapter(reservation, Some(0)))
+            .settle(Completion::from_adapter(
+                reservation,
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let deadline = clock.update(0, [true, false]).unwrap().unwrap();
         let at = deadline.at();
         let mut peer = key(KeyKind::Initial, 7);
         let receipt = initial_receipt(own_scope, &mut peer, 0, &[1]);
-        rx.apply_packet(receipt, &[1], 1).unwrap();
+        rx.apply_packet(receipt, &[1], 1, None).unwrap();
         let old_ack = tx.pending_ack().unwrap();
         let receipt = initial_receipt(own_scope, &mut peer, 2, &[1]);
-        rx.apply_packet(receipt, &[1], 2).unwrap();
+        rx.apply_packet(receipt, &[1], 2, None).unwrap();
         publication.acknowledgment_sent(old_ack).unwrap();
         assert!(tx.pending_ack().is_some());
         let mut plaintext = [0; 64];
         let len = ack(0, &mut plaintext);
         let receipt = initial_receipt(own_scope, &mut peer, 3, &plaintext[..len]);
-        rx.apply_packet(receipt, &plaintext[..len], 3).unwrap();
+        rx.apply_packet(receipt, &plaintext[..len], 3, None)
+            .unwrap();
         assert!(matches!(
             clock.expire(deadline, at),
             Err(Error::StaleDeadline)
@@ -3046,16 +3546,20 @@ mod tests {
 
         let mut peer = key(KeyKind::Initial, 7);
         let receipt = initial_receipt(own_scope, &mut peer, 0, &[1]);
-        rx.apply_packet(receipt, &[1], 1).unwrap();
+        rx.apply_packet(receipt, &[1], 1, None).unwrap();
         let stale_ack = tx.pending_ack().unwrap();
         assert!(!observer.ordinary_settled().unwrap());
         let receipt = initial_receipt(own_scope, &mut peer, 1, &[1]);
-        rx.apply_packet(receipt, &[1], 2).unwrap();
+        rx.apply_packet(receipt, &[1], 2, None).unwrap();
         let send = tx
             .reserve(Level::Initial, 1200, None, false, true, false, 2)
             .unwrap();
         publication
-            .settle(Completion::from_adapter(send, Some(2)))
+            .settle(Completion::from_adapter(
+                send,
+                Some(2),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         publication.acknowledgment_sent(stale_ack).unwrap();
         assert!(!observer.ordinary_settled().unwrap());
@@ -3064,7 +3568,11 @@ mod tests {
             .reserve(Level::Initial, 1200, None, false, true, false, 3)
             .unwrap();
         publication
-            .settle(Completion::from_adapter(send, None))
+            .settle(Completion::from_adapter(
+                send,
+                None,
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         assert!(!observer.ordinary_settled().unwrap());
         let current_ack = tx.pending_ack().unwrap();
@@ -3073,7 +3581,11 @@ mod tests {
             .unwrap();
         assert!(!observer.ordinary_settled().unwrap());
         publication
-            .settle(Completion::from_adapter(send, Some(4)))
+            .settle(Completion::from_adapter(
+                send,
+                Some(4),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         assert!(!observer.ordinary_settled().unwrap());
         publication.acknowledgment_sent(current_ack).unwrap();
@@ -3161,7 +3673,11 @@ mod tests {
             match tx.reserve_application(&[1], 0, 64, false, now) {
                 Ok(packet) => {
                     publication
-                        .settle(Completion::from_adapter(packet, Some(now)))
+                        .settle(Completion::from_adapter(
+                            packet,
+                            Some(now),
+                            crate::ecn::Codepoint::NotEct,
+                        ))
                         .unwrap();
                     admitted += 1;
                 }
@@ -3195,7 +3711,11 @@ mod tests {
         for now in 0..(LEDGER_CAPACITY - PTO_RECORD_RESERVE) as u64 {
             let packet = tx.reserve_application(&[1], 0, 64, false, now).unwrap();
             publication
-                .settle(Completion::from_adapter(packet, Some(now)))
+                .settle(Completion::from_adapter(
+                    packet,
+                    Some(now),
+                    crate::ecn::Codepoint::NotEct,
+                ))
                 .unwrap();
         }
         let mut now = LEDGER_CAPACITY as u64;
@@ -3212,7 +3732,11 @@ mod tests {
             for _ in 0..2 {
                 let probe = tx.reserve_application(&[1], 0, 1200, true, now).unwrap();
                 publication
-                    .settle(Completion::from_adapter(probe, Some(now)))
+                    .settle(Completion::from_adapter(
+                        probe,
+                        Some(now),
+                        crate::ecn::Codepoint::NotEct,
+                    ))
                     .unwrap();
             }
         }
@@ -3245,7 +3769,11 @@ mod tests {
         // A real eliciting packet whose peer ACK was lost stays outstanding.
         let first = tx.reserve_application(&[1], 0, 32, false, 0).unwrap();
         publication
-            .settle(Completion::from_adapter(first, Some(0)))
+            .settle(Completion::from_adapter(
+                first,
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let mut bytes = [0; 128];
         let len = ack(0, &mut bytes);
@@ -3254,7 +3782,11 @@ mod tests {
                 .reserve_application(&bytes[..len], 0, 32, false, now)
                 .expect("non-eliciting ACK history must leave publication capacity");
             publication
-                .settle(Completion::from_adapter(sent, Some(now)))
+                .settle(Completion::from_adapter(
+                    sent,
+                    Some(now),
+                    crate::ecn::Codepoint::NotEct,
+                ))
                 .unwrap();
         }
         let deadline = clock
@@ -3309,11 +3841,19 @@ mod tests {
             let pn = r.packet().value;
             if iteration % 3 == 0 {
                 publication
-                    .settle(Completion::from_adapter(r, None))
+                    .settle(Completion::from_adapter(
+                        r,
+                        None,
+                        crate::ecn::Codepoint::NotEct,
+                    ))
                     .unwrap();
             } else {
                 publication
-                    .settle(Completion::from_adapter(r, Some(now)))
+                    .settle(Completion::from_adapter(
+                        r,
+                        Some(now),
+                        crate::ecn::Codepoint::NotEct,
+                    ))
                     .unwrap();
                 let mut plaintext = [0; 64];
                 let len = ack(pn, &mut plaintext);
@@ -3321,7 +3861,7 @@ mod tests {
                     app_receipt(&mut read, &mut peer, peer_pn, &plaintext[..len], now + 1);
                 peer_pn += 1;
                 let result = rx
-                    .apply_application_packet(receipt, &plaintext[..len], now + 1)
+                    .apply_application_packet(receipt, &plaintext[..len], now + 1, None)
                     .unwrap();
                 assert_eq!(result.newly_acknowledged, 1);
                 assert_eq!(
@@ -3367,14 +3907,22 @@ mod tests {
             .reserve(Level::Handshake, 32, None, true, false, false, 0)
             .unwrap();
         publication
-            .settle(Completion::from_adapter(rejected, None))
+            .settle(Completion::from_adapter(
+                rejected,
+                None,
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         assert!(publication.take_initial_retirement().is_none());
         let handshake = tx
             .reserve(Level::Handshake, 32, None, true, false, false, 1)
             .unwrap();
         publication
-            .settle(Completion::from_adapter(handshake, Some(1)))
+            .settle(Completion::from_adapter(
+                handshake,
+                Some(1),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let token = publication.take_initial_retirement().unwrap();
         assert_eq!(
@@ -3410,9 +3958,9 @@ mod tests {
         let mut peer = key(KeyKind::Initial, 7);
         let receipt = initial_receipt(book.scope(), &mut peer, 0, &[1]);
         let (_, mut rx, _, _, mut retirement) = book.split().unwrap();
-        assert!(rx.apply_packet(receipt, &[0], 0).is_err());
+        assert!(rx.apply_packet(receipt, &[0], 0, None).is_err());
         let receipt = initial_receipt(&foreign, &mut peer, 1, &[1]);
-        assert!(rx.apply_packet(receipt, &[1], 1).is_err());
+        assert!(rx.apply_packet(receipt, &[1], 1, None).is_err());
         retirement.disarm();
     }
 
@@ -3424,14 +3972,14 @@ mod tests {
         let mut peer = key(KeyKind::Initial, 7);
         let plaintext = [0x1c, 0, 0, 0];
         let receipt = initial_receipt(own_scope, &mut peer, 0, &plaintext);
-        let outcome = rx.apply_packet(receipt, &plaintext, 0).unwrap();
+        let outcome = rx.apply_packet(receipt, &plaintext, 0, None).unwrap();
         assert!(!outcome.ack_eliciting);
         assert_eq!(outcome.newly_acknowledged, 0);
         assert_eq!(rx.snapshot().retained_packets, 0);
         let invalid = [0x1d, 0, 0];
         let receipt = initial_receipt(own_scope, &mut peer, 1, &invalid);
         assert!(matches!(
-            rx.apply_packet(receipt, &invalid, 1),
+            rx.apply_packet(receipt, &invalid, 1, None),
             Err(Error::Packet(packet::Error::FrameNotAllowed { .. }))
         ));
         retirement.disarm();
@@ -3448,14 +3996,18 @@ mod tests {
         for pn in 0..4 {
             let r = tx.reserve_application(&[1], 0, 32, false, pn).unwrap();
             publication
-                .settle(Completion::from_adapter(r, Some(pn)))
+                .settle(Completion::from_adapter(
+                    r,
+                    Some(pn),
+                    crate::ecn::Codepoint::NotEct,
+                ))
                 .unwrap();
         }
         let mut plaintext = [0; 64];
         let len = ack(3, &mut plaintext);
         let receipt = app_receipt(&mut read, &mut peer, 0, &plaintext[..len], 4);
         let outcome = rx
-            .apply_application_packet(receipt, &plaintext[..len], 4)
+            .apply_application_packet(receipt, &plaintext[..len], 4, None)
             .unwrap();
         assert_eq!(outcome.newly_acknowledged, 1);
         assert_eq!(outcome.history_floor, 1);
@@ -3469,7 +4021,7 @@ mod tests {
         assert_eq!(tx.take_lost_application().map(|grant| grant.packet()), None);
         let receipt = app_receipt(&mut read, &mut peer, 1, &plaintext[..len], 5);
         let duplicate = rx
-            .apply_application_packet(receipt, &plaintext[..len], 5)
+            .apply_application_packet(receipt, &plaintext[..len], 5, None)
             .unwrap();
         assert_eq!(duplicate.newly_acknowledged, 0);
         assert!(duplicate.key_acks.into_iter().all(|grant| grant.is_none()));
@@ -3514,13 +4066,17 @@ mod tests {
                 Err(_) => panic!("actual epoch-zero seal failed"),
             };
         publication
-            .settle(Completion::from_adapter(sealed.into_reservation(), Some(0)))
+            .settle(Completion::from_adapter(
+                sealed.into_reservation(),
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let mut plaintext = [0; 64];
         let len = ack(0, &mut plaintext);
         let receipt = app_receipt(&mut read, &mut old_peer, 0, &plaintext[..len], 1);
         let outcome = rx
-            .apply_application_packet(receipt, &plaintext[..len], 1)
+            .apply_application_packet(receipt, &plaintext[..len], 1, None)
             .unwrap();
         let grant = ValidatedKeyAck::from_connection_ack(
             outcome.key_acks.into_iter().flatten().next().unwrap(),
@@ -3557,7 +4113,7 @@ mod tests {
         };
         let installed = write.install_peer_update(transition).unwrap();
         let ready = read.accept_write_epoch(installed).unwrap();
-        rx.apply_application_packet(ready, &[1], 2).unwrap();
+        rx.apply_application_packet(ready, &[1], 2, None).unwrap();
         let next = tx
             .reserve_application(&[1], write.generation(), 22, false, 3)
             .unwrap();
@@ -3568,12 +4124,16 @@ mod tests {
                 Err(_) => panic!("actual epoch-one seal failed"),
             };
         publication
-            .settle(Completion::from_adapter(sealed.into_reservation(), Some(3)))
+            .settle(Completion::from_adapter(
+                sealed.into_reservation(),
+                Some(3),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         let len = ack(pn, &mut plaintext);
         let receipt = app_receipt(&mut read, &mut old_peer, 1, &plaintext[..len], 4);
         let outcome = rx
-            .apply_application_packet(receipt, &plaintext[..len], 4)
+            .apply_application_packet(receipt, &plaintext[..len], 4, None)
             .unwrap();
         let grant = outcome.key_acks.into_iter().flatten().next().unwrap();
         assert_eq!(grant.sent_key_generation(), 1);
@@ -3713,7 +4273,7 @@ mod tests {
                 &mut IntegrityBudget::new(),
             )
             .unwrap();
-        srx.apply_packet(receipt, &[1], 0).unwrap();
+        srx.apply_packet(receipt, &[1], 0, None).unwrap();
         assert!(srx.snapshot().address_validated);
         let initial = srx.take_initial_retirement().unwrap();
         assert_eq!(
@@ -3762,7 +4322,11 @@ mod tests {
             .unwrap();
         let app = tx.reserve_application(&[1], 0, 32, false, 0).unwrap();
         publication
-            .settle(Completion::from_adapter(app, Some(0)))
+            .settle(Completion::from_adapter(
+                app,
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
             .unwrap();
         buffer[0] = 0x1e;
         let len = server_write.seal(0, &[0x40], &mut buffer, 1).unwrap();
@@ -3781,7 +4345,9 @@ mod tests {
             AuthenticatedRead::Ready(receipt) => receipt,
             _ => panic!("unexpected update"),
         };
-        let result = rx.apply_application_packet(receipt, &[0x1e], 10).unwrap();
+        let result = rx
+            .apply_application_packet(receipt, &[0x1e], 10, None)
+            .unwrap();
         assert!(completion.handshake_confirmed().unwrap());
         let confirmation = result.confirmation.unwrap();
         assert_eq!(

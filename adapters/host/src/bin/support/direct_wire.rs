@@ -125,7 +125,7 @@ pub async fn before_deadline<T, const S: usize, const N: usize>(
 pub struct Receive<'a, 'r, const S: usize = 4, const T: usize = 8> {
     pub socket: &'a HostSocket<'r, S, T>,
     pub address: Address,
-    pub first: Option<&'a [u8]>,
+    pub first: Option<(&'a [u8], Option<Codepoint>)>,
     pub routed: Option<
         &'a mut hibana_quic_host::receive_routes::Receiver<{ super::direct_bootstrap::DATAGRAM }>,
     >,
@@ -133,8 +133,11 @@ pub struct Receive<'a, 'r, const S: usize = 4, const T: usize = 8> {
     pub statistics: &'a Statistics,
 }
 impl<const S: usize, const T: usize> DatagramRx for Receive<'_, '_, S, T> {
-    async fn receive(&mut self, bytes: &mut [u8]) -> Result<usize, IoError> {
-        if let Some(first) = self.first.take() {
+    async fn receive(
+        &mut self,
+        bytes: &mut [u8],
+    ) -> Result<hibana_quic::connection::ReceivedDatagram, IoError> {
+        if let Some((first, ecn)) = self.first.take() {
             if first.len() > bytes.len() {
                 return Err(IoError::Rejected);
             }
@@ -142,7 +145,10 @@ impl<const S: usize, const T: usize> DatagramRx for Receive<'_, '_, S, T> {
             self.statistics
                 .received
                 .set(self.statistics.received.get() + 1);
-            return Ok(first.len());
+            return Ok(hibana_quic::connection::ReceivedDatagram {
+                len: first.len(),
+                ecn,
+            });
         }
         if let Some(route) = self.routed.as_mut() {
             let packet = route.receive().await.map_err(|_| IoError::Closed)?;
@@ -153,7 +159,10 @@ impl<const S: usize, const T: usize> DatagramRx for Receive<'_, '_, S, T> {
             self.statistics
                 .received
                 .set(self.statistics.received.get() + 1);
-            return Ok(packet.bytes().len());
+            return Ok(hibana_quic::connection::ReceivedDatagram {
+                len: packet.bytes().len(),
+                ecn: packet.ecn(),
+            });
         }
         loop {
             let received = match self.socket.recv_from(bytes).await {
@@ -172,7 +181,10 @@ impl<const S: usize, const T: usize> DatagramRx for Receive<'_, '_, S, T> {
                 self.statistics
                     .received
                     .set(self.statistics.received.get() + 1);
-                return Ok(received.len);
+                return Ok(hibana_quic::connection::ReceivedDatagram {
+                    len: received.len,
+                    ecn: received.ecn,
+                });
             }
             self.statistics
                 .foreign
@@ -188,12 +200,15 @@ pub struct Transmit<'a, 'r, const S: usize = 4, const T: usize = 8> {
     pub statistics: &'a Statistics,
 }
 impl<const S: usize, const T: usize> DatagramTx for Transmit<'_, '_, S, T> {
-    async fn send(&mut self, bytes: &[u8]) -> Result<u64, IoError> {
-        match self
-            .socket
-            .send_from(bytes, self.address, Codepoint::NotEct)
-            .await
-        {
+    async fn send(
+        &mut self,
+        bytes: &[u8],
+        ecn: hibana_quic::ecn::Codepoint,
+    ) -> Result<u64, IoError> {
+        if ecn == Codepoint::Ce {
+            return Err(IoError::Rejected);
+        }
+        match self.socket.send_from(bytes, self.address, ecn).await {
             Ok(len) if len == bytes.len() => {
                 // Receipt only after full real sendmsg acceptance.
                 let accepted = self.clock.now();
@@ -259,7 +274,7 @@ mod tests {
             statistics: &statistics,
         };
         let accepted = reactor
-            .block_on(tx.send(b"direct role output"))
+            .block_on(tx.send(b"direct role output", Codepoint::NotEct))
             .unwrap()
             .unwrap();
         let mut bytes = [0; 32];
@@ -269,6 +284,107 @@ mod tests {
         assert_eq!(statistics.last_accepted.get(), Some(accepted));
         assert!(accepted <= clock.now());
     }
+    #[test]
+    fn actual_transmit_marks_each_datagram_and_rejects_ce_before_send() {
+        for bind in ["127.0.0.1:0", "[::1]:0"] {
+            let reactor = HostReactor::<4, 8>::new().unwrap();
+            let socket = reactor
+                .register_udp(UdpSocket::bind(bind).unwrap())
+                .unwrap();
+            let raw = UdpSocket::bind(bind).unwrap();
+            raw.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let remote = raw.local_addr().unwrap();
+            let mut peer = hibana_quic_host::udp::UdpMetadataSocket::new(raw).unwrap();
+            let clock = HostClock::new(&reactor, Instant::now());
+            let statistics = Statistics::default();
+            let address = Address {
+                local: socket.local_addr().unwrap(),
+                remote,
+            };
+            let mut tx = Transmit {
+                socket: &socket,
+                address,
+                clock: &clock,
+                statistics: &statistics,
+            };
+            for mark in [
+                Codepoint::Ect0,
+                Codepoint::NotEct,
+                Codepoint::Ect1,
+                Codepoint::NotEct,
+            ] {
+                let at = reactor
+                    .block_on(tx.send(b"real marked send", mark))
+                    .unwrap()
+                    .unwrap();
+                let mut bytes = [0; 32];
+                let got = peer.recv_from(&mut bytes).unwrap();
+                assert_eq!(&bytes[..got.len], b"real marked send");
+                assert_eq!(got.ecn, Some(mark));
+                assert_eq!(got.source, address.local);
+                assert!(at <= clock.now());
+            }
+            assert_eq!(statistics.sent.get(), 4);
+            let previous = statistics.last_accepted.get();
+            assert_eq!(
+                reactor
+                    .block_on(tx.send(b"forbidden CE", Codepoint::Ce))
+                    .unwrap(),
+                Err(IoError::Rejected)
+            );
+            assert_eq!(statistics.sent.get(), 4);
+            assert_eq!(statistics.last_accepted.get(), previous);
+        }
+    }
+    #[test]
+    fn actual_native_receive_preserves_ecn_with_its_datagram() {
+        for bind in ["127.0.0.1:0", "[::1]:0"] {
+            let reactor = HostReactor::<4, 8>::new().unwrap();
+            let socket = reactor
+                .register_udp(UdpSocket::bind(bind).unwrap())
+                .unwrap();
+            let raw = UdpSocket::bind(bind).unwrap();
+            let remote = raw.local_addr().unwrap();
+            let peer = hibana_quic_host::udp::UdpMetadataSocket::new(raw).unwrap();
+            let clock = HostClock::new(&reactor, Instant::now());
+            let statistics = Statistics::default();
+            let address = Address {
+                local: socket.local_addr().unwrap(),
+                remote,
+            };
+            let mut rx = Receive {
+                socket: &socket,
+                address,
+                first: None,
+                routed: None,
+                clock: &clock,
+                statistics: &statistics,
+            };
+            for mark in [
+                Codepoint::NotEct,
+                Codepoint::Ect0,
+                Codepoint::Ect1,
+                Codepoint::Ce,
+            ] {
+                // CE is injected by this explicit metadata fixture only.
+                peer.send_to(b"measured metadata", address.local, mark)
+                    .unwrap();
+                let mut bytes = [0; 32];
+                let observed = reactor
+                    .block_on(before_deadline(
+                        &clock,
+                        Instant::now() + Duration::from_secs(1),
+                        async { rx.receive(&mut bytes).await.map_err(|e| format!("{e:?}")) },
+                    ))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(&bytes[..observed.len], b"measured metadata");
+                assert_eq!(observed.ecn, Some(mark));
+            }
+            assert_eq!(statistics.received.get(), 4);
+        }
+    }
+
     #[test]
     fn foreign_peer_cannot_credit_the_admitted_path() {
         let reactor = HostReactor::<4, 8>::new().unwrap();
@@ -302,7 +418,8 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
-        assert_eq!(&bytes[..len], b"admitted");
+        assert_eq!(&bytes[..len.len], b"admitted");
+        assert_eq!(len.ecn, Some(Codepoint::NotEct));
         assert_eq!(statistics.received.get(), 1);
         assert_eq!(statistics.foreign.get(), 1);
     }
@@ -364,7 +481,8 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
-        assert_eq!(&bytes[..len], b"after cancellation");
+        assert_eq!(&bytes[..len.len], b"after cancellation");
+        assert_eq!(len.ecn, Some(Codepoint::NotEct));
     }
     #[test]
     fn rejected_send_never_records_acceptance() {
@@ -385,7 +503,9 @@ mod tests {
             statistics: &statistics,
         };
         assert_eq!(
-            reactor.block_on(tx.send(b"invalid family")).unwrap(),
+            reactor
+                .block_on(tx.send(b"invalid family", Codepoint::NotEct))
+                .unwrap(),
             Err(IoError::Rejected)
         );
         assert_eq!(statistics.sent.get(), 0);

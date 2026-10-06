@@ -37,6 +37,7 @@ pub struct AuthenticatedInput<'scope, const N: usize> {
     pub(crate) packet: u64,
     pub(crate) bytes: [u8; N],
     pub(crate) len: usize,
+    pub(crate) ecn: Option<crate::ecn::Codepoint>,
 }
 impl<const N: usize> Drop for AuthenticatedInput<'_, N> {
     fn drop(&mut self) {
@@ -51,8 +52,12 @@ pub struct StoredPacket<'scope> {
     generation: u64,
     packet: u64,
     ack_eliciting: bool,
+    ecn: Option<crate::ecn::Codepoint>,
 }
 impl<'scope> StoredPacket<'scope> {
+    pub(crate) fn ecn(&self) -> Option<crate::ecn::Codepoint> {
+        self.ecn
+    }
     pub(crate) fn scope(&self) -> &'scope ApplicationKeyScope {
         self.scope
     }
@@ -221,6 +226,7 @@ pub async fn run<'scope, const BYTES: usize, const PACKET: usize>(
                         generation: input.generation,
                         packet: input.packet,
                         ack_eliciting,
+                        ecn: input.ecn,
                     })
                     .map_err(|_| Failure::Binding)?;
                 endpoint.send::<p::PacketStored>(&packet).await?;
@@ -359,6 +365,7 @@ impl<'scope, const N: usize> AuthenticatedInput<'scope, N> {
         receipt: crate::bounded_tls::key_source::AuthenticatedEarlyRead<'scope>,
         generation: u64,
         plaintext: &[u8],
+        ecn: Option<crate::ecn::Codepoint>,
     ) -> Result<Self, Failure> {
         if plaintext.len() > N || !receipt.authenticates_plaintext(plaintext) {
             return Err(Failure::Binding);
@@ -371,6 +378,7 @@ impl<'scope, const N: usize> AuthenticatedInput<'scope, N> {
             packet: receipt.packet_number(),
             bytes,
             len: plaintext.len(),
+            ecn,
         })
     }
 }

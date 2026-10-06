@@ -84,13 +84,27 @@ pub enum IoError {
 }
 /// The adapter is bound to this connection's admitted peer/path. Arbitrary
 /// socket-source datagrams must be filtered before returning their byte count.
+/// Physical metadata returned with the exact received datagram. Missing ECN
+/// metadata is not evidence of Not-ECT. Authentication still precedes counting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReceivedDatagram {
+    pub len: usize,
+    pub ecn: Option<crate::ecn::Codepoint>,
+}
 pub trait DatagramRx {
-    fn receive(&mut self, bytes: &mut [u8]) -> impl Future<Output = Result<usize, IoError>>;
+    fn receive(
+        &mut self,
+        bytes: &mut [u8],
+    ) -> impl Future<Output = Result<ReceivedDatagram, IoError>>;
 }
 /// Success is the actual monotonic microsecond timestamp of UDP acceptance.
 /// A pending or dropped future must not have accepted this datagram.
 pub trait DatagramTx {
-    fn send(&mut self, bytes: &[u8]) -> impl Future<Output = Result<u64, IoError>>;
+    fn send(
+        &mut self,
+        bytes: &[u8],
+        ecn: crate::ecn::Codepoint,
+    ) -> impl Future<Output = Result<u64, IoError>>;
 }
 pub trait Clock {
     fn now(&self) -> u64;
@@ -305,7 +319,7 @@ pub struct Storage<'scope, 'book, const N: usize, const P: usize> {
     datagram: Inbox<wire::Datagram<'book, N>>,
     failure: Cell<Option<crate::tls::Error>>,
     early_packets: RefCell<Option<&'book mut dyn early_wire::RetainPackets>>,
-    pending_application: RefCell<Option<([u8; N], usize)>>,
+    pending_application: RefCell<Option<([u8; N], ReceivedDatagram)>>,
 }
 impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P> {
     pub fn new(peer: &[u8]) -> Result<Self, Error> {
@@ -336,7 +350,11 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
     }
     // Retain ciphertext only. Authentication and frame effects belong to the
     // application receive role after the actual handshake join and key transfer.
-    fn retain_application(&self, packet: &[u8]) -> Result<(), Error> {
+    fn retain_application(
+        &self,
+        packet: &[u8],
+        ecn: Option<crate::ecn::Codepoint>,
+    ) -> Result<(), Error> {
         if packet.is_empty() || packet.len() > N {
             return Err(Error::Capacity);
         }
@@ -344,7 +362,13 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
         if pending.is_none() {
             let mut bytes = [0; N];
             bytes[..packet.len()].copy_from_slice(packet);
-            *pending = Some((bytes, packet.len()));
+            *pending = Some((
+                bytes,
+                ReceivedDatagram {
+                    len: packet.len(),
+                    ecn,
+                },
+            ));
         }
         Ok(())
     }
@@ -628,28 +652,28 @@ mod retained_application_tests {
     fn first_packet_is_owned_and_not_overwritten() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
         let mut packet = [1, 2, 3];
-        storage.retain_application(&packet).unwrap();
+        storage.retain_application(&packet, None).unwrap();
         packet.fill(9);
-        storage.retain_application(&packet).unwrap();
+        storage.retain_application(&packet, None).unwrap();
         let (bytes, len) = storage.pending_application.borrow_mut().take().unwrap();
-        assert_eq!(&bytes[..len], &[1, 2, 3]);
+        assert_eq!(&bytes[..len.len], &[1, 2, 3]);
         assert!(storage.pending_application.borrow_mut().take().is_none());
     }
     #[test]
     fn cleanup_preserves_ciphertext_for_successful_single_use_transfer() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
         storage.claim().unwrap();
-        storage.retain_application(&[7]).unwrap();
+        storage.retain_application(&[7], None).unwrap();
         storage.clear();
         assert!(storage.claim().is_err());
         let (bytes, len) = storage.pending_application.borrow_mut().take().unwrap();
-        assert_eq!(&bytes[..len], &[7]);
+        assert_eq!(&bytes[..len.len], &[7]);
     }
     #[test]
     fn invalid_packet_lengths_do_not_publish_a_buffer() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
-        assert!(storage.retain_application(&[]).is_err());
-        assert!(storage.retain_application(&[1; 9]).is_err());
+        assert!(storage.retain_application(&[], None).is_err());
+        assert!(storage.retain_application(&[1; 9], None).is_err());
         assert!(storage.pending_application.borrow().is_none());
     }
 }

@@ -13,6 +13,8 @@
 //! cumulative counters, first-ACK facts and peer baselines bound to the actual
 //! path; this arithmetic module cannot authorize migration or marking.
 
+pub mod protocol;
+
 use crate::accounting::{MAX_PACKET_NUMBER, PacketNumberSpace};
 use crate::packet::EcnCounts;
 
@@ -127,6 +129,16 @@ impl RxCounts {
         self.counts[i] = next;
         self.observed[i] = true;
         Ok(())
+    }
+    /// Known processed markings, including partial observations. This does not
+    /// authorize an ACK_ECN when any datagram metadata was unavailable.
+    pub(crate) fn marked_packets(&self) -> Result<u64, Error> {
+        self.counts.iter().try_fold(0u64, |sum, counts| {
+            sum.checked_add(counts.ect0)
+                .and_then(|n| n.checked_add(counts.ect1))
+                .and_then(|n| n.checked_add(counts.ce))
+                .ok_or(Error::CounterLimit)
+        })
     }
     pub fn ack_counts(&self, space: PacketNumberSpace) -> Option<EcnCounts> {
         let i = space as usize;
@@ -331,3 +343,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod protocol_tests;

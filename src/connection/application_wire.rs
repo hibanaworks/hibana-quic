@@ -104,6 +104,10 @@ pub struct SealedApplicationDatagram<'book, const N: usize> {
     reservation: Option<Reservation<'book>>,
 }
 impl<'book, const N: usize> SealedApplicationDatagram<'book, N> {
+    pub(super) fn reservation(&self) -> &Reservation<'book> {
+        self.reservation.as_ref().expect("owned reservation")
+    }
+
     pub fn bytes(&self) -> &[u8] {
         &self.bytes[..self.len]
     }

@@ -3,7 +3,7 @@
   "registered_quic_cases": 22,
   "directions": 2,
   "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
-  "current_cleanup_commit_qualification": "30/44 unique historical case/direction passes across the exact revisions below. This is a cumulative inventory, not a complete rerun of 44 cells on the latest commit. Passing alternate-peer controls qualify a cell under the user-approved policy; duplicate peers do not add cells. Failed Neqo controls remain failed.",
+  "current_cleanup_commit_qualification": "32/44 cumulative distinct official case/direction passes:30 baseline29ba476 plus Retry2 on159ed009. ECN native pair is implemented and locally qualified only; its official paired trace verdict is pending. Not all32 have been rerun on the new ECN source.",
   "cases": [
     {
       "case": "handshake",
@@ -496,7 +496,7 @@
     "prior_failures_retained": true
   },
   "retry_pair_candidate": {
-    "official_pair_pass": false,
+    "official_pair_pass": true,
     "required_workflow": "both native directions locally before any new CI",
     "native_binary_sha256": "7c16ab3c29bd65bdd08f3dce33c8fc6ed806b464f3a325e85b77d9eef8256493",
     "same_binary_both_directions": true,
@@ -583,6 +583,107 @@
       "result": "passed",
       "workflow_boundary": "premature one-sided run; no additional CI until local pair qualified"
     },
-    "coverage_gap": "early-data plus Retry not qualified"
+    "coverage_gap": "early-data plus Retry not qualified",
+    "official": {
+      "commit": "159ed00980efd15e5bd63f3428120b8917bf2a51",
+      "run": 37472936094,
+      "artifact": 11417713931,
+      "baseline": "succeeded",
+      "client": "succeeded",
+      "server": "succeeded",
+      "unexecuted": 0,
+      "runtime_run": 37472936275,
+      "runtime_result": "success"
+    }
+  },
+  "cumulative_distinct_cells": 32,
+  "cumulative_scope": "baseline30 on29ba476 plus Retry2 on159ed009; not a full current-head sweep",
+  "ecn_pair_candidate": {
+    "official_qualified": false,
+    "native_binary_sha256": "448f1aab511e1df775c7d786765418f4e00d579549d9d560b714a412ce1269c2",
+    "native_scope": "unchanged Neqo, localhost,2/3/5MiB; not ns-3 or official capture verdict",
+    "native_client": {
+      "observation": {
+        "ecn_accepted_packets": 26,
+        "ecn_validated_packets": 26,
+        "ecn_received_packets": 7340,
+        "ecn_acknowledgments_sent": 93,
+        "ecn_feedback_error": null,
+        "peer_reported_capable": true
+      },
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        },
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5",
+          "received_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5"
+        },
+        {
+          "name": "5242880",
+          "bytes": 5242880,
+          "expected_sha256": "c036cbb7553a909f8b8877d4461924307f27ecb66cff928eeeafd569c3887e29",
+          "received_sha256": "c036cbb7553a909f8b8877d4461924307f27ecb66cff928eeeafd569c3887e29"
+        }
+      ],
+      "elapsed_seconds": 0.307,
+      "client_exit": 0,
+      "retirement_verified": true
+    },
+    "native_server": {
+      "observation": {
+        "ecn_accepted_packets": 10244,
+        "ecn_validated_packets": 10244,
+        "ecn_received_packets": 6839,
+        "ecn_acknowledgments_sent": 210,
+        "ecn_feedback_error": null,
+        "peer_reported_capable": true
+      },
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a",
+          "received_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a"
+        },
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7",
+          "received_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7"
+        },
+        {
+          "name": "5242880",
+          "bytes": 5242880,
+          "expected_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0",
+          "received_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0"
+        }
+      ],
+      "elapsed_seconds": 9.764,
+      "client_exit": 0,
+      "retirement_verified": true
+    },
+    "checks": {
+      "core_integration_docs": 554,
+      "host": 119,
+      "host_selected_strict_clippy": "passed",
+      "thumb_no_std": "passed",
+      "selected_reference_tls": 29,
+      "python": 71
+    },
+    "architecture": "Dedicated existing spare role31 controls projected probing/capable/failed continuations; role17 remains sole physical publisher; actual common Request/Settled, unique concurrent selectors, no local phase flag or relay actor.",
+    "additional_legacy_suite": {
+      "suite": "reference-tls/tests/certificate_depth.rs",
+      "status": "failed",
+      "passed": 3,
+      "failed": 3,
+      "ignored": 1,
+      "scope": "Outside unchanged selected CI suite. One fixed historical public-certificate fixture is missing; two old synchronous Provider-driver tests did not reach the expected terminal. They remain unqualified; no passing claim or test/deadline relaxation."
+    }
   }
 }

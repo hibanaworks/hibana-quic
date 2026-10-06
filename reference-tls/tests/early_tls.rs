@@ -401,6 +401,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                     authenticated,
                     2,
                     opened.plaintext(),
+                    None,
                 )
                 .unwrap();
             projected_early_release(admission, finished, input, &mut held, request);

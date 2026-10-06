@@ -130,7 +130,11 @@ mod tests {
 
     struct PendingUdp;
     impl DatagramTx for PendingUdp {
-        async fn send(&mut self, _bytes: &[u8]) -> Result<u64, IoError> {
+        async fn send(
+            &mut self,
+            _bytes: &[u8],
+            _ecn: crate::ecn::Codepoint,
+        ) -> Result<u64, IoError> {
             pending().await
         }
     }
@@ -214,7 +218,7 @@ mod tests {
             Ok::<(), Error>(())
         });
         let mut udp = PendingUdp;
-        let mut publication = pin!(udp.send(&[0]));
+        let mut publication = pin!(udp.send(&[0], crate::ecn::Codepoint::NotEct));
         let mut tasks = pin!(crate::runtime::TaskSet::new([
             timer.as_mut(),
             receiver.as_mut(),
@@ -370,7 +374,7 @@ mod tests {
         let mut receiver_endpoint = rendezvous.enter(sid, &receiver_program).unwrap();
         let schedule = Schedule::new();
         let mut udp = PendingUdp;
-        let mut publication = pin!(udp.send(&[0]));
+        let mut publication = pin!(udp.send(&[0], crate::ecn::Codepoint::NotEct));
         let mut producer = pin!(async {
             for _ in 0..3 {
                 producer_endpoint

@@ -41,7 +41,7 @@ fn authenticated_loss_gaps_prune_without_fabricating_acks_or_readmitting_replays
             panic!("unexpected key update")
         };
         let outcome = rx
-            .apply_application_packet(receipt, &bytes[..1], pn)
+            .apply_application_packet(receipt, &bytes[..1], pn, None)
             .unwrap();
         assert!(!outcome.duplicate);
         let ack = tx.pending_ack().unwrap();
@@ -63,7 +63,7 @@ fn authenticated_loss_gaps_prune_without_fabricating_acks_or_readmitting_replays
         panic!("unexpected key update")
     };
     assert!(matches!(
-        rx.apply_application_packet(replay, &original[..1], 5000),
+        rx.apply_application_packet(replay, &original[..1], 5000, None),
         Err(recovery::Error::Accounting(
             AccountingError::HistoryUnavailable
         ))

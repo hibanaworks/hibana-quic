@@ -545,6 +545,7 @@ struct Datagram {
     bytes: [u8; DATAGRAM],
     len: usize,
     ready_at: u64,
+    ecn: Option<hibana_quic::ecn::Codepoint>,
 }
 struct Path {
     queued: RefCell<std::collections::VecDeque<Datagram>>,
@@ -570,7 +571,10 @@ impl Path {
 }
 struct Rx<'a>(&'a Path, &'a TestClock);
 impl DatagramRx for Rx<'_> {
-    async fn receive(&mut self, output: &mut [u8]) -> Result<usize, IoError> {
+    async fn receive(
+        &mut self,
+        output: &mut [u8],
+    ) -> Result<hibana_quic::connection::ReceivedDatagram, IoError> {
         let ready_at = poll_fn(|cx| {
             if let Some(packet) = self.0.queued.borrow().front() {
                 Poll::Ready(packet.ready_at)
@@ -594,12 +598,17 @@ impl DatagramRx for Rx<'_> {
         if let Some(wake) = self.0.writer.borrow_mut().take() {
             wake.wake();
         }
-        Ok(packet.len)
+        Ok(hibana_quic::connection::ReceivedDatagram {
+            len: packet.len,
+            ecn: packet.ecn,
+        })
     }
 }
 #[derive(Clone, Copy)]
 enum Loss {
     None,
+    MissingEcnMetadata,
+    BleachedEcn,
     ServerApplicationAcks,
     ServerApplicationAcksPersistentServer,
     FirstServerOneRtt,
@@ -616,7 +625,11 @@ struct Tx<'a, 'scope> {
     inspector: Option<&'a mut Inspector<'scope>>,
 }
 impl DatagramTx for Tx<'_, '_> {
-    async fn send(&mut self, bytes: &[u8]) -> Result<u64, IoError> {
+    async fn send(
+        &mut self,
+        bytes: &[u8],
+        ecn: hibana_quic::ecn::Codepoint,
+    ) -> Result<u64, IoError> {
         poll_fn(|cx| {
             if self.path.queued.borrow().len() == self.path.capacity {
                 let next = cx.waker().clone();
@@ -633,7 +646,7 @@ impl DatagramTx for Tx<'_, '_> {
             // The first-1RTT smoke selects its target only by public header.
             // The two frame-specific cases below require authenticated parsing.
             let selected = match self.loss {
-                Loss::None => false,
+                Loss::None | Loss::MissingEcnMetadata | Loss::BleachedEcn => false,
                 Loss::DuplexPacketMask { client, server } => {
                     let mask = if self.inspector.is_some() {
                         server
@@ -675,6 +688,11 @@ impl DatagramTx for Tx<'_, '_> {
             let mut datagram = Datagram {
                 bytes: [0; DATAGRAM],
                 len: bytes.len(),
+                ecn: match self.loss {
+                    Loss::MissingEcnMetadata => None,
+                    Loss::BleachedEcn => Some(hibana_quic::ecn::Codepoint::NotEct),
+                    _ => Some(ecn),
+                },
                 ready_at: self.clock.now()
                     + if matches!(self.loss, Loss::DuplexPacketMask { .. }) {
                         15_000
@@ -814,6 +832,7 @@ impl StreamSink for Sink {
 macro_rules! roles {
     ($rv:expr, $sid:expr, $program:expr) => {
         application::Roles {
+            ecn_owner: $rv.enter($sid, &$program.ecn_owner).unwrap(),
             handshake: connection::Roles {
                 rx: $rv.enter($sid, &$program.handshake.rx).unwrap(),
                 tls_rx: $rv.enter($sid, &$program.handshake.tls_rx).unwrap(),
@@ -1249,7 +1268,10 @@ fn connection_case_with_failure(
         clock: &clock,
         loss: if matches!(
             loss,
-            Loss::ClientPacketBurst { .. } | Loss::DuplexPacketMask { .. }
+            Loss::ClientPacketBurst { .. }
+                | Loss::DuplexPacketMask { .. }
+                | Loss::MissingEcnMetadata
+                | Loss::BleachedEcn
         ) {
             loss
         } else {
@@ -1397,6 +1419,46 @@ fn connection_case_with_failure(
         client.close_completed && server.close_completed,
         "all ordinary roles must retire before close completes"
     );
+    if matches!(loss, Loss::None) {
+        for report in [&client, &server] {
+            assert!(
+                report.ecn_accepted_packets > 0,
+                "no actual marked send: {report:?}"
+            );
+            assert!(
+                report.ecn_validated_packets > 0,
+                "no authenticated ECN validation: {report:?}"
+            );
+            assert!(
+                report.ecn_received_packets > 0 && report.ecn_acknowledgments_sent > 0,
+                "missing actual ACK_ECN: {report:?}"
+            );
+            assert!(
+                report.ecn_feedback_error.is_none(),
+                "unexpected ECN failure: {report:?}"
+            );
+        }
+    }
+    if matches!(loss, Loss::MissingEcnMetadata | Loss::BleachedEcn) {
+        let expected = if matches!(loss, Loss::MissingEcnMetadata) {
+            hibana_quic::ecn::Failure::MissingCounts
+        } else {
+            hibana_quic::ecn::Failure::Bleached
+        };
+        for report in [&client, &server] {
+            assert!(
+                (1..=10).contains(&report.ecn_accepted_packets),
+                "probing did not stop: {report:?}"
+            );
+            assert_eq!(report.ecn_validated_packets, 0);
+            assert_eq!(report.ecn_received_packets, 0);
+            assert_eq!(report.ecn_acknowledgments_sent, 0);
+            assert_eq!(
+                report.ecn_feedback_error,
+                Some(hibana_quic::ecn::Error::Validation(expected))
+            );
+        }
+    }
     assert_eq!(client.submitted_streams, count);
     assert_eq!(client.completed_streams, count);
     assert_eq!(server.completed_streams, count);
@@ -1457,7 +1519,13 @@ fn connection_case_with_failure(
     } else {
         assert_eq!(
             to_client.dropped.get(),
-            if matches!(loss, Loss::None | Loss::ClientPacketBurst { .. }) {
+            if matches!(
+                loss,
+                Loss::None
+                    | Loss::ClientPacketBurst { .. }
+                    | Loss::MissingEcnMetadata
+                    | Loss::BleachedEcn
+            ) {
                 0
             } else {
                 1
@@ -1540,4 +1608,13 @@ fn finite_handshake_survives_reproducible_duplex_packet_loss() {
             },
         );
     }
+}
+
+#[test]
+fn missing_ecn_metadata_disables_marking_without_blocking_delivery() {
+    run_connection(3, Loss::MissingEcnMetadata);
+}
+#[test]
+fn bleached_ecn_disables_marking_without_blocking_delivery() {
+    run_connection(3, Loss::BleachedEcn);
 }

@@ -89,6 +89,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect', 'multiplexing'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
+    parser.add_argument('--require-ecn', action='store_true', help='require actual ECN send, authenticated feedback, received marks and accepted ACK_ECN in clean native transfers')
     parser.add_argument('--client-retry', action='store_true', help='native Retry reception, forward clean direction only')
     parser.add_argument('--server-retry', action='store_true', help='native Retry admission, reverse clean direction only')
     parser.add_argument('--direction', choices=('all', 'baseline', 'forward', 'reverse'), default='all')
@@ -111,6 +112,8 @@ def main():
         parser.error('--client-keyupdate requires --scenario keyupdate')
     if args.expect_idle_expiry and (args.scenario != 'multiconnect' or args.direction != 'reverse' or args.multi_impairment == 'none'):
         parser.error('--expect-idle-expiry requires impaired reverse multiconnect')
+    if args.require_ecn and (args.scenario != 'clean' or args.direction not in ('forward', 'reverse')):
+        parser.error('--require-ecn requires one clean candidate direction')
     if args.client_retry and (args.direction != 'forward' or args.scenario != 'clean'):
         parser.error('--client-retry requires --direction forward --scenario clean')
     if args.server_retry and (args.direction != 'reverse' or args.scenario != 'clean'):
@@ -349,8 +352,30 @@ def main():
                             assert proxy.stats['unclassified_client_datagrams'] == 0, dict(proxy.stats)
                             assert proxy.stats['zero_rtt_packets'] > 0, dict(proxy.stats)
                             assert proxy.stats['one_rtt_protected_payload_upper_bound'] <= 5000, dict(proxy.stats)
+                        ecn_observation = None
+                        if args.require_ecn and returncode == 0:
+                            if direction == 'reverse':
+                                server.wait(timeout=args.timeout_seconds + 5)
+                                assert server.returncode == 0, 'ECN server retirement failed'
+                                actual_text = log_path.read_text()
+                                peer_text = result.stdout + result.stderr
+                            else:
+                                actual_text = result.stdout
+                                peer_text = log_path.read_text()
+                            actual = next(json.loads(line) for line in actual_text.splitlines() if line.startswith('{'))
+                            for key in ('ecn_accepted_packets', 'ecn_validated_packets', 'ecn_received_packets', 'ecn_acknowledgments_sent'):
+                                assert actual[key] > 0, (key, actual)
+                            assert actual['ecn_feedback_error'] is None, actual
+                            assert actual['resources_retired'] and actual['lifecycle_closed'] and actual['http_transfer_complete'], actual
+                            ecn_observation = {key: actual[key] for key in ('ecn_accepted_packets', 'ecn_validated_packets', 'ecn_received_packets', 'ecn_acknowledgments_sent', 'ecn_feedback_error')}
+                            # The peer may legitimately still be testing its first ten
+                            # probes. Record its report without inventing capability.
+                            ecn_observation['peer_reported_capable'] = 'ECN validation succeeded, path is capable' in peer_text
+                            report['transfer_observations'][-1]['retirement_verified'] = True
                         files = [{'name': name, 'bytes': (destination / name).stat().st_size if (destination / name).exists() else None, 'expected_sha256': sha(www / name), 'received_sha256': sha(destination / name) if (destination / name).exists() else None} for name in names]
                         row = {'direction': direction, 'client_exit': returncode, 'client_elapsed_seconds': round(client_elapsed, 3), 'post_client_verification_and_retirement_seconds': round(time.monotonic() - started - client_elapsed, 3), 'elapsed_seconds': round(time.monotonic() - started, 3), 'files': files, 'proxy': dict(proxy.stats) if proxy else None, 'connections': resumed_report.get('connections') if resumed_report else None, 'resources_retired': resumed_report.get('resources_retired') if resumed_report else None, 'idle_expired_connections': resumed_report.get('idle_expired_connections') if resumed_report else None, 'lifecycle_closed': resumed_report.get('lifecycle_closed') if resumed_report else None, 'resumed_connections': resumed_report.get('resumed_connections', 0) if resumed_report else None, 'resumed_two_connections': bool(args.scenario != 'multiconnect' and resumed_report and resumed_report['resumed']), 'early_accepted_packets': resumed_report.get('early_accepted_packets', 0) if resumed_report else 0, 'early_stream_bytes': resumed_report.get('early_stream_bytes', 0) if resumed_report else 0, 'early_finished_streams': resumed_report.get('early_finished_streams', 0) if resumed_report else 0}
+                        if ecn_observation is not None:
+                            row['ecn_observation'] = ecn_observation
                         report['runs'].append(row)
                         save()
                         if args.client_early_loss:
