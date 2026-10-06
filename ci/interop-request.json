@@ -1,6 +1,6 @@
 {
-  "request": "Verify actual timer-stop and expiry-ack overlap correction",
-  "requested_at": "2026-10-06T04:42:00Z",
+  "request": "Measure third loss run after timer-stop correction without discarding prior failures",
+  "requested_at": "2026-10-06T05:12:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions"
@@ -15,6 +15,6 @@
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Run37413518827 passed quiche control and candidate client L1, failed candidate server with last committed StopTimer after ReceiveStopped. A capacity-one real-timer regression fails before the correction and passes after: independent stop reception remains runnable during the exact pending expiry ACK exchange, which is completed before retirement. No new flag/FSM, carrier capacity or deadline change. Three focused timer tests pass. Prior Initial backoff remains independently unresolved; full regression and both official directions must be read before qualification. Numeric capture diagnostics are retained. Local final full cargo test (424 library plus all integration/docs), thumbv6m check, 116 host tests, source audit and exact core snapshot all passed. Whole-repository formatting has existing unrelated differences and is not claimed clean.",
+  "qualification": "Same executable as397acc54. Runtime37415310732 all steps passed. Interop37415310712 attempt1: control/server passed, client49 successes plus one real idle expiry. Attempt2: control and both directions passed; client50 actual terminals, zero idle expiry, closed and resources retired. Both artifacts11391555489 and11392225772 retained. Third measurement checks reproducibility, not rerun-until-green or erasure of failure. No timeout/capacity/protocol/source changes and no complete matrix claim. Server runner success does not prove all server retirement futures completed before runner shutdown.",
   "formal_models": false
 }

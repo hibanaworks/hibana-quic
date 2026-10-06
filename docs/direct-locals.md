@@ -406,3 +406,21 @@ cases), and 26 compile-fail/doc tests. The thumbv6m no_std library check and all
 1193-file c3d89f78 snapshot check passed. The changed timer file is rustfmt
 formatted; whole-repository fmt still reports pre-existing unrelated formatting
 and is not claimed clean. External interop qualification remains pending.
+
+Remote qualification of 397acc54: runtime 37415310732 passed every actual step.
+Interop 37415310712 attempt 1 passed quiche control/server but failed client:
+49 successful transfers and one actual idle expiry (67.179 s, unconfirmed,
+submitted 1/completed 0), with all fifty futures returned. Artifact11391555489
+is retained, not replaced by the later pass. Its numeric captures show one
+flow receiving ServerHello around 6.9 s, Handshake traffic around 7.17 s, then
+client Handshake retransmissions at 22.312 and 52.580 s. This is evidence of a
+remaining loss/backoff boundary, not proof of an executor hang or a fabricated
+successful terminal.
+
+Attempt 2, artifact11392225772, passed the unchanged control and both candidate
+L1 directions. Client fifty actual terminals and the final report confirm
+50 files, zero idle expiry, closed lifecycle and resources retired (28.787 s
+endpoint duration). Six server futures were still pending when the runner
+ended; runner-cell success is not fifty clean server retirements. A third
+unchanged-source measurement is requested with both prior outcomes retained;
+no new historical unique cell or reliable root resolution is claimed.
