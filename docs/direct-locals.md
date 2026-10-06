@@ -653,3 +653,30 @@ four cases in both candidate directions, unchanged quiche controls and six
 Lean/six Z3 groups in37437645847/artifact11400961525. The earlier33c83f4e
 missing-tail capture remains retained; a later pass does not erase it or
 explain the other historical candidate-client failures.
+
+## Fixed-code repeat and widened sweep
+
+Product code29ba476 passed runtime37440190411 and the selected8 cells in
+37440190467 attempts1/2 (artifacts11400534954/11402098198), with passing controls
+and existing formal groups. Attempt3/artifact11403970827 failed only candidate
+server C1; all controls, candidate-client cases and server L1/M/Z passed.
+No fourth focused repeat is requested.
+
+Its actual encrypted capsule was decrypted privately. The failed quiche flow
+again sent a1490-byte ClientHello, with its tail offset1133/length357 only in
+client packet2. Server-side capture has packets0/1/3/5/7 containing the prefix
+and packet6 containing PING. Six authenticated ACK-only server packets are
+absent from the client-side capture. Quiche reports recv0/sent9 and idle expiry
+at30.0124521s; the matching server frontier has received6/sent6. Left capture
+statistics report zero capture drops. The right capture has no terminal
+statistics block, so no zero-drop claim is made for that interface. These
+observations do not show a complete ClientHello arriving and then a Hibana
+continuation stalling; they do not prove absence of other defects.
+
+The user's09:54 direction replaces continued focused repetitions: check the
+existing30 historical case/direction cells on this product code once, then
+advance to the14 unqualified cells, inspecting actual failed captures as needed.
+Only CI requests/docs change during this sweep. The first additional Neqo
+H/DC/LR/C20/6 group is run37446541784. Next are Neqo L2/C2/R/B/U and quiche A,
+all both directions with actual unchanged reference controls. Previous failures
+remain in the evidence and do not become passes because a later trial succeeds.

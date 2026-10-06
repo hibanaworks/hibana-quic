@@ -1,6 +1,6 @@
 {
-  "request": "Revalidate historical30 cells: unchanged Neqo basic transport group",
-  "requested_at": "2026-10-06T09:55:00Z",
+  "request": "Revalidate historical30 cells: unchanged Neqo recovery and key group",
+  "requested_at": "2026-10-06T10:04:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions",
@@ -9,17 +9,17 @@
   "approval": "User requested all-file direct-local migration, regression fixes and interoperability qualification.",
   "local_evidence": "docs/direct-locals.md",
   "cases": [
-    "handshake",
-    "transfer",
-    "longrtt",
-    "chacha20",
-    "ipv6"
+    "transferloss",
+    "transfercorruption",
+    "resumption",
+    "blackhole",
+    "keyupdate"
   ],
   "candidate_directions": [
     "client",
     "server"
   ],
   "reference_implementation": "neqo",
-  "qualification": "User requested one latest-code sweep of the30 historically qualified direction cells, then proceed to the14 remaining cells and diagnose any new failure from its actual captures. Product code is unchanged from29ba476cd1e40a30ecbcfeb9879fb9bde114cf52. Its C1/L1/M/Z8 cells already passed twice; the third previously-started run is finishing and will be the last focused repeat. This group covers10 additional historical cells against unchanged Neqo controls. Later groups cover Neqo L2/C2/R/B/U10 cells and quiche A2 cells. Do not count a failed control or prior-revision result as a current pass. Preserve any failed encrypted captures. No protocol/runner/deadline/source changes.",
+  "qualification": "User requested a single current-code sweep of historical30 cells then remaining14. Product code remains29ba476, unchanged. First Neqo group H/DC/LR/C20/6 is running in37446541784. This second group covers L2/C2/R/B/U both directions with unchanged Neqo self-controls. Quiche A2 cells follow. Last focused8 repetition is completed, pass/pass/fail: third server C1 actual capture lacked ClientHello tail and all server ACKs at client; retained, not retried away. Do not count failed controls or incomplete current cells as pass. Preserve failed encrypted actual capture/log evidence; no source/runner/deadline changes.",
   "formal_models": false
 }
