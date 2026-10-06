@@ -1,6 +1,6 @@
 {
-  "request": "Observe numeric Initial CRYPTO and ACK traffic behind long PTO backoff",
-  "requested_at": "2026-10-06T04:22:00Z",
+  "request": "Verify actual timer-stop and expiry-ack overlap correction",
+  "requested_at": "2026-10-06T04:42:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions"
@@ -15,6 +15,6 @@
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Run 37411717036: unchanged quiche L1 control passed, candidate server runner cell passed, candidate client timed out at 300 seconds with 49/50 files. Its unfinished session requested deadline560572808us at now283130335us. No root cause or fix is claimed. Endpoint executable is unchanged. Add bounded numeric dissection of existing captures, with no key log or raw traffic publication, to distinguish actual Initial CRYPTO delivery and ACK progress. Local numeric parser/privacy tests pass; actual tshark execution is not locally available and must be verified in this run. No runner or product timeouts changed.",
+  "qualification": "Run37413518827 passed quiche control and candidate client L1, failed candidate server with last committed StopTimer after ReceiveStopped. A capacity-one real-timer regression fails before the correction and passes after: independent stop reception remains runnable during the exact pending expiry ACK exchange, which is completed before retirement. No new flag/FSM, carrier capacity or deadline change. Three focused timer tests pass. Prior Initial backoff remains independently unresolved; full regression and both official directions must be read before qualification. Numeric capture diagnostics are retained. Local final full cargo test (424 library plus all integration/docs), thumbv6m check, 116 host tests, source audit and exact core snapshot all passed. Whole-repository formatting has existing unrelated differences and is not claimed clean.",
   "formal_models": false
 }

@@ -371,3 +371,38 @@ runner or endpoint; complete capture coverage is explicitly not claimed.
 Local parser/privacy fixtures cover the whitelist and failure boundaries.
 The local workspace has no tshark binary, so actual dissection is still a CI
 verification requirement, not a locally verified result.
+
+## Stop/expiry overlap reproduced locally
+
+Run 37413518827 on 3986103594 passed the unchanged quiche L1 control and
+candidate-client cell, but failed the candidate-server cell. The last server
+session's actual trace committed StopReceive/ReceiveStopped and then sent
+StopTimer (role 7, label 222) without the stop receipt. Numeric capture
+extraction succeeded on both sides; this is a different boundary from the
+previous client Initial PTO backoff, and does not establish that both share a
+cause.
+
+A capacity-one fixture using the real timer local reproduced the scheduling
+hole: consume TimerExpired, allow the independent StopTimer to occupy the
+carrier, then attempt TimerTaken. Before the correction it failed with
+`stop blocked the in-progress timer acknowledgement`. The timer was awaiting
+TimerTaken while not polling its already-owned stop receive, leaving both
+messages unable to finish.
+
+The correction keeps that exact stop receive runnable alongside the owned
+expiry send/receive future. If stop is actually received first, the existing
+expiry is still fully acknowledged before TimerRetired/TimerAcknowledged and
+TimerStopped. No pending exchange is dropped on successful stop, no new
+progress flag or state manager is introduced, and carrier capacity is unchanged.
+The explicit pin here preserves an in-progress exchange across executor
+selection rather than hiding or cancelling it. The new regression and the two
+existing timer tests pass; full regression and external interop remain required
+before claiming qualification. The earlier long Initial backoff remains open.
+
+Local verification of the final timer correction: `cargo test --locked` passed
+424 library tests, all integration groups (including 20 connected-application
+cases), and 26 compile-fail/doc tests. The thumbv6m no_std library check and all
+116 host tests passed. Source audit, the existing controller guard and the
+1193-file c3d89f78 snapshot check passed. The changed timer file is rustfmt
+formatted; whole-repository fmt still reports pre-existing unrelated formatting
+and is not claimed clean. External interop qualification remains pending.

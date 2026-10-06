@@ -54,10 +54,28 @@ pub(super) async fn run<const N: usize, const P: usize>(
             }
             match book.expire(deadline.ok_or(Error::Binding)?, clock.now()) {
                 Ok(Some(_)) => {
-                    // A stop cannot interrupt this projected exchange halfway.
-                    endpoint.send::<p::TimerExpired>(&sequence).await?;
-                    if endpoint.recv::<p::TimerTaken>().await? != sequence {
-                        return Err(Error::Binding);
+                    // Keep the independent stop receive runnable even while
+                    // this committed expiry awaits its acknowledgement. With a
+                    // capacity-one carrier, StopTimer can otherwise occupy the
+                    // slot needed by TimerTaken. Retain and finish the exact
+                    // expiry future before consuming retirement; never cancel
+                    // a half-completed projected exchange or manufacture ACK.
+                    let expiry_sequence = sequence;
+                    let mut expiry = pin!(async {
+                        endpoint.send::<p::TimerExpired>(&expiry_sequence).await?;
+                        if endpoint.recv::<p::TimerTaken>().await? != expiry_sequence {
+                            return Err(Error::Binding);
+                        }
+                        Ok::<(), Error>(())
+                    });
+                    match crate::runtime::select(stopping.as_mut(), expiry.as_mut()).await {
+                        core::ops::ControlFlow::Break(id) => {
+                            let id = id?;
+                            expiry.await?;
+                            sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                            break id;
+                        }
+                        core::ops::ControlFlow::Continue(result) => result?,
                     }
                     sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
                 }
@@ -222,6 +240,118 @@ mod tests {
             }
         }
         panic!("projected timer stop did not complete independently");
+    }
+
+    #[test]
+    fn stop_received_during_expiry_ack_does_not_block_capacity_one() {
+        struct QuietClock(core::cell::Cell<u64>);
+        impl Clock for QuietClock {
+            fn now(&self) -> u64 {
+                self.0.get()
+            }
+            async fn wait_until(&self, deadline: u64) {
+                self.0.set(deadline);
+            }
+        }
+        let global = g::par(
+            g::route(
+                g::seq(
+                    g::send::<{ p::TIMER }, { p::TIMER_TX }, p::TimerExpired>(),
+                    g::send::<{ p::TIMER_TX }, { p::TIMER }, p::TimerTaken>(),
+                ),
+                g::seq(
+                    g::send::<{ p::TIMER }, { p::TIMER_TX }, p::TimerRetired>(),
+                    g::send::<{ p::TIMER_TX }, { p::TIMER }, p::TimerAcknowledged>(),
+                ),
+            )
+            .roll(),
+            g::seq(
+                g::send::<{ p::TX_WIRE }, { p::TIMER_STOP }, p::StopTimer>(),
+                g::send::<{ p::TIMER_STOP }, { p::TX_WIRE }, p::TimerStopped>(),
+            ),
+        );
+        let timer_program: RoleProgram<{ p::TIMER }> = project(&global);
+        let receiver_program: RoleProgram<{ p::TIMER_TX }> = project(&global);
+        let stop_program: RoleProgram<{ p::TIMER_STOP }> = project(&global);
+        let sender_program: RoleProgram<{ p::TX_WIRE }> = project(&global);
+        let carrier = CarrierStorage::<1, 16, 64>::new();
+        let mut slab = [0; 65536];
+        let mut kit = SessionKitStorage::uninit();
+        let sid = SessionId::new(2);
+        let rv = kit
+            .init()
+            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+            .unwrap();
+        let mut timer_endpoint = rv.enter(sid, &timer_program).unwrap();
+        let mut receiver_endpoint = rv.enter(sid, &receiver_program).unwrap();
+        let mut stop_endpoint = rv.enter(sid, &stop_program).unwrap();
+        let mut sender_endpoint = rv.enter(sid, &sender_program).unwrap();
+        let mut scope = ApplicationKeyScope::new(200);
+        let mut installation = scope.claim().unwrap();
+        let mut book = recovery::Recovery::<1536>::new(
+            installation.take_recovery().unwrap(),
+            Side::Client,
+            333_000,
+            1200,
+        )
+        .unwrap();
+        let key_scope = book.scope();
+        let (_, _, mut clock_book, _, _retirement) = book.split().unwrap();
+        let storage = Storage::<1536, 64>::new(b"peer").unwrap();
+        let initial_pair = crypto::initial_keys(b"peer").unwrap();
+        let initial_keys =
+            initial::Keys::new(key_scope, initial_pair.server, initial_pair.client).unwrap();
+        let write_keys = RefCell::new(wire::WriteKeys {
+            initial: &initial_keys,
+            handshake: None,
+            application: None,
+        });
+        let clock = QuietClock(core::cell::Cell::new(0));
+        let mut timer = pin!(run(
+            &mut timer_endpoint,
+            &mut stop_endpoint,
+            &storage,
+            &write_keys,
+            &mut clock_book,
+            &clock
+        ));
+        let mut sender = pin!(async {
+            sender_endpoint.send::<p::StopTimer>(&91).await?;
+            if sender_endpoint.recv::<p::TimerStopped>().await? != 91 {
+                return Err(Error::Binding);
+            }
+            Ok::<(), Error>(())
+        });
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(timer.as_mut().poll(&mut cx).is_pending());
+        // Consume the expiry, but deliberately let the independent stop occupy
+        // the single carrier slot before its physical acknowledgement is sent.
+        {
+            let mut expired = pin!(receiver_endpoint.recv::<p::TimerExpired>());
+            assert!(matches!(expired.as_mut().poll(&mut cx), Poll::Ready(Ok(0))));
+        }
+        assert!(sender.as_mut().poll(&mut cx).is_pending());
+        let mut receiver = pin!(async {
+            receiver_endpoint.send::<p::TimerTaken>(&0).await?;
+            let sequence = receiver_endpoint.recv::<p::TimerRetired>().await?;
+            receiver_endpoint
+                .send::<p::TimerAcknowledged>(&sequence)
+                .await?;
+            Ok::<(), Error>(())
+        });
+        let mut tasks = pin!(crate::runtime::TaskSet::new([
+            timer.as_mut(),
+            receiver.as_mut(),
+            sender.as_mut()
+        ]));
+        for _ in 0..128 {
+            if let Poll::Ready(result) = tasks.as_mut().poll(&mut cx) {
+                result.unwrap();
+                assert_eq!(carrier.queued(), 0);
+                return;
+            }
+        }
+        panic!("stop blocked the in-progress timer acknowledgement");
     }
 
     #[test]
