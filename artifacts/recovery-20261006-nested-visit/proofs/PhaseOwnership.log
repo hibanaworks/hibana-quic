@@ -1,0 +1,30 @@
+[(0, 0),
+ (180, 0),
+ (200, 0),
+ (190, 0),
+ (210, 0),
+ (162, 0),
+ (1, 0),
+ (165, 0),
+ (162, 0),
+ (2, 0),
+ (8, 0),
+ (181, 0),
+ (201, 0),
+ (191, 0),
+ (211, 0),
+ (162, 0),
+ (9, 0),
+ (165, 0),
+ (162, 0)]
+[([0, 1, 2, 3, 4, 5, 6, 7, 8], [0, 1, 2]), ([10, 11, 12, 13, 14, 15, 16, 17, 18], [3, 4, 5])]
+true
+true
+false
+false
+'PhaseOwnership.valid_continuation' depends on axioms: [propext]
+'PhaseOwnership.old_label_cannot_consume_current_packet' depends on axioms: [propext]
+false
+true
+'PhaseOwnership.old_suffix_without_new_input_is_rejected' depends on axioms: [propext]
+'PhaseOwnership.earlier_roll_remains_elastic_after_a_fresh_input' depends on axioms: [propext]

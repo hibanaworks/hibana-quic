@@ -177,3 +177,59 @@ After actual root restoration, run the unchanged official Neqo baseline,
 candidate pilot, then matrix; no runner checks or environment predicates were
 weakened. Commands, exits, source identities, failure logs and native byte
 comparisons are preserved under `artifacts/recovery-20261004-live-preview/`.
+
+## 2026-10-06: containing-visit repair integrated at c3d89f78
+
+QUIC code is published at `64a7a09cb27f30336520818c66d51e93c65a0343`, with
+the identical tree to the tested local commit. Hibana is the exact 1,193-file
+upstream snapshot `c3d89f787aa1a8e066b310a5307fdf7cb076ee26` on
+`development/rolled-route-ownership`, with executable modes checked and no
+local patches. Cargo metadata for root and host resolves this single snapshot;
+pins and provenance agree. Both initial worktrees were clean and the original
+core checkout was preserved. The prior completed-descendant preview fix is
+retained in the selected ancestry.
+
+The new defect is independently reproduced on exact predecessor `12383a07`:
+after outer Connected/ACK and inner Sample/Retained, the subsequent Failed
+loses its enclosing prefix and FailureRetained exits 101 with `PhaseInvariant`.
+The same actual QUIC capacity-one carrier regression passes at C3. Four new
+global/direct-local async tests pass in debug and release/LTO: prefix retention,
+early-switch rejection, duplicate-ACK rejection and right-par-lane-first
+reentry. The existing publication test also passes in both profiles. Rust
+1.95.0 executes all six requested commands in order with exit 0, including
+4 application_wire, 7 connected_application and 27 host hq tests. No compiler,
+stack or carrier limit, assertion or old driver fallback was introduced.
+
+Fresh replay of the supplemental proof runner passes nine Lean files and
+18 UNSAT / 26 SAT checks. Its new NestedVisit portion has twelve Lean
+kernel/propext theorems and four UNSAT / four SAT checks. Core's four nested
+route regressions and workspace strict Clippy pass locally. These scoped
+models are not a whole-implementation Rust proof or interop qualification.
+The supplied broader core validation is recorded as upstream-reported;
+upstream CI 37396155673 is still in progress at inspection, not successful.
+
+The exact current upstream resource gate passes, with measured stack
+2,503/3,663 bytes, modeled SRAM 5,202/8,954 bytes and flash 97,476/169,965
+bytes. Qualification against the **unchanged previous RSS ceilings fails**:
+134/132 MiB route-arm, 131/129 MiB causal route and 130/129 MiB causal roll.
+The upstream snapshot contains four RSS baseline/budget updates; they are
+disclosed rather than treated as evidence of improvement. Flash grows 9,463
+bytes versus the previous observation. QUIC strict Clippy exits 101 on 51
+existing production diagnostics; default Clippy exits 0 and none points to
+the new regression test. Comparable QUIC performance remains unmeasured.
+
+Fresh native Neqo baseline passes 2/2; both candidate directions pass handshake
+and transfer, 4/4 total, with actual 1 KiB and 2/3/5 MiB file equality at the
+60-second deadline. The rebuilt binary and exact commands are recorded.
+This is hq-interop native diagnosis, not an official runner or HTTP/3 result.
+Formal C3 matrix remains **0 passed / 0 executed / 120 target**, 0/0/60 per
+direction, 0/0/40 per repetition, 0/0/3 per case-direction. No new formal
+failure or unsupported verdict was produced. Handshake/transfer are
+implemented; the other 18 cases are unimplemented and all formal cells remain
+unexecuted. Original Docker remains unavailable; actual-root recovery and
+the unchanged Neqo baseline gate are still required before formal pilot/matrix.
+
+Commands, exits, proof logs, minimal failing trace, source identities, resource
+comparison and all 120 cell statuses are preserved under
+`artifacts/recovery-20261006-nested-visit/`. Changes are on the recovery branch;
+main was not merged.

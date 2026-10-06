@@ -1,0 +1,108 @@
+{
+  "core_branch": "development/rolled-route-ownership",
+  "core_revision": "c3d89f787aa1a8e066b310a5307fdf7cb076ee26",
+  "core_tree": "1b15c051557ae740cdb7c92f4e709765781d5561",
+  "snapshot_files": 1193,
+  "local_patches": [],
+  "pre_fix_core": "12383a07f7a198031762e3092f6de0e72d8ee68f",
+  "pre_fix_q1_exit": 101,
+  "nested_q1_tests": {
+    "debug": {
+      "passed": 4,
+      "failed": 0
+    },
+    "release_lto": {
+      "passed": 4,
+      "failed": 0
+    }
+  },
+  "requested_six_exits": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "native_diagnosis": [
+    {
+      "mode": "baseline",
+      "case": "handshake",
+      "client_exit": 0,
+      "files_equal": true
+    },
+    {
+      "mode": "baseline",
+      "case": "transfer",
+      "client_exit": 0,
+      "files_equal": true
+    },
+    {
+      "mode": "client",
+      "case": "handshake",
+      "client_exit": 0,
+      "files_equal": true
+    },
+    {
+      "mode": "server",
+      "case": "handshake",
+      "client_exit": 0,
+      "files_equal": true
+    },
+    {
+      "mode": "client",
+      "case": "transfer",
+      "client_exit": 0,
+      "files_equal": true
+    },
+    {
+      "mode": "server",
+      "case": "transfer",
+      "client_exit": 0,
+      "files_equal": true
+    }
+  ],
+  "native_hq_sha256": "78bb47952075d03f8eb6537a8ee71c2c7bfb9f29f62965166d2f8dc460d87a76",
+  "native_timeout_seconds": 60,
+  "official_runner": "NOT_RUN",
+  "formal_matrix": {
+    "passed": 0,
+    "executed": 0,
+    "target": 120,
+    "per_direction": {
+      "passed": 0,
+      "executed": 0,
+      "target": 60
+    },
+    "per_repetition": {
+      "passed": 0,
+      "executed": 0,
+      "target": 40
+    },
+    "per_case_direction": {
+      "passed": 0,
+      "executed": 0,
+      "target": 3
+    }
+  },
+  "formal_unsupported_verdicts": 0,
+  "unimplemented_cases": 18,
+  "current_upstream_resource_gate_exit": 0,
+  "previous_rss_ceiling_comparison_pass": false,
+  "consumer_strict_clippy_exit": 101,
+  "consumer_existing_lint_mode_exit": 0,
+  "new_test_clippy_diagnostics": 0,
+  "rust_version": "1.95.0",
+  "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
+  "neqo_revision": "ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95",
+  "docker_original_daemon": "UNAVAILABLE",
+  "performance_improvement": "NOT_CLAIMED",
+  "recorded_utc": "2026-10-06T01:08:50.507405+00:00",
+  "core_strict_clippy_exit": 0,
+  "published_code": {
+    "code_commit": "64a7a09cb27f30336520818c66d51e93c65a0343",
+    "code_tree": "80c617f72dfc48c7e81a2afbf8e5ac939e18cd47",
+    "local_commit": "bc061849ebf3c773c883190041012359e7a93437",
+    "hibana_commit": "c3d89f787aa1a8e066b310a5307fdf7cb076ee26"
+  }
+}

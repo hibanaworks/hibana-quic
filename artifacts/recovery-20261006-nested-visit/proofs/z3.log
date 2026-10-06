@@ -1,0 +1,42 @@
+fresh head excludes outside-visit completion: premises SAT, violation UNSAT
+sat
+unsat
+parked lane needs later completion: premises SAT, violation UNSAT
+sat
+unsat
+parked past suffix with commit evidence: SAT
+sat
+old unselected suffix witness: SAT
+sat
+committed history survives a different preview: SAT
+sat
+past requires reentry: premises SAT, violation UNSAT
+sat
+unsat
+no new admissions: premises SAT, violation UNSAT
+sat
+unsat
+forward preserved: premises SAT, violation UNSAT
+sat
+unsat
+completed guard preserved: premises SAT, violation UNSAT
+sat
+unsat
+elastic preserved: premises SAT, violation UNSAT
+sat
+unsat
+selected requires every descriptor guard: premises SAT, violation UNSAT
+sat
+unsat
+selection is unique: premises SAT, violation UNSAT
+sat
+unsat
+unique eligible candidate is selected: premises SAT, violation UNSAT
+sat
+unsat
+current Continue211 positive: SAT
+sat
+authorized elastic head positive: SAT
+sat
+ambiguity rejects: SAT
+sat

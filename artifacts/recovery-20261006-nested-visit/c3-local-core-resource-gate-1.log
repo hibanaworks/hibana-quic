@@ -1,0 +1,485 @@
+info: component llvm-tools is up to date
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-final-form-measure v0.0.0 (/workspace/targets/hibana-core/final_form_measurements)
+    Finished `release` profile [optimized] target(s) in 6.65s
+== final-form binary sections ==
+section name=.text bytes=247923
+section name=.rodata bytes=21176
+section name=.data bytes=9584
+section name=.bss bytes=202
+== final-form thumb/no-std binary sections ==
+info: component rust-std for target thumbv6m-none-eabi is up to date
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+    Finished `release` profile [optimized] target(s) in 8.97s
+info: component rust-std for target thumbv6m-none-eabi is up to date
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-frame-header-codegen v0.0.0 (/workspace/targets/hibana-core/thumbv6m-frame-header-codegen/harness)
+    Finished `release` profile [optimized] target(s) in 8.67s
+thumbv6m FrameHeader codegen has no aeabi u64 helpers
+thumb section name=.text bytes=83732 target=thumbv6m-none-eabi no_default_features=1
+thumb section name=.rodata bytes=13744 target=thumbv6m-none-eabi no_default_features=1
+thumb section name=.data bytes=0 target=thumbv6m-none-eabi no_default_features=1
+thumb section name=.bss bytes=0 target=thumbv6m-none-eabi no_default_features=1
+snapshot-check thumb .text actual=83732 budget=154624
+snapshot-check thumb .rodata actual=13744 budget=15341
+snapshot-check thumb .data actual=0 budget=0
+snapshot-check thumb .bss actual=0 budget=0
+snapshot-check thumb flash_total actual=97476 budget=169965
+== final-form future/layout sizes ==
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+    Finished `test` profile [unoptimized] target(s) in 47.62s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+test endpoint::tests::endpoint_surface_size_gates_hold ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 481 filtered out; finished in 0.00s
+    Finished `test` profile [unoptimized] target(s) in 0.06s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+test endpoint::tests::recv_future_state_caches_completion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 481 filtered out; finished in 0.00s
+    Finished `test` profile [unoptimized] target(s) in 0.04s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+test endpoint::tests::message_type_variation_does_not_change_future_layout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 481 filtered out; finished in 0.00s
+    Finished `test` profile [unoptimized] target(s) in 0.04s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+test endpoint::tests::send_future_and_runtime_descriptor_size_gates_hold ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 481 filtered out; finished in 0.00s
+    Finished `test` profile [unoptimized] target(s) in 0.04s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+future-layout Endpoint=16 RouteBranch=16 OfferFuture=16 RecvFuture=16 BranchRecvFuture=16 SendFuture=40 RawOfferFuture=16 RawRecvFuture=16 OfferFutureLease=1 RecvFutureLease=1 RecvFutureU8=16 RecvFutureU64=16 RecvFutureBytes=16 BranchRecvFutureU8=16 BranchRecvFutureU64=16 BranchRecvFutureBytes=16
+test endpoint::tests::final_form_future_layout_measurement_report ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 481 filtered out; finished in 0.00s
+== final-form projected protocol matrix ==
+    Finished `test` profile [unoptimized] target(s) in 0.03s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 1 test
+protocol-matrix name=minimal_send_recv program_blob_len=9 role_blob_len=16 endpoint_scratch_bytes=284 largest_section_bytes=160
+protocol-matrix name=nested_par_join program_blob_len=42 role_blob_len=37 endpoint_scratch_bytes=284 largest_section_bytes=160
+protocol-matrix name=route_with_unselected_nested_par program_blob_len=114 role_blob_len=158 endpoint_scratch_bytes=296 largest_section_bytes=160
+protocol-matrix name=triple_nested_route program_blob_len=141 role_blob_len=251 endpoint_scratch_bytes=326 largest_section_bytes=160
+protocol-matrix name=passive_nested_route_observer program_blob_len=120 role_blob_len=199 endpoint_scratch_bytes=315 largest_section_bytes=160
+protocol-matrix name=alternating_par_route program_blob_len=168 role_blob_len=262 endpoint_scratch_bytes=372 largest_section_bytes=160
+protocol-matrix name=huge_legal_choreography program_blob_len=223 role_blob_len=375 endpoint_scratch_bytes=345 largest_section_bytes=160
+test global::role_program::tests::protocol_matrix::projected_protocol_matrix_reports_compact_resident_images ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 481 filtered out; finished in 0.00s
+snapshot-check protocol-matrix minimal endpoint_scratch_bytes actual=284 budget=512
+snapshot-check protocol-matrix minimal largest_section_bytes actual=160 budget=192
+snapshot-check protocol-matrix minimal program_blob_len actual=9 budget=16
+snapshot-check protocol-matrix minimal role_blob_len actual=16 budget=32
+snapshot-check protocol-matrix name=alternating_par_route endpoint_scratch_bytes actual=372 budget=1024
+snapshot-check protocol-matrix name=alternating_par_route largest_section_bytes actual=160 budget=384
+snapshot-check protocol-matrix name=alternating_par_route program_blob_len actual=168 budget=256
+snapshot-check protocol-matrix name=alternating_par_route role_blob_len actual=262 budget=512
+snapshot-check protocol-matrix name=huge_legal_choreography endpoint_scratch_bytes actual=345 budget=1024
+snapshot-check protocol-matrix name=huge_legal_choreography largest_section_bytes actual=160 budget=384
+snapshot-check protocol-matrix name=huge_legal_choreography program_blob_len actual=223 budget=256
+snapshot-check protocol-matrix name=huge_legal_choreography role_blob_len actual=375 budget=512
+snapshot-check protocol-matrix name=minimal_send_recv endpoint_scratch_bytes actual=284 budget=1024
+snapshot-check protocol-matrix name=minimal_send_recv largest_section_bytes actual=160 budget=384
+snapshot-check protocol-matrix name=minimal_send_recv program_blob_len actual=9 budget=256
+snapshot-check protocol-matrix name=minimal_send_recv role_blob_len actual=16 budget=512
+snapshot-check protocol-matrix name=nested_par_join endpoint_scratch_bytes actual=284 budget=1024
+snapshot-check protocol-matrix name=nested_par_join largest_section_bytes actual=160 budget=384
+snapshot-check protocol-matrix name=nested_par_join program_blob_len actual=42 budget=256
+snapshot-check protocol-matrix name=nested_par_join role_blob_len actual=37 budget=512
+snapshot-check protocol-matrix name=passive_nested_route_observer endpoint_scratch_bytes actual=315 budget=1024
+snapshot-check protocol-matrix name=passive_nested_route_observer largest_section_bytes actual=160 budget=384
+snapshot-check protocol-matrix name=passive_nested_route_observer program_blob_len actual=120 budget=256
+snapshot-check protocol-matrix name=passive_nested_route_observer role_blob_len actual=199 budget=512
+snapshot-check protocol-matrix name=route_with_unselected_nested_par endpoint_scratch_bytes actual=296 budget=1024
+snapshot-check protocol-matrix name=route_with_unselected_nested_par largest_section_bytes actual=160 budget=384
+snapshot-check protocol-matrix name=route_with_unselected_nested_par program_blob_len actual=114 budget=256
+snapshot-check protocol-matrix name=route_with_unselected_nested_par role_blob_len actual=158 budget=512
+snapshot-check protocol-matrix name=triple_nested_route endpoint_scratch_bytes actual=326 budget=1024
+snapshot-check protocol-matrix name=triple_nested_route largest_section_bytes actual=160 budget=384
+snapshot-check protocol-matrix name=triple_nested_route program_blob_len actual=141 budget=256
+snapshot-check protocol-matrix name=triple_nested_route role_blob_len actual=251 budget=512
+== final-form protocol artifact flash matrix ==
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-protocol-minimal-send-recv v0.0.0 (/tmp/hibana-protocol-artifacts-HJtMMB/minimal_send_recv)
+    Finished `release` profile [optimized] target(s) in 5.12s
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-protocol-nested-par-join v0.0.0 (/tmp/hibana-protocol-artifacts-HJtMMB/nested_par_join)
+    Finished `release` profile [optimized] target(s) in 6.06s
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-protocol-route-with-unselected-nested-par v0.0.0 (/tmp/hibana-protocol-artifacts-HJtMMB/route_with_unselected_nested_par)
+    Finished `release` profile [optimized] target(s) in 5.54s
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-protocol-triple-nested-route v0.0.0 (/tmp/hibana-protocol-artifacts-HJtMMB/triple_nested_route)
+    Finished `release` profile [optimized] target(s) in 5.36s
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-protocol-passive-nested-route-observer v0.0.0 (/tmp/hibana-protocol-artifacts-HJtMMB/passive_nested_route_observer)
+    Finished `release` profile [optimized] target(s) in 5.21s
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-protocol-alternating-par-route v0.0.0 (/tmp/hibana-protocol-artifacts-HJtMMB/alternating_par_route)
+    Finished `release` profile [optimized] target(s) in 6.03s
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-protocol-huge-legal-choreography v0.0.0 (/tmp/hibana-protocol-artifacts-HJtMMB/huge_legal_choreography)
+    Finished `release` profile [optimized] target(s) in 5.24s
+protocol-artifact name=minimal_send_recv program_blob_len=9 role_blob_len=16 endpoint_scratch_bytes=284 largest_section_bytes=160 selected_program_bucket_count=1 selected_role_bucket_count=2 flash_total=352 text=28 rodata=324 data=0 bss=0 rodata_map_bytes=319 rodata_map_fragments=5 bucket_symbol_count=0 map_bucket_symbol_count=0 full_bucket_floor_bytes=17024 aeabi_u64_helper_count=0
+protocol-artifact name=nested_par_join program_blob_len=42 role_blob_len=37 endpoint_scratch_bytes=284 largest_section_bytes=160 selected_program_bucket_count=1 selected_role_bucket_count=4 flash_total=704 text=44 rodata=660 data=0 bss=0 rodata_map_bytes=653 rodata_map_fragments=8 bucket_symbol_count=0 map_bucket_symbol_count=0 full_bucket_floor_bytes=17024 aeabi_u64_helper_count=0
+protocol-artifact name=route_with_unselected_nested_par program_blob_len=114 role_blob_len=158 endpoint_scratch_bytes=296 largest_section_bytes=160 selected_program_bucket_count=1 selected_role_bucket_count=4 flash_total=1376 text=44 rodata=1332 data=0 bss=0 rodata_map_bytes=1321 rodata_map_fragments=10 bucket_symbol_count=0 map_bucket_symbol_count=0 full_bucket_floor_bytes=17024 aeabi_u64_helper_count=0
+protocol-artifact name=triple_nested_route program_blob_len=141 role_blob_len=251 endpoint_scratch_bytes=326 largest_section_bytes=160 selected_program_bucket_count=1 selected_role_bucket_count=2 flash_total=1056 text=28 rodata=1028 data=0 bss=0 rodata_map_bytes=1021 rodata_map_fragments=6 bucket_symbol_count=0 map_bucket_symbol_count=0 full_bucket_floor_bytes=17024 aeabi_u64_helper_count=0
+protocol-artifact name=passive_nested_route_observer program_blob_len=120 role_blob_len=199 endpoint_scratch_bytes=315 largest_section_bytes=160 selected_program_bucket_count=1 selected_role_bucket_count=4 flash_total=1568 text=44 rodata=1524 data=0 bss=0 rodata_map_bytes=1513 rodata_map_fragments=10 bucket_symbol_count=0 map_bucket_symbol_count=0 full_bucket_floor_bytes=17024 aeabi_u64_helper_count=0
+protocol-artifact name=alternating_par_route program_blob_len=168 role_blob_len=262 endpoint_scratch_bytes=372 largest_section_bytes=160 selected_program_bucket_count=1 selected_role_bucket_count=4 flash_total=1824 text=44 rodata=1780 data=0 bss=0 rodata_map_bytes=1769 rodata_map_fragments=10 bucket_symbol_count=0 map_bucket_symbol_count=0 full_bucket_floor_bytes=17024 aeabi_u64_helper_count=0
+protocol-artifact name=huge_legal_choreography program_blob_len=223 role_blob_len=375 endpoint_scratch_bytes=345 largest_section_bytes=160 selected_program_bucket_count=1 selected_role_bucket_count=2 flash_total=1376 text=28 rodata=1348 data=0 bss=0 rodata_map_bytes=1341 rodata_map_fragments=6 bucket_symbol_count=0 map_bucket_symbol_count=0 full_bucket_floor_bytes=17024 aeabi_u64_helper_count=0
+snapshot-check protocol-artifact name=alternating_par_route flash_total actual=1824 budget=16384
+snapshot-check protocol-artifact name=alternating_par_route rodata actual=1780 budget=4096
+snapshot-check protocol-artifact name=alternating_par_route rodata_section_padding_bytes actual=11 budget=64
+snapshot-check protocol-artifact name=alternating_par_route bucket_symbol_count actual=0 budget=5
+snapshot-check protocol-artifact name=alternating_par_route map_bucket_symbol_count actual=0 budget=5
+snapshot-check protocol-artifact name=huge_legal_choreography flash_total actual=1376 budget=16384
+snapshot-check protocol-artifact name=huge_legal_choreography rodata actual=1348 budget=4096
+snapshot-check protocol-artifact name=huge_legal_choreography rodata_section_padding_bytes actual=7 budget=64
+snapshot-check protocol-artifact name=huge_legal_choreography bucket_symbol_count actual=0 budget=3
+snapshot-check protocol-artifact name=huge_legal_choreography map_bucket_symbol_count actual=0 budget=3
+snapshot-check protocol-artifact name=minimal_send_recv flash_total actual=352 budget=2048
+snapshot-check protocol-artifact name=minimal_send_recv rodata actual=324 budget=1024
+snapshot-check protocol-artifact name=minimal_send_recv rodata_section_padding_bytes actual=5 budget=64
+snapshot-check protocol-artifact name=minimal_send_recv bucket_symbol_count actual=0 budget=3
+snapshot-check protocol-artifact name=minimal_send_recv map_bucket_symbol_count actual=0 budget=3
+snapshot-check protocol-artifact name=nested_par_join flash_total actual=704 budget=16384
+snapshot-check protocol-artifact name=nested_par_join rodata actual=660 budget=4096
+snapshot-check protocol-artifact name=nested_par_join rodata_section_padding_bytes actual=7 budget=64
+snapshot-check protocol-artifact name=nested_par_join bucket_symbol_count actual=0 budget=5
+snapshot-check protocol-artifact name=nested_par_join map_bucket_symbol_count actual=0 budget=5
+snapshot-check protocol-artifact name=passive_nested_route_observer flash_total actual=1568 budget=16384
+snapshot-check protocol-artifact name=passive_nested_route_observer rodata actual=1524 budget=4096
+snapshot-check protocol-artifact name=passive_nested_route_observer rodata_section_padding_bytes actual=11 budget=64
+snapshot-check protocol-artifact name=passive_nested_route_observer bucket_symbol_count actual=0 budget=5
+snapshot-check protocol-artifact name=passive_nested_route_observer map_bucket_symbol_count actual=0 budget=5
+snapshot-check protocol-artifact name=route_with_unselected_nested_par flash_total actual=1376 budget=16384
+snapshot-check protocol-artifact name=route_with_unselected_nested_par rodata actual=1332 budget=4096
+snapshot-check protocol-artifact name=route_with_unselected_nested_par rodata_section_padding_bytes actual=11 budget=64
+snapshot-check protocol-artifact name=route_with_unselected_nested_par bucket_symbol_count actual=0 budget=5
+snapshot-check protocol-artifact name=route_with_unselected_nested_par map_bucket_symbol_count actual=0 budget=5
+snapshot-check protocol-artifact name=triple_nested_route flash_total actual=1056 budget=16384
+snapshot-check protocol-artifact name=triple_nested_route rodata actual=1028 budget=4096
+snapshot-check protocol-artifact name=triple_nested_route rodata_section_padding_bytes actual=7 budget=64
+snapshot-check protocol-artifact name=triple_nested_route bucket_symbol_count actual=0 budget=3
+snapshot-check protocol-artifact name=triple_nested_route map_bucket_symbol_count actual=0 budget=3
+== final-form runtime stack high-water ==
+   Compiling proc-macro2 v1.0.103
+   Compiling quote v1.0.41
+   Compiling unicode-ident v1.0.20
+   Compiling serde_core v1.0.228
+   Compiling libc v0.2.177
+   Compiling memchr v2.7.6
+   Compiling futures-sink v0.3.31
+   Compiling futures-core v0.3.31
+   Compiling pin-project-lite v0.2.16
+   Compiling futures-channel v0.3.31
+   Compiling syn v2.0.108
+   Compiling pin-utils v0.1.0
+   Compiling serde_json v1.0.145
+   Compiling futures-task v0.3.31
+   Compiling target-triple v0.1.4
+   Compiling serde v1.0.228
+   Compiling slab v0.4.11
+   Compiling futures-io v0.3.31
+   Compiling winnow v0.7.13
+   Compiling itoa v1.0.15
+   Compiling ryu v1.0.20
+   Compiling toml_writer v1.0.4
+   Compiling socket2 v0.6.2
+   Compiling serde_spanned v1.0.3
+   Compiling toml_datetime v0.7.3
+   Compiling toml_parser v1.0.4
+   Compiling toml v0.9.8
+   Compiling mio v1.1.0
+   Compiling futures-macro v0.3.31
+   Compiling serde_derive v1.0.228
+   Compiling futures-util v0.3.31
+   Compiling tokio-macros v2.6.0
+   Compiling glob v0.3.3
+   Compiling bytes v1.11.1
+   Compiling termcolor v1.4.1
+   Compiling futures-executor v0.3.31
+   Compiling tokio v1.48.0
+   Compiling trybuild v1.0.112
+   Compiling futures v0.3.31
+   Compiling static_assertions v1.1.0
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+    Finished `release` profile [optimized] target(s) in 1m 10s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/release/deps/hibana-6c42714e4a25f64f)
+
+running 3 tests
+test runtime::tests::large_choreography_runtime_peak_metrics_fanout_heavy ... large-choreography-runtime shape=fanout_heavy slab_bytes=32768 session_kit_storage_bytes=24 resident_prefix_bytes=412 tap_ring_bytes=252 sidecar_scratch_high_water_bytes=103 image_frontier_bytes=92 frontier_workspace_bytes=11 live_endpoint_bytes=2208 peak_live_slab_bytes=2311 localside_peak_stack_bytes=2455 peak_stack_bytes=2455
+ok
+test runtime::tests::large_choreography_runtime_peak_metrics_linear_heavy ... large-choreography-runtime shape=linear_heavy slab_bytes=32768 session_kit_storage_bytes=24 resident_prefix_bytes=412 tap_ring_bytes=252 sidecar_scratch_high_water_bytes=103 image_frontier_bytes=92 frontier_workspace_bytes=11 live_endpoint_bytes=1952 peak_live_slab_bytes=2055 localside_peak_stack_bytes=1847 peak_stack_bytes=1847
+ok
+test runtime::tests::large_choreography_runtime_peak_metrics_route_heavy ... large-choreography-runtime shape=route_heavy slab_bytes=32768 session_kit_storage_bytes=24 resident_prefix_bytes=412 tap_ring_bytes=252 sidecar_scratch_high_water_bytes=103 image_frontier_bytes=92 frontier_workspace_bytes=11 live_endpoint_bytes=2080 peak_live_slab_bytes=2183 localside_peak_stack_bytes=2503 peak_stack_bytes=2503
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 479 filtered out; finished in 0.03s
+snapshot-check runtime shape=fanout_heavy live_endpoint_bytes actual=2208 budget=3328
+snapshot-check runtime shape=fanout_heavy localside_peak_stack_bytes actual=2455 budget=3583
+snapshot-check runtime shape=fanout_heavy modeled_runtime_sram_bytes actual=5202 budget=8954
+snapshot-check runtime shape=fanout_heavy peak_live_slab_bytes actual=2311 budget=4323
+snapshot-check runtime shape=fanout_heavy peak_stack_bytes actual=2455 budget=3583
+snapshot-check runtime shape=fanout_heavy resident_prefix_bytes actual=412 budget=952
+snapshot-check runtime shape=fanout_heavy session_kit_storage_bytes actual=24 budget=32
+snapshot-check runtime shape=fanout_heavy sidecar_scratch_high_water_bytes actual=103 budget=995
+snapshot-check runtime shape=fanout_heavy tap_ring_bytes actual=252 budget=512
+snapshot-check runtime shape=linear_heavy live_endpoint_bytes actual=1952 budget=2784
+snapshot-check runtime shape=linear_heavy localside_peak_stack_bytes actual=1847 budget=2383
+snapshot-check runtime shape=linear_heavy modeled_runtime_sram_bytes actual=4338 budget=6658
+snapshot-check runtime shape=linear_heavy peak_live_slab_bytes actual=2055 budget=3227
+snapshot-check runtime shape=linear_heavy peak_stack_bytes actual=1847 budget=2383
+snapshot-check runtime shape=linear_heavy resident_prefix_bytes actual=412 budget=952
+snapshot-check runtime shape=linear_heavy session_kit_storage_bytes actual=24 budget=32
+snapshot-check runtime shape=linear_heavy sidecar_scratch_high_water_bytes actual=103 budget=443
+snapshot-check runtime shape=linear_heavy tap_ring_bytes actual=252 budget=512
+snapshot-check runtime shape=route_heavy live_endpoint_bytes actual=2080 budget=3216
+snapshot-check runtime shape=route_heavy localside_peak_stack_bytes actual=2503 budget=3663
+snapshot-check runtime shape=route_heavy modeled_runtime_sram_bytes actual=5122 budget=8922
+snapshot-check runtime shape=route_heavy peak_live_slab_bytes actual=2183 budget=4211
+snapshot-check runtime shape=route_heavy peak_stack_bytes actual=2503 budget=3663
+snapshot-check runtime shape=route_heavy resident_prefix_bytes actual=412 budget=952
+snapshot-check runtime shape=route_heavy session_kit_storage_bytes actual=24 budget=32
+snapshot-check runtime shape=route_heavy sidecar_scratch_high_water_bytes actual=103 budget=995
+snapshot-check runtime shape=route_heavy tap_ring_bytes actual=252 budget=512
+snapshot-check runtime max_peak_stack_bytes actual=2503 budget=3663
+snapshot-check aggregate max_stack actual=2503 budget=3663
+snapshot-check aggregate sram actual=5202 budget=8954
+snapshot-check aggregate flash actual=97476 budget=169965
+snapshot-check aggregate sram_headroom actual=3752 minimum=64
+Live footprint report: host=x86_64-unknown-linux-gnu
+`SessionKitStorage`: 24 B
+Fixed per-rendezvous storage, including the 252 B tap records: 412 B
+Peak live runtime slab across tracked heavy shapes: 2,311 B
+Runtime operation stack high-water: 2,503 B
+Modeled runtime SRAM envelope: 5,202 B
+Minimal linked protocol artifact: 352 B
+Largest linked artifact in the tracked protocol matrix: 1,824 B
+Complete no-default `libhibana.rlib` sections: 97,476 B
+Library `.data + .bss`: 0 B
+== final-form worktree size snapshot ==
+info: component rust-std for target thumbv6m-none-eabi is up to date
+Preparing worktree (detached HEAD c3d89f78)
+== measuring current-c3d89f78 (/tmp/hibana-size-snapshot-165342/current) ==
+   Compiling hibana v0.9.6 (/tmp/hibana-size-snapshot-165342/current)
+    Finished `release` profile [optimized] target(s) in 11.58s
+section .text 83732
+section .rodata 13744
+section .data 0
+section .bss 0
+     Locking 1 package to latest Rust 1.95 compatible version
+   Compiling hibana v0.9.6 (/tmp/hibana-size-snapshot-165342/current)
+   Compiling hibana-pico-projection-example v0.0.0 (/tmp/hibana-size-snapshot-165342/current/examples/pico)
+    Finished `release` profile [optimized] target(s) in 6.82s
+projected section .text 20
+projected section .rodata 319
+projected section .data 0
+projected section .bss 0
+   Compiling proc-macro2 v1.0.103
+   Compiling unicode-ident v1.0.20
+   Compiling quote v1.0.41
+   Compiling serde_core v1.0.228
+   Compiling libc v0.2.177
+   Compiling memchr v2.7.6
+   Compiling futures-core v0.3.31
+   Compiling futures-sink v0.3.31
+   Compiling pin-project-lite v0.2.16
+   Compiling futures-channel v0.3.31
+   Compiling syn v2.0.108
+   Compiling serde v1.0.228
+   Compiling futures-io v0.3.31
+   Compiling futures-task v0.3.31
+   Compiling pin-utils v0.1.0
+   Compiling slab v0.4.11
+   Compiling serde_json v1.0.145
+   Compiling winnow v0.7.13
+   Compiling target-triple v0.1.4
+   Compiling serde_spanned v1.0.3
+   Compiling toml_datetime v0.7.3
+   Compiling ryu v1.0.20
+   Compiling itoa v1.0.15
+   Compiling toml_writer v1.0.4
+   Compiling toml_parser v1.0.4
+   Compiling socket2 v0.6.2
+   Compiling futures-macro v0.3.31
+   Compiling futures-util v0.3.31
+   Compiling serde_derive v1.0.228
+   Compiling tokio-macros v2.6.0
+   Compiling toml v0.9.8
+   Compiling mio v1.1.0
+   Compiling bytes v1.11.1
+   Compiling glob v0.3.3
+   Compiling termcolor v1.4.1
+   Compiling futures-executor v0.3.31
+   Compiling futures v0.3.31
+   Compiling trybuild v1.0.112
+   Compiling tokio v1.48.0
+   Compiling static_assertions v1.1.0
+   Compiling hibana v0.9.6 (/tmp/hibana-size-snapshot-165342/current)
+    Finished `release` profile [optimized] target(s) in 1m 14s
+     Running unittests src/lib.rs (/tmp/hibana-size-snapshot-165342/target-current-c3d89f78/release/deps/hibana-6c42714e4a25f64f)
+
+running 3 tests
+test runtime::tests::large_choreography_runtime_peak_metrics_fanout_heavy ... large-choreography-runtime shape=fanout_heavy slab_bytes=32768 session_kit_storage_bytes=24 resident_prefix_bytes=412 tap_ring_bytes=252 sidecar_scratch_high_water_bytes=103 image_frontier_bytes=92 frontier_workspace_bytes=11 live_endpoint_bytes=2208 peak_live_slab_bytes=2311 localside_peak_stack_bytes=2455 peak_stack_bytes=2455
+ok
+test runtime::tests::large_choreography_runtime_peak_metrics_linear_heavy ... large-choreography-runtime shape=linear_heavy slab_bytes=32768 session_kit_storage_bytes=24 resident_prefix_bytes=412 tap_ring_bytes=252 sidecar_scratch_high_water_bytes=103 image_frontier_bytes=92 frontier_workspace_bytes=11 live_endpoint_bytes=1952 peak_live_slab_bytes=2055 localside_peak_stack_bytes=1847 peak_stack_bytes=1847
+ok
+test runtime::tests::large_choreography_runtime_peak_metrics_route_heavy ... large-choreography-runtime shape=route_heavy slab_bytes=32768 session_kit_storage_bytes=24 resident_prefix_bytes=412 tap_ring_bytes=252 sidecar_scratch_high_water_bytes=103 image_frontier_bytes=92 frontier_workspace_bytes=11 live_endpoint_bytes=2080 peak_live_slab_bytes=2183 localside_peak_stack_bytes=2503 peak_stack_bytes=2503
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 479 filtered out; finished in 0.03s
+worktree-snapshot budget-section .text actual=83732 budget=154624
+worktree-snapshot budget-section .rodata actual=13744 budget=15341
+worktree-snapshot budget-section .data actual=0 budget=0
+worktree-snapshot budget-section .bss actual=0 budget=0
+worktree-snapshot budget-section flash_total actual=97476 budget=169965
+worktree-snapshot budget-projected-section .text actual=20 budget=154624
+worktree-snapshot budget-projected-section .rodata actual=319 budget=15341
+worktree-snapshot budget-projected-section .data actual=0 budget=0
+worktree-snapshot budget-projected-section .bss actual=0 budget=0
+worktree-snapshot budget-projected-section flash_total actual=339 budget=169965
+worktree-snapshot budget-runtime shape=fanout_heavy live_endpoint_bytes actual=2208 budget=3328
+worktree-snapshot budget-runtime shape=fanout_heavy localside_peak_stack_bytes actual=2455 budget=3583
+worktree-snapshot budget-runtime shape=fanout_heavy modeled_runtime_sram_bytes actual=5202 budget=8954
+worktree-snapshot budget-runtime shape=fanout_heavy peak_live_slab_bytes actual=2311 budget=4323
+worktree-snapshot budget-runtime shape=fanout_heavy peak_stack_bytes actual=2455 budget=3583
+worktree-snapshot budget-runtime shape=fanout_heavy resident_prefix_bytes actual=412 budget=952
+worktree-snapshot budget-runtime shape=fanout_heavy session_kit_storage_bytes actual=24 budget=32
+worktree-snapshot budget-runtime shape=fanout_heavy sidecar_scratch_high_water_bytes actual=103 budget=995
+worktree-snapshot budget-runtime shape=fanout_heavy tap_ring_bytes actual=252 budget=512
+worktree-snapshot budget-runtime shape=linear_heavy live_endpoint_bytes actual=1952 budget=2784
+worktree-snapshot budget-runtime shape=linear_heavy localside_peak_stack_bytes actual=1847 budget=2383
+worktree-snapshot budget-runtime shape=linear_heavy modeled_runtime_sram_bytes actual=4338 budget=6658
+worktree-snapshot budget-runtime shape=linear_heavy peak_live_slab_bytes actual=2055 budget=3227
+worktree-snapshot budget-runtime shape=linear_heavy peak_stack_bytes actual=1847 budget=2383
+worktree-snapshot budget-runtime shape=linear_heavy resident_prefix_bytes actual=412 budget=952
+worktree-snapshot budget-runtime shape=linear_heavy session_kit_storage_bytes actual=24 budget=32
+worktree-snapshot budget-runtime shape=linear_heavy sidecar_scratch_high_water_bytes actual=103 budget=443
+worktree-snapshot budget-runtime shape=linear_heavy tap_ring_bytes actual=252 budget=512
+worktree-snapshot budget-runtime shape=route_heavy live_endpoint_bytes actual=2080 budget=3216
+worktree-snapshot budget-runtime shape=route_heavy localside_peak_stack_bytes actual=2503 budget=3663
+worktree-snapshot budget-runtime shape=route_heavy modeled_runtime_sram_bytes actual=5122 budget=8922
+worktree-snapshot budget-runtime shape=route_heavy peak_live_slab_bytes actual=2183 budget=4211
+worktree-snapshot budget-runtime shape=route_heavy peak_stack_bytes actual=2503 budget=3663
+worktree-snapshot budget-runtime shape=route_heavy resident_prefix_bytes actual=412 budget=952
+worktree-snapshot budget-runtime shape=route_heavy session_kit_storage_bytes actual=24 budget=32
+worktree-snapshot budget-runtime shape=route_heavy sidecar_scratch_high_water_bytes actual=103 budget=995
+worktree-snapshot budget-runtime shape=route_heavy tap_ring_bytes actual=252 budget=512
+worktree-snapshot budget-aggregate max_stack actual=2503 budget=3663
+worktree-snapshot budget-aggregate sram actual=5202 budget=8954
+worktree-snapshot budget-aggregate flash actual=97476 budget=169965
+worktree-snapshot aggregate sram_headroom current=3752 minimum=64
+size snapshot check passed: current=c3d89f78
+== final-form message-heavy matrix ==
+info: component rust-std for target thumbv6m-none-eabi is up to date
+info: component llvm-tools is up to date
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-message-heavy-1 v0.0.0 (/tmp/hibana-message-heavy-matrix-nx7L2a/messages_1)
+    Finished `release` profile [optimized] target(s) in 8.10s
+compile pressure observed: message-heavy 1 elapsed=0s seconds_budget=16s max_rss=134MiB rss_budget=215MiB
+message-heavy thumb count=1 image_bytes=339 rlib_bytes=11070
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-message-heavy-8 v0.0.0 (/tmp/hibana-message-heavy-matrix-nx7L2a/messages_8)
+    Finished `release` profile [optimized] target(s) in 0.15s
+message-heavy thumb count=8 image_bytes=467 rlib_bytes=15030
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-message-heavy-16 v0.0.0 (/tmp/hibana-message-heavy-matrix-nx7L2a/messages_16)
+    Finished `release` profile [optimized] target(s) in 0.17s
+message-heavy thumb count=16 image_bytes=659 rlib_bytes=18622
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-message-heavy-32 v0.0.0 (/tmp/hibana-message-heavy-matrix-nx7L2a/messages_32)
+    Finished `release` profile [optimized] target(s) in 0.21s
+message-heavy thumb count=32 image_bytes=1043 rlib_bytes=27530
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-message-heavy-64 v0.0.0 (/tmp/hibana-message-heavy-matrix-nx7L2a/messages_64)
+    Finished `release` profile [optimized] target(s) in 0.36s
+compile pressure observed: message-heavy 64 elapsed=1s seconds_budget=16s max_rss=137MiB rss_budget=226MiB
+message-heavy thumb count=64 image_bytes=2323 rlib_bytes=45794
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-message-heavy-256 v0.0.0 (/tmp/hibana-message-heavy-matrix-nx7L2a/messages_256)
+    Finished `release` profile [optimized] target(s) in 1.72s
+compile pressure observed: message-heavy 256 elapsed=2s seconds_budget=25s max_rss=163MiB rss_budget=400MiB
+message-heavy thumb count=256 image_bytes=8467 rlib_bytes=154052
+message-heavy thumb growth image_1_to_64=1984 image_64_to_256=6144 rlib_1_to_64=34724 rlib_64_to_256=108258
+message-heavy compile pressure count=1 elapsed=0s rss=134MiB count=64 elapsed=1s rss=137MiB count=256 elapsed=2s rss=163MiB
+message-heavy matrix check passed target=thumbv6m-none-eabi messages=256
+== final-form route-arm projection pressure ==
+info: component rust-std for target thumbv6m-none-eabi is up to date
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-route-arm-heavy-1 v0.0.0 (/tmp/hibana-route-arm-pressure-DryfCi/route_arm_1)
+    Finished `release` profile [optimized] target(s) in 6.19s
+compile pressure observed: route-arm-heavy 1 elapsed=0s seconds_budget=16s max_rss=134MiB rss_budget=250MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-route-arm-heavy-64 v0.0.0 (/tmp/hibana-route-arm-pressure-DryfCi/route_arm_64)
+    Finished `release` profile [optimized] target(s) in 1.41s
+compile pressure observed: route-arm-heavy 64 elapsed=2s seconds_budget=16s max_rss=147MiB rss_budget=227MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-route-arm-heavy-256 v0.0.0 (/tmp/hibana-route-arm-pressure-DryfCi/route_arm_256)
+    Finished `release` profile [optimized] target(s) in 10.02s
+compile pressure observed: route-arm-heavy 256 elapsed=10s seconds_budget=23s max_rss=208MiB rss_budget=409MiB
+route-arm projection pressure passed target=thumbv6m-none-eabi arm-events=256 elapsed=10s rss=208MiB
+== final-form causal-handoff pressure ==
+info: component rust-std for target thumbv6m-none-eabi is up to date
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+   Compiling hibana-causal-handoff-linear-4 v0.0.0 (/tmp/hibana-causal-handoff-pressure-6jP6pj/causal_handoff_linear_4)
+    Finished `release` profile [optimized] target(s) in 8.19s
+compile pressure observed: causal-handoff linear 4 elapsed=0s seconds_budget=16s max_rss=120MiB rss_budget=259MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-linear-64 v0.0.0 (/tmp/hibana-causal-handoff-pressure-6jP6pj/causal_handoff_linear_64)
+    Finished `release` profile [optimized] target(s) in 0.37s
+compile pressure observed: causal-handoff linear 64 elapsed=0s seconds_budget=16s max_rss=130MiB rss_budget=211MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-linear-256 v0.0.0 (/tmp/hibana-causal-handoff-pressure-6jP6pj/causal_handoff_linear_256)
+    Finished `release` profile [optimized] target(s) in 2.01s
+compile pressure observed: causal-handoff linear 256 elapsed=2s seconds_budget=16s max_rss=158MiB rss_budget=245MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-route-4 v0.0.0 (/tmp/hibana-causal-handoff-pressure-6jP6pj/causal_handoff_route_4)
+    Finished `release` profile [optimized] target(s) in 0.23s
+compile pressure observed: causal-handoff route 4 elapsed=0s seconds_budget=16s max_rss=131MiB rss_budget=257MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-route-32 v0.0.0 (/tmp/hibana-causal-handoff-pressure-6jP6pj/causal_handoff_route_32)
+    Finished `release` profile [optimized] target(s) in 0.61s
+compile pressure observed: causal-handoff route 32 elapsed=1s seconds_budget=21s max_rss=143MiB rss_budget=366MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-route-64 v0.0.0 (/tmp/hibana-causal-handoff-pressure-6jP6pj/causal_handoff_route_64)
+    Finished `release` profile [optimized] target(s) in 1.45s
+compile pressure observed: causal-handoff route 64 elapsed=1s seconds_budget=30s max_rss=144MiB rss_budget=684MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-roll-4 v0.0.0 (/tmp/hibana-causal-handoff-pressure-6jP6pj/causal_handoff_roll_4)
+    Finished `release` profile [optimized] target(s) in 0.23s
+compile pressure observed: causal-handoff roll 4 elapsed=0s seconds_budget=16s max_rss=130MiB rss_budget=247MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-roll-32 v0.0.0 (/tmp/hibana-causal-handoff-pressure-6jP6pj/causal_handoff_roll_32)
+    Finished `release` profile [optimized] target(s) in 0.76s
+compile pressure observed: causal-handoff roll 32 elapsed=1s seconds_budget=21s max_rss=134MiB rss_budget=351MiB
+     Locking 1 package to latest Rust 1.95.0 compatible version
+   Compiling hibana-causal-handoff-roll-64 v0.0.0 (/tmp/hibana-causal-handoff-pressure-6jP6pj/causal_handoff_roll_64)
+    Finished `release` profile [optimized] target(s) in 1.24s
+compile pressure observed: causal-handoff roll 64 elapsed=1s seconds_budget=28s max_rss=150MiB rss_budget=590MiB
+causal-handoff pressure passed target=thumbv6m-none-eabi linear-events=256 route-arm-events=64 roll-events=64 linear-elapsed=2s route-elapsed=1s roll-elapsed=1s linear-rss=158MiB route-rss=144MiB roll-rss=150MiB
+final-form measurement check passed

@@ -1,0 +1,8 @@
+✔ [2/8] Built Hibana.Generation (1.7s)
+✔ [3/8] Built Hibana.Syntax (1.9s)
+✔ [4/8] Built Hibana.GlobalSyntax (2.4s)
+✔ [5/8] Built Hibana.EventGraph (1.8s)
+✔ [6/8] Built Hibana.Commit (1.8s)
+✔ [7/8] Built Hibana.OperationAdmission (580ms)
+✔ [8/8] Built Hibana.GlobalSemantics (1.9s)
+Build completed successfully (8 jobs).

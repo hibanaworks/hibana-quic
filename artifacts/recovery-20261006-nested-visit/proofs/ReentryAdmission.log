@@ -1,0 +1,7 @@
+'ReentryAdmission.past_requires_reentry' depends on axioms: [propext]
+'ReentryAdmission.no_new_admissions' depends on axioms: [propext]
+'ReentryAdmission.preserves_authorized_elastic' does not depend on any axioms
+'ReentryAdmission.offer_cannot_select_disabled' does not depend on any axioms
+'ReentryAdmission.passed_requires_a_later_committed_event' depends on axioms: [propext, Quot.sound]
+'ReentryAdmission.parked_lane_without_later_commits_is_not_past' depends on axioms: [propext, Quot.sound]
+'ReentryAdmission.fresh_reset_bounds_the_new_visit' does not depend on any axioms

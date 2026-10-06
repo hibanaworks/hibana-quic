@@ -1,0 +1,1101 @@
+    Checking typenum v1.20.1
+    Checking subtle v2.6.1
+    Checking const-oid v0.9.6
+    Checking zeroize v1.8.2
+    Checking cpufeatures v0.2.17
+    Checking cfg-if v1.0.5
+    Checking rand_core v0.6.4
+    Checking der v0.7.10
+    Checking base16ct v0.2.0
+    Checking opaque-debug v0.3.1
+    Checking ff v0.13.1
+    Checking curve25519-dalek v4.1.3
+    Checking group v0.13.0
+    Checking rustls-pki-types v1.15.1
+    Checking untrusted v0.9.0
+    Checking x25519-dalek v2.0.1
+    Checking rustls-webpki v0.103.15 (/workspace/hibana-quic/vendor/rustls-webpki-0.103.15)
+    Checking hibana v0.9.6 (/workspace/hibana-quic/vendor/hibana)
+    Checking generic-array v0.14.7
+    Checking spki v0.7.3
+    Checking pkcs1 v0.7.5
+    Checking actor-test-allocator v0.0.0 (/workspace/hibana-quic/tests/support/actor-test-allocator)
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking inout v0.1.4
+    Checking universal-hash v0.5.1
+    Checking cipher v0.4.4
+    Checking digest v0.10.7
+    Checking crypto-bigint v0.5.5
+    Checking sec1 v0.7.3
+    Checking hmac v0.12.1
+    Checking signature v2.2.0
+    Checking hkdf v0.12.4
+    Checking rfc6979 v0.4.0
+    Checking polyval v0.6.2
+    Checking aead v0.5.2
+    Checking sha2 v0.10.9
+    Checking ghash v0.5.1
+    Checking ctr v0.9.2
+    Checking chacha20 v0.9.1
+    Checking aes v0.8.4
+    Checking poly1305 v0.8.0
+    Checking chacha20poly1305 v0.10.1
+    Checking aes-gcm v0.10.3
+    Checking elliptic-curve v0.13.8
+    Checking ecdsa v0.16.9
+    Checking primeorder v0.13.6
+    Checking p256 v0.13.2
+    Checking hibana-quic v0.1.0 (/workspace/hibana-quic)
+error: this looks like an `else if` but the `else` is missing
+  --> src/roles/publication_gate.rs:17:114
+   |
+17 |  pub fn begin(&mut self)->Result<Permit<'_,'scope>,Error>{if self.gate.revoked.get(){return Err(Error::Revoked);}if self.gate.active...
+   |                                                                                                                  ^
+   |
+   = note: to remove this lint, add the missing `else` or add a new line before the second `if`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#possible_missing_else
+   = note: `-D clippy::possible-missing-else` implied by `-D clippy::all`
+   = help: to override `-D clippy::all` add `#[allow(clippy::possible_missing_else)]`
+
+error: this looks like an `else if` but the `else` is missing
+  --> src/connection/locals.rs:43:250
+   |
+43 | ...eck(route.recv::<Stage::Boundary>().await?,*id)?;return Ok(());}if route.label()!=Stage::Need::LOGICAL_LABEL{return Err(Error::Un...
+   |                                                                    ^
+   |
+   = note: to remove this lint, add the missing `else` or add a new line before the second `if`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#possible_missing_else
+
+error: this looks like an `else if` but the `else` is missing
+  --> src/connection/locals.rs:75:165
+   |
+75 | ...()==Level::Initial&&!keys.initial.available(){return Ok(false);}if let Some(d)=prepare(keys,book,config,&peer,data.level(),Frame:...
+   |                                                                    ^
+   |
+   = note: to remove this lint, add the missing `else` or add a new line before the second `if`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#possible_missing_else
+
+error: this looks like an `else if` but the `else` is missing
+  --> src/connection/locals.rs:76:117
+   |
+76 |  else if let Some(level)=book.pending_probe(){if level==Level::Initial&&!keys.initial.available(){return Ok(false);}if let Some(d)=p...
+   |                                                                                                                     ^
+   |
+   = note: to remove this lint, add the missing `else` or add a new line before the second `if`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#possible_missing_else
+
+error: this looks like an `else if` but the `else` is missing
+  --> src/connection/locals.rs:88:359
+   |
+88 | ...Stage::Data,N,P>(output,keys.initial,slots,d,*id).await?;break;}if !numerical::<Stage::Ack,Stage::Probe,N,P>(output,slots,keys,bo...
+   |                                                                    ^
+   |
+   = note: to remove this lint, add the missing `else` or add a new line before the second `if`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#possible_missing_else
+
+warning: unreachable pattern
+   --> src/connection/recovery.rs:256:95
+    |
+256 |     match level { Level::Initial => Ok(0), Level::Handshake => Ok(1), Level::OneRtt => Ok(2), _ => Err(Error::UnsupportedLevel) }
+    |                                                                                               ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> src/connection/recovery.rs:256:95
+    |
+256 |     match level { Level::Initial => Ok(0), Level::Handshake => Ok(1), Level::OneRtt => Ok(2), _ => Err(Error::UnsupportedLevel) }
+    |                   --------------           ----------------           -------------           ^ collectively making this unreachable
+    |                   |                        |                          |
+    |                   |                        |                          matches some of the same values
+    |                   |                        matches some of the same values
+    |                   matches some of the same values
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `into_directional` is never used
+   --> src/crypto.rs:519:19
+    |
+515 | impl ApplicationKeys {
+    | -------------------- method in this implementation
+...
+519 |     pub(crate) fn into_directional<'a>(
+    |                   ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `install_existing` is never used
+   --> src/crypto/directional.rs:107:19
+    |
+ 66 | impl<'a> ApplicationKeyInstallation<'a> {
+    | --------------------------------------- method in this implementation
+...
+107 |     pub(crate) fn install_existing(self, keys: ApplicationKeys)
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: associated function `from_confirmed` is never used
+   --> src/crypto/directional.rs:155:19
+    |
+149 | impl<'a> ScopedHandshakeConfirmation<'a> {
+    | ---------------------------------------- associated function in this implementation
+...
+155 |     pub(crate) fn from_confirmed(scope: &'a ApplicationKeyScope, confirmation: HandshakeConfirmation)
+    |                   ^^^^^^^^^^^^^^
+
+warning: associated function `from_validated` is never used
+   --> src/crypto/directional.rs:190:19
+    |
+174 | impl<'a> ValidatedKeyAck<'a> {
+    | ---------------------------- associated function in this implementation
+...
+190 |     pub(crate) fn from_validated(scope: &'a ApplicationKeyScope, grant: KeyAckGrant) -> Result<Self, Error> {
+    |                   ^^^^^^^^^^^^^^
+
+warning: function `split` is never used
+   --> src/crypto/directional.rs:336:15
+    |
+336 | pub(super) fn split<'a>(keys: ApplicationKeys, scope: &'a mut ApplicationKeyScope)
+    |               ^^^^^
+
+warning: function `split_claimed` is never used
+   --> src/crypto/directional.rs:339:4
+    |
+339 | fn split_claimed<'a>(keys: ApplicationKeys, scope: &'a ApplicationKeyScope)
+    |    ^^^^^^^^^^^^^
+
+warning: method `acknowledge_validated` is never used
+   --> src/crypto/directional.rs:534:8
+    |
+503 | impl<'a> ApplicationWriteKeys<'a> {
+    | --------------------------------- method in this implementation
+...
+534 |     fn acknowledge_validated(&mut self, pn: u64, received_generation: u64, now: u64, pto: u64) -> Result<(), Error> {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `commit_with_receipt` is never used
+   --> src/retry.rs:548:19
+    |
+482 | impl<const N: usize> ClientRetry<N> {
+    | ----------------------------------- method in this implementation
+...
+548 |     pub(crate) fn commit_with_receipt(
+    |                   ^^^^^^^^^^^^^^^^^^^
+
+warning: method `accepts_authenticated_generation` is never used
+   --> src/early_data.rs:611:19
+    |
+585 | impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
+    | -------------------------------------------------- method in this implementation
+...
+611 |     pub(crate) fn accepts_authenticated_generation(&self, generation: u64) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `from_committed` is never used
+   --> src/roles/packet_authority.rs:141:19
+    |
+128 | impl RetryPeerCid {
+    | ----------------- associated function in this implementation
+...
+141 |     pub(crate) fn from_committed(generation: u64, retry: crate::retry::CommittedRetry) -> Self {
+    |                   ^^^^^^^^^^^^^^
+
+warning: function `split_retry` is never used
+   --> src/roles/packet_authority.rs:193:15
+    |
+193 | pub(crate) fn split_retry(generation: u64, retry: crate::retry::CommittedRetry) -> RetryGrants {
+    |               ^^^^^^^^^^^
+
+warning: field `context` is never read
+   --> src/roles/packet_authority.rs:462:5
+    |
+456 | struct PacketRecord {
+    |        ------------ field in this struct
+...
+462 |     context: Option<super::path_owner::PathContext>,
+    |     ^^^^^^^
+
+warning: methods `grant_initial_peer_cid`, `bind_path_context`, and `grant_path` are never used
+   --> src/roles/packet_authority.rs:617:19
+    |
+486 | impl<const P: usize, const E: usize> Arena<P, E> {
+    | ------------------------------------------------ methods in this implementation
+...
+617 |     pub(crate) fn grant_initial_peer_cid(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+660 |     pub(crate) fn bind_path_context(
+    |                   ^^^^^^^^^^^^^^^^^
+...
+768 |     pub(crate) fn grant_path(
+    |                   ^^^^^^^^^^
+
+warning: associated functions `from_owned_level`, `from_received`, and `from_directional` are never used
+  --> src/roles/packet_authority/scoped.rs:50:19
+   |
+47 | impl<'a> ScopedReceiveEvidence<'a> {
+   | ---------------------------------- associated functions in this implementation
+...
+50 |     pub(crate) fn from_owned_level(
+   |                   ^^^^^^^^^^^^^^^^
+...
+72 |     pub(crate) fn from_received(
+   |                   ^^^^^^^^^^^^^
+...
+87 |     pub(crate) fn from_directional(
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: function `verify_and_split` is never used
+   --> src/roles/connection_authority.rs:121:15
+    |
+121 | pub(crate) fn verify_and_split(
+    |               ^^^^^^^^^^^^^^^^
+
+warning: function `retirement` is never used
+   --> src/roles/protocol_stream.rs:227:4
+    |
+227 | fn retirement<const C: u8, const O: u8>() -> g::Program<Retirement<C, O>> {
+    |    ^^^^^^^^^^
+
+warning: associated function `from_sealed` is never used
+  --> src/roles/datagram.rs:72:19
+   |
+50 | impl<const N: usize> ProtectedDatagram<N> {
+   | ----------------------------------------- associated function in this implementation
+...
+72 |     pub(crate) fn from_sealed<const M: usize>(
+   |                   ^^^^^^^^^^^
+
+warning: function `managed_application_frame` is never used
+   --> src/roles/datagram.rs:311:4
+    |
+311 | fn managed_application_frame(frame: Frame<'_>) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `prefix` is never used
+   --> src/roles/datagram.rs:371:8
+    |
+370 | impl HandshakeFragment {
+    | ---------------------- associated function in this implementation
+371 |     fn prefix(offset: u64, data: &[u8]) -> Option<Self> {
+    |        ^^^^^^
+
+warning: function `cancel_before_publication` is never used
+   --> src/roles/datagram.rs:502:15
+    |
+502 | pub(crate) fn cancel_before_publication(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> src/roles/early_owner.rs:270:19
+    |
+269 | impl<const N: usize> AuthenticatedPacket<N> {
+    | ------------------------------------------- associated function in this implementation
+270 |     pub(crate) fn new(
+    |                   ^^^
+
+warning: method `into_finished` is never used
+  --> src/connection/parameters.rs:19:16
+   |
+ 9 | impl<'scope,const P:usize> ValidatedPeer<'scope,P>{
+   | -------------------------------------------------- method in this implementation
+...
+19 |  pub(crate) fn into_finished(self)->FinishedAuthenticated<'scope>{self.finished}
+   |                ^^^^^^^^^^^^^
+
+warning: methods `lost` and `forget_lost` are never used
+   --> src/connection/application_stream.rs:279:19
+    |
+216 | impl<const RX: usize, const CHUNK: usize> Rx<'_, '_, '_, RX, CHUNK> {
+    | ------------------------------------------------------------------- methods in this implementation
+...
+279 |     pub(super) fn lost(&mut self, packet_number: u64) -> Result<(), Error> {
+    |                   ^^^^
+...
+293 |     pub(super) fn forget_lost(&mut self, packet_number: u64) -> Result<(), Error> {
+    |                   ^^^^^^^^^^^
+
+warning: field `0` is never read
+  --> src/connection/application/keys.rs:27:10
+   |
+27 |     Slot(InboxError),
+   |     ---- ^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `Error` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+27 -     Slot(InboxError),
+27 +     Slot(()),
+   |
+
+warning: field `0` is never read
+  --> src/connection/application/keys.rs:30:21
+   |
+30 |     UnexpectedLabel(u8),
+   |     --------------- ^^
+   |     |
+   |     field in this variant
+   |
+   = note: `Error` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+30 -     UnexpectedLabel(u8),
+30 +     UnexpectedLabel(()),
+   |
+
+warning: method `phase` is never used
+  --> src/connection/application/keys.rs:94:19
+   |
+64 | impl<'scope> KeyOwner<'scope> {
+   | ----------------------------- method in this implementation
+...
+94 |     pub(crate) fn phase(&self) -> Result<bool, Error> {
+   |                   ^^^^^
+
+warning: method `snapshot` is never used
+  --> src/connection/application/transmit.rs:72:19
+   |
+61 | / impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const CHUNK: usize>
+62 | |     State<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>
+   | |__________________________________________________________- method in this implementation
+...
+72 |       pub(crate) fn snapshot(&self) -> recovery::Snapshot { self.owners.borrow().book.snapshot() }
+   |                     ^^^^^^^^
+
+error: large size difference between variants
+   --> src/bounded_tls.rs:237:1
+    |
+237 | / enum ApplicationMaterial {
+238 | |     Empty,
+239 | |     Legacy(ApplicationKeys),
+    | |     ----------------------- the largest variant contains at least 808 bytes
+240 | |     Handoff(DirectionalKeys),
+    | |     ------------------------ the second-largest variant contains at least 272 bytes
+241 | | }
+    | |_^ the entire enum is at least 808 bytes
+    |
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   --> src/bounded_tls.rs:239:5
+    |
+239 |     Legacy(ApplicationKeys),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+    = note: `-D clippy::large-enum-variant` implied by `-D clippy::all`
+    = help: to override `-D clippy::all` add `#[allow(clippy::large_enum_variant)]`
+
+error: unneeded `return` statement
+   --> src/roles/tls_owner.rs:780:13
+    |
+780 |             return Ok(());
+    |             ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#needless_return
+    = note: `-D clippy::needless-return` implied by `-D clippy::all`
+    = help: to override `-D clippy::all` add `#[allow(clippy::needless_return)]`
+help: remove `return`
+    |
+780 ~             Ok(())
+781 |         }
+782 ~     }
+    |
+
+error: unneeded `return` statement
+   --> src/roles/tls_owner.rs:884:13
+    |
+884 |             return Ok(());
+    |             ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#needless_return
+help: remove `return`
+    |
+884 ~             Ok(())
+885 |         }
+886 ~     }
+    |
+
+error: large size difference between variants
+   --> src/roles/recovery_owner.rs:441:1
+    |
+441 | /  pub enum Command<const B: usize> {
+442 | |      Reserve(SendPlan),
+443 | |      AdapterComplete(super::datagram::RecoveryCompletion),
+    | |      ---------------------------------------------------- the second-largest variant contains at least 152 bytes
+444 | |      Cancel(super::datagram::RecoveryCancellation),
+445 | |/     Ack {
+446 | ||         grant: AckGrant,
+447 | ||         now: u64,
+448 | ||         context: AckContext,
+449 | ||     },
+    | ||_____- the largest variant contains at least 656 bytes
+...   |
+471 | |      Retire,
+472 | |  }
+    | |__^ the entire enum is at least 656 bytes
+    |
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   --> src/roles/recovery_owner.rs:445:5
+    |
+445 | /     Ack {
+446 | |         grant: AckGrant,
+447 | |         now: u64,
+448 | |         context: AckContext,
+449 | |     },
+    | |_____^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+
+error: large size difference between variants
+   --> src/roles/recovery_owner.rs:512:1
+    |
+512 | / pub enum Outcome<const L: usize, const B: usize> {
+513 | |     Installed,
+514 | |     Reserved(SendTicket),
+    | |     -------------------- the second-largest variant contains at least 104 bytes
+515 | |     AdapterAccepted(PacketNumber),
+516 | |     AdapterRejected(PacketNumber),
+517 | |     Acknowledged(AckResult<L>),
+    | |     -------------------------- the largest variant contains at least 640 bytes
+...   |
+563 | |     Retired,
+564 | | }
+    | |_^ the entire enum is at least 640 bytes
+    |
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   --> src/roles/recovery_owner.rs:517:5
+    |
+517 |     Acknowledged(AckResult<L>),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+
+error: this `if` statement can be collapsed
+   --> src/roles/recovery_owner.rs:936:9
+    |
+936 | /         if self.ecn_disabled_error.is_none() {
+937 | |             if let Some(state) = self
+938 | |                 .ecn
+939 | |                 .as_mut()
+...   |
+959 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D clippy::all`
+    = help: to override `-D clippy::all` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+936 ~         if self.ecn_disabled_error.is_none()
+937 ~             && let Some(state) = self
+938 |                 .ecn
+...
+957 |                 }
+958 ~             }
+    |
+
+error: this `if` statement can be collapsed
+    --> src/roles/recovery_owner.rs:1097:17
+     |
+1097 | /                 if self.ecn_disabled_error.is_none()
+1098 | |                     && matches!(p.sent.ecn, Codepoint::Ect0 | Codepoint::Ect1)
+1099 | |                 {
+1100 | |                     if let Some(state) = self
+...    |
+1109 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1098 ~                     && matches!(p.sent.ecn, Codepoint::Ect0 | Codepoint::Ect1)
+1099 ~                     && let Some(state) = self
+1100 |                         .ecn
+ ...
+1106 |                         }
+1107 ~                     }
+     |
+
+error: this `if` statement can be collapsed
+    --> src/roles/recovery_owner.rs:1100:21
+     |
+1100 | /                     if let Some(state) = self
+1101 | |                         .ecn
+1102 | |                         .as_mut()
+1103 | |                         .filter(|state| p.sent.path == Some(state.identity()))
+...    |
+1108 | |                     }
+     | |_____________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1103 ~                         .filter(|state| p.sent.path == Some(state.identity()))
+1104 ~                         && let Err(error) = state.lost(state.identity(), 1) {
+1105 |                             self.ecn_disabled_error = Some(error);
+1106 ~                         }
+     |
+
+error: this `if` can be collapsed into the outer `match`
+    --> src/roles/path_owner.rs:1694:21
+     |
+1694 | /                     if self.paths.find(context.address).is_none()
+1695 | |                         || (context.address.remote != self.config.initial.remote
+1696 | |                             && self.preferred.is_none_or(|p| p.0 != context.address))
+...    |
+1699 | |                     }
+     | |_____________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_match
+     = note: `-D clippy::collapsible-match` implied by `-D clippy::all`
+     = help: to override `-D clippy::all` add `#[allow(clippy::collapsible_match)]`
+help: collapse nested if block
+     |
+1693 ~                 Role::Client
+1694 ~                     if (self.paths.find(context.address).is_none()
+1695 |                         || (context.address.remote != self.config.initial.remote
+1696 ~                             && self.preferred.is_none_or(|p| p.0 != context.address)))
+1697 ~                     => {
+1698 |                         return Err(Error::InvalidConfig);
+1699 ~                     }
+     |
+
+error: large size difference between variants
+    --> src/roles/path_owner.rs:2005:1
+     |
+2005 | / pub enum Command {
+2006 | |     ServerRetry(crate::retry::ValidatedToken),
+2007 | |     LearnPeerCid(authority::InitialPeerCid),
+2008 | |     ApplyRetry(authority::RetryPeerCid),
+2009 | |     EarlyPreflight(super::early_owner::PathCheck),
+     | |     --------------------------------------------- the largest variant contains at least 12496 bytes
+...    |
+2029 | |     AdapterComplete(AdapterCompletion),
+     | |     ---------------------------------- the second-largest variant contains at least 4488 bytes
+...    |
+2041 | |     Retire,
+2042 | | }
+     | |_^ the entire enum is at least 12496 bytes
+     |
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    --> src/roles/path_owner.rs:2009:5
+     |
+2009 |     EarlyPreflight(super::early_owner::PathCheck),
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+
+error: large size difference between variants
+    --> src/roles/path_owner.rs:2043:1
+     |
+2043 | /  pub enum Outcome {
+2044 | |      ServerRetryValidated,
+2045 | |      PeerCidLearned,
+2046 | |      RetryApplied,
+2047 | |      EarlyChecked(super::early_owner::PathChecked),
+2048 | |/     EarlyCheckRejected {
+2049 | ||         check: super::early_owner::PathCheck,
+2050 | ||         error: Error,
+2051 | ||     },
+     | ||_____- the largest variant contains at least 12512 bytes
+...    |
+2077 | |      Reserved(PendingTransmit),
+     | |      ------------------------- the second-largest variant contains at least 344 bytes
+...    |
+2093 | |      Retired,
+2094 | |  }
+     | |__^ the entire enum is at least 12512 bytes
+     |
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    --> src/roles/path_owner.rs:2048:5
+     |
+2048 | /     EarlyCheckRejected {
+2049 | |         check: super::early_owner::PathCheck,
+2050 | |         error: Error,
+2051 | |     },
+     | |_____^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+
+error: this `if` statement can be collapsed
+  --> src/roles/path_owner/early.rs:37:9
+   |
+37 | /         if let Some((id, address, bytes, path)) = self.last_datagram {
+38 | |             if incoming.datagram_id < id
+39 | |                 || (incoming.datagram_id == id
+40 | |                     && (incoming.address != address
+...  |
+46 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+37 ~         if let Some((id, address, bytes, path)) = self.last_datagram
+38 ~             && (incoming.datagram_id < id
+39 |                 || (incoming.datagram_id == id
+40 |                     && (incoming.address != address
+41 |                         || incoming.datagram_bytes != bytes
+42 ~                         || original != path)))
+43 |             {
+44 |                 return Err(Error::StaleIngress);
+45 ~             }
+   |
+
+error: large size difference between variants
+   --> src/roles/stream_owner.rs:192:1
+    |
+192 | / pub enum Command<const N: usize> {
+193 | |     PeerReady(PeerReady),
+194 | |     Probe(super::recovery_owner::StreamPtoGrant),
+195 | |     EarlyReady(EarlyReady),
+...   |
+200 | |     Acknowledge(super::recovery_owner::StreamAck),
+    | |     --------------------------------------------- the largest variant contains at least 600 bytes
+201 | |     Lost(super::recovery_owner::LostPacket),
+    | |     --------------------------------------- the second-largest variant contains at least 136 bytes
+...   |
+252 | |     Retire,
+253 | | }
+    | |_^ the entire enum is at least 600 bytes
+    |
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   --> src/roles/stream_owner.rs:200:5
+    |
+200 |     Acknowledge(super::recovery_owner::StreamAck),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+
+error: large size difference between variants
+   --> src/roles/stream_owner.rs:254:1
+    |
+254 | / pub enum Outcome<const N: usize> {
+255 | |     Installed,
+256 | |     Applied,
+257 | |     LossApplied(Option<super::recovery_owner::StreamLossSettled>),
+...   |
+262 | |     Inspected(Option<StreamStatus>),
+    | |     ------------------------------- the second-largest variant contains at least 88 bytes
+263 | |     Found(StreamHandle),
+264 | |     Handles(HandlePage),
+    | |     ------------------- the largest variant contains at least 1288 bytes
+...   |
+275 | |     Retired,
+276 | | }
+    | |_^ the entire enum is at least 1288 bytes
+    |
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   --> src/roles/stream_owner.rs:264:5
+    |
+264 |     Handles(HandlePage),
+    |     ^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+
+error: this function has too many arguments (8/7)
+   --> src/roles/stream_owner.rs:320:5
+    |
+320 | /     pub fn new(
+321 | |         generation: u64,
+322 | |         role: Role,
+323 | |         local: Limits,
+...   |
+328 | |         mut early_slots: Option<&'s mut [early_send::RequestSlot<TX>]>,
+329 | |     ) -> Result<Self, Fault> {
+    | |____________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D clippy::all`
+    = help: to override `-D clippy::all` add `#[allow(clippy::too_many_arguments)]`
+
+error: this function has too many arguments (8/7)
+    --> src/roles/stream_owner.rs:1315:1
+     |
+1315 | / async fn client_prepare<const C: u8, const N: usize, const Q: usize, const R: usize>(
+1316 | |     endpoint: &mut Endpoint<'_, C>,
+1317 | |     generation: u64,
+1318 | |     sequence: &mut u64,
+...    |
+1323 | |     early: bool,
+1324 | | ) -> Result<(), Error> {
+     | |______________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#too_many_arguments
+
+error: large size difference between variants
+  --> src/roles/early_owner/service.rs:21:1
+   |
+21 | / pub enum Outcome<const N: usize> {
+22 | |     Installed,
+23 | |     Check(PathCheck),
+   | |     ---------------- the largest variant contains at least 12496 bytes
+24 | |     Dropped,
+...  |
+27 | |     Release(Option<Release<N>>),
+   | |     --------------------------- the second-largest variant contains at least 256 bytes
+...  |
+31 | |     Retired,
+32 | | }
+   | |_^ the entire enum is at least 12496 bytes
+   |
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+  --> src/roles/early_owner/service.rs:23:5
+   |
+23 |     Check(PathCheck),
+   |     ^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+
+error: consider using `sort_unstable_by_key`
+   --> src/connection/recovery.rs:239:9
+    |
+239 |         items[..self.len + 1].sort_unstable_by(|a, b| b.largest.cmp(&a.largest));
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#unnecessary_sort_by
+    = note: `-D clippy::unnecessary-sort-by` implied by `-D clippy::all`
+    = help: to override `-D clippy::all` add `#[allow(clippy::unnecessary_sort_by)]`
+help: try
+    |
+239 -         items[..self.len + 1].sort_unstable_by(|a, b| b.largest.cmp(&a.largest));
+239 +         items[..self.len + 1].sort_unstable_by_key(|b| core::cmp::Reverse(b.largest));
+    |
+
+error: this `if` statement can be collapsed
+   --> src/connection/recovery.rs:634:9
+    |
+634 | /         if n.probe_credits != 0 {
+635 | |             if let Some(id) = n.probe_space.and_then(|space| n.flights.probe(space)) { return Some((id, true)); }
+636 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+634 ~         if n.probe_credits != 0
+635 ~             && let Some(id) = n.probe_space.and_then(|space| n.flights.probe(space)) { return Some((id, true)); }
+    |
+
+error: the `Err`-variant returned from this function is very large
+  --> src/connection/application_wire.rs:48:140
+   |
+48 | ...t:&[u8])->Result<SealedApplicationDatagram<'book,N>,(Error,Reservation<'book>)> {
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 288 bytes
+   |
+   = help: try reducing the size of `(connection::Error, connection::recovery::Reservation<'_>)`, for example by boxing large elements or replacing it with `Box<(connection::Error, connection::recovery::Reservation<'_>)>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_large_err
+   = note: `-D clippy::result-large-err` implied by `-D clippy::all`
+   = help: to override `-D clippy::all` add `#[allow(clippy::result_large_err)]`
+
+error: this `if` statement can be collapsed
+   --> src/connection/application_stream.rs:632:9
+    |
+632 | /         if let Some((stream, maximum)) = contents.max_stream_data {
+633 | |             if let Ok(state) = self.state_mut(stream) { state.credit.retry(Some(maximum)); }
+634 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+632 ~         if let Some((stream, maximum)) = contents.max_stream_data
+633 ~             && let Ok(state) = self.state_mut(stream) { state.credit.retry(Some(maximum)); }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/connection/application_stream.rs:635:9
+    |
+635 | /         if let Some((stream, _)) = contents.reset {
+636 | |             if let Ok(state) = self.state_mut(stream) {
+637 | |                 if !state.reset_acked { state.reset_pending = true; }
+638 | |             }
+639 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+635 ~         if let Some((stream, _)) = contents.reset
+636 ~             && let Ok(state) = self.state_mut(stream) {
+637 |                 if !state.reset_acked { state.reset_pending = true; }
+638 ~             }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/connection/application_stream.rs:636:13
+    |
+636 | /             if let Ok(state) = self.state_mut(stream) {
+637 | |                 if !state.reset_acked { state.reset_pending = true; }
+638 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+636 ~             if let Ok(state) = self.state_mut(stream)
+637 ~                 && !state.reset_acked { state.reset_pending = true; }
+    |
+
+error: the `Err`-variant returned from this function is very large
+   --> src/connection/application/keys.rs:114:10
+    |
+114 |     ) -> Result<connection::wire::Datagram<'book, N>, (connection::Error, Reservation<'book>)> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 288 bytes
+    |
+    = help: try reducing the size of `(connection::Error, connection::recovery::Reservation<'_>)`, for example by boxing large elements or replacing it with `Box<(connection::Error, connection::recovery::Reservation<'_>)>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+   --> src/connection/application/keys.rs:139:10
+    |
+139 |     ) -> Result<SealedApplicationDatagram<'book, N>, (connection::Error, Reservation<'book>)>
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 288 bytes
+    |
+    = help: try reducing the size of `(connection::Error, connection::recovery::Reservation<'_>)`, for example by boxing large elements or replacing it with `Box<(connection::Error, connection::recovery::Reservation<'_>)>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_large_err
+
+error: large size difference between variants
+  --> src/connection/application/transmit.rs:21:1
+   |
+21 | / enum Sealed<'book, const N: usize> {
+22 | |     Application(SealedApplicationDatagram<'book, N>),
+   | |     ------------------------------------------------ the second-largest variant contains at least 272 bytes
+23 | |     Long(wire::Datagram<'book, N>),
+   | |     ------------------------------ the largest variant contains at least 816 bytes
+24 | | }
+   | |_^ the entire enum is at least 816 bytes
+   |
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+  --> src/connection/application/transmit.rs:23:5
+   |
+23 |     Long(wire::Datagram<'book, N>),
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#large_enum_variant
+
+error: the `Err`-variant returned from this function is very large
+  --> src/connection/application/transmit.rs:74:59
+   |
+74 |     fn put(&self, packet: Pending<'book, 'streams, N>) -> Result<(), (Error, Pending<'book, 'streams, N>)> {
+   |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 1513 bytes
+   |
+   = help: try reducing the size of `(connection::application::Error, connection::application::transmit::Pending<'book, 'streams, N>)`, for example by boxing large elements or replacing it with `Box<(connection::application::Error, connection::application::transmit::Pending<'book, 'streams, N>)>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_large_err
+
+error: this `if` statement can be collapsed
+   --> src/connection/application/transmit.rs:139:5
+    |
+139 | /     if accepted_at.is_some() {
+140 | |         if let Some(ack) = acknowledgment.or(long_ack) { book.acknowledgment_sent(ack)?; }
+141 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+139 ~     if accepted_at.is_some()
+140 ~         && let Some(ack) = acknowledgment.or(long_ack) { book.acknowledgment_sent(ack)?; }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/connection/application/transmit.rs:225:5
+    |
+225 | /     if let Some(ack) = book.pending_ack() {
+226 | |         if ack.level() != Level::OneRtt && available[level_index(ack.level())] {
+227 | |             let frame = Frame::Ack { delay: 0, ranges: packet::AckRanges::new(ack.ranges())?, ecn: None };
+228 | |             let plain = wire::PlainPacket::<N>::new(config, peer, ack.level(), frame)?;
+...   |
+243 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+225 ~     if let Some(ack) = book.pending_ack()
+226 ~         && ack.level() != Level::OneRtt && available[level_index(ack.level())] {
+227 |             let frame = Frame::Ack { delay: 0, ranges: packet::AckRanges::new(ack.ranges())?, ecn: None };
+...
+241 |             }
+242 ~         }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/connection/application/transmit.rs:273:5
+    |
+273 | /     if let Some(level) = book.pending_probe() {
+274 | |         if level != Level::OneRtt && available[level_index(level)] {
+275 | |             if let Some(pending) = long_packet(keys, book, config, peer, level, Frame::Ping, None, true, now)? {
+276 | |                 return Ok(Some(pending));
+...   |
+279 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+273 ~     if let Some(level) = book.pending_probe()
+274 ~         && level != Level::OneRtt && available[level_index(level)] {
+275 |             if let Some(pending) = long_packet(keys, book, config, peer, level, Frame::Ping, None, true, now)? {
+276 |                 return Ok(Some(pending));
+277 |             }
+278 ~         }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/connection/application/transmit.rs:274:9
+    |
+274 | /         if level != Level::OneRtt && available[level_index(level)] {
+275 | |             if let Some(pending) = long_packet(keys, book, config, peer, level, Frame::Ping, None, true, now)? {
+276 | |                 return Ok(Some(pending));
+277 | |             }
+278 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+274 ~         if level != Level::OneRtt && available[level_index(level)]
+275 ~             && let Some(pending) = long_packet(keys, book, config, peer, level, Frame::Ping, None, true, now)? {
+276 |                 return Ok(Some(pending));
+277 ~             }
+    |
+
+error: this returns a `Result<_, ()>`
+  --> src/connection/application/mod.rs:37:5
+   |
+37 |     fn started(&mut self, stream_id: u64) -> Result<(), ()>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a custom `Error` type instead
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_unit_err
+   = note: `-D clippy::result-unit-err` implied by `-D clippy::all`
+   = help: to override `-D clippy::all` add `#[allow(clippy::result_unit_err)]`
+
+error: the `Err`-variant returned from this function is very large
+  --> src/connection/initial.rs:26:12
+   |
+26 |         -> Result<wire::Datagram<'book, N>, (Error, recovery::Reservation<'book>)> {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 288 bytes
+   |
+   = help: try reducing the size of `(connection::Error, connection::recovery::Reservation<'_>)`, for example by boxing large elements or replacing it with `Box<(connection::Error, connection::recovery::Reservation<'_>)>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_large_err
+
+error: this function has too many arguments (9/7)
+  --> src/connection/locals.rs:13:2
+   |
+13 |  async fn packet<const P:usize>(&mut self...k:&impl Clock,may_finish:bool)->Result<bool,Error>{
+   |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#too_many_arguments
+
+error: this `if` statement can be collapsed
+  --> src/connection/locals.rs:36:3
+   |
+36 | /   if let Some(endpoint)=initial_endpoint.as_deref_mut(){
+37 | |    if let Some(evidence)=book.take_initial_retirement(){initial::announce(endpoint,exchange,evidence).await?;}
+38 | |   }
+   | |___^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+36 ~   if let Some(endpoint)=initial_endpoint.as_deref_mut()
+37 ~    && let Some(evidence)=book.take_initial_retirement(){initial::announce(endpoint,exchange,evidence).await?;}
+   |
+
+error: this function has too many arguments (11/7)
+  --> src/connection/locals.rs:42:1
+   |
+42 | async fn receive_phase<'scope,Stage,cons...u64)->Result<(),Error> where Stage:p::ReceivePhase{
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#too_many_arguments
+
+error: this function has too many arguments (10/7)
+   --> src/connection/locals.rs:107:1
+    |
+107 | async fn publish_result<'scope,'book,P...lication<'book,'scope,N>,id:u64)->Result<(),Error>{
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#too_many_arguments
+
+error: this `if` statement can be collapsed
+   --> src/connection/locals.rs:111:141
+    |
+111 | ...ion,accepted_at))?;if accepted_at.is_some(){if let Some(ack)=acknowledgment{book.acknowledgment_sent(ack)?;}}slots.schedule.chan...
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+111 -  let accepted_at=match result{Some(Ok(Ok(at)))=>Some(at),_=>None};book.settle(recovery::Completion::from_adapter(reservation,accepted_at))?;if accepted_at.is_some(){if let Some(ack)=acknowledgment{book.acknowledgment_sent(ack)?;}}slots.schedule.changed()?;
+111 +  let accepted_at=match result{Some(Ok(Ok(at)))=>Some(at),_=>None};book.settle(recovery::Completion::from_adapter(reservation,accepted_at))?;if accepted_at.is_some()&& let Some(ack)=acknowledgment{book.acknowledgment_sent(ack)?;}slots.schedule.changed()?;
+    |
+
+error: this `if` statement can be collapsed
+   --> src/connection/locals.rs:112:2
+    |
+112 |  if let Some(endpoint)=initial_endpoint.as_deref_mut(){if let Some(evidence)=book.take_initial_retirement(){initial::announce(endpoint,exchange,evidence).await?;}}
+    |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+112 -  if let Some(endpoint)=initial_endpoint.as_deref_mut(){if let Some(evidence)=book.take_initial_retirement(){initial::announce(endpoint,exchange,evidence).await?;}}
+112 +  if let Some(endpoint)=initial_endpoint.as_deref_mut()&& let Some(evidence)=book.take_initial_retirement(){initial::announce(endpoint,exchange,evidence).await?;}
+    |
+
+error: this function has too many arguments (9/7)
+   --> src/connection/locals.rs:116:1
+    |
+116 | async fn publish_phase<'scope,'book,St...ry::Publication<'book,'scope,N>)->Result<(),Error>{
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+   --> src/connection/locals.rs:122:1
+    |
+122 | pub(super) async fn publish<'scope,'bo...ry::Publication<'book,'scope,N>)->Result<(),Error>{
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#too_many_arguments
+
+error: the `Err`-variant returned from this function is very large
+  --> src/connection/wire.rs:36:148
+   |
+36 | ...ot<'book>>)->Result<Datagram<'book,N>,(Error,recovery::Reservation<'book>)>{
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 288 bytes
+   |
+   = help: try reducing the size of `(connection::Error, connection::recovery::Reservation<'_>)`, for example by boxing large elements or replacing it with `Box<(connection::Error, connection::recovery::Reservation<'_>)>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+  --> src/connection/wire.rs:39:148
+   |
+39 | ...ot<'book>>)->Result<Datagram<'book,N>,(Error,recovery::Reservation<'book>)>{self.seal_borrowed(BorrowedWriteKey::Initial(key),res...
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 288 bytes
+   |
+   = help: try reducing the size of `(connection::Error, connection::recovery::Reservation<'_>)`, for example by boxing large elements or replacing it with `Box<(connection::Error, connection::recovery::Reservation<'_>)>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+  --> src/connection/wire.rs:40:162
+   |
+40 | ...ot<'book>>)->Result<Datagram<'book,N>,(Error,recovery::Reservation<'book>)>{self.seal_borrowed(BorrowedWriteKey::Handshake(key),r...
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 288 bytes
+   |
+   = help: try reducing the size of `(connection::Error, connection::recovery::Reservation<'_>)`, for example by boxing large elements or replacing it with `Box<(connection::Error, connection::recovery::Reservation<'_>)>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+  --> src/connection/wire.rs:41:162
+   |
+41 | ...ot<'book>>)->Result<Datagram<'book,N>,(Error,recovery::Reservation<'book>)>{
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 288 bytes
+   |
+   = help: try reducing the size of `(connection::Error, connection::recovery::Reservation<'_>)`, for example by boxing large elements or replacing it with `Box<(connection::Error, connection::recovery::Reservation<'_>)>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#result_large_err
+
+error: derefed type is same as origin
+   --> src/connection/mod.rs:227:111
+    |
+227 | ...age, &initial, &initial_exchange, publish_initial.as_deref_mut(), issuer, adapter_outcome, &mut publication));
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `publish_initial`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#needless_option_as_deref
+    = note: `-D clippy::needless-option-as-deref` implied by `-D clippy::all`
+    = help: to override `-D clippy::all` add `#[allow(clippy::needless_option_as_deref)]`
+
+warning: `hibana-quic` (lib) generated 28 warnings
+error: could not compile `hibana-quic` (lib) due to 51 previous errors; 28 warnings emitted

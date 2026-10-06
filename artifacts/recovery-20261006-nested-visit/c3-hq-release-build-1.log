@@ -1,0 +1,272 @@
+   Compiling hibana v0.9.6 (/workspace/hibana-quic/vendor/hibana)
+   Compiling hibana-quic v0.1.0 (/workspace/hibana-quic)
+warning: unreachable pattern
+   --> /workspace/hibana-quic/src/connection/recovery.rs:256:95
+    |
+256 |     match level { Level::Initial => Ok(0), Level::Handshake => Ok(1), Level::OneRtt => Ok(2), _ => Err(Error::UnsupportedLevel) }
+    |                                                                                               ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> /workspace/hibana-quic/src/connection/recovery.rs:256:95
+    |
+256 |     match level { Level::Initial => Ok(0), Level::Handshake => Ok(1), Level::OneRtt => Ok(2), _ => Err(Error::UnsupportedLevel) }
+    |                   --------------           ----------------           -------------           ^ collectively making this unreachable
+    |                   |                        |                          |
+    |                   |                        |                          matches some of the same values
+    |                   |                        matches some of the same values
+    |                   matches some of the same values
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `into_directional` is never used
+   --> /workspace/hibana-quic/src/crypto.rs:519:19
+    |
+515 | impl ApplicationKeys {
+    | -------------------- method in this implementation
+...
+519 |     pub(crate) fn into_directional<'a>(
+    |                   ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `install_existing` is never used
+   --> /workspace/hibana-quic/src/crypto/directional.rs:107:19
+    |
+ 66 | impl<'a> ApplicationKeyInstallation<'a> {
+    | --------------------------------------- method in this implementation
+...
+107 |     pub(crate) fn install_existing(self, keys: ApplicationKeys)
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: associated function `from_confirmed` is never used
+   --> /workspace/hibana-quic/src/crypto/directional.rs:155:19
+    |
+149 | impl<'a> ScopedHandshakeConfirmation<'a> {
+    | ---------------------------------------- associated function in this implementation
+...
+155 |     pub(crate) fn from_confirmed(scope: &'a ApplicationKeyScope, confirmation: HandshakeConfirmation)
+    |                   ^^^^^^^^^^^^^^
+
+warning: associated function `from_validated` is never used
+   --> /workspace/hibana-quic/src/crypto/directional.rs:190:19
+    |
+174 | impl<'a> ValidatedKeyAck<'a> {
+    | ---------------------------- associated function in this implementation
+...
+190 |     pub(crate) fn from_validated(scope: &'a ApplicationKeyScope, grant: KeyAckGrant) -> Result<Self, Error> {
+    |                   ^^^^^^^^^^^^^^
+
+warning: function `split` is never used
+   --> /workspace/hibana-quic/src/crypto/directional.rs:336:15
+    |
+336 | pub(super) fn split<'a>(keys: ApplicationKeys, scope: &'a mut ApplicationKeyScope)
+    |               ^^^^^
+
+warning: function `split_claimed` is never used
+   --> /workspace/hibana-quic/src/crypto/directional.rs:339:4
+    |
+339 | fn split_claimed<'a>(keys: ApplicationKeys, scope: &'a ApplicationKeyScope)
+    |    ^^^^^^^^^^^^^
+
+warning: method `acknowledge_validated` is never used
+   --> /workspace/hibana-quic/src/crypto/directional.rs:534:8
+    |
+503 | impl<'a> ApplicationWriteKeys<'a> {
+    | --------------------------------- method in this implementation
+...
+534 |     fn acknowledge_validated(&mut self, pn: u64, received_generation: u64, now: u64, pto: u64) -> Result<(), Error> {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `commit_with_receipt` is never used
+   --> /workspace/hibana-quic/src/retry.rs:548:19
+    |
+482 | impl<const N: usize> ClientRetry<N> {
+    | ----------------------------------- method in this implementation
+...
+548 |     pub(crate) fn commit_with_receipt(
+    |                   ^^^^^^^^^^^^^^^^^^^
+
+warning: method `accepts_authenticated_generation` is never used
+   --> /workspace/hibana-quic/src/early_data.rs:611:19
+    |
+585 | impl<'a, const BYTES: usize> Quarantine<'a, BYTES> {
+    | -------------------------------------------------- method in this implementation
+...
+611 |     pub(crate) fn accepts_authenticated_generation(&self, generation: u64) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `from_committed` is never used
+   --> /workspace/hibana-quic/src/roles/packet_authority.rs:141:19
+    |
+128 | impl RetryPeerCid {
+    | ----------------- associated function in this implementation
+...
+141 |     pub(crate) fn from_committed(generation: u64, retry: crate::retry::CommittedRetry) -> Self {
+    |                   ^^^^^^^^^^^^^^
+
+warning: function `split_retry` is never used
+   --> /workspace/hibana-quic/src/roles/packet_authority.rs:193:15
+    |
+193 | pub(crate) fn split_retry(generation: u64, retry: crate::retry::CommittedRetry) -> RetryGrants {
+    |               ^^^^^^^^^^^
+
+warning: field `context` is never read
+   --> /workspace/hibana-quic/src/roles/packet_authority.rs:462:5
+    |
+456 | struct PacketRecord {
+    |        ------------ field in this struct
+...
+462 |     context: Option<super::path_owner::PathContext>,
+    |     ^^^^^^^
+
+warning: methods `grant_initial_peer_cid`, `bind_path_context`, and `grant_path` are never used
+   --> /workspace/hibana-quic/src/roles/packet_authority.rs:617:19
+    |
+486 | impl<const P: usize, const E: usize> Arena<P, E> {
+    | ------------------------------------------------ methods in this implementation
+...
+617 |     pub(crate) fn grant_initial_peer_cid(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+660 |     pub(crate) fn bind_path_context(
+    |                   ^^^^^^^^^^^^^^^^^
+...
+768 |     pub(crate) fn grant_path(
+    |                   ^^^^^^^^^^
+
+warning: associated functions `from_owned_level`, `from_received`, and `from_directional` are never used
+  --> /workspace/hibana-quic/src/roles/packet_authority/scoped.rs:50:19
+   |
+47 | impl<'a> ScopedReceiveEvidence<'a> {
+   | ---------------------------------- associated functions in this implementation
+...
+50 |     pub(crate) fn from_owned_level(
+   |                   ^^^^^^^^^^^^^^^^
+...
+72 |     pub(crate) fn from_received(
+   |                   ^^^^^^^^^^^^^
+...
+87 |     pub(crate) fn from_directional(
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: function `verify_and_split` is never used
+   --> /workspace/hibana-quic/src/roles/connection_authority.rs:121:15
+    |
+121 | pub(crate) fn verify_and_split(
+    |               ^^^^^^^^^^^^^^^^
+
+warning: function `retirement` is never used
+   --> /workspace/hibana-quic/src/roles/protocol_stream.rs:227:4
+    |
+227 | fn retirement<const C: u8, const O: u8>() -> g::Program<Retirement<C, O>> {
+    |    ^^^^^^^^^^
+
+warning: associated function `from_sealed` is never used
+  --> /workspace/hibana-quic/src/roles/datagram.rs:72:19
+   |
+50 | impl<const N: usize> ProtectedDatagram<N> {
+   | ----------------------------------------- associated function in this implementation
+...
+72 |     pub(crate) fn from_sealed<const M: usize>(
+   |                   ^^^^^^^^^^^
+
+warning: function `managed_application_frame` is never used
+   --> /workspace/hibana-quic/src/roles/datagram.rs:311:4
+    |
+311 | fn managed_application_frame(frame: Frame<'_>) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `prefix` is never used
+   --> /workspace/hibana-quic/src/roles/datagram.rs:371:8
+    |
+370 | impl HandshakeFragment {
+    | ---------------------- associated function in this implementation
+371 |     fn prefix(offset: u64, data: &[u8]) -> Option<Self> {
+    |        ^^^^^^
+
+warning: function `cancel_before_publication` is never used
+   --> /workspace/hibana-quic/src/roles/datagram.rs:502:15
+    |
+502 | pub(crate) fn cancel_before_publication(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> /workspace/hibana-quic/src/roles/early_owner.rs:270:19
+    |
+269 | impl<const N: usize> AuthenticatedPacket<N> {
+    | ------------------------------------------- associated function in this implementation
+270 |     pub(crate) fn new(
+    |                   ^^^
+
+warning: method `into_finished` is never used
+  --> /workspace/hibana-quic/src/connection/parameters.rs:19:16
+   |
+ 9 | impl<'scope,const P:usize> ValidatedPeer<'scope,P>{
+   | -------------------------------------------------- method in this implementation
+...
+19 |  pub(crate) fn into_finished(self)->FinishedAuthenticated<'scope>{self.finished}
+   |                ^^^^^^^^^^^^^
+
+warning: methods `lost` and `forget_lost` are never used
+   --> /workspace/hibana-quic/src/connection/application_stream.rs:279:19
+    |
+216 | impl<const RX: usize, const CHUNK: usize> Rx<'_, '_, '_, RX, CHUNK> {
+    | ------------------------------------------------------------------- methods in this implementation
+...
+279 |     pub(super) fn lost(&mut self, packet_number: u64) -> Result<(), Error> {
+    |                   ^^^^
+...
+293 |     pub(super) fn forget_lost(&mut self, packet_number: u64) -> Result<(), Error> {
+    |                   ^^^^^^^^^^^
+
+warning: field `0` is never read
+  --> /workspace/hibana-quic/src/connection/application/keys.rs:27:10
+   |
+27 |     Slot(InboxError),
+   |     ---- ^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `Error` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+27 -     Slot(InboxError),
+27 +     Slot(()),
+   |
+
+warning: field `0` is never read
+  --> /workspace/hibana-quic/src/connection/application/keys.rs:30:21
+   |
+30 |     UnexpectedLabel(u8),
+   |     --------------- ^^
+   |     |
+   |     field in this variant
+   |
+   = note: `Error` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+30 -     UnexpectedLabel(u8),
+30 +     UnexpectedLabel(()),
+   |
+
+warning: method `phase` is never used
+  --> /workspace/hibana-quic/src/connection/application/keys.rs:94:19
+   |
+64 | impl<'scope> KeyOwner<'scope> {
+   | ----------------------------- method in this implementation
+...
+94 |     pub(crate) fn phase(&self) -> Result<bool, Error> {
+   |                   ^^^^^
+
+warning: method `snapshot` is never used
+  --> /workspace/hibana-quic/src/connection/application/transmit.rs:72:19
+   |
+61 | / impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const CHUNK: usize>
+62 | |     State<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>
+   | |__________________________________________________________- method in this implementation
+...
+72 |       pub(crate) fn snapshot(&self) -> recovery::Snapshot { self.owners.borrow().book.snapshot() }
+   |                     ^^^^^^^^
+
+   Compiling hibana-quic-host v0.1.0 (/workspace/hibana-quic/adapters/host)
+warning: `hibana-quic` (lib) generated 28 warnings
+    Finished `release` profile [optimized] target(s) in 4m 50s

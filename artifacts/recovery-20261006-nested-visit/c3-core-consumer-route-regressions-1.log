@@ -1,0 +1,12 @@
+   Compiling hibana v0.9.6 (/workspace/hibana-c3)
+    Finished `test` profile [unoptimized] target(s) in 22.01s
+     Running tests/visible_route_reentry.rs (/workspace/targets/hibana-core/debug/deps/visible_route_reentry-73944c1023e67e95)
+
+running 4 tests
+test nested_input_roll_accepts_failure_ack_after_retained_samples ... ok
+test nested_input_roll_preserves_prefix_when_parallel_right_lane_reenters_first ... ok
+test nested_input_roll_rejects_duplicate_failure_ack ... ok
+test nested_input_roll_rejects_switch_before_retention ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 37 filtered out; finished in 0.06s
+

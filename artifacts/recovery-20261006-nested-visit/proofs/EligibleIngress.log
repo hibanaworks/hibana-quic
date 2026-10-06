@@ -1,0 +1,4 @@
+'RolledAdjacent.selected_has_all_guards' depends on axioms: [propext]
+'RolledAdjacent.selected_is_unique' depends on axioms: [propext]
+'RolledAdjacent.blocked_candidate_not_selected' depends on axioms: [propext]
+'RolledAdjacent.positive_current_sibling' depends on axioms: [propext]

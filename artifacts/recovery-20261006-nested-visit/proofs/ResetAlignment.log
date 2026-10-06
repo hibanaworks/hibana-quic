@@ -1,0 +1,8 @@
+'ResetAlignment.owned_head_rewinds' depends on axioms: [propext]
+'ResetAlignment.unowned_head_unchanged' depends on axioms: [propext]
+'ResetAlignment.fresh_prefix_starts_from_reset_head' does not depend on any axioms
+'ResetAlignment.materializable_descendant_is_preserved' does not depend on any axioms
+'ResetAlignment.fresh_prefix_cannot_reuse_next_route_arm' depends on axioms: [propext]
+'ResetAlignment.cleared_selection_cannot_retain_previous_evidence' depends on axioms: [propext]
+'ResetAlignment.preview_cannot_change_iteration_history' does not depend on any axioms
+'ResetAlignment.reset_materializes_the_first_row_once' does not depend on any axioms

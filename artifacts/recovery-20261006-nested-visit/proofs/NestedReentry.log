@@ -1,0 +1,3 @@
+[(0, 0), (190, 0), (180, 0), (200, 0), (162, 0), (1, 0), (165, 0), (2, 0)]
+'NestedReentry.fresh_request_then_alternating_nested_result' depends on axioms: [propext]
+'NestedReentry.nested_result_without_fresh_request_is_rejected' depends on axioms: [propext]
