@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 import tempfile
+import tarfile
+import shutil
 import traceback
 
 ROOT = Path(os.environ['ROOT']).resolve()
@@ -507,6 +509,92 @@ def capture_observations(root, parts, key_parts=None):
         if fd is not None:
             os.close(fd)
 
+def preserve_failed_capture(logs, client, server, phase_name, status):
+    """Retain synthetic failure evidence only as authenticated ciphertext.
+
+    The recipient private key never exists in CI or this repository. Plaintext
+    lives only in unlinked temporary files, never in the uploaded directory.
+    """
+    if status == 'PASSED':
+        return {'state': 'not-needed'}
+    if client not in IMPLEMENTATIONS or server not in IMPLEMENTATIONS or phase_name not in {'bounded-client', 'bounded-server', 'quiche-baseline', 'neqo-baseline'}:
+        return {'state': 'invalid-scope'}
+    try:
+        recipient = json.loads((ROOT / 'ci/failure-recipient.json').read_text())['certificate']
+        if not isinstance(recipient, str) or len(recipient) > 8192 or 'PRIVATE KEY' in recipient or not recipient.startswith('-----BEGIN CERTIFICATE-----'):
+            return {'state': 'invalid-recipient'}
+        manifest = []
+        with tempfile.TemporaryFile() as plain, tempfile.TemporaryFile() as encrypted, tempfile.TemporaryFile() as certificate:
+            certificate.write(recipient.encode('ascii'))
+            certificate.flush()
+            with tarfile.open(fileobj=plain, mode='w') as archive:
+                for case in sorted(EXPECTED):
+                    if case not in CASE_ABBREVIATIONS:
+                        return {'state': 'invalid-case'}
+                    prefix = (server + '_' + client, case)
+                    sources = [(('sim', 'trace_node_' + side + '.pcap'), MAX_CAPTURE_BYTES) for side in ('left', 'right')]
+                    sources += [((role, filename), limit) for role in ('client', 'server') for filename, limit in [('keys.log', 1024 * 1024), ('log.txt', MAX_LOG_BYTES), (role + '.log', MAX_LOG_BYTES)]]
+                    for parts, limit in sources:
+                        fd = None
+                        name = '/'.join((case,) + parts)
+                        try:
+                            fd = _open_beneath(logs, prefix + parts)
+                            before = os.fstat(fd)
+                            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 <= before.st_size <= limit:
+                                manifest.append({'file': name, 'state': 'rejected'})
+                                continue
+                            info = tarfile.TarInfo(name)
+                            info.size, info.mode, info.mtime = before.st_size, 0o600, 0
+                            with os.fdopen(os.dup(fd), 'rb') as source:
+                                archive.addfile(info, source)
+                            after = os.fstat(fd)
+                            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                                return {'state': 'changed-input'}
+                            manifest.append({'file': name, 'state': 'included', 'bytes': before.st_size})
+                        except (OSError, ValueError):
+                            manifest.append({'file': name, 'state': 'unavailable'})
+                        finally:
+                            if fd is not None:
+                                os.close(fd)
+                data = json.dumps({'phase': phase_name, 'status': status, 'files': manifest}).encode()
+                import io
+                info = tarfile.TarInfo('manifest.json')
+                info.size, info.mode, info.mtime = len(data), 0o600, 0
+                archive.addfile(info, io.BytesIO(data))
+            plain.flush()
+            plain.seek(0)
+            command = ['openssl', 'cms', '-encrypt', '-binary', '-aes-256-gcm',
+                       '-in', '/proc/self/fd/' + str(plain.fileno()), '-outform', 'DER',
+                       '-out', '/proc/self/fd/' + str(encrypted.fileno()),
+                       '/proc/self/fd/' + str(certificate.fileno())]
+            certificate.seek(0)
+            result = subprocess.run(command, pass_fds=(plain.fileno(), encrypted.fileno(), certificate.fileno()),
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
+            if result.returncode:
+                return {'state': 'encryption-failed'}
+            encrypted.seek(0, 2)
+            size = encrypted.tell()
+            if not 128 <= size <= len(EXPECTED) * (2 * MAX_CAPTURE_BYTES + 4 * MAX_LOG_BYTES + 4 * 1024 * 1024):
+                return {'state': 'invalid-ciphertext-size'}
+            encrypted.seek(0)
+            name = phase_name + '-failure.cms'
+            SAFE.mkdir(exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=SAFE, prefix='.ciphertext-', delete=False) as stage:
+                staged = Path(stage.name)
+                try:
+                    shutil.copyfileobj(encrypted, stage)
+                    stage.flush()
+                    os.replace(staged, SAFE / name)
+                finally:
+                    staged.unlink(missing_ok=True)
+            return {'state': 'encrypted', 'artifact': name, 'bytes': size,
+                    'format': 'CMS AuthEnvelopedData AES-256-GCM',
+                    'plaintext_not_published': True}
+    except subprocess.TimeoutExpired:
+        return {'state': 'encryption-timeout'}
+    except (OSError, ValueError, KeyError, UnicodeError, tarfile.TarError):
+        return {'state': 'preservation-failed'}
+
 def collect_case_diagnostics(logs, client, server):
     if client not in IMPLEMENTATIONS or server not in IMPLEMENTATIONS:
         return {'state': 'invalid-matrix-identifiers'}
@@ -706,6 +794,7 @@ def phase(name, client, server, candidate):
             for case, evidence in record['case_diagnostics'].items()
             for side, metadata in evidence['captures'].items()
             if metadata['state'] == 'present']
+        record['private_failure_capture'] = preserve_failed_capture(logs, client, server, name, record['status'])
         write(name + '.json', record)
         print(name + ': ' + record['status'], flush=True)
     return record

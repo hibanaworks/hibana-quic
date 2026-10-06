@@ -480,3 +480,24 @@ remain separately visible). The changed timer file is formatted; no global
 formatting cleanup or complete all-file migration is claimed. The next remote
 request rechecks C1/L1/M/Z in both directions and the existing formal models,
 rather than using another isolated L1 pass to declare root resolution.
+
+## Preserve actual failure captures without public plaintext
+
+The owner requested inspecting failed packet captures. Earlier artifacts kept
+only bounded numeric summaries and capture hashes; those are insufficient to
+revisit missing Handshake details after an ephemeral runner disappears.
+Failure phases now additionally retain the exact fixed capture/keylog/endpoint
+log files in CMS AuthEnvelopedData using AES-256-GCM and a temporary public
+recipient certificate. The recipient private key is held only in the separate
+investigation workspace, never in this repository or CI. Plaintext is streamed
+through unlinked temporary files; the uploaded directory receives authenticated
+ciphertext only. Successful phases do not retain private captures.
+
+The file set is fixed, bounded and descriptor-opened without symlinks/hardlinks;
+unavailable/rejected sources are recorded inside the encrypted manifest.
+Encryption failure does not publish partial plaintext. The public result only
+identifies the sealed artifact and status. Local tests perform actual OpenSSL
+encryption/decryption and exact synthetic-byte recovery, reject a modified
+ciphertext, and verify that unrequested files and plaintext never enter public
+output. All69 Python tests pass. This fixes evidence retention; it does not
+retroactively recover discarded failures or establish the remaining loss cause.

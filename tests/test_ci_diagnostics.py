@@ -3,6 +3,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
+import tarfile
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -301,6 +303,51 @@ class Diagnostics(unittest.TestCase):
         with patch.object(self.module.subprocess, 'run', side_effect=run):
             result = self.module.capture_observations(self.case, ('sim', 'trace_node_left.pcap'))
         self.assertEqual(result['state'], 'parsed')
+
+    def test_failed_capture_is_authenticated_encrypted_and_exactly_recoverable(self):
+        key, cert = self.root / 'recipient.key', self.root / 'recipient.crt'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                        '-days', '1', '-subj', '/CN=synthetic-test-only',
+                        '-keyout', str(key), '-out', str(cert)], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        (self.root / 'ci').mkdir()
+        (self.root / 'ci/failure-recipient.json').write_text(json.dumps({'certificate': cert.read_text()}))
+        packet = b'PRIVATE_SYNTHETIC_PACKET_BYTES'
+        secret = b'PRIVATE_SYNTHETIC_TRAFFIC_KEY'
+        self.put('sim/trace_node_left.pcap', packet)
+        self.put('server/keys.log', secret)
+        self.put('server/UNREQUESTED_SECRET', b'MUST_NOT_BE_READ')
+        result = self.module.preserve_failed_capture(self.logs, 'hibana-quic', 'neqo', 'bounded-client', 'FAILED')
+        self.assertEqual(result['state'], 'encrypted')
+        sealed = self.module.SAFE / result['artifact']
+        self.assertNotIn(packet, sealed.read_bytes())
+        self.assertNotIn(secret, sealed.read_bytes())
+        self.assertEqual(sorted(p.name for p in self.module.SAFE.iterdir()), ['bounded-client-failure.cms'])
+        recovered = self.root / 'private-recovered.tar'
+        command = ['openssl', 'cms', '-decrypt', '-binary', '-inform', 'DER',
+                   '-in', str(sealed), '-inkey', str(key), '-out', str(recovered)]
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with tarfile.open(recovered) as archive:
+            self.assertEqual(archive.extractfile('transfer/sim/trace_node_left.pcap').read(), packet)
+            self.assertEqual(archive.extractfile('transfer/server/keys.log').read(), secret)
+            self.assertNotIn('transfer/server/UNREQUESTED_SECRET', archive.getnames())
+        damaged = bytearray(sealed.read_bytes())
+        damaged[-1] ^= 1
+        sealed.write_bytes(damaged)
+        self.assertNotEqual(subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode, 0)
+        self.assertNotIn('PRIVATE_', json.dumps(result))
+
+    def test_success_never_preserves_private_capture(self):
+        result = self.module.preserve_failed_capture(self.logs, 'hibana-quic', 'neqo', 'bounded-client', 'PASSED')
+        self.assertEqual(result, {'state': 'not-needed'})
+        self.assertFalse(self.module.SAFE.exists())
+
+    def test_failed_capture_requires_valid_public_recipient(self):
+        self.assertEqual(self.module.preserve_failed_capture(self.logs, 'hibana-quic', 'neqo', '../bad', 'FAILED'), {'state': 'invalid-scope'})
+        (self.root / 'ci').mkdir()
+        (self.root / 'ci/failure-recipient.json').write_text(json.dumps({'certificate': 'PRIVATE KEY'}))
+        self.assertEqual(self.module.preserve_failed_capture(self.logs, 'hibana-quic', 'neqo', 'bounded-client', 'FAILED'), {'state': 'invalid-recipient'})
+        self.assertFalse(self.module.SAFE.exists())
 
     def test_reference_keylog_stays_local_and_never_enters_report(self):
         self.put('sim/trace_node_left.pcap', b'not a real pcap')
