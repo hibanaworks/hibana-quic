@@ -577,3 +577,53 @@ independent reference TLS tests, selected host lib/hq strict Clippy,69 Python
 tests and source/core snapshot audits. Broad pre-existing core Clippy warnings
 are not represented as a whole-workspace strict pass. This source still needs
 its own remote interoperability qualification before it is called qualified.
+
+## Actual failed capture: missing ClientHello tail
+
+Runtime37434925495 passed every step for33c83f4e. Official interop37434925514
+/artifact11399775283 did not pass: unchanged quiche controls and all candidate
+client cases passed, as did candidate-server C1/M/Z, but server L1 failed.
+The existing six Lean/six Z3 groups passed. The failure is retained, not retried
+away or counted as a qualification.
+
+The authenticated encrypted server-phase capsule was downloaded and decrypted
+privately. Both pcapng files were parsed with complete block boundaries; their
+capture statistics report zero dropped packets. QUIC-v1 Initial header removal
+and AES-GCM authentication succeeded for the identified failed flow. No raw
+capture, traffic secret, key log or TLS bytes are included here.
+
+The quiche ClientHello is1490 bytes. Its initial prefix is offset0/length1133;
+the remaining offset1133/length357 appears only in client packet2. Client-side
+capture contains packet0–8; server-side capture contains client packets0,3,6.
+Packets0 and3 carry the prefix, and6 is PING. The tail never appears in the
+server-side capture. The server emits three authenticated ACK-only Initials:
+ACK{0}, ACK{0,3}, ACK{0,3,6}; none appears in the client-side capture. Quiche's
+actual log ends with recv0/sent9 and its30.015789-second idle expiry. This is
+insufficient CRYPTO delivery, not evidence that a complete ClientHello reached
+the server and its TLS continuation stalled. It does not establish the cause
+of the different earlier candidate-client idle expiries.
+
+partial_client_hello.rs preserves the observed range sizes with synthetic
+framing bytes: duplicate prefixes and PING cannot complete or consume the
+message; only actual insertion of the missing357-byte range completes framing.
+It is a framing regression, not full encrypted runner replay. Runner loss,
+timeouts, peer source and acceptance criteria remain unchanged.
+
+## Key and source progress are direct local operations
+
+RX_KEYS/TX_KEYS no longer mirror a local sequence counter or advance helper.
+Key progress messages carry unit; actual authenticated key-update, ACK,
+confirmation and installed-epoch receipts still cross their affine mailboxes,
+and their scope/epoch validation remains. The redundant key echo-check helper
+is removed; result-versus-offer validation is retained.
+
+SOURCE/INGRESS data and terminal progress similarly use unit, removing three
+production counters and their echo checks. Actual stream IDs on open/FIN/
+abandon/reclaim, byte offsets, body ownership and physical IO results remain.
+The source production fixture preserves stream identity and forbidden-after-
+terminal assertions with typed receives instead of ordinal payload checks.
+
+Final local full cargo, thumbv6m, host116, referenceTLS29 and selected host
+lib/hq strict Clippy pass, plus the new missing-tail framing test. Earlier
+obsolete integer fixture payload compile failures were corrected before these
+final runs. This new source needs its own remote qualification.

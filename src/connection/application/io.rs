@@ -150,10 +150,7 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut impl ClientRequests,
 ) -> Result<(), Error> {
-    let mut sequence = 0;
     let result = async {
-        let sequence = &mut sequence;
-
         if CHUNK == 0 {
             return Err(Error::Capacity);
         }
@@ -216,33 +213,32 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                     let admitted = async {
                         let endpoint = &mut *endpoint;
 
-                        let sequence = &mut *sequence;
                         let input = Input::Chunk(chunk);
 
                         state.data.put(input).map_err(|_| Error::Binding)?;
-                        endpoint.send::<p::SourceData>(sequence).await?;
+                        endpoint.send::<p::SourceData>(&()).await?;
                         let reply = endpoint.offer().await?;
                         let accepted = match reply.label() {
                             1 => {
-                                check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
+                                reply.recv::<p::SourceAccepted>().await?;
                                 Admission::Accepted
                             }
                             2 => {
-                                check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
+                                reply.recv::<p::SourceRejected>().await?;
                                 Admission::Interrupted
                             }
                             187 => {
-                                check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
+                                reply.recv::<p::SourceStopped>().await?;
                                 Admission::Stopped
                             }
                             215 => {
-                                check(reply.recv::<p::SourceDataFailed>().await?, *sequence)?;
+                                reply.recv::<p::SourceDataFailed>().await?;
                                 Admission::Failed
                             }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
-                        endpoint.send::<p::SourceTaken>(sequence).await?;
-                        *sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                        endpoint.send::<p::SourceTaken>(&()).await?;
+
                         Ok(accepted)
                     }
                     .await?;
@@ -311,12 +307,12 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
         result
     };
     {
-        endpoint.send::<p::SourceDone>(&sequence).await?;
-        check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
+        endpoint.send::<p::SourceDone>(&()).await?;
+        endpoint.recv::<p::SourceRetired>().await?;
         if result.is_err() {
-            endpoint.send::<p::SourceFailed>(&sequence).await?;
+            endpoint.send::<p::SourceFailed>(&()).await?;
         } else {
-            endpoint.send::<p::SourceJoined>(&sequence).await?;
+            endpoint.send::<p::SourceJoined>(&()).await?;
         }
         control.changed()?;
     }
@@ -356,10 +352,7 @@ pub(crate) async fn server_source<
     requests: &mut Receiver<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
     handler: &mut H,
 ) -> Result<(), Error> {
-    let mut sequence = 0;
     let result = async {
-        let sequence = &mut sequence;
-
         if CHUNK == 0 {
             return Err(Error::Capacity);
         }
@@ -404,33 +397,32 @@ pub(crate) async fn server_source<
             let result = async {
                 let endpoint = &mut *endpoint;
 
-                let sequence = &mut *sequence;
                 let input = Input::Body(body);
 
                 state.data.put(input).map_err(|_| Error::Binding)?;
-                endpoint.send::<p::SourceData>(sequence).await?;
+                endpoint.send::<p::SourceData>(&()).await?;
                 let reply = endpoint.offer().await?;
                 let accepted = match reply.label() {
                     1 => {
-                        check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
+                        reply.recv::<p::SourceAccepted>().await?;
                         Admission::Accepted
                     }
                     2 => {
-                        check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
+                        reply.recv::<p::SourceRejected>().await?;
                         Admission::Interrupted
                     }
                     187 => {
-                        check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
+                        reply.recv::<p::SourceStopped>().await?;
                         Admission::Stopped
                     }
                     215 => {
-                        check(reply.recv::<p::SourceDataFailed>().await?, *sequence)?;
+                        reply.recv::<p::SourceDataFailed>().await?;
                         Admission::Failed
                     }
                     label => return Err(Error::UnexpectedLabel(label)),
                 };
-                endpoint.send::<p::SourceTaken>(sequence).await?;
-                *sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                endpoint.send::<p::SourceTaken>(&()).await?;
+
                 Ok(accepted)
             }
             .await;
@@ -490,12 +482,12 @@ pub(crate) async fn server_source<
     .await;
     requests.close();
     {
-        endpoint.send::<p::SourceDone>(&sequence).await?;
-        check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
+        endpoint.send::<p::SourceDone>(&()).await?;
+        endpoint.recv::<p::SourceRetired>().await?;
         if result.is_err() {
-            endpoint.send::<p::SourceFailed>(&sequence).await?;
+            endpoint.send::<p::SourceFailed>(&()).await?;
         } else {
-            endpoint.send::<p::SourceJoined>(&sequence).await?;
+            endpoint.send::<p::SourceJoined>(&()).await?;
         }
         control.changed()?;
     }
@@ -509,7 +501,6 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     reclaim: &super::reclaim::Exchange<'book>,
 ) -> Result<(), Error> {
-    let mut sequence = 0;
     loop {
         let offered = endpoint.offer().await?;
         match offered.label() {
@@ -521,7 +512,7 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                     let offered = endpoint.offer().await?;
                     match offered.label() {
                         0 => {
-                            check(offered.recv::<p::SourceData>().await?, sequence)?;
+                            offered.recv::<p::SourceData>().await?;
                             let input = state.data.take().map_err(|_| Error::Binding)?;
                             let result = match input {
                                 Input::Chunk(chunk) => {
@@ -537,20 +528,19 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                             };
                             match accepted {
                                 Admission::Accepted => {
-                                    endpoint.send::<p::SourceAccepted>(&sequence).await?
+                                    endpoint.send::<p::SourceAccepted>(&()).await?
                                 }
                                 Admission::Stopped => {
-                                    endpoint.send::<p::SourceStopped>(&sequence).await?
+                                    endpoint.send::<p::SourceStopped>(&()).await?
                                 }
                                 Admission::Interrupted => {
-                                    endpoint.send::<p::SourceRejected>(&sequence).await?
+                                    endpoint.send::<p::SourceRejected>(&()).await?
                                 }
                                 Admission::Failed => {
-                                    endpoint.send::<p::SourceDataFailed>(&sequence).await?
+                                    endpoint.send::<p::SourceDataFailed>(&()).await?
                                 }
                             }
-                            check(endpoint.recv::<p::SourceTaken>().await?, sequence)?;
-                            sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                            endpoint.recv::<p::SourceTaken>().await?;
                         }
                         173 => {
                             check(offered.recv::<p::SourceDataFinished>().await?, stream_id)?;
@@ -595,13 +585,13 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                 }
             }
             4 => {
-                check(offered.recv::<p::SourceDone>().await?, sequence)?;
+                offered.recv::<p::SourceDone>().await?;
                 if !state.data.is_empty() {
                     return Err(Error::Binding);
                 }
                 endpoint.send::<p::ProductionReclaimsDone>(&0).await?;
                 check(endpoint.recv::<p::ProductionReclaimsClosed>().await?, 0)?;
-                endpoint.send::<p::SourceRetired>(&sequence).await?;
+                endpoint.send::<p::SourceRetired>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),
@@ -1188,7 +1178,6 @@ mod stop_tests {
         let allocations = actor_test_allocator::NoAlloc::start();
         let mut all = pin!(crate::runtime::join2(
             async {
-                let mut sequence = 0;
                 {
                     let endpoint = &mut source;
                     let state = &state;
@@ -1204,7 +1193,7 @@ mod stop_tests {
                     let result = async {
                         let endpoint = &mut source;
                         let state = &state;
-                        let sequence = &mut sequence;
+
                         let input = if body {
                             Input::Body(CountingBody {
                                 drops: &drops,
@@ -1220,29 +1209,29 @@ mod stop_tests {
                         };
 
                         state.data.put(input).map_err(|_| Error::Binding)?;
-                        endpoint.send::<p::SourceData>(sequence).await?;
+                        endpoint.send::<p::SourceData>(&()).await?;
                         let reply = endpoint.offer().await?;
                         let accepted = match reply.label() {
                             1 => {
-                                check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
+                                reply.recv::<p::SourceAccepted>().await?;
                                 Admission::Accepted
                             }
                             2 => {
-                                check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
+                                reply.recv::<p::SourceRejected>().await?;
                                 Admission::Interrupted
                             }
                             187 => {
-                                check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
+                                reply.recv::<p::SourceStopped>().await?;
                                 Admission::Stopped
                             }
                             215 => {
-                                check(reply.recv::<p::SourceDataFailed>().await?, *sequence)?;
+                                reply.recv::<p::SourceDataFailed>().await?;
                                 Admission::Failed
                             }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
-                        endpoint.send::<p::SourceTaken>(sequence).await?;
-                        *sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                        endpoint.send::<p::SourceTaken>(&()).await?;
+
                         Ok(accepted)
                     }
                     .await?;
@@ -1299,7 +1288,7 @@ mod stop_tests {
                 let second_outcome = async {
                     let endpoint = &mut source;
                     let state = &state;
-                    let sequence = &mut sequence;
+
                     let input = if body {
                         Input::Body(CountingBody {
                             drops: &drops,
@@ -1315,29 +1304,29 @@ mod stop_tests {
                     };
 
                     state.data.put(input).map_err(|_| Error::Binding)?;
-                    endpoint.send::<p::SourceData>(sequence).await?;
+                    endpoint.send::<p::SourceData>(&()).await?;
                     let reply = endpoint.offer().await?;
                     let accepted = match reply.label() {
                         1 => {
-                            check(reply.recv::<p::SourceAccepted>().await?, *sequence)?;
+                            reply.recv::<p::SourceAccepted>().await?;
                             Admission::Accepted
                         }
                         2 => {
-                            check(reply.recv::<p::SourceRejected>().await?, *sequence)?;
+                            reply.recv::<p::SourceRejected>().await?;
                             Admission::Interrupted
                         }
                         187 => {
-                            check(reply.recv::<p::SourceStopped>().await?, *sequence)?;
+                            reply.recv::<p::SourceStopped>().await?;
                             Admission::Stopped
                         }
                         215 => {
-                            check(reply.recv::<p::SourceDataFailed>().await?, *sequence)?;
+                            reply.recv::<p::SourceDataFailed>().await?;
                             Admission::Failed
                         }
                         label => return Err(Error::UnexpectedLabel(label)),
                     };
-                    endpoint.send::<p::SourceTaken>(sequence).await?;
-                    *sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                    endpoint.send::<p::SourceTaken>(&()).await?;
+
                     Ok(accepted)
                 }
                 .await?;
@@ -1388,12 +1377,12 @@ mod stop_tests {
                 {
                     let endpoint = &mut source;
                     let control = &control;
-                    endpoint.send::<p::SourceDone>(&sequence).await?;
-                    check(endpoint.recv::<p::SourceRetired>().await?, sequence)?;
+                    endpoint.send::<p::SourceDone>(&()).await?;
+                    endpoint.recv::<p::SourceRetired>().await?;
                     if second_outcome == Admission::Failed {
-                        endpoint.send::<p::SourceFailed>(&sequence).await?;
+                        endpoint.send::<p::SourceFailed>(&()).await?;
                     } else {
-                        endpoint.send::<p::SourceJoined>(&sequence).await?;
+                        endpoint.send::<p::SourceJoined>(&()).await?;
                     }
                     control.changed()?;
                 }

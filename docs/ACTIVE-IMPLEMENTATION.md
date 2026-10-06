@@ -15,10 +15,15 @@ Earlier intermittent L1 client failures remain recorded in direct-locals.md;
 their cause is not established by later passes. The timer stop/expiry deadlock
 was separately reproduced pre-fix and corrected without dropping the actual
 expiry acknowledgement. Failed phases now preserve sealed authenticated
-capture/keylog/log evidence for private diagnosis; no real failed ciphertext
-has yet been obtained on this retention-enabled revision. See
+capture/keylog/log evidence for private diagnosis; the later33c83f4e trial supplied the first actual failed capsule. See
 [direct locals](direct-locals.md) for exact boundaries. Earlier evidence sections
 below are historical checkpoints, not current claims.
+
+The subsequent33c83f4e trial passed runtime37434925495 but failed server L1 in
+37434925514. Its actual encrypted capture was recovered: the1490-byte
+ClientHello lacked its357-byte tail at the server, while all three server ACKs
+were absent at the client. Other selected cells and controls passed. This trial
+is not a full pass; see the captured-evidence section in direct-locals.md.
 
 ## Architecture
 

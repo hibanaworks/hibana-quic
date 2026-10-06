@@ -258,7 +258,7 @@ pub(super) struct KeyAck<'scope> {
 }
 
 /// Each lane carries its actual affine object, beside its corresponding
-/// projected wire edge. Numeric wire sequence values are correlation only.
+/// projected edge. Scope and epoch binding belong to these actual objects.
 pub(crate) struct Exchange<'owner, 'scope> {
     pub(super) owner: &'owner KeyOwner<'scope>,
     pub(super) peer_update: Inbox<PeerUpdate<'scope>>,
@@ -293,20 +293,11 @@ impl<'owner, 'scope> Exchange<'owner, 'scope> {
 /// into ACK eligibility; neither this client nor the write owner can mint it.
 pub(crate) struct RxControl<'lane, 'owner, 'scope> {
     pub(super) exchange: &'lane Exchange<'owner, 'scope>,
-    pub(super) sequence: u64,
 }
 
 impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
     pub(crate) const fn new(exchange: &'lane Exchange<'owner, 'scope>) -> Self {
-        Self {
-            exchange,
-            sequence: 0,
-        }
-    }
-
-    pub(super) fn advance(&mut self) -> Result<(), Error> {
-        self.sequence = self.sequence.checked_add(1).ok_or(Error::Binding)?;
-        Ok(())
+        Self { exchange }
     }
 
     pub(crate) fn local_update_due(&self, target: u64, now: u64) -> Result<bool, Error> {
@@ -335,73 +326,64 @@ pub(crate) async fn run<'owner, 'scope>(
     if !core::ptr::eq(owner, exchange.owner) {
         return Err(Error::Binding);
     }
-    let mut sequence = 0u64;
     loop {
         let request = endpoint.offer().await?;
         match request.label() {
             11 => {
-                check(request.recv::<p::PeerUpdate>().await?, sequence)?;
+                request.recv::<p::PeerUpdate>().await?;
                 let result = owner.install_peer_update(exchange.peer_update.take()?);
                 let accepted = result.is_ok();
                 exchange.write_installed.put(result)?;
                 if accepted {
-                    endpoint.send::<p::WriteInstalled>(&sequence).await?;
+                    endpoint.send::<p::WriteInstalled>(&()).await?;
                 } else {
-                    endpoint.send::<p::UpdateFailed>(&sequence).await?;
+                    endpoint.send::<p::UpdateFailed>(&()).await?;
                 }
             }
             14 => {
-                check(request.recv::<p::KeyAck>().await?, sequence)?;
+                request.recv::<p::KeyAck>().await?;
                 let result = owner.acknowledge(exchange.key_ack.take()?);
                 let accepted = result.is_ok();
                 exchange.key_ack_applied.put(result)?;
                 if accepted {
-                    endpoint.send::<p::KeyAckApplied>(&sequence).await?;
+                    endpoint.send::<p::KeyAckApplied>(&()).await?;
                 } else {
-                    endpoint.send::<p::KeyAckFailed>(&sequence).await?;
+                    endpoint.send::<p::KeyAckFailed>(&()).await?;
                 }
             }
             17 => {
-                check(request.recv::<p::Confirmed>().await?, sequence)?;
+                request.recv::<p::Confirmed>().await?;
                 let result = owner.confirm(exchange.confirmation.take()?);
                 let accepted = result.is_ok();
                 exchange.confirmation_applied.put(result)?;
                 if accepted {
-                    endpoint.send::<p::ConfirmationApplied>(&sequence).await?;
+                    endpoint.send::<p::ConfirmationApplied>(&()).await?;
                 } else {
-                    endpoint.send::<p::ConfirmationFailed>(&sequence).await?;
+                    endpoint.send::<p::ConfirmationFailed>(&()).await?;
                 }
             }
             205 => {
-                check(request.recv::<p::LocalUpdate>().await?, sequence)?;
+                request.recv::<p::LocalUpdate>().await?;
                 let result = owner.local_update(exchange.local_update.take()?);
                 let accepted = result.is_ok();
                 exchange.local_result.put(result)?;
                 if accepted {
-                    endpoint.send::<p::LocalInstalled>(&sequence).await?;
+                    endpoint.send::<p::LocalInstalled>(&()).await?;
                 } else {
-                    endpoint.send::<p::LocalRejected>(&sequence).await?;
+                    endpoint.send::<p::LocalRejected>(&()).await?;
                 }
-                check(endpoint.recv::<p::LocalSettled>().await?, sequence)?;
+                endpoint.recv::<p::LocalSettled>().await?;
             }
             20 => {
-                check(request.recv::<p::KeysRetire>().await?, sequence)?;
+                request.recv::<p::KeysRetire>().await?;
                 owner.retire_control()?;
-                endpoint.send::<p::KeysRetired>(&sequence).await?;
+                endpoint.send::<p::KeysRetired>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),
         }
-        sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
-        crate::runtime::yield_now().await;
-    }
-}
 
-pub(super) fn check(received: u64, expected: u64) -> Result<(), Error> {
-    if received == expected {
-        Ok(())
-    } else {
-        Err(Error::Binding)
+        crate::runtime::yield_now().await;
     }
 }
 
@@ -461,7 +443,7 @@ mod tests {
             }),
         };
         let exchange = Exchange::new(&owner);
-        let mut control = RxControl::new(&exchange);
+        let control = RxControl::new(&exchange);
         let global = p::key_choreography();
         let rxp: RoleProgram<{ p::RX_KEYS }> = project(&global);
         let txp: RoleProgram<{ p::TX_KEYS }> = project(&global);
@@ -487,22 +469,21 @@ mod tests {
                     let now = 0;
                     let pto = 10;
 
-                    let sequence = control.sequence;
                     read.maintain(now, pto)?;
                     let ready = read.prepare_local_update()?;
                     control
                         .exchange
                         .local_update
                         .put(LocalUpdateRequest { ready, now, pto })?;
-                    endpoint.send::<p::LocalUpdate>(&sequence).await?;
+                    endpoint.send::<p::LocalUpdate>(&()).await?;
                     let offered = endpoint.offer().await?;
                     let accepted = match offered.label() {
                         206 => {
-                            check(offered.recv::<p::LocalInstalled>().await?, sequence)?;
+                            offered.recv::<p::LocalInstalled>().await?;
                             true
                         }
                         207 => {
-                            check(offered.recv::<p::LocalRejected>().await?, sequence)?;
+                            offered.recv::<p::LocalRejected>().await?;
                             false
                         }
                         label => {
@@ -522,8 +503,8 @@ mod tests {
                             Err(Error::Crypto(rejected.error))
                         }
                     };
-                    endpoint.send::<p::LocalSettled>(&sequence).await?;
-                    control.advance()?;
+                    endpoint.send::<p::LocalSettled>(&()).await?;
+
                     result
                 }
                 .await;
@@ -542,9 +523,8 @@ mod tests {
                 async {
                     let endpoint = &mut rx;
 
-                    let sequence = control.sequence;
-                    endpoint.send::<p::KeysRetire>(&sequence).await?;
-                    check(endpoint.recv::<p::KeysRetired>().await?, sequence)?;
+                    endpoint.send::<p::KeysRetire>(&()).await?;
+                    endpoint.recv::<p::KeysRetired>().await?;
                     Ok::<(), Error>(())
                 }
                 .await?;

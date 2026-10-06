@@ -1,6 +1,6 @@
 {
-  "request": "Qualify direct TLS and application progress without mirrored ordinals",
-  "requested_at": "2026-10-06T08:13:00Z",
+  "request": "Qualify literal source and key-control progress with captured-loss regression",
+  "requested_at": "2026-10-06T08:37:00Z",
   "scope": [
     "unchanged quiche controls",
     "both candidate directions",
@@ -19,6 +19,6 @@
     "server"
   ],
   "reference_implementation": "quiche",
-  "qualification": "Parent43c0c48a passed all runtime steps and C1/L1/M/Z both directions with unchanged quiche controls and six Lean/six Z3 groups. TLS transcript and application publication/ACK-batch/close progress now carry unit; mirrored sequence counters and TLS echo-check helper are removed. Real stream/packet identities, affine receipts, actual IO settlement and cancellation secret-clearing guards remain. Local full cargo, host116, referenceTLS29, thumbv6m, selected host Clippy, Python69 and source/core audits pass. Verify this exact source independently. Older intermittent L1 failures remain unresolved; failed phases retain authenticated encrypted actual captures and keylogs privately. No full audit or matrix completion claim.",
+  "qualification": "Prior33c83f4e runtime passed but official server L1 failed. Its actual encrypted capture was recovered and Initial-authenticated: ClientHello1490 bytes lacked tail357 at server; all three server ACKs absent at client. Failure retained, other C1/L1/M/Z cells and controls passed. New source removes mirrored key/source counters while retaining actual affine scope/epoch/stream/IO validation. Synthetic observed-range framing regression added, not claimed as full runner replay. Final full cargo, thumb, host116, referenceTLS29, selected host Clippy and new test pass. Verify this source without changing runner/peer/loss/timeouts. Older candidate-client loss causes remain unresolved. Failed captures remain encrypted privately.",
   "formal_models": true
 }

@@ -90,17 +90,16 @@ pub(crate) async fn run<
                 let endpoint = &mut *endpoint;
                 let confirmation = ScopedHandshakeConfirmation::from_connection(confirmation);
 
-                let sequence = keys.sequence;
                 keys.exchange.confirmation.put(confirmation)?;
-                endpoint.send::<p::Confirmed>(&sequence).await?;
+                endpoint.send::<p::Confirmed>(&()).await?;
                 let response = endpoint.offer().await?;
                 let accepted = match response.label() {
                     18 => {
-                        keys::check(response.recv::<p::ConfirmationApplied>().await?, sequence)?;
+                        response.recv::<p::ConfirmationApplied>().await?;
                         true
                     }
                     19 => {
-                        keys::check(response.recv::<p::ConfirmationFailed>().await?, sequence)?;
+                        response.recv::<p::ConfirmationFailed>().await?;
                         false
                     }
                     label => {
@@ -109,7 +108,7 @@ pub(crate) async fn run<
                 };
                 let result = keys.exchange.confirmation_applied.take()?;
                 keys::check_result(&result, accepted)?;
-                keys.advance()?;
+
                 result
             }
             .await?;
@@ -300,29 +299,20 @@ pub(crate) async fn run<
                                         let installed = async {
                                             let endpoint = &mut *endpoint;
 
-                                            let sequence = keys.sequence;
                                             keys.exchange.peer_update.put(keys::PeerUpdate {
                                                 authenticated,
                                                 now,
                                                 pto,
                                             })?;
-                                            endpoint.send::<p::PeerUpdate>(&sequence).await?;
+                                            endpoint.send::<p::PeerUpdate>(&()).await?;
                                             let response = endpoint.offer().await?;
                                             let accepted = match response.label() {
                                                 12 => {
-                                                    keys::check(
-                                                        response
-                                                            .recv::<p::WriteInstalled>()
-                                                            .await?,
-                                                        sequence,
-                                                    )?;
+                                                    response.recv::<p::WriteInstalled>().await?;
                                                     true
                                                 }
                                                 13 => {
-                                                    keys::check(
-                                                        response.recv::<p::UpdateFailed>().await?,
-                                                        sequence,
-                                                    )?;
+                                                    response.recv::<p::UpdateFailed>().await?;
                                                     false
                                                 }
                                                 label => {
@@ -333,7 +323,7 @@ pub(crate) async fn run<
                                             };
                                             let result = keys.exchange.write_installed.take()?;
                                             keys::check_result(&result, accepted)?;
-                                            keys.advance()?;
+
                                             result
                                         }
                                         .await?;
@@ -369,27 +359,20 @@ pub(crate) async fn run<
                                         let validated =
                                             ValidatedKeyAck::from_connection_ack(grant)?;
 
-                                        let sequence = keys.sequence;
                                         keys.exchange.key_ack.put(keys::KeyAck {
                                             validated,
                                             now,
                                             pto,
                                         })?;
-                                        endpoint.send::<p::KeyAck>(&sequence).await?;
+                                        endpoint.send::<p::KeyAck>(&()).await?;
                                         let response = endpoint.offer().await?;
                                         let accepted = match response.label() {
                                             15 => {
-                                                keys::check(
-                                                    response.recv::<p::KeyAckApplied>().await?,
-                                                    sequence,
-                                                )?;
+                                                response.recv::<p::KeyAckApplied>().await?;
                                                 true
                                             }
                                             16 => {
-                                                keys::check(
-                                                    response.recv::<p::KeyAckFailed>().await?,
-                                                    sequence,
-                                                )?;
+                                                response.recv::<p::KeyAckFailed>().await?;
                                                 false
                                             }
                                             label => {
@@ -398,7 +381,7 @@ pub(crate) async fn run<
                                         };
                                         let result = keys.exchange.key_ack_applied.take()?;
                                         keys::check_result(&result, accepted)?;
-                                        keys.advance()?;
+
                                         result
                                     }
                                     .await?;
@@ -433,27 +416,20 @@ pub(crate) async fn run<
                                                     confirmation,
                                                 );
 
-                                            let sequence = keys.sequence;
                                             keys.exchange.confirmation.put(confirmation)?;
-                                            endpoint.send::<p::Confirmed>(&sequence).await?;
+                                            endpoint.send::<p::Confirmed>(&()).await?;
                                             let response = endpoint.offer().await?;
                                             let accepted = match response.label() {
                                                 18 => {
-                                                    keys::check(
-                                                        response
-                                                            .recv::<p::ConfirmationApplied>()
-                                                            .await?,
-                                                        sequence,
-                                                    )?;
+                                                    response
+                                                        .recv::<p::ConfirmationApplied>()
+                                                        .await?;
                                                     true
                                                 }
                                                 19 => {
-                                                    keys::check(
-                                                        response
-                                                            .recv::<p::ConfirmationFailed>()
-                                                            .await?,
-                                                        sequence,
-                                                    )?;
+                                                    response
+                                                        .recv::<p::ConfirmationFailed>()
+                                                        .await?;
                                                     false
                                                 }
                                                 label => {
@@ -465,7 +441,7 @@ pub(crate) async fn run<
                                             let result =
                                                 keys.exchange.confirmation_applied.take()?;
                                             keys::check_result(&result, accepted)?;
-                                            keys.advance()?;
+
                                             result
                                         }
                                         .await?;
@@ -568,27 +544,20 @@ pub(crate) async fn run<
                                         let now = clock.now();
                                         let pto = update_pto;
 
-                                        let sequence = keys.sequence;
                                         read.maintain(now, pto)?;
                                         let ready = read.prepare_local_update()?;
                                         keys.exchange
                                             .local_update
                                             .put(keys::LocalUpdateRequest { ready, now, pto })?;
-                                        endpoint.send::<p::LocalUpdate>(&sequence).await?;
+                                        endpoint.send::<p::LocalUpdate>(&()).await?;
                                         let offered = endpoint.offer().await?;
                                         let accepted = match offered.label() {
                                             206 => {
-                                                keys::check(
-                                                    offered.recv::<p::LocalInstalled>().await?,
-                                                    sequence,
-                                                )?;
+                                                offered.recv::<p::LocalInstalled>().await?;
                                                 true
                                             }
                                             207 => {
-                                                keys::check(
-                                                    offered.recv::<p::LocalRejected>().await?,
-                                                    sequence,
-                                                )?;
+                                                offered.recv::<p::LocalRejected>().await?;
                                                 false
                                             }
                                             label => {
@@ -608,8 +577,8 @@ pub(crate) async fn run<
                                                 Err(keys::Error::Crypto(rejected.error))
                                             }
                                         };
-                                        endpoint.send::<p::LocalSettled>(&sequence).await?;
-                                        keys.advance()?;
+                                        endpoint.send::<p::LocalSettled>(&()).await?;
+
                                         result
                                     }
                                     .await?;
@@ -854,9 +823,8 @@ pub(crate) async fn run<
     Ok(async {
         let endpoint = rx_keys;
 
-        let sequence = keys.sequence;
-        endpoint.send::<p::KeysRetire>(&sequence).await?;
-        keys::check(endpoint.recv::<p::KeysRetired>().await?, sequence)?;
+        endpoint.send::<p::KeysRetire>(&()).await?;
+        endpoint.recv::<p::KeysRetired>().await?;
         Ok::<(), keys::Error>(())
     }
     .await?)

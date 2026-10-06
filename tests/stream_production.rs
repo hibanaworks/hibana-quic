@@ -35,10 +35,10 @@ fn run(chunks: usize, abandon: bool, rejected: bool, illegal: u8) {
     let mut all = pin!(join2(
         async {
             source.send::<p::SourceOpen>(&4).await?;
-            for n in 0..chunks as u64 {
-                source.send::<p::SourceData>(&n).await?;
-                assert_eq!(source.offer().await?.recv::<p::SourceAccepted>().await?, n);
-                source.send::<p::SourceTaken>(&n).await?;
+            for _ in 0..chunks {
+                source.send::<p::SourceData>(&()).await?;
+                source.offer().await?.recv::<p::SourceAccepted>().await?;
+                source.send::<p::SourceTaken>(&()).await?;
             }
             source.send::<p::SourceDataFinished>(&4).await?;
             if abandon {
@@ -54,7 +54,7 @@ fn run(chunks: usize, abandon: bool, rejected: bool, illegal: u8) {
             }
             match illegal {
                 1 => assert!(
-                    source.send::<p::SourceData>(&99).await.is_err(),
+                    source.send::<p::SourceData>(&()).await.is_err(),
                     "data roll reopened after terminal"
                 ),
                 2 => assert!(
@@ -66,18 +66,18 @@ fn run(chunks: usize, abandon: bool, rejected: bool, illegal: u8) {
                     "abandon repeated after terminal"
                 ),
                 _ => {
-                    source.send::<p::SourceDone>(&(chunks as u64)).await?;
-                    assert_eq!(source.recv::<p::SourceRetired>().await?, chunks as u64);
+                    source.send::<p::SourceDone>(&()).await?;
+                    source.recv::<p::SourceRetired>().await?;
                 }
             }
             Ok::<_, EndpointError>(())
         },
         async {
             assert_eq!(ingress.offer().await?.recv::<p::SourceOpen>().await?, 4);
-            for n in 0..chunks as u64 {
-                assert_eq!(ingress.offer().await?.recv::<p::SourceData>().await?, n);
-                ingress.send::<p::SourceAccepted>(&n).await?;
-                assert_eq!(ingress.recv::<p::SourceTaken>().await?, n);
+            for _ in 0..chunks {
+                ingress.offer().await?.recv::<p::SourceData>().await?;
+                ingress.send::<p::SourceAccepted>(&()).await?;
+                ingress.recv::<p::SourceTaken>().await?;
             }
             assert_eq!(
                 ingress
@@ -99,11 +99,8 @@ fn run(chunks: usize, abandon: bool, rejected: bool, illegal: u8) {
                 ingress.send::<p::SourceEnded>(&4).await?;
             }
             if illegal == 0 {
-                assert_eq!(
-                    ingress.offer().await?.recv::<p::SourceDone>().await?,
-                    chunks as u64
-                );
-                ingress.send::<p::SourceRetired>(&(chunks as u64)).await?;
+                ingress.offer().await?.recv::<p::SourceDone>().await?;
+                ingress.send::<p::SourceRetired>(&()).await?;
             }
             Ok(())
         }
@@ -157,14 +154,14 @@ fn stopped_stream_then_next(stop_at_fin: bool) {
     let mut all = pin!(join2(
         async {
             source.send::<p::SourceOpen>(&4).await?;
-            source.send::<p::SourceData>(&0).await?;
+            source.send::<p::SourceData>(&()).await?;
             let reply = source.offer().await?;
             if stop_at_fin {
-                assert_eq!(reply.recv::<p::SourceAccepted>().await?, 0);
+                reply.recv::<p::SourceAccepted>().await?;
             } else {
-                assert_eq!(reply.recv::<p::SourceStopped>().await?, 0);
+                reply.recv::<p::SourceStopped>().await?;
             }
-            source.send::<p::SourceTaken>(&0).await?;
+            source.send::<p::SourceTaken>(&()).await?;
             source.send::<p::SourceDataFinished>(&4).await?;
             if stop_at_fin {
                 source.send::<p::SourceFin>(&4).await?;
@@ -183,19 +180,19 @@ fn stopped_stream_then_next(stop_at_fin: bool) {
             source.send::<p::SourceDataFinished>(&8).await?;
             source.send::<p::SourceFin>(&8).await?;
             assert_eq!(source.offer().await?.recv::<p::SourceEnded>().await?, 8);
-            source.send::<p::SourceDone>(&1).await?;
-            assert_eq!(source.recv::<p::SourceRetired>().await?, 1);
+            source.send::<p::SourceDone>(&()).await?;
+            source.recv::<p::SourceRetired>().await?;
             Ok::<_, EndpointError>(())
         },
         async {
             assert_eq!(ingress.offer().await?.recv::<p::SourceOpen>().await?, 4);
-            assert_eq!(ingress.offer().await?.recv::<p::SourceData>().await?, 0);
+            ingress.offer().await?.recv::<p::SourceData>().await?;
             if stop_at_fin {
-                ingress.send::<p::SourceAccepted>(&0).await?;
+                ingress.send::<p::SourceAccepted>(&()).await?;
             } else {
-                ingress.send::<p::SourceStopped>(&0).await?;
+                ingress.send::<p::SourceStopped>(&()).await?;
             }
-            assert_eq!(ingress.recv::<p::SourceTaken>().await?, 0);
+            ingress.recv::<p::SourceTaken>().await?;
             assert_eq!(
                 ingress
                     .offer()
@@ -223,8 +220,8 @@ fn stopped_stream_then_next(stop_at_fin: bool) {
             );
             assert_eq!(ingress.offer().await?.recv::<p::SourceFin>().await?, 8);
             ingress.send::<p::SourceEnded>(&8).await?;
-            assert_eq!(ingress.offer().await?.recv::<p::SourceDone>().await?, 1);
-            ingress.send::<p::SourceRetired>(&1).await?;
+            ingress.offer().await?.recv::<p::SourceDone>().await?;
+            ingress.send::<p::SourceRetired>(&()).await?;
             Ok(())
         }
     ));
