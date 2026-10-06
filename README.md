@@ -30,6 +30,8 @@ in a wrapper; see [the direct-local checkpoint](docs/direct-locals.md).
   HelloRetry, certificates and Finished. No synchronous handshake dispatcher.
 - [Application roles](src/connection/application): bounded stream transfer,
   packet-key ownership, recovery and close.
+- [Application assembly](src/connection/application/assembly): caller-owned role
+  futures, their owned results and joins; local protocol exchanges remain direct.
 - [Core scheduler](src/runtime.rs) and
   [host reactor](adapters/host/src/async_io.rs): actual wake, backpressure,
   fairness and cancellation behavior.
@@ -71,7 +73,7 @@ the complete Rust implementation, cryptography or interoperability.
 ## Build and test
 
 Rust 1.95.0 is pinned. Hibana is vendored from
-`development/rolled-route-ownership` at `ee5727d80b49c2c5533f5f1d42d5cae7373b2a70` without local patches.
+`development/rolled-route-ownership` at `c3d89f787aa1a8e066b310a5307fdf7cb076ee26` without local patches.
 
 ```sh
 cargo test --locked

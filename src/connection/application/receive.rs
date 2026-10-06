@@ -18,12 +18,7 @@ use crate::{
     streams,
     tls::Level,
 };
-use core::{
-    cell::RefCell,
-    future::{Future, poll_fn},
-    pin::pin,
-    task::Poll,
-};
+use core::cell::RefCell;
 use hibana::Endpoint;
 use zeroize::Zeroizing;
 
@@ -187,57 +182,50 @@ pub(crate) async fn run<
                     datagram = bytes;
                     Some(Ok(len))
                 } else {
-                    let mut input = pin!(control.until_stop(3, socket.receive(&mut datagram)));
-                    match poll_fn(|cx| Poll::Ready(input.as_mut().poll(cx))).await {
-                        Poll::Ready(result) => result,
-                        Poll::Pending => {
-                            async {
-                                let endpoint = &mut *receive;
+                    crate::runtime::on_pending(
+                        control.until_stop(3, socket.receive(&mut datagram)),
+                        async {
+                            let endpoint = &mut *receive;
 
-                                // A sink error asks the independent completion lane to close. Do not keep
-                                // redispatching that same ready stream while that lane is being scheduled.
-                                while !control.stopping() {
-                                    let ready = app
-                                        .try_borrow()
-                                        .map_err(|_| Error::Binding)?
-                                        .ready_streams()?;
-                                    let Some(stream) = ready
-                                        .into_iter()
-                                        .flatten()
-                                        .find(|stream| !state.is_complete(stream.id()))
-                                    else {
-                                        break;
-                                    };
-                                    let id = stream.id();
-                                    endpoint.send::<p::ReceivedData>(&id).await?;
-                                    let result = endpoint.offer().await?;
-                                    match result.label() {
-                                        7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
-                                        8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
-                                        219 => {
-                                            check(
-                                                result.recv::<p::ReceivedInterrupted>().await?,
-                                                id,
-                                            )?;
-                                            if !control.stopping() {
-                                                return Err(Error::Binding);
-                                            }
+                            // A sink error asks the independent completion lane to close. Do not keep
+                            // redispatching that same ready stream while that lane is being scheduled.
+                            while !control.stopping() {
+                                let ready = app
+                                    .try_borrow()
+                                    .map_err(|_| Error::Binding)?
+                                    .ready_streams()?;
+                                let Some(stream) = ready
+                                    .into_iter()
+                                    .flatten()
+                                    .find(|stream| !state.is_complete(stream.id()))
+                                else {
+                                    break;
+                                };
+                                let id = stream.id();
+                                endpoint.send::<p::ReceivedData>(&id).await?;
+                                let result = endpoint.offer().await?;
+                                match result.label() {
+                                    7 => check(result.recv::<p::ReceivedMore>().await?, id)?,
+                                    8 => check(result.recv::<p::ReceivedFin>().await?, id)?,
+                                    219 => {
+                                        check(result.recv::<p::ReceivedInterrupted>().await?, id)?;
+                                        if !control.stopping() {
+                                            return Err(Error::Binding);
                                         }
-                                        217 => {
-                                            check(result.recv::<p::ReceivedFailed>().await?, id)?;
-                                            return Err(Error::Application);
-                                        }
-                                        label => return Err(Error::UnexpectedLabel(label)),
                                     }
-                                    crate::runtime::yield_now().await;
+                                    217 => {
+                                        check(result.recv::<p::ReceivedFailed>().await?, id)?;
+                                        return Err(Error::Application);
+                                    }
+                                    label => return Err(Error::UnexpectedLabel(label)),
                                 }
-                                Ok::<(), Error>(())
+                                crate::runtime::yield_now().await;
                             }
-                            .await?;
                             burst = 0;
-                            input.await
-                        }
-                    }
+                            Ok::<(), Error>(())
+                        },
+                    )
+                    .await?
                 };
                 let Some(result) = result else {
                     break;
@@ -698,10 +686,10 @@ pub(crate) async fn run<
                                     kind: CloseKind::Peer { code },
                                 })
                                 .map_err(|_| Error::Binding)?;
-                            let sequence = termination.sequence();
-                            peer_event.send::<p::PeerClose>(&sequence).await?;
+
+                            peer_event.send::<p::PeerClose>(&()).await?;
                             control.revoke()?;
-                            check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+                            peer_event.recv::<p::PeerSeen>().await?;
                             return Ok::<(), Error>(());
                         }
                         Ok(None) => {}
@@ -720,10 +708,10 @@ pub(crate) async fn run<
                                     },
                                 })
                                 .map_err(|_| Error::Binding)?;
-                            let sequence = termination.sequence();
-                            peer_event.send::<p::PeerFailed>(&sequence).await?;
+
+                            peer_event.send::<p::PeerFailed>(&()).await?;
                             control.revoke()?;
-                            check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+                            peer_event.recv::<p::PeerSeen>().await?;
                             return Ok::<(), Error>(());
                         }
                     }
@@ -824,9 +812,9 @@ pub(crate) async fn run<
             if !termination.peer.is_empty() {
                 return Err(Error::Binding);
             }
-            let sequence = termination.sequence();
-            peer_event.send::<p::PeerCancelled>(&sequence).await?;
-            check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+
+            peer_event.send::<p::PeerCancelled>(&()).await?;
+            peer_event.recv::<p::PeerSeen>().await?;
             Ok::<(), Error>(())
         }
         .await?;
@@ -849,12 +837,10 @@ pub(crate) async fn run<
                     },
                 })
                 .map_err(|_| Error::Binding)?;
-            let sequence = termination.sequence();
-            peer_event
-                .send::<p::PeerApplicationFailed>(&sequence)
-                .await?;
+
+            peer_event.send::<p::PeerApplicationFailed>(&()).await?;
             control.revoke()?;
-            check(peer_event.recv::<p::PeerSeen>().await?, sequence)?;
+            peer_event.recv::<p::PeerSeen>().await?;
         }
         Err(error) => return Err(error),
     }

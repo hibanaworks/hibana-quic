@@ -453,3 +453,119 @@ fn six_real_roles_repeat_parallel_routes_while_an_independent_receive_is_idle() 
     }
     panic!("bounded repeated work failed to finish and leave only idle tasks");
 }
+
+#[test]
+fn runtime_select_prefers_observed_first_completion_and_drops_the_loser() {
+    struct Pending<'a>(&'a Cell<usize>);
+    impl Future for Pending<'_> {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+            Poll::Pending
+        }
+    }
+    impl Drop for Pending<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    let dropped = Cell::new(0);
+    let mut task = pin!(hibana_quic::runtime::select(ready(7), Pending(&dropped)));
+    assert_eq!(
+        task.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(core::ops::ControlFlow::Break(7))
+    );
+    assert_eq!(dropped.get(), 1);
+    let mut both = pin!(hibana_quic::runtime::select(ready(1), ready(2)));
+    assert_eq!(
+        both.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(core::ops::ControlFlow::Break(1))
+    );
+}
+
+#[test]
+fn runtime_companion_preserves_the_same_pending_io_owner() {
+    struct Io<'a> {
+        polls: &'a Cell<usize>,
+        dropped: &'a Cell<usize>,
+    }
+    impl Future for Io<'_> {
+        type Output = u8;
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<u8> {
+            self.polls.set(self.polls.get() + 1);
+            if self.polls.get() == 1 {
+                Poll::Pending
+            } else {
+                Poll::Ready(9)
+            }
+        }
+    }
+    impl Drop for Io<'_> {
+        fn drop(&mut self) {
+            self.dropped.set(self.dropped.get() + 1);
+        }
+    }
+    let polls = Cell::new(0);
+    let dropped = Cell::new(0);
+    let task = hibana_quic::runtime::on_pending(
+        Io {
+            polls: &polls,
+            dropped: &dropped,
+        },
+        async {
+            assert_eq!(polls.get(), 1);
+            assert_eq!(dropped.get(), 0);
+            Ok::<(), ()>(())
+        },
+    );
+    let mut task = pin!(task);
+    assert_eq!(
+        task.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(Ok(9))
+    );
+    assert_eq!(polls.get(), 2);
+    assert_eq!(dropped.get(), 1);
+    let ran = Cell::new(false);
+    let mut ready_io = pin!(hibana_quic::runtime::on_pending(ready(10), async {
+        ran.set(true);
+        Ok::<(), ()>(())
+    }));
+    assert_eq!(
+        ready_io
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(Ok(10))
+    );
+    assert!(!ran.get());
+}
+
+#[test]
+fn standard_join_macro_drives_actual_capacity_one_hibana_locals() {
+    with_pair(pair_programs(), |mut source, mut sink, carrier| {
+        let first = async {
+            for n in 0..4 {
+                source.send::<Msg<10, u32>>(&n).await?;
+                assert_eq!(source.recv::<Msg<11, u32>>().await?, n);
+            }
+            Ok::<(), EndpointError>(())
+        };
+        let second = async {
+            for _ in 0..4 {
+                let n = sink.recv::<Msg<10, u32>>().await?;
+                sink.send::<Msg<11, u32>>(&n).await?;
+            }
+            Ok::<(), EndpointError>(())
+        };
+        let mut joined = pin!(async { futures_util::try_join!(first, second) });
+        for _ in 0..32 {
+            if let Poll::Ready(result) = joined
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+            {
+                result.unwrap();
+                assert_eq!(carrier.queued(), 0);
+                return;
+            }
+        }
+        panic!("real local continuations failed to join");
+    });
+}

@@ -2,28 +2,24 @@
 //! bounded stream IO, ordinary retirement, closing and draining.
 
 mod acknowledgments;
-mod early;
-mod early_client;
+mod assembly;
 mod io;
 mod keys;
 pub mod protocol;
 mod receive;
 pub(super) mod reclaim;
 mod reset;
-mod run;
-mod startup;
 mod termination;
 mod timer;
 mod transmit;
 
-pub use run::{client, client_early, server};
+pub use assembly::{client, client_early, server};
 
 use super::{Config, Outcome, application_stream, parameters, recovery};
 use crate::{connection::publication_gate, crypto, handshake::CryptoBuffer, packet, streams};
 use core::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},
-    pin::pin,
     task::{Poll, Waker},
 };
 use hibana::{Endpoint, EndpointError};
@@ -290,19 +286,16 @@ impl<'gate, 'scope> Control<'gate, 'scope> {
         .await
     }
     pub(crate) async fn until_stop<F: Future>(&self, lane: usize, future: F) -> Option<F::Output> {
-        let mut future = pin!(future);
-        poll_fn(|cx| {
+        crate::runtime::until_cancelled(future, |cx| {
             if self.stopping() {
-                return Poll::Ready(None);
+                return true;
             }
             self.register(lane, cx.waker());
-            if self.stopping() {
-                return Poll::Ready(None);
-            }
-            future.as_mut().poll(cx).map(Some)
+            self.stopping()
         })
         .await
     }
+
     pub(crate) fn revoke(&self) -> Result<(), Error> {
         let stop = self.stop.borrow_mut().take();
         if let Some(stop) = stop {

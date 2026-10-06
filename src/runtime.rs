@@ -99,6 +99,60 @@ impl<E, const N: usize> Future for TaskSet<'_, E, N> {
     }
 }
 
+/// Poll two owned futures, preferring the first when both are ready. The losing
+/// future is dropped before return. Use only where cancelling it is permitted.
+pub async fn select<A: Future, B: Future>(
+    first: A,
+    second: B,
+) -> core::ops::ControlFlow<A::Output, B::Output> {
+    let mut first = pin!(first);
+    let mut second = pin!(second);
+    poll_fn(|cx| {
+        if let Poll::Ready(value) = first.as_mut().poll(cx) {
+            return Poll::Ready(core::ops::ControlFlow::Break(value));
+        }
+        second
+            .as_mut()
+            .poll(cx)
+            .map(core::ops::ControlFlow::Continue)
+    })
+    .await
+}
+
+/// Keep the same pending IO future owned while independent work makes progress.
+/// An immediately ready IO does not run the companion. Companion failure drops
+/// and cancels the original future; success resumes that exact pending future.
+pub async fn on_pending<F, G, T, E>(future: F, work: G) -> Result<T, E>
+where
+    F: Future<Output = T>,
+    G: Future<Output = Result<(), E>>,
+{
+    let mut future = pin!(future);
+    if let Poll::Ready(value) = poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await {
+        return Ok(value);
+    }
+    work.await?;
+    Ok(future.await)
+}
+
+/// Executor-side cancellation polling; the supplied predicate observes the
+/// caller's real cancellation authority and registers its wake before returning.
+pub async fn until_cancelled<F, C>(future: F, mut cancelled: C) -> Option<F::Output>
+where
+    F: Future,
+    C: FnMut(&mut Context<'_>) -> bool,
+{
+    let mut future = pin!(future);
+    poll_fn(|cx| {
+        if cancelled(cx) {
+            Poll::Ready(None)
+        } else {
+            future.as_mut().poll(cx).map(Some)
+        }
+    })
+    .await
+}
+
 /// Run two owned, heterogeneous futures with one fixed fair task set.
 ///
 /// Returning an error or dropping this future drops both child futures and

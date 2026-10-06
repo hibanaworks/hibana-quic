@@ -2,7 +2,7 @@
 //!
 //! A pending packet owns both numerical reservations and immutable sealed
 //! bytes. Key borrows finish before any endpoint or adapter is awaited.
-use super::{CloseKind, Control, Error, keys, protocol as p, startup};
+use super::{CloseKind, Control, Error, assembly::ownership, keys, protocol as p};
 use crate::{
     accounting::AccountingError,
     connection::publication_gate,
@@ -16,8 +16,9 @@ use crate::{
     packet::{self, Frame},
     tls::Level,
 };
+use core::cell::{Cell, RefCell};
+#[cfg(test)]
 use core::{
-    cell::{Cell, RefCell},
     future::{Future, poll_fn},
     pin::pin,
     task::Poll,
@@ -912,13 +913,13 @@ pub(crate) async fn close<
     control: &Control<'_, 'scope>,
     state: &State<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
     owner: &'owner keys::KeyOwner<'scope>,
-    closing: startup::Closing<'scope>,
+    closing: ownership::Closing<'scope>,
     book: &mut recovery::Tx<'book, 'scope, N>,
     peer: &ConnectionId,
     receive: &mut impl DatagramRx,
     clock: &impl Clock,
 ) -> Result<(), Error> {
-    let startup::Closing {
+    let ownership::Closing {
         ordinary: retired,
         permission,
     } = closing;
@@ -964,24 +965,14 @@ pub(crate) async fn close<
                 // Ordinary RX has actually retired, transferring its native
                 // receive borrow here. Observe late datagrams during closing
                 // rather than abandoning them behind three blind timer sends.
-                let input = {
-                    let mut input = pin!(receive.receive(&mut received));
-                    let mut timer = pin!(clock.wait_until(retry_at.min(deadline)));
-                    poll_fn(|cx| {
-                        if clock.now() >= deadline {
-                            return Poll::Ready(None);
-                        }
-                        // Due publication must not be starved by continuously
-                        // ready (possibly invalid) input during closing.
-                        if timer.as_mut().poll(cx).is_ready() {
-                            return Poll::Ready(None);
-                        }
-                        if let Poll::Ready(result) = input.as_mut().poll(cx) {
-                            return Poll::Ready(Some(result));
-                        }
-                        Poll::Pending
-                    })
-                    .await
+                let input = match crate::runtime::select(
+                    clock.wait_until(retry_at.min(deadline)),
+                    receive.receive(&mut received),
+                )
+                .await
+                {
+                    core::ops::ControlFlow::Break(()) => None,
+                    core::ops::ControlFlow::Continue(result) => Some(result),
                 };
                 let reply_budget = match input {
                     Some(Ok(len)) if len <= N => {
@@ -1148,20 +1139,15 @@ pub(crate) async fn publish_close<
                         packet: Some(packet),
                         state,
                     };
-                    let accepted_at = {
-                        let mut send = pin!(socket.send(pending.bytes()));
-                        let mut timeout = pin!(clock.wait_until(deadline));
-                        poll_fn(|cx| {
-                            // An observed actual completion wins over deadline
-                            // readiness from the same poll turn.
-                            match send.as_mut().poll(cx) {
-                                Poll::Ready(Ok(at)) => return Poll::Ready(Some(at)),
-                                Poll::Ready(Err(_)) => return Poll::Ready(None),
-                                Poll::Pending => {}
-                            }
-                            timeout.as_mut().poll(cx).map(|()| None)
-                        })
-                        .await
+                    let accepted_at = match crate::runtime::select(
+                        socket.send(pending.bytes()),
+                        clock.wait_until(deadline),
+                    )
+                    .await
+                    {
+                        core::ops::ControlFlow::Break(Ok(at)) => Some(at),
+                        core::ops::ControlFlow::Break(Err(_))
+                        | core::ops::ControlFlow::Continue(()) => None,
                     };
                     pending.complete(accepted_at)?;
                     accepted_at

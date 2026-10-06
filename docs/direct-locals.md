@@ -185,3 +185,63 @@ checks or proper retirement. Client L1 reported successful transfer/retirement
 with 259285 ms duration, but the overall 600-second client phase expired before
 M/Z and produced no final client verdict JSON. The next request isolates M/Z;
 C1/L1 termination latency remains an explicit regression investigation.
+
+
+## Executor boundary and remaining loss failure (2026-10-06)
+
+The experimental 130c864 checkpoint uses unmodified Hibana c3d89f78. Its runtime
+CI 37398933045 passed. In official run 37398932952, all quiche self-controls
+C1/L1/M/Z passed, candidate server C1/L1/M/Z passed, and candidate client C1/M/Z
+passed. Client L1 timed out at the unchanged 300-second limit, with 49 of 50
+length-complete files and no final report. File lengths are not content
+verification. This remaining failure is not established to be only shutdown:
+one response is missing. Historical unique qualification remains 30/44.
+
+The following readability candidate separates application assembly from locals:
+
+- `application/assembly/mod.rs` binds and drives the independent projected roles.
+- `assembly/ownership.rs` transfers actual startup/retirement owners and returns
+  their values directly. It no longer stores Option result mirrors to extract
+  them after joining.
+- `timer.rs` and `termination.rs` write their projected send/recv operations
+  directly. Pure completion/retirement messages use unit payloads; redundant
+  sequence counters and equality checks have been removed. Actual resource,
+  cryptographic, stream identity and native IO validation is retained.
+- `runtime.rs` contains protocol-neutral polling/cancellation primitives.
+  Pending native IO is kept as the same future during companion work; it is not
+  cancelled and reconstructed. Their tests cover actual drop and wake behavior.
+
+Pinning is an executor requirement, not a replacement choreography. Standard
+`try_join!` is concentrated at role assembly boundaries where it keeps futures
+in place without allocation in the core. Owned-join replacements overflowed the
+normal debug test stack and were rejected, rather than increasing that stack or
+calling a cosmetic pin-free rewrite an improvement. Explicit pinning remains
+where it makes retaining/cancelling the actual future simpler. This is not a
+claim that every remaining local has been fully audited.
+
+For the remaining official loss failure, host diagnostics sample the actual
+Hibana tap at existing polls. Sampling registers no timer or wake, does not
+select a route and cannot change a verdict. Only fixed numeric tap metadata
+and exact terminal fields are extracted into bounded CI artifacts. The next
+run must establish the stalled connection's actual progress before attributing
+or claiming to fix the root cause. Raw logs and peer-controlled text stay private.
+
+
+The readability candidate passed 423 core unit tests, the integration groups
+(including 17 connected application and 12 runtime tests), and 26 doctests.
+Host suites passed 115 tests; embedded thumbv6m compiled; 58 Python tests passed.
+Selected host `--lib --bin hq` strict Clippy passed. The broader core
+`--all-targets -D warnings` invocation failed on 47 diagnostics (including
+existing large affine-error payloads and fixture lints); it is not a full
+strict-Clippy pass. Native/official qualification for this candidate remains
+pending until its exact-source evidence is recorded.
+
+The candidate's immutable native binary SHA256 is
+`8ab9ce8e6f7cfeb1fcd42f4c46f3d4dafab372c2161f1d98cd667346aaed6184`.
+Fresh fifty-connection self diagnostics passed deterministic loss and corruption
+with all file hashes matching, zero idle expiries and all resources retired.
+The loss sample exported fifty actual finished tap records on each endpoint and
+fifty client terminal records. Unchanged native Neqo 40-file 0-RTT and 1999-file
+multiplexing passed both directions. These are diagnostic fixtures, not the
+unmodified official runner's loss verdict; the outstanding 49/50 failure is not
+claimed fixed. The actual TLS/RSA/resumption/early reference test groups passed.

@@ -286,6 +286,35 @@ def summarize_log(raw, endpoint=False):
     record['line_count'] = len(lines)
     record['error_classes'] = sorted({label for pattern, label in ENDPOINT_CLASSES.items() if any(pattern in line for line in lines)})
     if endpoint:
+        # Fixed native diagnostic grammar only. Retain the latest actual tap
+        # sample per session and exact successful terminal fields, never raw
+        # error strings, peer-controlled paths, or arbitrary JSON metadata.
+        frontiers, terminals = {}, []
+        frontier_count = terminal_count = frontier_samples_omitted = 0
+        for line in lines:
+            match = re.fullmatch(r'connection-frontier session=([0-9]{1,10}) ordinal=([0-9]{1,10}) event=(514|515|516) metadata=([0-9]{1,10}) finished=(true|false) elapsed_ms=([0-9]{1,7}) sent=([0-9]{1,10}) received=([0-9]{1,10})', line)
+            if match:
+                session, ordinal, event, metadata, finished, elapsed, sent, received = match.groups()
+                values = tuple(map(int, (session, ordinal, event, metadata, elapsed, sent, received)))
+                if max(values[:4] + values[5:]) <= 0xffffffff and values[4] <= 3600000:
+                    frontier_count += 1
+                    if session in frontiers or len(frontiers) < 64:
+                        frontiers[session] = dict(zip(('session', 'ordinal', 'event', 'metadata', 'elapsed_ms', 'sent', 'received'), values), finished=finished == 'true')
+                    else:
+                        frontier_samples_omitted += 1
+            match = re.fullmatch(r'connection-terminal index=([0-9]{1,6}) idle=([0-9]{1,6}) confirmed=(true|false) completed=([0-9]{1,6}) submitted=([0-9]{1,6}) acked=(true|false) closed=(true|false) elapsed_ms=([0-9]{1,7})', line)
+            if match:
+                index, idle, confirmed, completed, submitted, acked, closed, elapsed = match.groups()
+                if int(elapsed) <= 3600000:
+                    terminal_count += 1
+                    if len(terminals) < 64:
+                        terminals.append(dict(index=int(index), idle=int(idle), confirmed=confirmed == 'true', completed=int(completed), submitted=int(submitted), acked=acked == 'true', closed=closed == 'true', elapsed_ms=int(elapsed)))
+        record['frontier_sample_count'] = frontier_count
+        record['frontier_samples_omitted_for_capacity'] = frontier_samples_omitted
+        record['latest_connection_frontiers'] = list(frontiers.values())
+        record['connection_terminal_count'] = terminal_count
+        record['connection_terminals'] = terminals
+        record['connection_terminals_omitted'] = terminal_count - len(terminals)
         json_lines = [line.strip() for line in lines if line.lstrip().startswith('{')]
         record['json_record_count'] = len(json_lines)
         if len(json_lines) > MAX_JSON_RECORDS:

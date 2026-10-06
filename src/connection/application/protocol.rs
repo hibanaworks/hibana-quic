@@ -32,7 +32,7 @@ pub type SourceDataFailed = g::Msg<215, u64>;
 pub type SourceEndFailed = g::Msg<216, u64>;
 pub type ReceivedFailed = g::Msg<217, u64>;
 pub type ReceivedInterrupted = g::Msg<219, u64>;
-pub type PeerApplicationFailed = g::Msg<218, u64>;
+pub type PeerApplicationFailed = g::Msg<218, ()>;
 pub const SUBMISSION_RESULT: u16 = 1100;
 pub const STOP_RESULT: u16 = 1101;
 
@@ -58,10 +58,10 @@ pub type ConfirmationApplied = g::Msg<18, u64>;
 pub type ConfirmationFailed = g::Msg<19, u64>;
 pub type KeysRetire = g::Msg<20, u64>;
 pub type KeysRetired = g::Msg<21, u64>;
-pub type Expired = g::Msg<22, u64>;
-pub type TimerTaken = g::Msg<23, u64>;
-pub type ClockRetired = g::Msg<24, u64>;
-pub type ClockAcknowledged = g::Msg<25, u64>;
+pub type Expired = g::Msg<22, ()>;
+pub type TimerTaken = g::Msg<23, ()>;
+pub type ClockRetired = g::Msg<24, ()>;
+pub type ClockAcknowledged = g::Msg<25, ()>;
 pub type Datagram = g::Msg<26, u64>;
 pub type Accepted = g::Msg<27, u64>;
 pub type Rejected = g::Msg<28, u64>;
@@ -81,18 +81,18 @@ pub type Retired = g::Msg<41, u64>;
 // Parallel terminal observations join before connection retirement.
 pub type Quiesce = g::Msg<42, u64>;
 pub type Quiesced = g::Msg<43, u64>;
-pub type PeerClose = g::Msg<44, u64>;
-pub type PeerFailed = g::Msg<45, u64>;
-pub type PeerCancelled = g::Msg<46, u64>;
-pub type PeerSeen = g::Msg<47, u64>;
-pub type FilesComplete = g::Msg<48, u64>;
+pub type PeerClose = g::Msg<44, ()>;
+pub type PeerFailed = g::Msg<45, ()>;
+pub type PeerCancelled = g::Msg<46, ()>;
+pub type PeerSeen = g::Msg<47, ()>;
+pub type FilesComplete = g::Msg<48, ()>;
 /// The client consumed every authenticated response FIN. This is application
 /// completion, not a fabricated ACK of its outbound request packets.
-pub type ResponsesComplete = g::Msg<220, u64>;
-pub type ApplicationFailed = g::Msg<49, u64>;
-pub type CompletionCancelled = g::Msg<50, u64>;
-pub type CompletionSeen = g::Msg<51, u64>;
-pub type IdleExpired = g::Msg<52, u64>;
+pub type ResponsesComplete = g::Msg<220, ()>;
+pub type ApplicationFailed = g::Msg<49, ()>;
+pub type CompletionCancelled = g::Msg<50, ()>;
+pub type CompletionSeen = g::Msg<51, ()>;
+pub type IdleExpired = g::Msg<52, ()>;
 
 // Stream production has a finite terminal outside the rolled data fragment.
 // FIN is a choreography message, never a boolean hidden in a data slot.
@@ -368,22 +368,22 @@ pub type PublicationBase = g::Seq<
 >;
 pub type PublicationFlow =
     g::Par<PublicationBase, g::Roll<g::Route<DeliveryTransfer, DeliveryClose>>>;
-pub type FilesOutcome = g::Msg<52, u64>;
-pub type KeyRetirement = g::Msg<53, u64>;
-pub type CloseAuthority = g::Msg<54, u64>;
-pub type PublicationRetired = g::Msg<55, u64>;
-pub type PeerOutcome = g::Msg<56, u64>;
-pub type KeyRetirementGrant = g::Msg<57, u64>;
-pub type PeerRetirementGrant = g::Msg<58, u64>;
-pub type FilesRetirementGrant = g::Msg<59, u64>;
-pub type FinishedValidated = g::Msg<160, u64>;
-pub type TranscriptStart = g::Msg<161, u64>;
-pub type WriteStart = g::Msg<162, u64>;
-pub type StreamAdmission = g::Msg<163, u64>;
-pub type WriteAdmission = g::Msg<164, u64>;
-pub type ReadAdmission = g::Msg<165, u64>;
-pub type KeyControlAdmission = g::Msg<166, u64>;
-pub type WriteForAdmission = g::Msg<167, u64>;
+pub type FilesOutcome = g::Msg<52, ()>;
+pub type KeyRetirement = g::Msg<53, ()>;
+pub type CloseAuthority = g::Msg<54, ()>;
+pub type PublicationRetired = g::Msg<55, ()>;
+pub type PeerOutcome = g::Msg<56, ()>;
+pub type KeyRetirementGrant = g::Msg<57, ()>;
+pub type PeerRetirementGrant = g::Msg<58, ()>;
+pub type FilesRetirementGrant = g::Msg<59, ()>;
+pub type FinishedValidated = g::Msg<160, ()>;
+pub type TranscriptStart = g::Msg<161, ()>;
+pub type WriteStart = g::Msg<162, ()>;
+pub type StreamAdmission = g::Msg<163, ()>;
+pub type WriteAdmission = g::Msg<164, ()>;
+pub type ReadAdmission = g::Msg<165, ()>;
+pub type KeyControlAdmission = g::Msg<166, ()>;
+pub type WriteForAdmission = g::Msg<167, ()>;
 
 pub type PeerTerminal = g::Seq<
     g::Route<

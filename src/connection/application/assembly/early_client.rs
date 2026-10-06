@@ -1,12 +1,12 @@
 //! Materialize accepted early requests before ordinary RX can consume their ACKs.
 //! The finite projected prefix transfers real production receipts to the same
 //! collector used by ordinary streams. Rejected intents use the ordinary source.
-use super::{Error, Roles, io, protocol as p, reclaim};
+use super::super::{Error, Roles, io, protocol as p, reclaim};
 use crate::connection::{
     application_stream::{App, Publication, Tx},
     early_client::Requests,
 };
-use core::{cell::RefCell, pin::pin};
+use core::cell::RefCell;
 fn check(actual: u64, expected: u64) -> Result<(), Error> {
     if actual == expected {
         Ok(())
@@ -25,7 +25,7 @@ pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: u
     state: &io::State<'book, CHUNK, B>,
     reclaim: &reclaim::Exchange<'book>,
 ) -> Result<(), Error> {
-    let mut source = pin!(async {
+    let source = async {
         for index in 0..count {
             roles
                 .source
@@ -39,8 +39,8 @@ pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: u
             .send::<p::EarlyRequestsDone>(&(count as u64))
             .await?;
         Ok(())
-    });
-    let mut ingress = pin!(async {
+    };
+    let ingress = async {
         for index in 0..count {
             check(
                 roles
@@ -99,8 +99,8 @@ pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: u
             .send::<p::EarlyReceiptsDone>(&(count as u64))
             .await?;
         Ok(())
-    });
-    let mut collector = pin!(async {
+    };
+    let collector = async {
         for index in 0..count {
             check(
                 roles
@@ -127,6 +127,6 @@ pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: u
                 .await?,
             count as u64,
         )
-    });
-    crate::runtime::TaskSet::new([source.as_mut(), ingress.as_mut(), collector.as_mut()]).await
+    };
+    futures_util::try_join!(source, ingress, collector).map(|_| ())
 }

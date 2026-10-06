@@ -1,10 +1,13 @@
 //! The library owns one projected connection from Initial input through
 //! authenticated application admission, ordinary role retirement and close.
 //! No host callback chooses connection phases or owns a replacement FSM.
+mod early;
+mod early_client;
+pub(super) mod ownership;
+
 use super::{
     BodyReader, ClientRequests, Control, Error, OrdinaryRetired, Outcomes, Report, Roles,
-    ServerHandler, Setup, StreamSink, io, keys, receive, reset, startup, termination, timer,
-    transmit,
+    ServerHandler, Setup, StreamSink, io, keys, receive, reset, termination, timer, transmit,
 };
 use crate::{
     connection::publication_gate::{Issuer, Stop},
@@ -17,7 +20,7 @@ use crate::{
     mailbox::Mailbox,
     streams,
 };
-use core::{cell::RefCell, pin::pin};
+use core::cell::RefCell;
 
 /// Run the single connected global with client request and response handlers.
 #[allow(clippy::too_many_arguments)]
@@ -262,11 +265,11 @@ async fn connected<
         (read, write, pending)
     };
     let (mut received, write, transcript) =
-        startup::transfer(roles, source, config, read, write).await?;
+        ownership::transfer(roles, source, config, read, write).await?;
     let owner = keys::KeyOwner::new(scope, write)?;
     let exchange = keys::Exchange::new(&owner);
     let (peer, writer, rx_control) =
-        startup::admit(roles, received.peer, &owner, &exchange).await?;
+        ownership::admit(roles, received.peer, &owner, &exchange).await?;
     if peer.max_udp_payload() < (CHUNK + 192) as u64 {
         return Err(Error::Capacity);
     }
@@ -311,7 +314,7 @@ async fn connected<
     if config.side == Side::Server {
         book_tx.store_handshake_done_token(peer.finished(), server_token)?;
     }
-    let early_received = super::early::receive::<N, RX, CHUNK>(
+    let early_received = early::receive::<N, RX, CHUNK>(
         roles,
         transcript,
         config,
@@ -328,7 +331,7 @@ async fn connected<
     let terminal = termination::Exchange::new(&control, scope);
     let reset_exchange = reset::Exchange::new();
     let reclaim_exchange = super::reclaim::Exchange::new();
-    super::early_client::admit::<N, RX, CHUNK, H::Body>(
+    early_client::admit::<N, RX, CHUNK, H::Body>(
         roles,
         client_early.as_deref(),
         accepted_early,
@@ -351,7 +354,7 @@ async fn connected<
     let first_io_error = RefCell::new(None);
 
     let result = {
-        let mut source = pin!(async {
+        let source = async {
             let result = match source_io {
                 Source::Client(requests) => {
                     if let Some(retained) = client_early.as_deref() {
@@ -383,15 +386,15 @@ async fn connected<
                 }
             }
             Ok::<(), Error>(())
-        });
-        let mut ingress = pin!(io::ingress(
+        };
+        let ingress = io::ingress(
             &mut roles.ingress,
             &control,
             &state,
             &app,
-            &reclaim_exchange
-        ));
-        let mut sink = pin!(async {
+            &reclaim_exchange,
+        );
+        let sink = async {
             match sink_io {
                 Sink::Client(sink) => {
                     io::client_sink(
@@ -416,8 +419,8 @@ async fn connected<
                     .await
                 }
             }
-        });
-        let mut receiving = pin!(async {
+        };
+        let receiving = async {
             receive::run::<N, RX, CHUNK, _>(
                 &mut roles.receive,
                 &mut roles.rx_keys,
@@ -442,21 +445,15 @@ async fn connected<
                 pending_application,
             )
             .await
-        });
-        let mut key_control = pin!(async {
+        };
+        let key_control = async {
             keys::run(&mut roles.tx_keys, &owner, &exchange)
                 .await
                 .map_err(Error::from)
-        });
-        let mut clock_role = pin!(timer::run(
-            &mut roles.clock,
-            &control,
-            &owner,
-            &mut book_clock,
-            clock
-        ));
-        let mut timer_receive = pin!(timer::receive(&mut roles.tx_clock, &control));
-        let mut transmitting = pin!(transmit::run(
+        };
+        let clock_role = timer::run(&mut roles.clock, &control, &owner, &mut book_clock, clock);
+        let timer_receive = timer::receive(&mut roles.tx_clock, &control);
+        let transmitting = transmit::run(
             &mut roles.transmit,
             &control,
             &publication_state,
@@ -468,9 +465,9 @@ async fn connected<
             &acknowledgments,
             config,
             &peer_id,
-            clock
-        ));
-        let mut publishing = pin!(transmit::publish(
+            clock,
+        );
+        let publishing = transmit::publish(
             &mut roles.adapter,
             &control,
             &publication_state,
@@ -481,9 +478,9 @@ async fn connected<
             &reclaim_exchange,
             &acknowledgments,
             &mut reset_owner,
-            send_io
-        ));
-        let mut completion = pin!(termination::completion(
+            send_io,
+        );
+        let completion = termination::completion(
             &mut roles.files_event,
             &mut roles.source_join,
             &terminal,
@@ -491,47 +488,38 @@ async fn connected<
             &app,
             &completion_book,
             config.side,
-            (local_idle_timeout_ms, clock)
-        ));
-        let mut terminal_receive = pin!(async {
+            (local_idle_timeout_ms, clock),
+        );
+        let terminal_receive = async {
             permission = Some(
                 termination::receive(&mut roles.peer_close, &mut roles.files_close, &terminal)
                     .await?,
             );
             Ok::<(), Error>(())
-        });
-        let mut source_collector = pin!(super::reclaim::source(
-            &mut roles.source_collector,
-            &reclaim_exchange,
-            &control
-        ));
-        let mut input_collector = pin!(super::reclaim::input(
-            &mut roles.input_collector,
-            &reclaim_exchange,
-            &control
-        ));
-        let mut delivery_collector = pin!(super::reclaim::delivery(
-            &mut roles.delivery_collector,
-            &reclaim_exchange,
-            &control
-        ));
-        crate::runtime::TaskSet::new([
-            source.as_mut(),
-            ingress.as_mut(),
-            sink.as_mut(),
-            receiving.as_mut(),
-            key_control.as_mut(),
-            clock_role.as_mut(),
-            timer_receive.as_mut(),
-            transmitting.as_mut(),
-            publishing.as_mut(),
-            completion.as_mut(),
-            terminal_receive.as_mut(),
-            source_collector.as_mut(),
-            input_collector.as_mut(),
-            delivery_collector.as_mut(),
-        ])
-        .await
+        };
+        let source_collector =
+            super::reclaim::source(&mut roles.source_collector, &reclaim_exchange, &control);
+        let input_collector =
+            super::reclaim::input(&mut roles.input_collector, &reclaim_exchange, &control);
+        let delivery_collector =
+            super::reclaim::delivery(&mut roles.delivery_collector, &reclaim_exchange, &control);
+        futures_util::try_join!(
+            source,
+            ingress,
+            sink,
+            receiving,
+            key_control,
+            clock_role,
+            timer_receive,
+            transmitting,
+            publishing,
+            completion,
+            terminal_receive,
+            source_collector,
+            input_collector,
+            delivery_collector,
+        )
+        .map(|_| ())
     };
     if let Err(error) = result {
         control.revoke()?;
@@ -552,7 +540,7 @@ async fn connected<
         && (config.side == Side::Client || state.completed_count() == completed_streams);
     // This constructor is reached only after every ordinary future completed,
     // including adapter cancellation, timer acknowledgement and key retirement.
-    let closing = startup::retire(
+    let closing = ownership::retire(
         roles,
         OrdinaryRetired { scope },
         permission.ok_or(Error::Binding)?,

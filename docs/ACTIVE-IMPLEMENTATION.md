@@ -1,9 +1,19 @@
 # Active implementation and qualification
 
+## Current qualification boundary (2026-10-06)
+
+The historical matrix is 30/44 unique candidate cells, not a complete matrix
+on this candidate. Experimental 130c864 passed runtime CI37398933045. Official
+CI37398932952 passed quiche C1/L1/M/Z controls, all four candidate server cells,
+and candidate client C1/M/Z. Client L1 timed out at 300 seconds with 49/50
+length-complete files. The missing response and retirement remain unresolved.
+See [direct locals](direct-locals.md) for the current implementation and evidence.
+Earlier evidence sections below are historical checkpoints, not current claims.
+
 ## Architecture
 
 The pinned Hibana branch is development/rolled-route-ownership at
-ee5727d80b49c2c5533f5f1d42d5cae7373b2a70, with no local vendor patches.
+c3d89f787aa1a8e066b310a5307fdf7cb076ee26, with no local vendor patches.
 The actual connection uses global choreography and explicit local endpoint
 send/recv/offer/resolver calls. RX, TX, key, timer, source/sink and retirement
 roles run on the bounded caller-owned async runtime; the host supplies an actual

@@ -1,23 +1,15 @@
 //! Affine transitions between the projected prefix, ordinary application and
-//! closing continuations. Payload numbers correlate owned slots only.
-use super::{Error, OrdinaryRetired, Roles, keys, protocol as p, termination};
+//! closing continuations. Hibana owns progress; actual affine slots own resources.
+use super::super::{Error, OrdinaryRetired, Roles, keys, protocol as p, termination};
 use crate::connection::{
     Config, ReceiveContinuation, ReceiveMaterial, Side, TransmitContinuation,
     parameters::{self, ValidatedPeer},
     tls::{Inbox, Transcript},
 };
-use core::pin::pin;
 
 pub(crate) struct Received<'scope, const P: usize> {
     pub material: ReceiveMaterial<'scope>,
     pub peer: ValidatedPeer<'scope, P>,
-}
-fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(Error::Binding)
-    }
 }
 
 /// The settled write continuation visits prefix RX for Finished/TP/scope
@@ -38,45 +30,32 @@ pub(crate) async fn transfer<'source, 'scope, 'cfg, 'buf, const P: usize>(
     Error,
 > {
     let scope = source.scope();
-    let sequence = scope.connection_generation();
     let (material, finished) = received.into_parts();
     let write_slot = Inbox::new();
     let validation_slot = Inbox::new();
     let finished_slot = Inbox::new();
     let transcript_slot = Inbox::new();
     let admission_slot = Inbox::new();
-    let mut material_out = None;
-    let mut peer_out = None;
-    let mut write_out = None;
-    let mut transcript_out = None;
-    {
-        let mut from_tx = pin!(async {
+    let (_, (transmitted, peer), _, _, (material, transcript)) = {
+        let from_tx = async {
             write_slot.put(transmitted).map_err(|_| Error::Binding)?;
-            roles.handshake.tx.send::<p::WriteStart>(&sequence).await?;
+            roles.handshake.tx.send::<p::WriteStart>(&()).await?;
             Ok::<(), Error>(())
-        });
-        let mut write = pin!(async {
-            check(roles.tx_keys.recv::<p::WriteStart>().await?, sequence)?;
+        };
+        let write = async {
+            roles.tx_keys.recv::<p::WriteStart>().await?;
             let transmitted = write_slot.take().map_err(|_| Error::Binding)?;
             validation_slot
                 .put(transmitted)
                 .map_err(|_| Error::Binding)?;
-            roles
-                .tx_keys
-                .send::<p::WriteForAdmission>(&sequence)
-                .await?;
+            roles.tx_keys.send::<p::WriteForAdmission>(&()).await?;
             // ReadAdmission cannot be sent until RX consumed the write token.
-            check(roles.tx_keys.recv::<p::ReadAdmission>().await?, sequence)?;
+            roles.tx_keys.recv::<p::ReadAdmission>().await?;
             let (transmitted, peer) = admission_slot.take().map_err(|_| Error::Binding)?;
-            write_out = Some(transmitted);
-            peer_out = Some(peer);
-            Ok::<(), Error>(())
-        });
-        let mut from_rx = pin!(async {
-            check(
-                roles.handshake.rx.recv::<p::WriteForAdmission>().await?,
-                sequence,
-            )?;
+            Ok::<_, Error>((transmitted, peer))
+        };
+        let from_rx = async {
+            roles.handshake.rx.recv::<p::WriteForAdmission>().await?;
             let transmitted: TransmitContinuation<'scope> =
                 validation_slot.take().map_err(|_| Error::Binding)?;
             if !core::ptr::eq(scope, transmitted.application.scope())
@@ -99,22 +78,15 @@ pub(crate) async fn transfer<'source, 'scope, 'cfg, 'buf, const P: usize>(
             finished_slot
                 .put((Received { material, peer }, transmitted))
                 .map_err(|_| Error::Binding)?;
+            roles.handshake.rx.send::<p::FinishedValidated>(&()).await?;
+            Ok::<(), Error>(())
+        };
+        let from_tls = async {
             roles
                 .handshake
-                .rx
-                .send::<p::FinishedValidated>(&sequence)
+                .tls_rx
+                .recv::<p::FinishedValidated>()
                 .await?;
-            Ok::<(), Error>(())
-        });
-        let mut from_tls = pin!(async {
-            check(
-                roles
-                    .handshake
-                    .tls_rx
-                    .recv::<p::FinishedValidated>()
-                    .await?,
-                sequence,
-            )?;
             let (received, transmitted): (Received<'scope, P>, _) =
                 finished_slot.take().map_err(|_| Error::Binding)?;
             if !core::ptr::eq(received.peer.scope(), source.scope()) {
@@ -126,39 +98,24 @@ pub(crate) async fn transfer<'source, 'scope, 'cfg, 'buf, const P: usize>(
             roles
                 .handshake
                 .tls_rx
-                .send::<p::TranscriptStart>(&sequence)
+                .send::<p::TranscriptStart>(&())
                 .await?;
             Ok::<(), Error>(())
-        });
-        let mut receive = pin!(async {
-            check(roles.receive.recv::<p::TranscriptStart>().await?, sequence)?;
+        };
+        let receive = async {
+            roles.receive.recv::<p::TranscriptStart>().await?;
             let (received, transmitted, transcript) =
                 transcript_slot.take().map_err(|_| Error::Binding)?;
-            material_out = Some(received.material);
-            transcript_out = Some(transcript);
+            let material = received.material;
             admission_slot
                 .put((transmitted, received.peer))
                 .map_err(|_| Error::Binding)?;
-            roles.receive.send::<p::ReadAdmission>(&sequence).await?;
-            Ok::<(), Error>(())
-        });
-        crate::runtime::TaskSet::new([
-            from_tx.as_mut(),
-            write.as_mut(),
-            from_rx.as_mut(),
-            from_tls.as_mut(),
-            receive.as_mut(),
-        ])
-        .await?;
-    }
-    Ok((
-        Received {
-            material: material_out.ok_or(Error::Binding)?,
-            peer: peer_out.ok_or(Error::Binding)?,
-        },
-        write_out.ok_or(Error::Binding)?,
-        transcript_out.ok_or(Error::Binding)?,
-    ))
+            roles.receive.send::<p::ReadAdmission>(&()).await?;
+            Ok::<_, Error>((material, transcript))
+        };
+        futures_util::try_join!(from_tx, write, from_rx, from_tls, receive)?
+    };
+    Ok((Received { material, peer }, transmitted, transcript))
 }
 
 /// The actual write owner grants RX its unique control client before RX may
@@ -179,60 +136,37 @@ pub(crate) async fn admit<'lane, 'owner, 'scope, const P: usize>(
     if !core::ptr::eq(peer.scope(), owner.scope()) {
         return Err(Error::Binding);
     }
-    let sequence = peer.scope().connection_generation();
     let control_slot = Inbox::new();
     let owner_slot = Inbox::new();
     let peer_slot = Inbox::new();
-    let mut peer_out = None;
-    let mut owner_out = None;
-    let mut control_out = None;
-    {
-        let mut send_owner = pin!(async {
+    let (_, control, writer, peer) = {
+        let send_owner = async {
             control_slot
                 .put(keys::RxControl::new(exchange))
                 .map_err(|_| Error::Binding)?;
-            roles
-                .tx_keys
-                .send::<p::KeyControlAdmission>(&sequence)
-                .await?;
+            roles.tx_keys.send::<p::KeyControlAdmission>(&()).await?;
             owner_slot.put((owner, peer)).map_err(|_| Error::Binding)?;
-            roles.tx_keys.send::<p::WriteAdmission>(&sequence).await?;
+            roles.tx_keys.send::<p::WriteAdmission>(&()).await?;
             Ok::<(), Error>(())
-        });
-        let mut admit_control = pin!(async {
-            check(
-                roles.rx_keys.recv::<p::KeyControlAdmission>().await?,
-                sequence,
-            )?;
-            control_out = Some(control_slot.take().map_err(|_| Error::Binding)?);
-            Ok::<(), Error>(())
-        });
-        let mut admit_transmit = pin!(async {
-            check(roles.transmit.recv::<p::WriteAdmission>().await?, sequence)?;
+        };
+        let admit_control = async {
+            roles.rx_keys.recv::<p::KeyControlAdmission>().await?;
+            control_slot.take().map_err(|_| Error::Binding)
+        };
+        let admit_transmit = async {
+            roles.transmit.recv::<p::WriteAdmission>().await?;
             let (writer, peer) = owner_slot.take().map_err(|_| Error::Binding)?;
-            owner_out = Some(writer);
             peer_slot.put(peer).map_err(|_| Error::Binding)?;
-            roles.transmit.send::<p::StreamAdmission>(&sequence).await?;
-            Ok::<(), Error>(())
-        });
-        let mut admit_source = pin!(async {
-            check(roles.source.recv::<p::StreamAdmission>().await?, sequence)?;
-            peer_out = Some(peer_slot.take().map_err(|_| Error::Binding)?);
-            Ok::<(), Error>(())
-        });
-        crate::runtime::TaskSet::new([
-            send_owner.as_mut(),
-            admit_control.as_mut(),
-            admit_transmit.as_mut(),
-            admit_source.as_mut(),
-        ])
-        .await?;
-    }
-    Ok((
-        peer_out.ok_or(Error::Binding)?,
-        owner_out.ok_or(Error::Binding)?,
-        control_out.ok_or(Error::Binding)?,
-    ))
+            roles.transmit.send::<p::StreamAdmission>(&()).await?;
+            Ok::<_, Error>(writer)
+        };
+        let admit_source = async {
+            roles.source.recv::<p::StreamAdmission>().await?;
+            peer_slot.take().map_err(|_| Error::Binding)
+        };
+        futures_util::try_join!(send_owner, admit_control, admit_transmit, admit_source)?
+    };
+    Ok((peer, writer, control))
 }
 
 pub(crate) struct Closing<'scope> {
@@ -253,7 +187,6 @@ pub(crate) async fn retire<'scope>(
     outcomes: termination::TerminalOutcomes<'scope>,
 ) -> Result<Closing<'scope>, Error> {
     let scope = ordinary.scope();
-    let sequence = scope.connection_generation();
     let (peer, files) = outcomes.into_parts();
     let publication_slot = Inbox::new();
     let key_grant = Inbox::new();
@@ -263,45 +196,31 @@ pub(crate) async fn retire<'scope>(
     let files_grant = Inbox::new();
     let files_result = Inbox::new();
     let close_slot = Inbox::new();
-    let mut received = None;
-    {
-        let mut publication = pin!(async {
+    let (closing, _, _, _, _) = {
+        let publication = async {
             publication_slot.put(ordinary).map_err(|_| Error::Binding)?;
-            roles
-                .transmit
-                .send::<p::PublicationRetired>(&sequence)
-                .await?;
-            check(roles.transmit.recv::<p::CloseAuthority>().await?, sequence)?;
-            received = Some(close_slot.take().map_err(|_| Error::Binding)?);
-            Ok::<(), Error>(())
-        });
-        let mut key_owner = pin!(async {
-            check(
-                roles.rx_keys.recv::<p::KeyRetirementGrant>().await?,
-                sequence,
-            )?;
+            roles.transmit.send::<p::PublicationRetired>(&()).await?;
+            roles.transmit.recv::<p::CloseAuthority>().await?;
+            close_slot.take().map_err(|_| Error::Binding)
+        };
+        let key_owner = async {
+            roles.rx_keys.recv::<p::KeyRetirementGrant>().await?;
             let ordinary = key_grant.take().map_err(|_| Error::Binding)?;
             key_result.put(ordinary).map_err(|_| Error::Binding)?;
-            roles.rx_keys.send::<p::KeyRetirement>(&sequence).await?;
+            roles.rx_keys.send::<p::KeyRetirement>(&()).await?;
             Ok::<(), Error>(())
-        });
-        let mut peer_owner = pin!(async {
-            check(
-                roles.peer_close.recv::<p::PeerRetirementGrant>().await?,
-                sequence,
-            )?;
+        };
+        let peer_owner = async {
+            roles.peer_close.recv::<p::PeerRetirementGrant>().await?;
             let ordinary = peer_grant.take().map_err(|_| Error::Binding)?;
             peer_result
                 .put(RetiredPeer { ordinary, peer })
                 .map_err(|_| Error::Binding)?;
-            roles.peer_close.send::<p::PeerOutcome>(&sequence).await?;
+            roles.peer_close.send::<p::PeerOutcome>(&()).await?;
             Ok::<(), Error>(())
-        });
-        let mut files_owner = pin!(async {
-            check(
-                roles.files_close.recv::<p::FilesRetirementGrant>().await?,
-                sequence,
-            )?;
+        };
+        let files_owner = async {
+            roles.files_close.recv::<p::FilesRetirementGrant>().await?;
             let retired: RetiredPeer<'scope> = files_grant.take().map_err(|_| Error::Binding)?;
             for permission in [retired.peer.as_ref(), files.as_ref()]
                 .into_iter()
@@ -318,55 +237,36 @@ pub(crate) async fn retire<'scope>(
                     permission,
                 })
                 .map_err(|_| Error::Binding)?;
-            roles.files_close.send::<p::FilesOutcome>(&sequence).await?;
+            roles.files_close.send::<p::FilesOutcome>(&()).await?;
             Ok::<(), Error>(())
-        });
-        let mut join = pin!(async {
-            check(
-                roles.close_join.recv::<p::PublicationRetired>().await?,
-                sequence,
-            )?;
+        };
+        let join = async {
+            roles.close_join.recv::<p::PublicationRetired>().await?;
             key_grant
                 .put(publication_slot.take().map_err(|_| Error::Binding)?)
                 .map_err(|_| Error::Binding)?;
-            roles
-                .close_join
-                .send::<p::KeyRetirementGrant>(&sequence)
-                .await?;
-            check(roles.close_join.recv::<p::KeyRetirement>().await?, sequence)?;
+            roles.close_join.send::<p::KeyRetirementGrant>(&()).await?;
+            roles.close_join.recv::<p::KeyRetirement>().await?;
             peer_grant
                 .put(key_result.take().map_err(|_| Error::Binding)?)
                 .map_err(|_| Error::Binding)?;
-            roles
-                .close_join
-                .send::<p::PeerRetirementGrant>(&sequence)
-                .await?;
-            check(roles.close_join.recv::<p::PeerOutcome>().await?, sequence)?;
+            roles.close_join.send::<p::PeerRetirementGrant>(&()).await?;
+            roles.close_join.recv::<p::PeerOutcome>().await?;
             files_grant
                 .put(peer_result.take().map_err(|_| Error::Binding)?)
                 .map_err(|_| Error::Binding)?;
             roles
                 .close_join
-                .send::<p::FilesRetirementGrant>(&sequence)
+                .send::<p::FilesRetirementGrant>(&())
                 .await?;
-            check(roles.close_join.recv::<p::FilesOutcome>().await?, sequence)?;
+            roles.close_join.recv::<p::FilesOutcome>().await?;
             close_slot
                 .put(files_result.take().map_err(|_| Error::Binding)?)
                 .map_err(|_| Error::Binding)?;
-            roles
-                .close_join
-                .send::<p::CloseAuthority>(&sequence)
-                .await?;
+            roles.close_join.send::<p::CloseAuthority>(&()).await?;
             Ok::<(), Error>(())
-        });
-        crate::runtime::TaskSet::new([
-            publication.as_mut(),
-            key_owner.as_mut(),
-            peer_owner.as_mut(),
-            files_owner.as_mut(),
-            join.as_mut(),
-        ])
-        .await?;
-    }
-    received.ok_or(Error::Binding)
+        };
+        futures_util::try_join!(publication, key_owner, peer_owner, files_owner, join)?
+    };
+    Ok(closing)
 }

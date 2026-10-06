@@ -60,10 +60,6 @@ impl<'a, 'gate, 'scope> Exchange<'a, 'gate, 'scope> {
         self.check_scope(permission.scope)?;
         self.control.revoke()
     }
-
-    pub(super) fn sequence(&self) -> u64 {
-        self.scope.connection_generation()
-    }
 }
 
 /// Observe completion independently of UDP receive and publication. A client
@@ -83,7 +79,6 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
     idle: (u64, &impl crate::connection::Clock),
 ) -> Result<(), Error> {
     let (local_idle_timeout_ms, clock) = idle;
-    let sequence = exchange.sequence();
     // Normal completion cannot even inspect the final numerical conditions
     // before consuming the source's actual projected retirement message.
     let mut normal = pin!(async {
@@ -194,22 +189,23 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
             application: true,
             code: 0,
         }) => match side {
-            Side::Client => endpoint.send::<p::ResponsesComplete>(&sequence).await?,
-            Side::Server => endpoint.send::<p::FilesComplete>(&sequence).await?,
+            Side::Client => endpoint.send::<p::ResponsesComplete>(&()).await?,
+            Side::Server => endpoint.send::<p::FilesComplete>(&()).await?,
         },
         Some(CloseKind::Local {
             application: true,
             code: 0x100,
         }) => {
-            endpoint.send::<p::ApplicationFailed>(&sequence).await?;
+            endpoint.send::<p::ApplicationFailed>(&()).await?;
         }
         Some(CloseKind::IdleExpired) => {
-            endpoint.send::<p::IdleExpired>(&sequence).await?;
+            endpoint.send::<p::IdleExpired>(&()).await?;
         }
-        None => endpoint.send::<p::CompletionCancelled>(&sequence).await?,
+        None => endpoint.send::<p::CompletionCancelled>(&()).await?,
         _ => return Err(Error::Binding),
     }
-    check(endpoint.recv::<p::CompletionSeen>().await?, sequence)
+    endpoint.recv::<p::CompletionSeen>().await?;
+    Ok(())
 }
 
 /// The two terminal facets retain their separate affine results until the
@@ -232,7 +228,6 @@ pub(crate) async fn receive<'scope>(
     files: &mut Endpoint<'_, { p::FILES_CLOSE }>,
     exchange: &Exchange<'_, '_, 'scope>,
 ) -> Result<TerminalOutcomes<'scope>, Error> {
-    let sequence = exchange.sequence();
     let mut peer_permission = None;
     let mut files_permission = None;
     // The two projected terminal locals run independently. Each performs its
@@ -242,7 +237,7 @@ pub(crate) async fn receive<'scope>(
             let offered = peer.offer().await?;
             let permission = match offered.label() {
                 44 => {
-                    check(offered.recv::<p::PeerClose>().await?, sequence)?;
+                    offered.recv::<p::PeerClose>().await?;
                     let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
                     if !matches!(permission.kind, CloseKind::Peer { .. }) {
                         return Err(Error::Binding);
@@ -251,7 +246,7 @@ pub(crate) async fn receive<'scope>(
                     Some(permission)
                 }
                 45 => {
-                    check(offered.recv::<p::PeerFailed>().await?, sequence)?;
+                    offered.recv::<p::PeerFailed>().await?;
                     let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
                     if !matches!(
                         permission.kind,
@@ -266,7 +261,7 @@ pub(crate) async fn receive<'scope>(
                     Some(permission)
                 }
                 218 => {
-                    check(offered.recv::<p::PeerApplicationFailed>().await?, sequence)?;
+                    offered.recv::<p::PeerApplicationFailed>().await?;
                     let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
                     if !matches!(
                         permission.kind,
@@ -281,7 +276,7 @@ pub(crate) async fn receive<'scope>(
                     Some(permission)
                 }
                 46 => {
-                    check(offered.recv::<p::PeerCancelled>().await?, sequence)?;
+                    offered.recv::<p::PeerCancelled>().await?;
                     if !exchange.peer.is_empty() {
                         return Err(Error::Binding);
                     }
@@ -290,14 +285,14 @@ pub(crate) async fn receive<'scope>(
                 label => return Err(Error::UnexpectedLabel(label)),
             };
             peer_permission = permission;
-            peer.send::<p::PeerSeen>(&sequence).await?;
+            peer.send::<p::PeerSeen>(&()).await?;
             Ok::<(), Error>(())
         },
         async {
             let offered = files.offer().await?;
             let permission = match offered.label() {
                 220 => {
-                    check(offered.recv::<p::ResponsesComplete>().await?, sequence)?;
+                    offered.recv::<p::ResponsesComplete>().await?;
                     let permission = exchange.files.take().map_err(|_| Error::Binding)?;
                     if !matches!(
                         permission.kind,
@@ -312,7 +307,7 @@ pub(crate) async fn receive<'scope>(
                     Some(permission)
                 }
                 48 => {
-                    check(offered.recv::<p::FilesComplete>().await?, sequence)?;
+                    offered.recv::<p::FilesComplete>().await?;
                     let permission = exchange.files.take().map_err(|_| Error::Binding)?;
                     if !matches!(
                         permission.kind,
@@ -327,7 +322,7 @@ pub(crate) async fn receive<'scope>(
                     Some(permission)
                 }
                 49 => {
-                    check(offered.recv::<p::ApplicationFailed>().await?, sequence)?;
+                    offered.recv::<p::ApplicationFailed>().await?;
                     let permission = exchange.files.take().map_err(|_| Error::Binding)?;
                     if !matches!(
                         permission.kind,
@@ -342,7 +337,7 @@ pub(crate) async fn receive<'scope>(
                     Some(permission)
                 }
                 52 => {
-                    check(offered.recv::<p::IdleExpired>().await?, sequence)?;
+                    offered.recv::<p::IdleExpired>().await?;
                     let permission = exchange.files.take().map_err(|_| Error::Binding)?;
                     if !matches!(permission.kind, CloseKind::IdleExpired) {
                         return Err(Error::Binding);
@@ -351,7 +346,7 @@ pub(crate) async fn receive<'scope>(
                     Some(permission)
                 }
                 50 => {
-                    check(offered.recv::<p::CompletionCancelled>().await?, sequence)?;
+                    offered.recv::<p::CompletionCancelled>().await?;
                     if !exchange.files.is_empty() {
                         return Err(Error::Binding);
                     }
@@ -360,7 +355,7 @@ pub(crate) async fn receive<'scope>(
                 label => return Err(Error::UnexpectedLabel(label)),
             };
             files_permission = permission;
-            files.send::<p::CompletionSeen>(&sequence).await?;
+            files.send::<p::CompletionSeen>(&()).await?;
             Ok::<(), Error>(())
         },
     )
@@ -369,12 +364,4 @@ pub(crate) async fn receive<'scope>(
         peer: peer_permission,
         files: files_permission,
     })
-}
-
-fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(Error::Binding)
-    }
 }

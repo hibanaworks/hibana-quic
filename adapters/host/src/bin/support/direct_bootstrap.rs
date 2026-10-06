@@ -241,93 +241,115 @@ pub async fn files<'scope, const S: usize, const T: usize>(
         input_collector: enter!(programs.input_collector),
         delivery_collector: enter!(programs.delivery_collector),
     };
-    let result = match files {
-        Files::Client(client) => {
-            macro_rules! run_client {
-                ($rx:expr) => {{
-                    let mut storage = application_storage::Storage::<$rx>::new(
-                        client.count.min(application_storage::STREAMS),
+    let statistics = receive.statistics;
+    let mut application = Box::pin(async {
+        match files {
+            Files::Client(client) => {
+                macro_rules! run_client {
+                    ($rx:expr) => {{
+                        let mut storage = application_storage::Storage::<$rx>::new(
+                            client.count.min(application_storage::STREAMS),
+                        )?;
+                        let mut setup = storage.setup(config)?;
+                        setup.key_update_target = key_update_target;
+                        if source.early_status() == hibana_quic::early_data::EarlyStatus::Offered {
+                            let mut early_slots = (0..client.count)
+                                .map(|_| hibana_quic::connection::early_client::RequestSlot::EMPTY)
+                                .collect::<Vec<_>>();
+                            Box::pin(application::client_early::<
+                                DATAGRAM,
+                                PARAMETERS,
+                                $rx,
+                                { application_storage::CHUNK_BYTES },
+                            >(
+                                &mut roles,
+                                source,
+                                setup,
+                                receive,
+                                transmit,
+                                clock,
+                                issuer,
+                                stop,
+                                book,
+                                &outcomes,
+                                &mut client.requests,
+                                &mut client.downloads,
+                                &mut early_slots,
+                            ))
+                            .await
+                        } else {
+                            Box::pin(application::client::<
+                                DATAGRAM,
+                                PARAMETERS,
+                                $rx,
+                                { application_storage::CHUNK_BYTES },
+                            >(
+                                &mut roles,
+                                source,
+                                setup,
+                                receive,
+                                transmit,
+                                clock,
+                                issuer,
+                                stop,
+                                book,
+                                &outcomes,
+                                &mut client.requests,
+                                &mut client.downloads,
+                            ))
+                            .await
+                        }
+                    }};
+                }
+                if application_storage::client_uses_large_window(client.count) {
+                    run_client!({ application_storage::CLIENT_RECEIVE_BYTES })
+                } else {
+                    run_client!({ application_storage::RECEIVE_BYTES })
+                }
+            }
+            Files::Server(server) => {
+                let mut storage =
+                    application_storage::Storage::<{ application_storage::RECEIVE_BYTES }>::new(
+                        application_storage::server_capacity(server.completion_limit),
                     )?;
-                    let mut setup = storage.setup(config)?;
-                    setup.key_update_target = key_update_target;
-                    if source.early_status() == hibana_quic::early_data::EarlyStatus::Offered {
-                        let mut early_slots = (0..client.count)
-                            .map(|_| hibana_quic::connection::early_client::RequestSlot::EMPTY)
-                            .collect::<Vec<_>>();
-                        Box::pin(application::client_early::<
-                            DATAGRAM,
-                            PARAMETERS,
-                            $rx,
-                            { application_storage::CHUNK_BYTES },
-                        >(
-                            &mut roles,
-                            source,
-                            setup,
-                            receive,
-                            transmit,
-                            clock,
-                            issuer,
-                            stop,
-                            book,
-                            &outcomes,
-                            &mut client.requests,
-                            &mut client.downloads,
-                            &mut early_slots,
-                        ))
-                        .await
-                    } else {
-                        Box::pin(application::client::<
-                            DATAGRAM,
-                            PARAMETERS,
-                            $rx,
-                            { application_storage::CHUNK_BYTES },
-                        >(
-                            &mut roles,
-                            source,
-                            setup,
-                            receive,
-                            transmit,
-                            clock,
-                            issuer,
-                            stop,
-                            book,
-                            &outcomes,
-                            &mut client.requests,
-                            &mut client.downloads,
-                        ))
-                        .await
-                    }
-                }};
-            }
-            if application_storage::client_uses_large_window(client.count) {
-                run_client!({ application_storage::CLIENT_RECEIVE_BYTES })
-            } else {
-                run_client!({ application_storage::RECEIVE_BYTES })
+                let mut setup = storage.setup(config)?;
+                setup.server_token = server_token;
+                setup.early = early
+                    .as_mut()
+                    .map(application_storage::EarlyStorage::borrow);
+                Box::pin(application::server::<
+                    DATAGRAM,
+                    PARAMETERS,
+                    { application_storage::RECEIVE_BYTES },
+                    { application_storage::CHUNK_BYTES },
+                >(
+                    &mut roles, source, setup, receive, transmit, clock, issuer, stop, book,
+                    &outcomes, server,
+                ))
+                .await
             }
         }
-        Files::Server(server) => {
-            let mut storage =
-                application_storage::Storage::<{ application_storage::RECEIVE_BYTES }>::new(
-                    application_storage::server_capacity(server.completion_limit),
-                )?;
-            let mut setup = storage.setup(config)?;
-            setup.server_token = server_token;
-            setup.early = early
-                .as_mut()
-                .map(application_storage::EarlyStorage::borrow);
-            Box::pin(application::server::<
-                DATAGRAM,
-                PARAMETERS,
-                { application_storage::RECEIVE_BYTES },
-                { application_storage::CHUNK_BYTES },
-            >(
-                &mut roles, source, setup, receive, transmit, clock, issuer, stop, book, &outcomes,
-                server,
-            ))
-            .await
+        .map_err(|e| format!("direct application: {e:?}"))
+    });
+
+    // Read-only diagnostic sampling at the host executor boundary. This never
+    // wakes a task or changes an endpoint, deadline, or success condition.
+    let diagnostics = std::env::var("HIBANA_QUIC_DIAGNOSTICS").as_deref() == Ok("1");
+    let started = std::time::Instant::now();
+    let mut sampled_at = None;
+    let result = std::future::poll_fn(|cx| {
+        let result = std::future::Future::poll(application.as_mut(), cx);
+        if diagnostics && (result.is_ready() || sampled_at.is_none_or(|at: std::time::Instant| at.elapsed() >= std::time::Duration::from_secs(1))) {
+            sampled_at = Some(std::time::Instant::now());
+            if let Some(event) = rendezvous.tap().filter(|event| matches!(event.id(),
+                hibana::runtime::tap::ENDPOINT_SEND | hibana::runtime::tap::ENDPOINT_RECV | hibana::runtime::tap::ENDPOINT_SESSION)).last() {
+                eprintln!("connection-frontier session={} ordinal={} event={} metadata={} finished={} elapsed_ms={} sent={} received={}",
+                    event.arg0(), event.ts(), event.id(), event.arg1(), result.is_ready(), started.elapsed().as_millis(), statistics.sent.get(), statistics.received.get());
+            }
         }
-    }
-    .map_err(|e| format!("direct application: {e:?}"));
+        result
+    }).await;
+    drop(application);
     if (result.is_err()
         || result
             .as_ref()

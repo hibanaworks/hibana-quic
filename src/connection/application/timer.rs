@@ -1,11 +1,6 @@
 //! Deadline progress is independent of a pending UDP publication.
 use super::{Control, Error, keys::KeyOwner, protocol as p};
 use crate::connection::{Clock, recovery};
-use core::{
-    future::{Future, poll_fn},
-    pin::pin,
-    task::Poll,
-};
 use hibana::Endpoint;
 
 pub(crate) async fn run<const N: usize>(
@@ -15,11 +10,11 @@ pub(crate) async fn run<const N: usize>(
     book: &mut recovery::Clock<'_, '_, N>,
     clock: &impl Clock,
 ) -> Result<(), Error> {
-    let mut sequence = 0u64;
     loop {
         if control.stopping() {
-            endpoint.send::<p::ClockRetired>(&sequence).await?;
-            return check(endpoint.recv::<p::ClockAcknowledged>().await?, sequence);
+            endpoint.send::<p::ClockRetired>(&()).await?;
+            endpoint.recv::<p::ClockAcknowledged>().await?;
+            return Ok(());
         }
         let revision = control.revision();
         let available = keys.available_levels()?;
@@ -27,25 +22,15 @@ pub(crate) async fn run<const N: usize>(
             control.wait(5, revision).await;
             continue;
         };
-        let expired = {
-            let mut wait = pin!(clock.wait_until(deadline.at()));
-            let mut changed = pin!(control.wait(5, revision));
-            poll_fn(|cx| {
-                if changed.as_mut().poll(cx).is_ready() {
-                    return Poll::Ready(false);
-                }
-                wait.as_mut().poll(cx).map(|()| true)
-            })
-            .await
-        };
-        if !expired {
+        if let core::ops::ControlFlow::Break(()) =
+            crate::runtime::select(control.wait(5, revision), clock.wait_until(deadline.at())).await
+        {
             continue;
         }
         match book.expire(deadline, clock.now()) {
             Ok(Some(_)) => {
-                endpoint.send::<p::Expired>(&sequence).await?;
-                check(endpoint.recv::<p::TimerTaken>().await?, sequence)?;
-                sequence = sequence.checked_add(1).ok_or(Error::Binding)?;
+                endpoint.send::<p::Expired>(&()).await?;
+                endpoint.recv::<p::TimerTaken>().await?;
             }
             Ok(None) | Err(recovery::Error::StaleDeadline) => {}
             Err(error) => return Err(error.into()),
@@ -65,25 +50,17 @@ pub(crate) async fn receive(
         let offered = endpoint.offer().await?;
         match offered.label() {
             22 => {
-                let sequence = offered.recv::<p::Expired>().await?;
-                endpoint.send::<p::TimerTaken>(&sequence).await?;
+                offered.recv::<p::Expired>().await?;
+                endpoint.send::<p::TimerTaken>(&()).await?;
                 control.changed()?;
             }
             24 => {
-                let sequence = offered.recv::<p::ClockRetired>().await?;
-                endpoint.send::<p::ClockAcknowledged>(&sequence).await?;
+                offered.recv::<p::ClockRetired>().await?;
+                endpoint.send::<p::ClockAcknowledged>(&()).await?;
                 return Ok(());
             }
             label => return Err(Error::UnexpectedLabel(label)),
         }
         crate::runtime::yield_now().await;
-    }
-}
-
-fn check(actual: u64, expected: u64) -> Result<(), Error> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(Error::Binding)
     }
 }

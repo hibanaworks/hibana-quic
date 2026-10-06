@@ -101,6 +101,20 @@ class Diagnostics(unittest.TestCase):
         self.assertIn('early-data-not-sent', missing['runner_classes'])
         self.assertIn('two-handshake-count-mismatch', missing['runner_classes'])
 
+    def test_native_frontiers_and_terminals_are_bounded_exact_metadata(self):
+        raw = b"connection-frontier session=12 ordinal=31 event=514 metadata=123 finished=false elapsed_ms=10 sent=3 received=4\nconnection-frontier session=12 ordinal=32 event=515 metadata=124 finished=true elapsed_ms=20 sent=3 received=4\nconnection-frontier session=4294967296 ordinal=1 event=514 metadata=1 finished=false elapsed_ms=1 sent=3 received=4\nconnection-frontier session=4 ordinal=1 event=999 metadata=1 finished=false elapsed_ms=1 sent=3 received=4\nconnection-terminal index=2 idle=0 confirmed=true completed=1 submitted=1 acked=false closed=true elapsed_ms=25\nconnection-terminal index=3 failure=PRIVATE_SECRET\nPRIVATE_PREFIX connection-frontier session=3 ordinal=1 event=514 metadata=1 finished=false elapsed_ms=1 sent=3 received=4\n"
+        result = self.module.summarize_log(raw, endpoint=True)
+        self.assertEqual(result['frontier_sample_count'], 2)
+        self.assertEqual(result['latest_connection_frontiers'], [dict(session=12, ordinal=32, event=515, metadata=124, finished=True, elapsed_ms=20, sent=3, received=4)])
+        self.assertEqual(result['connection_terminal_count'], 1)
+        self.assertFalse(result['connection_terminals'][0]['acked'])
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        many = b''.join(f'connection-frontier session={i} ordinal=1 event=514 metadata=1 finished=false elapsed_ms=1 sent=3 received=4\n'.encode() for i in range(70))
+        bounded = self.module.summarize_log(many, endpoint=True)
+        self.assertEqual(bounded['frontier_sample_count'], 70)
+        self.assertEqual(len(bounded['latest_connection_frontiers']), 64)
+        self.assertEqual(bounded['frontier_samples_omitted_for_capacity'], 6)
+
     def test_panic_backtrace_refcell_without_messages(self):
         raw = b"thread 'PRIVATE_NAME' panicked at PRIVATE_PATH\nalready borrowed: BorrowMutError\nstack backtrace:\nfatal runtime error: stack overflow\n"
         result = self.module.summarize_log(raw, endpoint=True)

@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 description = "Experimental bounded QUIC v1 transport driven by Hibana choreography"
 
 [dependencies]
+futures-util = { version = "=0.3.31", default-features = false, features = ["async-await-macro"] }
 hibana = { path = "vendor/hibana", default-features = false }
 aes = { version = "=0.8.4", default-features = false, features = ["zeroize"] }
 aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "zeroize"] }
