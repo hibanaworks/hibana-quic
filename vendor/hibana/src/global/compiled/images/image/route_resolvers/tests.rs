@@ -293,3 +293,66 @@ fn compiled_program_descriptor_rejects_missing_route_scope_query() {
     let descriptor = forged_program_ref(&INTRINSIC, 1, 4);
     let _ = descriptor.route_controller_role(ScopeId::route(1));
 }
+
+const fn encoded_resolver_index(scopes: [u16; 3]) -> [u8; 30] {
+    let mut bytes = [0u8; 30];
+    let mut slot = 0;
+    while slot < scopes.len() {
+        let row = encoded_row(
+            dynamic_scope(scopes[slot]),
+            u16::MAX - slot as u16,
+            0,
+            (slot * 2) as u16,
+            1,
+        );
+        let mut offset = 0;
+        while offset < row.len() {
+            bytes[slot * 8 + offset] = row[offset];
+            offset += 1;
+        }
+        slot += 1;
+    }
+    // Six role-zero entries follow the three packed descriptor rows.
+    bytes
+}
+
+static SORTED_RESOLVER_INDEX: [u8; 30] = encoded_resolver_index([1, 7, 31]);
+static UNSORTED_RESOLVER_INDEX: [u8; 30] = encoded_resolver_index([31, 1, 7]);
+static DUPLICATE_RESOLVER_INDEX: [u8; 30] = encoded_resolver_index([1, 1, 7]);
+
+#[test]
+fn sealed_resolver_index_matches_linear_lookup_for_all_encoded_scopes() {
+    for (scopes, bytes) in [
+        ([1u16, 7, 31], &SORTED_RESOLVER_INDEX),
+        ([31, 1, 7], &UNSORTED_RESOLVER_INDEX),
+        ([1, 1, 7], &DUPLICATE_RESOLVER_INDEX),
+    ] {
+        let descriptor = CompiledProgramRef::compact(
+            ProgramImageFacts { max_role: 0 },
+            ProgramImageColumns::new(0, 3, 6, 0),
+            bytes,
+        );
+        assert_eq!(
+            descriptor.route_resolver_index_is_sorted(),
+            scopes == [1, 7, 31]
+        );
+        for raw in 0..=u16::MAX {
+            let Some(query) = ScopeId::decode_raw(raw) else {
+                continue;
+            };
+            let expected = scopes.iter().position(|scope| *scope == raw);
+            assert_eq!(descriptor.route_resolver_slot(query), expected, "raw={raw}");
+            if let Some(slot) = expected {
+                let resolver = descriptor.route_resolver(query).unwrap();
+                assert_eq!(resolver.resolver_id(), u16::MAX - slot as u16);
+            }
+        }
+    }
+}
+
+#[test]
+#[should_panic]
+fn sealing_rejects_bad_participants_before_any_lookup() {
+    // Previously this was rediscovered by every selected row lookup.
+    let _ = forged_program_ref(&DUPLICATE_PARTICIPANTS, 1, 4);
+}

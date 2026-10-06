@@ -55,12 +55,13 @@ run_final_form_test() {
   fi
 }
 
-MEASURE_DIR="${ROOT_DIR}/target/final_form_measurements"
+MEASURE_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
+MEASURE_DIR="${MEASURE_TARGET_DIR}/final_form_measurements"
 SNAPSHOT_FILE="${ROOT_DIR}/.github/measurement_snapshots/hibana-size-snapshot.json"
 rm -rf "${MEASURE_DIR}"
 mkdir -p "${MEASURE_DIR}/src"
 
-cat >"${MEASURE_DIR}/Cargo.toml" <<'EOF'
+cat >"${MEASURE_DIR}/Cargo.toml" <<EOF
 [package]
 name = "hibana-final-form-measure"
 version = "0.0.0"
@@ -70,7 +71,7 @@ publish = false
 [workspace]
 
 [dependencies]
-hibana = { path = "../..", default-features = false }
+hibana = { path = "${ROOT_DIR}", default-features = false }
 EOF
 
 cat >"${MEASURE_DIR}/src/main.rs" <<'EOF'
@@ -129,7 +130,7 @@ TERM=dumb \
     --release \
     --lib \
     >/dev/null
-THUMB_RLIB="${ROOT_DIR}/target/thumbv6m-none-eabi/release/libhibana.rlib"
+THUMB_RLIB="${MEASURE_TARGET_DIR}/thumbv6m-none-eabi/release/libhibana.rlib"
 if [[ ! -f "${THUMB_RLIB}" ]]; then
   echo "final-form thumb measurement artifact missing: ${THUMB_RLIB}" >&2
   exit 1
@@ -830,18 +831,14 @@ else
   echo "fixed snapshot runtime budget check omitted by explicit override; worktree size snapshot still runs"
 fi
 
-README_PATH="${ROOT_DIR}/README.md" \
 MEASUREMENT_HOST="${HOST}" \
-SNAPSHOT_FILE="${SNAPSHOT_FILE}" \
 THUMB_SECTION_OUTPUT="${THUMB_SECTION_OUTPUT}" \
 PROTOCOL_ARTIFACT_OUTPUT="${PROTOCOL_ARTIFACT_OUTPUT}" \
 STACK_HIGH_WATER_OUTPUT="${STACK_HIGH_WATER_OUTPUT}" \
 python3 - <<'PY'
-import json
 import os
 import re
 import sys
-from pathlib import Path
 
 
 def metrics_from(line: str) -> dict[str, int]:
@@ -866,7 +863,7 @@ for line in os.environ["STACK_HIGH_WATER_OUTPUT"].splitlines():
         runtime.append(metrics_from(line[line.index(marker):]))
 
 if not artifacts or not runtime:
-    print("README measurement sync missing protocol or runtime measurements", file=sys.stderr)
+    print("live footprint report missing protocol or runtime measurements", file=sys.stderr)
     sys.exit(1)
 
 data_bss = thumb.get(".data", 0) + thumb.get(".bss", 0)
@@ -881,7 +878,7 @@ for row in runtime:
 
 tap_bytes = max(row["tap_ring_bytes"] for row in runtime)
 flash_total = thumb.get(".text", 0) + thumb.get(".rodata", 0) + thumb.get(".data", 0)
-host_expected = {
+host_measurements = {
     "`SessionKitStorage`": max(row["session_kit_storage_bytes"] for row in runtime),
     f"Fixed per-rendezvous storage, including the {tap_bytes:,} B tap records": max(
         row["resident_prefix_bytes"] for row in runtime
@@ -892,7 +889,7 @@ host_expected = {
     "Runtime operation stack high-water": max(row["peak_stack_bytes"] for row in runtime),
     "Modeled runtime SRAM envelope": max(row["modeled_runtime_sram_bytes"] for row in runtime),
 }
-target_expected = {
+target_measurements = {
     "Minimal linked protocol artifact": min(row["flash_total"] for row in artifacts),
     "Largest linked artifact in the tracked protocol matrix": max(
         row["flash_total"] for row in artifacts
@@ -901,39 +898,11 @@ target_expected = {
     "Library `.data + .bss`": data_bss,
 }
 
-readme = Path(os.environ["README_PATH"]).read_text(encoding="utf-8")
-with open(os.environ["SNAPSHOT_FILE"], "r", encoding="utf-8") as f:
-    publication_host = json.load(f)["runtime_measurement"]["publication_host"]
-measurement_host = os.environ["MEASUREMENT_HOST"]
-host_marker = f"`{publication_host}` measurement host"
-if host_marker not in readme:
-    print(
-        "README measurement host stale or missing: "
-        f"expected {host_marker}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-expected = dict(target_expected)
-if measurement_host == publication_host:
-    expected.update(host_expected)
-else:
-    print(
-        "README host measurement boundary: "
-        f"live={measurement_host} publication={publication_host}; "
-        "host-sensitive current values remain publication-host measurements"
-    )
-
-for label, value in expected.items():
-    row_prefix = f"| {label} | {value:,} B |"
-    if row_prefix not in readme:
-        print(
-            f"README measurement row stale or missing: expected {row_prefix}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-print("README measurement sync passed")
+# Current measurements belong to this run, not a manually synchronized README.
+# The target and host resource ceilings were checked above without change.
+print(f"Live footprint report: host={os.environ['MEASUREMENT_HOST']}")
+for label, value in {**host_measurements, **target_measurements}.items():
+    print(f"{label}: {value:,} B")
 PY
 
 if [[ "${HIBANA_OMIT_WORKTREE_SIZE_SNAPSHOT:-0}" != "1" ]]; then

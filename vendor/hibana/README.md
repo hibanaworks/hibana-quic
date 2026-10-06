@@ -697,24 +697,22 @@ concerns.
 
 The repository compiles the public choreography and projection API for
 `thumbv6m-none-eabi` without an allocator, SDK, host transport, or target-only
-Hibana API. With Rust `1.95.0`, the tracked release measurements are:
+Hibana API. The release gate publishes fresh measurements for each checked
+revision and enforces the tracked resource ceilings. Measured values are not
+copied into a manually synchronized source table here.
 
-| Hibana-owned quantity | Current | Release ceiling |
-| --- | ---: | ---: |
-| `SessionKitStorage` | 24 B | 32 B |
-| Fixed per-rendezvous storage, including the 252 B tap records | 412 B | 952 B |
-| Peak live runtime slab across tracked heavy shapes | 2,311 B | 4,323 B |
-| Runtime operation stack high-water | 2,607 B | 3,663 B |
-| Modeled runtime SRAM envelope | 5,290 B | 8,954 B |
-| Minimal linked protocol artifact | 352 B | 2,048 B |
-| Largest linked artifact in the tracked protocol matrix | 1,824 B | 16,384 B |
-| Complete no-default `libhibana.rlib` sections | 88,013 B | 169,965 B |
-| Library `.data + .bss` | 0 B | 0 B |
+The gate measures `SessionKitStorage`, fixed per-session storage including tap
+records, peak live runtime slab, operation stack, modeled SRAM, the minimal
+and largest linked protocol artifacts, and complete library sections.
 
-The linked-artifact and library rows are `thumbv6m-none-eabi` release
-measurements. The complete rlib is not the flash cost paid by one linked
-protocol. Stack high-water is measured around runtime operations on the pinned
-`aarch64-unknown-linux-gnu` measurement host used by the release gate.
+For example, the [dafdf8a CI measurement](https://github.com/hibanaworks/hibana/actions/runs/37240935107)
+reported a 5,274 B modeled runtime SRAM envelope and a 2,591 B operation-stack
+high-water mark, within the unchanged 8,954 B and 3,663 B ceilings. These are
+revision-specific observations, not promises for arbitrary application state.
+The no-default `thumbv6m-none-eabi` rlib sections were 97,344 B, below the
+169,965 B ceiling. A complete rlib is not the flash cost paid by one linked
+protocol. Host stack observations use the pinned
+`aarch64-unknown-linux-gnu` measurement host.
 
 The modeled SRAM envelope combines the target's Hibana `.data/.bss`, storage
 owners, one measured live slab shape, and runtime operation stack. Component
@@ -783,7 +781,11 @@ bash ./.github/scripts/run_final_form_gates.sh
 
 It executes the runnable example, Rust tests, `no_std` target checks, rustdoc,
 package checks, Miri, Lean, the Unix carrier conformance suite, and resource
-measurements. Kani/CBMC is a separate required CI job and can be run locally
+measurements. Rust tests exercise protocol behavior and compile-time ownership;
+resource gates measure compiled artifacts and operation stack use. Package
+checks compile the extracted crate and its test modules. CI leaves internal
+names, file layout and documentation wording to code review. Kani/CBMC is a
+separate required CI job and can be run locally
 after installing the version recorded in `.github/kani-version`:
 
 ```bash
@@ -805,3 +807,28 @@ with distributed fidelity, progress, and cancellation conclusions stated under
 explicit carrier, deployment, codec, and scheduling requirements.
 
 Hibana is licensed under either Apache-2.0 or MIT, at your option.
+
+### Explaining projection failures
+
+Projection errors identify the affected role, structured scope, arm event ranges,
+and source messages when a witness is available. For example, a receive-lane
+error can name `event#0(8->9 label=168 lane=0)` followed by
+`event#1(27->9 label=190 lane=0)` and request a causal handoff. A rolled error also
+identifies the reentry scope. Missing branch knowledge names the passive role
+and shows which arm has no local event.
+
+For a read-only structured explanation without constructing endpoints, call
+`g::diagnose(&program)`. It returns `Option<g::ProjectionDiagnostic>` and supports
+`Display` and `Debug`. `None` means the existing projection checks accept; it is
+not evidence about payload algorithms or physical I/O. Projection itself remains
+fail-closed and includes the available explanation in its compile-time error.
+Scope and event numbers are zero-based source-order ordinals, not Rust line
+numbers. Some selector/passive-child failures currently have only a category;
+missing witnesses are never guessed. See `proofs/projection-diagnostics` for the
+verification scope and regression checks.
+
+### Explicit completion and resource return
+
+For finite RX/TX completion, failure, and resource-return boundaries using the
+existing API, see the [executable explicit-resource-join example and verification](proofs/explicit-resource-join/README.md). This preserves independent emergency
+stop and long-running parallel loops; it adds no automatic native-resource guarantee.

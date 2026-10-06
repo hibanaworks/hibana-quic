@@ -9,5 +9,7 @@ cargo test --locked --manifest-path adapters/host/Cargo.toml --bin hq -- --test-
 host=$?
 cargo test --locked --release --test connection_publication_route -- --test-threads=1
 publication=$?
-printf '{"application_wire_exit":%d,"connected_application_exit":%d,"host_hq_exit":%d,"publication_route_exit":%d,"interop":"NOT_RUN"}\n' "$wire" "$connection" "$host" "$publication" > /results/runtime-status.json
-(( wire == 0 && connection == 0 && host == 0 && publication == 0 ))
+cargo test --locked --release --test nested_visit_carrier -- --test-threads=1
+nested=$?
+printf '{"application_wire_exit":%d,"connected_application_exit":%d,"host_hq_exit":%d,"publication_route_exit":%d,"nested_visit_exit":%d,"interop":"NOT_RUN"}\n' "$wire" "$connection" "$host" "$publication" "$nested" > /results/runtime-status.json
+(( wire == 0 && connection == 0 && host == 0 && publication == 0 && nested == 0 ))

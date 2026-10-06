@@ -1,21 +1,29 @@
 # Audited local dependency snapshots
 
 `hibana/` is the complete tracked source at published commit
-`adea68456116df8339c76a0d7407889755ae7b87` on
-`fix/elastic-roll-wire-colors-20261002`, incorporating the rolled-route ownership
-follow-up through `67cbf9f0a57fe89a8486766456a769b646f2a3e1` and the fresh completed
-descendant preview correction. All 1,238 files and executable modes match that
+`c3d89f787aa1a8e066b310a5307fdf7cb076ee26` on
+`development/rolled-route-ownership`. This descends from the previous
+`adea68456116df8339c76a0d7407889755ae7b87` snapshot and retains its completed
+descendant preview correction. All 1,193 files and executable modes match that
 Git tree, with no extras or local edits. Cargo metadata, `ci/pins.env` and
 `hibana-provenance.json` pin the exact source.
 
-The new repair has a QUIC-independent release reproduction, eight Lean theorems,
-four Z3 UNSAT obligations and one historical SAT witness. The core workspace
-passed 874 Rust tests with 11 ignored, and its release/LTO regression and Clippy
-passed. QUIC has a separate test with the actual capacity-one carrier. These
-checks are distinct from Neqo interop. The full resource gate still fails the
-existing route-arm compiler RSS ceiling (135 MiB against 132 MiB); its isolated
-run passed at 132 MiB. Stack/SRAM/flash remain within unchanged budgets. See
-`hibana/proofs/live-descendant-preview/` and the fresh recovery evidence.
+The new repair preserves an enclosing connection prefix when only its inner
+rolled route enters a fresh visit. Prepared reset bounds use the real
+descriptor/lane head; retained ancestors keep their arm. Public API, stored
+state, wire format, capacity and dependencies are unchanged by this repair.
+`hibana/proofs/rolled-route-ownership/NestedVisit.lean` has twelve scoped kernel
+theorems; its Z3 companion has four UNSAT obligations and four SAT premises.
+Fresh local replay of the whole supplemental runner passes nine Lean files and
+18 UNSAT / 26 SAT results. These are scoped models and canonical histories.
+
+QUIC retains the publication regression and adds four actual capacity-one
+carrier tests: retained-sample failure ACK, premature switch rejection,
+duplicate ACK rejection and right-par-lane-first reentry. The requested local
+wire/full-connection/host suites run separately from those contract traces and
+from native Neqo diagnosis. CI run 37396155673 was in progress on initial
+inspection; a prior core test result or prior interop result is not a new result
+for this snapshot. Fresh consumer evidence is recorded in RECOVERY-STATUS.md.
 
 The earlier three immutable metadata lookup optimizations have pre-implementation Lean
 and Z3 evidence, differential tests, and passing upstream Kani/final-form CI:

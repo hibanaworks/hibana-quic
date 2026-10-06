@@ -1,5 +1,105 @@
 # Rolled-route ownership regressions
 
+## Nested visit reset repair, 2026-10-06
+
+The Module touch-input contract reproduced a distinct defect on `12383a07`:
+Connected/ConnectedReceived followed by one completed Sample/Retained visit and
+the inner Failed receive made FailureRetained fail with PhaseInvariant. The same
+ordinary test carrier accepted an initial failure without a preceding sample.
+The earlier intrinsic entry-selection repair remains in place. This defect was
+in commit application: the completed containing route was reset when only its
+inner rolled route entered a new visit, erasing the actual connection prefix.
+
+The prepared fresh suffix now requires the descriptor's lane-head admission.
+Retained ancestors must keep their selected arm, and each fresh descendant must
+belong to the prepared containing arm. Commit application consumes that prepared
+suffix instead of treating every completed ancestor as a new visit. Existing
+event/dependency/conflict checks and preflight-before-publication remain intact.
+No public API, stored field, transport byte, fixed capacity or dependency is added.
+
+`NestedVisit.lean` was checked before the production edits: five quantified head,
+reset-bound and retained-arm obligations plus seven canonical GlobalSemantics
+histories. Its twelve theorems use only the existing kernel and propext; no new
+trusted declaration or native decision is introduced. `NestedVisit.smt2` checks
+four negated obligations as UNSAT with four SAT premises. The existing runner
+now includes nine Lean files, eighteen UNSAT obligations and twenty-six SAT
+premises/witnesses. These are source-linked abstractions and canonical histories,
+not a universal refinement proof of arbitrary Rust or physical devices.
+
+Three permanent Rust regressions cover 0/1/3 retained samples, enclosing reentry,
+an unretained sample's forbidden arm switch and duplicate failure ACK rejection.
+A fourth case covers a parallel right lane reentering first; a selected parallel
+sibling uses direct recv. All four passed strict-provenance Miri (three cases in
+252.47 seconds and the additional parallel case in 74.46 seconds), and are included
+in the existing Miri gate without increasing its timeout. The complete workspace
+passed 727 tests with twelve explicit ignored cases; the added parallel case and
+its strict Clippy check also passed. Workspace/all-target Clippy, Pico no-default
+build, the full 709 static/506 generated Lean inventory, 182 parallel and 36 causal
+correspondences, and atomic-failure/public-operation audits passed.
+
+The unchanged resource gate passed: thumb rlib sections total 97,476 bytes,
+sample peak stack 2,655 bytes and modeled maximum sample SRAM 5,322 bytes. These
+are sample/object-section measurements, not linked StackChan flash or a universal
+stack proof. Evidence: `/tmp/hibana-nested-visit-final-evidence.U8YY7l/`,
+`/tmp/hibana-nested-visit-miri-evidence.k8YyzJ/`,
+`/tmp/hibana-nested-par-miri-evidence.VxOw9c/` and
+`/tmp/hibana-nested-par-clippy-evidence.m3W3cC/`. Disposable Rust products were
+cleaned after each group. Remote CI and matched device-bundle qualification are
+required before deploying this core to the resident body.
+
+## Intrinsic entry selection repair, 2026-10-06
+
+The StackChan touch sampling contract reproduced another entry-selection defect
+on `fac137e3`. An outer rolled route uses Read in its first arm and Return in its
+second. The Read arm contains a nested failed-read Return with the same logical
+label and payload schema. After a successful Read/Sampled/Received cycle, a fresh
+outer Return was rejected as PhaseInvariant even with the ordinary test carrier,
+without I2C or intercore I/O.
+
+Intrinsic send-preview selection scanned the entire first arm before checking
+the second arm's actual entry. That scan selected the unchosen nested Return.
+Intrinsic choice now considers only actual controller entries. The separately
+authorized selected-arm continuation scan and all dependency, conflict, resolver,
+reentry and atomic publication checks remain. There is no public API, stored
+field, wire-format or capacity addition.
+
+`SendEntry.lean` was kernel-checked before the production edit. Three quantified
+selector obligations exclude an arbitrary interior occurrence and preserve a
+matching second entry. Six canonical GlobalSemantics histories cover initial
+Return, successful-read reentry, wrong inner Return rejection, the actual failed
+read return path, early-return rejection and repeated reads. `SendEntry.smt2`
+checks two UNSAT negated obligations with SAT premises and a concrete SAT witness
+of the former body-before-entry selection. These abstractions and histories do
+not claim universal refinement of arbitrary Rust or native hardware behavior.
+The supplemental runner checks eight Lean files and the exact new Z3 result
+sequence, with 14 UNSAT obligations and 22 SAT premises/witnesses overall.
+
+The ordinary workspace run passed 723 tests (12 explicitly ignored cases),
+strict workspace/all-target Clippy and the Pico no-default projection build.
+The canonical Lean gate passed its complete 709 static/506 generated theorem
+inventory, 182 parallel and 36 causal correspondences, and atomic-failure/public
+operation audits. All six send-continuation regressions passed strict-provenance
+Miri, including the 0/1/2/64-read case and either nested initial arm. Miri products
+were cleaned at its actual nested target directory after the generic root clean
+rejected its missing cache tag. The resource gate passed with thumb rlib sections
+97,276 bytes, sample peak stack 2,623 bytes and modeled sample SRAM 5,290 bytes,
+within unchanged limits. These are sample/object-section measurements, not a
+linked StackChan flash or universal stack proof. Evidence is retained in
+`/tmp/hibana-send-entry-evidence.00tMTi/`; disposable Rust products are removed.
+The running generation-92 body remains selected. The touch implementation is not
+yet deployed and no petting reaction is claimed from this core qualification.
+
+Remote run 37380539604 passed Kani and the preceding gates, but the combined
+send-continuation Miri group exceeded its existing 480-second limit while doing
+the new 64-read repetition. The 64-read case is now a separate native stress
+test; initial entry, one completed read, reentry after two reads, the rejecting
+case and the other nested-arm ownership tests remain in Miri. No production
+guard, check, timeout or proof obligation is changed. The seven native cases,
+strict regression Clippy and six strict-provenance Miri cases passed again in
+`/tmp/hibana-send-entry-ci-evidence.Py3UlW/`; Miri reported 259.99 seconds. Both
+native and nested Miri products were cleaned. The revised remote run is required
+before deployment; this local result does not certify its completion.
+
 ## Nested send continuation repair, 2026-10-03
 
 The Path handoff on `ca5a6fc3` exposes a send-preview defect independent of the
