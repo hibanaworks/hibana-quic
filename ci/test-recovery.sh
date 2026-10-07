@@ -11,5 +11,7 @@ cargo test --locked --release --test connection_publication_route -- --test-thre
 publication=$?
 cargo test --locked --release --test nested_visit_carrier -- --test-threads=1
 nested=$?
-printf '{"application_wire_exit":%d,"connected_application_exit":%d,"host_hq_exit":%d,"publication_route_exit":%d,"nested_visit_exit":%d,"interop":"NOT_RUN"}\n' "$wire" "$connection" "$host" "$publication" "$nested" > /results/runtime-status.json
-(( wire == 0 && connection == 0 && host == 0 && publication == 0 && nested == 0 ))
+cargo test --locked --release --test parallel_offer_carrier -- --test-threads=1
+parallel=$?
+printf '{"application_wire_exit":%d,"connected_application_exit":%d,"host_hq_exit":%d,"publication_route_exit":%d,"nested_visit_exit":%d,"parallel_offer_exit":%d,"interop":"NOT_RUN"}\n' "$wire" "$connection" "$host" "$publication" "$nested" "$parallel" > /results/runtime-status.json
+(( wire == 0 && connection == 0 && host == 0 && publication == 0 && nested == 0 && parallel == 0 ))

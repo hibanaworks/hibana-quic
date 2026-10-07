@@ -1,29 +1,35 @@
 # Audited local dependency snapshots
 
 `hibana/` is the complete tracked source at published commit
-`c3d89f787aa1a8e066b310a5307fdf7cb076ee26` on
+`8302a07b5f0f2d224229afdba4d0afef62d6aa2b` on
 `development/rolled-route-ownership`. This descends from the previous
-`adea68456116df8339c76a0d7407889755ae7b87` snapshot and retains its completed
-descendant preview correction. All 1,193 files and executable modes match that
-Git tree, with no extras or local edits. Cargo metadata, `ci/pins.env` and
+`c3d89f787aa1a8e066b310a5307fdf7cb076ee26` snapshot and retains the earlier
+completed-descendant and containing-visit corrections. All 1,207 files and
+executable modes match that Git tree, with no extras or local edits. Cargo
+metadata, `ci/pins.env` and
 `hibana-provenance.json` pin the exact source.
 
-The new repair preserves an enclosing connection prefix when only its inner
-rolled route enters a fresh visit. Prepared reset bounds use the real
-descriptor/lane head; retained ancestors keep their arm. Public API, stored
-state, wire format, capacity and dependencies are unchanged by this repair.
-`hibana/proofs/rolled-route-ownership/NestedVisit.lean` has twelve scoped kernel
-theorems; its Z3 companion has four UNSAT obligations and four SAT premises.
-Fresh local replay of the whole supplemental runner passes nine Lean files and
-18 UNSAT / 26 SAT results. These are scoped models and canonical histories.
+This update keeps independent active receive lanes armed during a parked
+parallel offer, scans incomplete events from existing completion words, and
+shares one checked immutable event row during each admission. Dependency,
+conflict, reentry and lane-head checks still run on every operation; there is
+no persistent eligibility cache. The final commit only corrects the optional
+route-arm presence model; its Rust, Cargo and CI files match parent cf084d22.
+Public API, wire format, capacity and dependencies are unchanged.
 
-QUIC retains the publication regression and adds four actual capacity-one
+Fresh local Lean/Z3 checks pass: event admission 4 theorems / 6 UNSAT / 4 SAT,
+parallel offer ingress 14 / 8 / 2, and pending-event scan 7 / 4 / 2. These
+scoped models do not establish a whole-Rust refinement or QUIC interop proof.
+
+QUIC retains the publication regression and four actual capacity-one
 carrier tests: retained-sample failure ACK, premature switch rejection,
 duplicate ACK rejection and right-par-lane-first reentry. The requested local
 wire/full-connection/host suites run separately from those contract traces and
-from native Neqo diagnosis. CI run 37396155673 was in progress on initial
-inspection; a prior core test result or prior interop result is not a new result
-for this snapshot. Fresh consumer evidence is recorded in RECOVERY-STATUS.md.
+from native Neqo diagnosis. A new delayed-parallel-offer test uses the actual
+capacity-one QUIC carrier, cancels each owned preview, then receives and ACKs
+all six payloads without duplication. Upstream CI runs 37664144837 (parent)
+and 37668496444 (selected SHA) were both confirmed successful. Fresh consumer
+evidence and remaining limits are recorded in RECOVERY-STATUS.md.
 
 The earlier three immutable metadata lookup optimizations have pre-implementation Lean
 and Z3 evidence, differential tests, and passing upstream Kani/final-form CI:
