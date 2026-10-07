@@ -42,18 +42,20 @@ class UdpProxy:
         self._stop = threading.Event()
         self._error = None
         self._client = None
-        self._front = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._front.bind(('127.0.0.1', 0))
+        family = socket.AF_INET6 if ':' in server[0] else socket.AF_INET
+        self._loopback = '::1' if family == socket.AF_INET6 else '127.0.0.1'
+        self._front = socket.socket(family, socket.SOCK_DGRAM)
+        self._front.bind((self._loopback, 0))
         self.address = self._front.getsockname()
-        self._back = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._back.bind(('127.0.0.1', 0))
+        self._back = socket.socket(family, socket.SOCK_DGRAM)
+        self._back.bind((self._loopback, 0))
         self._back.connect(server)
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def _accept_client(self, sender):
         if sender == self._client:
             return True
-        if sender[0] != '127.0.0.1' or sender in self._seen_clients or len(self._seen_clients) >= self._client_endpoints:
+        if sender[0] != self._loopback or sender in self._seen_clients or len(self._seen_clients) >= self._client_endpoints:
             return False
         self._seen_clients.add(sender)
         self._client = sender

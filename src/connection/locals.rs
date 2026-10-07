@@ -22,6 +22,9 @@ struct ReceiveWire<'keys, 'scope, 'buf, const N: usize> {
     path: Option<crate::path::Address>,
     offset: usize,
     opened: [u8; N],
+    // One owned ciphertext packet, not a TLS/protocol phase flag. It cannot
+    // produce ACK or CRYPTO effects until the real Handshake key arrives.
+    pending_handshake: Option<([u8; N], ReceivedDatagram)>,
 }
 impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
     async fn packet<const P: usize>(
@@ -33,7 +36,23 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
         clock: &impl Clock,
     ) -> Result<bool, Error> {
         if self.offset >= self.len {
-            let received = io.receive(&mut self.datagram).await?;
+            let received = if self.handshake.is_some()
+                && let Some((bytes, received)) = self.pending_handshake.take()
+            {
+                self.datagram = bytes;
+                received
+            } else {
+                let received = io.receive(&mut self.datagram).await?;
+                if config.initial_path.is_some() && received.path != config.initial_path {
+                    return Ok(true);
+                }
+                if received.len > N {
+                    return Err(Error::Capacity);
+                }
+                book.received_datagram(received.len as u64)?;
+                slots.schedule.changed()?;
+                received
+            };
             if config.initial_path.is_some() && received.path != config.initial_path {
                 return Ok(true);
             }
@@ -46,8 +65,6 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             }
             self.len = len;
             self.offset = 0;
-            book.received_datagram(len as u64)?;
-            slots.schedule.changed()?;
         }
         let untrusted = match PacketIter::new(
             &self.datagram[self.offset..self.len],
@@ -128,7 +145,24 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             } else {
                 match self.handshake.as_ref() {
                     Some(key) => key,
-                    None => return Ok(true),
+                    None => {
+                        // A reordered server flight can precede ServerHello.
+                        // Retain one bounded packet while continuing to read
+                        // Initial input; never block the key-producing input.
+                        if self.pending_handshake.is_none() {
+                            let mut bytes = [0; N];
+                            bytes[..untrusted.bytes.len()].copy_from_slice(untrusted.bytes);
+                            self.pending_handshake = Some((
+                                bytes,
+                                ReceivedDatagram {
+                                    len: untrusted.bytes.len(),
+                                    ecn: self.ecn,
+                                    path: self.path,
+                                },
+                            ));
+                        }
+                        return Ok(true);
+                    }
                 }
             };
             self.opened[..untrusted.bytes.len()].copy_from_slice(untrusted.bytes);
@@ -212,6 +246,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
         path: None,
         offset: 0,
         opened: [0; N],
+        pending_handshake: None,
     };
     if let Some(first) = first_response {
         if first.received.len > N {

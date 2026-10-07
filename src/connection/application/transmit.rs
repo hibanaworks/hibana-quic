@@ -450,7 +450,18 @@ pub(crate) async fn run<
                         .responses
                         .pending()
                         .map_err(|_| Error::Binding)?
-                        .and_then(|r| r.path),
+                        .and_then(|r| r.path)
+                        .filter(|path| {
+                            // A retired CID cannot answer a delayed challenge
+                            // on the old path. Retain that response until an
+                            // actual NEW_CONNECTION_ID supplies a usable CID;
+                            // ordinary publication on the active path continues.
+                            state.peers.borrow().as_ref().is_none_or(|peers| {
+                                peers
+                                    .choose(*path, state.paths.preferred_cid(Some(*path)))
+                                    .is_ok()
+                            })
+                        }),
                 }))
                 .map_err(|_| Error::Binding)?;
             endpoint.send::<pp::Request>(&()).await?;
@@ -515,13 +526,24 @@ pub(crate) async fn run<
                             .responses
                             .pending()
                             .map_err(|_| Error::Binding)?
-                            .and_then(|r| r.path),
+                            .and_then(|r| r.path)
+                            .filter(|path| {
+                                // A retired CID cannot answer a delayed challenge
+                                // on the old path. Retain that response until an
+                                // actual NEW_CONNECTION_ID supplies a usable CID;
+                                // ordinary publication on the active path continues.
+                                state.peers.borrow().as_ref().is_none_or(|peers| {
+                                    peers
+                                        .choose(*path, state.paths.preferred_cid(Some(*path)))
+                                        .is_ok()
+                                })
+                            }),
                     }))
                     .map_err(|_| Error::Binding)?;
                 endpoint.send::<pp::Request>(&()).await?;
             }
             let grant = state.paths.grant.take().map_err(|_| Error::Binding)?;
-            let pending = prepare(
+            let pending = match prepare(
                 keys,
                 book,
                 streams,
@@ -532,7 +554,15 @@ pub(crate) async fn run<
                 &state.ids,
                 &state.peers,
                 grant,
-            )?;
+            ) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    // This grant has no published datagram. Close its actual
+                    // path round before the terminal Request/End continuation.
+                    endpoint.send::<pp::Settled>(&()).await?;
+                    return Err(error);
+                }
+            };
             let Some(pending) = pending else {
                 endpoint.send::<pp::Settled>(&()).await?;
                 if let Some(deadline) = state.paths.deadline(clock.now()) {

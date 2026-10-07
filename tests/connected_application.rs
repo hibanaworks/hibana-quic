@@ -120,6 +120,8 @@ fn parameters_with_limits(id: &[u8], original: Option<&[u8]>, limits: Limits) ->
 // connections still perform their own TLS, certificate and AEAD verification.
 // This lets the loss cases name encrypted frames only after successful AEAD.
 struct Inspector<'scope> {
+    initial: hibana_quic::crypto::PacketKey,
+    largest_initial: Option<u64>,
     handshake: ReceivePacketKey<'scope>,
     application: ApplicationReadKeys<'scope>,
     integrity: IntegrityBudget,
@@ -127,6 +129,7 @@ struct Inspector<'scope> {
     largest_application: Option<u64>,
     handshake_acks: usize,
     handshake_done: usize,
+    handshake_crypto: usize,
 }
 fn inspection_keys<'scope>(
     scope: &'scope mut ApplicationKeyScope,
@@ -295,6 +298,8 @@ fn inspection_keys<'scope>(
         .0;
     let integrity = client.borrow_mut().take_integrity_budget().unwrap();
     Inspector {
+        initial: hibana_quic::crypto::initial_keys(ORIGINAL).unwrap().server,
+        largest_initial: None,
         handshake,
         application,
         integrity,
@@ -302,14 +307,17 @@ fn inspection_keys<'scope>(
         largest_application: None,
         handshake_acks: 0,
         handshake_done: 0,
+        handshake_crypto: 0,
     }
 }
 
 #[derive(Default)]
 struct Classification {
+    initial_crypto: bool,
     handshake_ack: bool,
     application_ack: bool,
     handshake_done: bool,
+    handshake_crypto: bool,
 }
 fn classify_frames(bytes: &[u8], level: EncryptionLevel) -> Classification {
     let mut result = Classification::default();
@@ -323,6 +331,14 @@ fn classify_frames(bytes: &[u8], level: EncryptionLevel) -> Classification {
             Frame::Padding { .. } => {}
             Frame::HandshakeDone => {
                 result.handshake_done = true;
+                only_ack_or_padding = false;
+            }
+            Frame::Crypto { .. } if level == EncryptionLevel::Initial => {
+                result.initial_crypto = true;
+                only_ack_or_padding = false;
+            }
+            Frame::Crypto { .. } if level == EncryptionLevel::Handshake => {
+                result.handshake_crypto = true;
                 only_ack_or_padding = false;
             }
             _ => only_ack_or_padding = false,
@@ -339,40 +355,43 @@ impl Inspector<'_> {
             let packet = packet.unwrap();
             let current = match packet.header {
                 Header::Long {
-                    kind: LongType::Handshake,
+                    kind,
                     destination_id,
                     packet_number_offset,
                     ..
-                } => {
+                } if matches!(kind, LongType::Initial | LongType::Handshake) => {
+                    let (largest, level) = if kind == LongType::Initial {
+                        (&mut self.largest_initial, EncryptionLevel::Initial)
+                    } else {
+                        (&mut self.largest_handshake, EncryptionLevel::Handshake)
+                    };
                     assert_eq!(destination_id, CLIENT_ID);
                     let mut storage = [0; DATAGRAM];
                     storage[..packet.bytes.len()].copy_from_slice(packet.bytes);
                     let bytes = &mut storage[..packet.bytes.len()];
-                    let pn_len = self
-                        .handshake
-                        .unprotect_header(bytes, packet_number_offset)
-                        .unwrap();
+                    let pn_len = if kind == LongType::Initial {
+                        self.initial.unprotect_header(bytes, packet_number_offset)
+                    } else {
+                        self.handshake.unprotect_header(bytes, packet_number_offset)
+                    }
+                    .unwrap();
                     let (truncated, _) = packet::decode_truncated_packet_number(
                         bytes[0],
                         &bytes[packet_number_offset..],
                     )
                     .unwrap();
-                    let pn = packet::restore_packet_number(
-                        truncated,
-                        pn_len as u8,
-                        self.largest_handshake,
-                    )
-                    .unwrap();
+                    let pn =
+                        packet::restore_packet_number(truncated, pn_len as u8, *largest).unwrap();
                     let (header, payload) = bytes.split_at_mut(packet_number_offset + pn_len);
-                    let len = self
-                        .handshake
-                        .open(pn, header, payload, &mut self.integrity)
-                        .expect(
-                            "deterministic replay must authenticate the actual Handshake packet",
-                        );
-                    self.largest_handshake =
-                        Some(self.largest_handshake.map_or(pn, |old| old.max(pn)));
-                    classify_frames(&payload[..len], EncryptionLevel::Handshake)
+                    let len = if kind == LongType::Initial {
+                        self.initial.open(pn, header, payload, &mut self.integrity)
+                    } else {
+                        self.handshake
+                            .open(pn, header, payload, &mut self.integrity)
+                    }
+                    .expect("deterministic replay must authenticate the actual Handshake packet");
+                    *largest = Some(largest.map_or(pn, |old| old.max(pn)));
+                    classify_frames(&payload[..len], level)
                 }
                 Header::Short { .. } => {
                     let opened = connection::application_wire::open::<DATAGRAM>(
@@ -392,12 +411,15 @@ impl Inspector<'_> {
                 }
                 _ => Classification::default(),
             };
+            result.initial_crypto |= current.initial_crypto;
             result.handshake_ack |= current.handshake_ack;
             result.application_ack |= current.application_ack;
             result.handshake_done |= current.handshake_done;
+            result.handshake_crypto |= current.handshake_crypto;
         }
         self.handshake_acks += usize::from(result.handshake_ack);
         self.handshake_done += usize::from(result.handshake_done);
+        self.handshake_crypto += usize::from(result.handshake_crypto);
         result
     }
 }
@@ -622,6 +644,7 @@ enum Loss {
     ServerHandshakeAck,
     HandshakeDone,
     AllHandshakeDone,
+    HandshakeBeforeServerHello,
 }
 struct Tx<'a, 'scope> {
     path: &'a Path,
@@ -676,12 +699,19 @@ impl DatagramTx for Tx<'_, '_> {
                 Loss::HandshakeDone | Loss::AllHandshakeDone => classification
                     .as_ref()
                     .is_some_and(|packet| packet.handshake_done),
+                Loss::HandshakeBeforeServerHello => {
+                    (classification.as_ref().is_some_and(|p| p.initial_crypto)
+                        && self.path.dropped.get() == 0)
+                        || (classification.as_ref().is_some_and(|p| p.handshake_crypto)
+                            && self.inspector.as_ref().unwrap().handshake_crypto > 1)
+                }
             };
             if selected
                 && (matches!(
                     self.loss,
                     Loss::ServerApplicationAcks
                         | Loss::AllHandshakeDone
+                        | Loss::HandshakeBeforeServerHello
                         | Loss::ServerApplicationAcksPersistentServer
                         | Loss::ServerPacketBurst { .. }
                         | Loss::ClientPacketBurst { .. }
@@ -979,6 +1009,11 @@ fn lost_authenticated_handshake_done_is_retransmitted_before_client_completion()
 #[test]
 fn authenticated_one_rtt_ack_confirms_when_every_handshake_done_is_lost() {
     run_connection(3, Loss::AllHandshakeDone);
+}
+
+#[test]
+fn reordered_handshake_ciphertext_survives_missing_server_hello_and_retransmissions() {
+    run_connection(3, Loss::HandshakeBeforeServerHello);
 }
 
 fn run_connection(count: usize, loss: Loss) {
@@ -1541,6 +1576,7 @@ fn connection_case_with_failure(
         Loss::ServerApplicationAcks
             | Loss::ServerApplicationAcksPersistentServer
             | Loss::AllHandshakeDone
+            | Loss::HandshakeBeforeServerHello
     ) {
         assert!(to_client.dropped.get() > 0);
     } else if let Loss::DuplexPacketMask { server, .. } = loss {

@@ -1,12 +1,12 @@
 {
-  "request": "Qualify all 44 case/direction cells, including native-validated HTTP3",
-  "requested_at": "2026-10-07T06:36:08Z",
+  "request": "Qualify all 44 cells after authenticated ACK confirmation, bounded reordered Handshake retention and delayed path-response CID admission",
+  "requested_at": "2026-10-07T08:38:33Z",
   "scope": [
     "same source commit across all qualification groups",
     "22 mandatory unchanged reference self-controls",
     "44 actual candidate client/server verdicts"
   ],
-  "approval": "User requested separate core and QUIC handoff ZIPs with push instructions. The receiving operator must follow the user-authorized publication scope.",
+  "approval": "User requested checking and repairing the remaining interop failures, including latest upstream Hibana, with both local directions checked before CI. Existing authorized publication workflow continues.",
   "local_evidence": "docs/remaining-interop.md",
   "candidate_directions": [
     "client",

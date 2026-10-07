@@ -99,6 +99,9 @@ def main():
                         help='finite initial-path delay for native preferred-address diagnostics')
     parser.add_argument('--migration-preferred-ip', choices=('127.0.0.1', '127.0.0.2'), default='127.0.0.1')
     parser.add_argument('--migration-ipv6', action='store_true')
+    parser.add_argument('--migration-wildcard', action='store_true',
+                        help='bind the unchanged reference to [::], matching its QNS listener')
+    parser.add_argument('--migration-body-mib', type=int, choices=(2, 16), default=2)
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
     parser.add_argument('--client-keyupdate', action='store_true')
     parser.add_argument('--expect-idle-expiry', action='store_true')
@@ -111,8 +114,10 @@ def main():
     args = parser.parse_args()
     if not 0 <= args.migration_delay_ms <= 1000 or (args.migration_delay_ms and args.scenario != 'connectionmigration'):
         parser.error('--migration-delay-ms requires connectionmigration and 0..1000 ms')
-    if args.migration_ipv6 and (args.scenario != 'connectionmigration' or args.migration_delay_ms):
-        parser.error('--migration-ipv6 requires connectionmigration without the IPv4 delay proxy')
+    if args.migration_ipv6 and (args.scenario != 'connectionmigration'):
+        parser.error('--migration-ipv6 requires connectionmigration')
+    if args.migration_wildcard and not args.migration_ipv6:
+        parser.error('--migration-wildcard requires --migration-ipv6')
     if (args.client_early_reject or args.client_early_loss) and (args.scenario != 'zerortt' or not args.client_early):
         parser.error('early fault scenarios require --scenario zerortt --client-early')
     if args.client_early_reject and args.client_early_loss:
@@ -141,7 +146,7 @@ def main():
     if args.scenario == 'v2':
         sizes = [1024]
     if args.scenario == 'connectionmigration':
-        sizes = [2 << 20]
+        sizes = [args.migration_body_mib << 20]
     if args.scenario in ('rebind-port','rebind-addr'):
         sizes = [10 << 20]
     if args.scenario == 'multiconnect':
@@ -173,6 +178,7 @@ def main():
         'scope': 'native-peer-diagnostics', 'official_interop_pass': False,
         'scenario': args.scenario, 'server_retry': args.server_retry, 'client_retry': args.client_retry, 'impairment': options, 'ordinary_files': len(sizes),
         'migration_ipv6': args.migration_ipv6, 'migration_preferred_ip': args.migration_preferred_ip,
+        'migration_wildcard': args.migration_wildcard,
         'coverage_gaps': ['not ns-3 topology or exact stochastic impairment', 'no packet-trace verdicts', 'forward ordinary-Neqo generated-zero payloads'],
         'binaries': {name: sha(path) for name, path in [('hq', hq), ('neqo-client', nc), ('neqo-server', ns)]},
         'runs': [],
@@ -233,6 +239,8 @@ def main():
             server_port = unused_port(ipv6)
             preferred_port = unused_port(ipv6)
             server_address = f'[::1]:{server_port}' if ipv6 else f'127.0.0.1:{server_port}'
+            if args.migration_wildcard and direction != 'reverse':
+                server_address = f'[::]:{server_port}'
             if direction == 'reverse':
                 server_command = [str(hq), 'server', '--listen', server_address, '--cert', str(root / 'server.pem'), '--key', str(root / 'server.key'), '--www', str(www), '--max-requests', str(64 if args.scenario in ('resumption', 'zerortt') else len(names)), '--timeout-seconds', str(args.timeout_seconds)]
             else:
@@ -275,7 +283,7 @@ def main():
                         # Native Neqo correctly rejects early data for ten seconds
                         # after startup. Unlike its QNS mode, do not shift its clock.
                         time.sleep(11)
-                    proxy_context = (EarlyWireProbe(('127.0.0.1', server_port), client_endpoints=2 if direction == 'forward' else 1, drop_first_early=args.client_early_loss) if args.scenario == 'zerortt' else (MultiEndpointProxy if args.scenario == 'multiconnect' else UdpProxy)(('127.0.0.1', server_port), **options) if options else nullcontext(None))
+                    proxy_context = (EarlyWireProbe(('127.0.0.1', server_port), client_endpoints=2 if direction == 'forward' else 1, drop_first_early=args.client_early_loss) if args.scenario == 'zerortt' else (MultiEndpointProxy if args.scenario == 'multiconnect' else UdpProxy)(('::1' if ipv6 else '127.0.0.1', server_port), **options) if options else nullcontext(None))
                     if args.scenario == 'v2': proxy_context = VersionWireProbe(('127.0.0.1',server_port))
                     if args.scenario in ('rebind-port','rebind-addr'): proxy_context = RebindingWireProbe(('127.0.0.1',server_port),change_address=args.scenario=='rebind-addr')
                     with proxy_context as proxy:

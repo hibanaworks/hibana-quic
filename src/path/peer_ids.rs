@@ -213,9 +213,17 @@ mod tests {
         assert_eq!(next.sequence, 1);
         peers.accepted(next, new).unwrap();
         peers.retire_previous(old, new, None).unwrap();
+        // A delayed challenge on the old path must wait for a usable CID.
+        // Never reuse its retired CID, or reuse the new path's bound CID.
+        assert!(peers.choose(old, None).is_err());
         assert_eq!(peers.prepare_retirement(next.cid).unwrap(), Some(0));
         assert_eq!(peers.prepare_retirement(next.cid).unwrap(), Some(0));
         peers.retirement_accepted(0, 12).unwrap();
         assert_eq!(peers.prepare_retirement(next.cid).unwrap(), None);
+        peers.receive(2, 0, &[4; 8], [5; 16]).unwrap();
+        let reply = peers.choose(old, None).unwrap();
+        assert_eq!(reply.sequence, 2);
+        peers.accepted(reply, old).unwrap();
+        assert_eq!(peers.choose(new, None).unwrap().sequence, 1);
     }
 }

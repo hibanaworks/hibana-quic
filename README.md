@@ -54,10 +54,10 @@ alone. Passing interop does not complete this migration.
 ## Status
 
 This is **not production-ready** and is not yet a fully qualified QUIC stack.
-The latest complete CI attempt on `69c6cfc` reports **40 of 44 candidate cells
-passed**, two failed client cells (`connectionmigration`, `handshakeloss`), and
-two unexecuted ECN directions after Docker service startup failed. See
-[run 37587982856](https://github.com/hibanaworks/hibana-quic/actions/runs/37587982856).
+The latest complete CI attempt on `bc8195b` reports **42 of 44 candidate cells
+passed**, with client `connectionmigration` and `handshakeloss` still failed.
+All 44 cells ran, including both successful ECN directions. See
+[run 37599109955](https://github.com/hibanaworks/hibana-quic/actions/runs/37599109955).
 This is not a passing qualification of all 44 cells. Local fixes and new tests
 still require qualification on their exact resulting commit.
 
