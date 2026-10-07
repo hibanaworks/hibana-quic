@@ -1,0 +1,151 @@
+{
+  "scope": "native-peer-diagnostics",
+  "official_interop_pass": false,
+  "scenario": "loss",
+  "server_retry": false,
+  "client_retry": false,
+  "impairment": {
+    "drop_every": 50
+  },
+  "ordinary_files": 1,
+  "migration_ipv6": false,
+  "migration_preferred_ip": "127.0.0.1",
+  "coverage_gaps": [
+    "not ns-3 topology or exact stochastic impairment",
+    "no packet-trace verdicts",
+    "forward ordinary-Neqo generated-zero payloads"
+  ],
+  "binaries": {
+    "hq": "47292fc548e160ee3389a2747ba3eba56d59d45cd4b0c658ffb7a323c9416dfe",
+    "neqo-client": "495378d2bc27d2f7134602b9b470722f85a41b1800d6dc43ff888fc9938f7df9",
+    "neqo-server": "0b90c1315966f972b45b6cd4cc325b5bc99e73ecd01e09328bccb2b154e20c7e"
+  },
+  "runs": [
+    {
+      "direction": "baseline",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.027,
+      "post_client_verification_and_retirement_seconds": 0.007,
+      "elapsed_seconds": 0.034,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        }
+      ],
+      "proxy": {
+        "to_server_received": 104,
+        "peak_queued_bytes": 65540,
+        "to_server_forwarded": 102,
+        "to_client_received": 220,
+        "to_client_forwarded": 216,
+        "to_client_dropped": 4,
+        "to_server_dropped": 2
+      },
+      "connections": null,
+      "resources_retired": null,
+      "idle_expired_connections": null,
+      "lifecycle_closed": null,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0
+    },
+    {
+      "direction": "forward",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.416,
+      "post_client_verification_and_retirement_seconds": 0.008,
+      "elapsed_seconds": 0.424,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        }
+      ],
+      "proxy": {
+        "to_server_received": 202,
+        "peak_queued_bytes": 1472,
+        "to_server_forwarded": 198,
+        "to_client_received": 1576,
+        "to_client_forwarded": 1545,
+        "to_client_dropped": 31,
+        "to_server_dropped": 4
+      },
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0
+    },
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 2.931,
+      "post_client_verification_and_retirement_seconds": 0.007,
+      "elapsed_seconds": 2.938,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a",
+          "received_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a"
+        }
+      ],
+      "proxy": {
+        "to_server_received": 1199,
+        "peak_queued_bytes": 1472,
+        "to_server_forwarded": 1176,
+        "to_client_received": 2095,
+        "to_client_forwarded": 2054,
+        "to_client_dropped": 41,
+        "to_server_dropped": 23
+      },
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0,
+      "candidate_server_exit": 0
+    }
+  ],
+  "transfer_observations": [
+    {
+      "direction": "baseline",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.027,
+      "expected_files": 1,
+      "matching_files": 1,
+      "retirement_verified": false
+    },
+    {
+      "direction": "forward",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.416,
+      "expected_files": 1,
+      "matching_files": 1,
+      "retirement_verified": true
+    },
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 2.931,
+      "expected_files": 1,
+      "matching_files": 1,
+      "retirement_verified": true
+    }
+  ]
+}

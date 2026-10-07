@@ -311,7 +311,13 @@ class Diagnostics(unittest.TestCase):
                         '-keyout', str(key), '-out', str(cert)], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         (self.root / 'ci').mkdir()
-        (self.root / 'ci/failure-recipient.json').write_text(json.dumps({'certificate': cert.read_text()}))
+        diagnostic_key, diagnostic_cert = self.root / 'diagnostic.key', self.root / 'diagnostic.crt'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                        '-days', '1', '-subj', '/CN=synthetic-diagnostic-only',
+                        '-keyout', str(diagnostic_key), '-out', str(diagnostic_cert)], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        (self.root / 'ci/failure-recipient.json').write_text(json.dumps({
+            'certificate': cert.read_text(), 'diagnostic_certificate': diagnostic_cert.read_text()}))
         packet = b'PRIVATE_SYNTHETIC_PACKET_BYTES'
         secret = b'PRIVATE_SYNTHETIC_TRAFFIC_KEY'
         self.put('sim/trace_node_left.pcap', packet)
@@ -325,8 +331,14 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.module.SAFE.iterdir()), ['bounded-client-failure.cms'])
         recovered = self.root / 'private-recovered.tar'
         command = ['openssl', 'cms', '-decrypt', '-binary', '-inform', 'DER',
-                   '-in', str(sealed), '-inkey', str(key), '-out', str(recovered)]
+                   '-in', str(sealed), '-inkey', str(key), '-recip', str(cert), '-out', str(recovered)]
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        operator_plaintext = recovered.read_bytes()
+        diagnostic_command = command.copy()
+        diagnostic_command[diagnostic_command.index('-inkey') + 1] = str(diagnostic_key)
+        diagnostic_command[diagnostic_command.index('-recip') + 1] = str(diagnostic_cert)
+        subprocess.run(diagnostic_command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.assertEqual(recovered.read_bytes(), operator_plaintext)
         with tarfile.open(recovered) as archive:
             self.assertEqual(archive.extractfile('transfer/sim/trace_node_left.pcap').read(), packet)
             self.assertEqual(archive.extractfile('transfer/server/keys.log').read(), secret)

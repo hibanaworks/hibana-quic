@@ -95,6 +95,10 @@ def main():
     parser.add_argument('--server-retry', action='store_true', help='native Retry admission, reverse clean direction only')
     parser.add_argument('--direction', choices=('all', 'baseline', 'forward', 'reverse'), default='all')
     parser.add_argument('--timeout-seconds', type=int, default=60)
+    parser.add_argument('--migration-delay-ms', type=int, default=0,
+                        help='finite initial-path delay for native preferred-address diagnostics')
+    parser.add_argument('--migration-preferred-ip', choices=('127.0.0.1', '127.0.0.2'), default='127.0.0.1')
+    parser.add_argument('--migration-ipv6', action='store_true')
     parser.add_argument('--early-files', type=int, choices=[2, 40], default=2)
     parser.add_argument('--client-keyupdate', action='store_true')
     parser.add_argument('--expect-idle-expiry', action='store_true')
@@ -105,6 +109,10 @@ def main():
     parser.add_argument('--client-early-reject', action='store_true', help='native Neqo startup rejection; forward direction only')
     parser.add_argument('--ordinary-files', type=int, choices=[3, 5, 40, 64], default=3)
     args = parser.parse_args()
+    if not 0 <= args.migration_delay_ms <= 1000 or (args.migration_delay_ms and args.scenario != 'connectionmigration'):
+        parser.error('--migration-delay-ms requires connectionmigration and 0..1000 ms')
+    if args.migration_ipv6 and (args.scenario != 'connectionmigration' or args.migration_delay_ms):
+        parser.error('--migration-ipv6 requires connectionmigration without the IPv4 delay proxy')
     if (args.client_early_reject or args.client_early_loss) and (args.scenario != 'zerortt' or not args.client_early):
         parser.error('early fault scenarios require --scenario zerortt --client-early')
     if args.client_early_reject and args.client_early_loss:
@@ -126,7 +134,7 @@ def main():
         env['HIBANA_QUIC_DIAGNOSTICS'] = '1'
     env['LD_LIBRARY_PATH'] = str(nss / 'lib')
     env.pop('SSLKEYLOGFILE', None)
-    ipv6 = args.scenario == 'ipv6'
+    ipv6 = args.scenario == 'ipv6' or args.migration_ipv6
     sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario in ('chacha20', 'keyupdate') else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
     if args.scenario == 'http3':
         sizes = [5 << 10, 10 << 10, 500 << 10]
@@ -153,6 +161,8 @@ def main():
     )
     if args.scenario == 'blackhole':
         options = {'blackhole_after_bytes': 4 << 20, 'blackhole_seconds': 2.0}
+    if args.scenario == 'connectionmigration' and args.migration_delay_ms:
+        options = {'delay': args.migration_delay_ms / 1000}
     if args.multi_impairment != 'none':
         if args.scenario != 'multiconnect':
             parser.error('--multi-impairment requires multiconnect')
@@ -162,6 +172,7 @@ def main():
     report = {
         'scope': 'native-peer-diagnostics', 'official_interop_pass': False,
         'scenario': args.scenario, 'server_retry': args.server_retry, 'client_retry': args.client_retry, 'impairment': options, 'ordinary_files': len(sizes),
+        'migration_ipv6': args.migration_ipv6, 'migration_preferred_ip': args.migration_preferred_ip,
         'coverage_gaps': ['not ns-3 topology or exact stochastic impairment', 'no packet-trace verdicts', 'forward ordinary-Neqo generated-zero payloads'],
         'binaries': {name: sha(path) for name, path in [('hq', hq), ('neqo-client', nc), ('neqo-server', ns)]},
         'runs': [],
@@ -230,7 +241,8 @@ def main():
                 server_command += ['--http', '3']
             if args.scenario == 'connectionmigration':
                 if direction == 'reverse': server_command += ['--preferred-port', str(preferred_port)]
-                else: server_command += ['--preferred-address-v4', f'127.0.0.1:{preferred_port}']
+                elif ipv6: server_command += ['--preferred-address-v6', f'[::1]:{preferred_port}']
+                else: server_command += ['--preferred-address-v4', f'{args.migration_preferred_ip}:{preferred_port}']
             if args.scenario == 'v2':
                 if direction == 'reverse': server_command += ['--version','2']
                 else:
@@ -444,7 +456,7 @@ def main():
                                 responses=set(re.findall(r'TX -> PathResponse \{ data: (\[[0-9, ]+\])',text))
                                 assert len(challenges&responses)>=2,(len(challenges),len(responses))
                                 row['peer_matched_path_responses']=len(challenges&responses)
-                        if args.scenario in ('v2','rebind-port','rebind-addr','connectionmigration','http3') and returncode==0 and direction!='baseline':
+                        if args.scenario in ('v2','rebind-port','rebind-addr','connectionmigration','http3','loss') and returncode==0 and direction!='baseline':
                             if direction=='reverse':
                                 server.wait(timeout=5)
                                 row['candidate_server_exit'] = server.returncode

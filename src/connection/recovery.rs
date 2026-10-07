@@ -155,7 +155,8 @@ impl<const B: usize> CompletionObserver<'_, '_, B> {
             && n.flights.active_flights() == 0
             && (0..3).all(|index| n.retired_space[index] || !n.ack_pending[index]))
     }
-    /// Clients become confirmed only after authenticated HANDSHAKE_DONE;
+    /// Clients confirm through authenticated HANDSHAKE_DONE or a validated
+    /// acknowledgment of a physically accepted 1-RTT packet (RFC 9001 4.1.2);
     /// servers use the validated peer-Finished transition.
     pub fn handshake_confirmed(&self) -> Result<bool, Error> {
         let n = self.book.numbers.borrow();
@@ -2299,7 +2300,16 @@ fn process_packet<'scope, const B: usize>(
                 )?;
             }
         }
-        if handshake_done && !n.handshake_confirmed {
+        // Existing scoped key-ACK receipts prove actual 1-RTT publication and
+        // an authenticated peer acknowledgment. Zero-RTT ACKs never create
+        // these receipts. Use that evidence when HANDSHAKE_DONE is lost rather
+        // than retaining an independent first-packet/progress flag.
+        if !n.handshake_confirmed
+            && (handshake_done
+                || (n.side == Side::Client
+                    && n.parameters_bound
+                    && outcome.key_acks.iter().any(Option::is_some)))
+        {
             n.handshake_confirmed = true;
             outcome.confirmation = Some(HandshakeConfirmed {
                 scope,
@@ -2848,6 +2858,9 @@ mod tests {
         // Numerical accounting fixture: the public early entry additionally
         // requires an actual scoped TLS-owned ZeroRtt key.
         book!(book, scope, installation, arena, Side::Client, 172);
+        // The real application continuation has bound the authenticated TLS
+        // parameters before accepting application acknowledgments.
+        book.numbers.borrow_mut().parameters_bound = true;
         let (mut read, _) = installation
             .install(key(KeyKind::OneRtt, 8), key(KeyKind::OneRtt, 7))
             .unwrap();
@@ -2917,6 +2930,7 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.newly_acknowledged, 1);
         assert!(outcome.key_acks.iter().all(Option::is_none));
+        assert!(outcome.confirmation.is_none());
         assert_eq!(outcome.packets[0].unwrap().value, 1);
         let len = ack(2, &mut plain);
         let receipt = app_receipt(
@@ -2930,6 +2944,10 @@ mod tests {
             .apply_application_packet(receipt, &plain[..len], 11, None)
             .unwrap();
         assert!(outcome.key_acks.iter().any(Option::is_some));
+        assert!(
+            outcome.confirmation.is_some(),
+            "a real 1-RTT ACK confirms the handshake even when HANDSHAKE_DONE was lost"
+        );
         retirement.disarm();
         drop(guard);
     }

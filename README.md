@@ -54,17 +54,12 @@ alone. Passing interop does not complete this migration.
 ## Status
 
 This is **not production-ready** and is not yet a fully qualified QUIC stack.
-The pinned, unmodified quic-interop-runner has qualified **30 of 44 unique
-candidate cells** across the exact revisions in [the inventory](interop/qualification.json).
-Multiplexing passed both directions at `4fdc24a7` with a passing unchanged Neqo
-control in [run 37359435433](https://github.com/hibanaworks/hibana-quic/actions/runs/37359435433).
-Earlier passes include blackhole, 0-RTT, key update, amplification limit and
-handshake loss/corruption both directions. Alternate-peer controls are recorded;
-reference controls and duplicate peers do not add candidate cells.
-
-This is a historical inventory, not a complete latest-commit matrix. The other
-14 cells, the repeated release matrix and embedded hardware remain unqualified.
-The direct-local rewrite requires fresh regressions and interoperability tests.
+The latest complete CI attempt on `69c6cfc` reports **40 of 44 candidate cells
+passed**, two failed client cells (`connectionmigration`, `handshakeloss`), and
+two unexecuted ECN directions after Docker service startup failed. See
+[run 37587982856](https://github.com/hibanaworks/hibana-quic/actions/runs/37587982856).
+This is not a passing qualification of all 44 cells. Local fixes and new tests
+still require qualification on their exact resulting commit.
 
 See [active implementation and evidence](docs/ACTIVE-IMPLEMENTATION.md).
 Lean and Z3 models cover explicitly scoped obligations; they are not proofs of
@@ -73,7 +68,7 @@ the complete Rust implementation, cryptography or interoperability.
 ## Build and test
 
 Rust 1.95.0 is pinned. Hibana is vendored from
-`development/rolled-route-ownership` at `c3d89f787aa1a8e066b310a5307fdf7cb076ee26` without local patches.
+`development/rolled-route-ownership` at `b92a1fe4153e6b2404a183c9231245efd58e3237` without local patches.
 
 ```sh
 cargo test --locked

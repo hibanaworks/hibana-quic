@@ -69,6 +69,10 @@ ENDPOINT_CLASSES = {
     'packet receive:': 'packet-receive', 'bounded TLS:': 'bounded-tls',
     'Authentication': 'authentication', 'Certificate': 'certificate',
     'BufferTooSmall': 'buffer-too-small', 'Capacity': 'capacity',
+    'Binding': 'binding', 'UnusedConnectionId': 'unused-connection-id',
+    'ConnectionIdLimit': 'connection-id-limit', 'PathValidation': 'path-validation',
+    'UnsupportedFrame': 'unsupported-frame', 'HistoryUnavailable': 'history-unavailable',
+    'UnknownConnectionId': 'unknown-connection-id',
     'ConnectionRefused': 'connection-refused', 'PermissionDenied': 'permission-denied',
 }
 RUNNER_PATTERNS = {
@@ -520,13 +524,21 @@ def preserve_failed_capture(logs, client, server, phase_name, status):
     if client not in IMPLEMENTATIONS or server not in IMPLEMENTATIONS or phase_name not in {'bounded-client', 'bounded-server', 'quiche-baseline', 'neqo-baseline'}:
         return {'state': 'invalid-scope'}
     try:
-        recipient = json.loads((ROOT / 'ci/failure-recipient.json').read_text())['certificate']
+        config = json.loads((ROOT / 'ci/failure-recipient.json').read_text())
+        recipient = config['certificate']
+        diagnostic = config.get('diagnostic_certificate')
         if not isinstance(recipient, str) or len(recipient) > 8192 or 'PRIVATE KEY' in recipient or not recipient.startswith('-----BEGIN CERTIFICATE-----'):
             return {'state': 'invalid-recipient'}
+        if diagnostic is not None and (not isinstance(diagnostic, str) or len(diagnostic) > 8192 or 'PRIVATE KEY' in diagnostic or not diagnostic.startswith('-----BEGIN CERTIFICATE-----')):
+            return {'state': 'invalid-recipient'}
         manifest = []
-        with tempfile.TemporaryFile() as plain, tempfile.TemporaryFile() as encrypted, tempfile.TemporaryFile() as certificate:
+        with tempfile.TemporaryFile() as plain, tempfile.TemporaryFile() as encrypted, tempfile.TemporaryFile() as certificate, tempfile.TemporaryFile() as diagnostic_certificate:
             certificate.write(recipient.encode('ascii'))
             certificate.flush()
+            if diagnostic is not None:
+                diagnostic_certificate.write(diagnostic.encode('ascii'))
+                diagnostic_certificate.flush()
+                diagnostic_certificate.seek(0)
             with tarfile.open(fileobj=plain, mode='w') as archive:
                 for case in sorted(EXPECTED):
                     if case not in CASE_ABBREVIATIONS:
@@ -568,7 +580,9 @@ def preserve_failed_capture(logs, client, server, phase_name, status):
                        '-out', '/proc/self/fd/' + str(encrypted.fileno()),
                        '/proc/self/fd/' + str(certificate.fileno())]
             certificate.seek(0)
-            result = subprocess.run(command, pass_fds=(plain.fileno(), encrypted.fileno(), certificate.fileno()),
+            if diagnostic is not None:
+                command.append('/proc/self/fd/' + str(diagnostic_certificate.fileno()))
+            result = subprocess.run(command, pass_fds=(plain.fileno(), encrypted.fileno(), certificate.fileno(), diagnostic_certificate.fileno()),
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
             if result.returncode:
                 return {'state': 'encryption-failed'}

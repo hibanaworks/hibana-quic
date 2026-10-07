@@ -1,6 +1,40 @@
 # Active implementation and qualification
 
-## Current qualification boundary (2026-10-07)
+## Current investigation (2026-10-07)
+
+Run 37587982856 on 69c6cfc has 40/44 successful candidate cells. Client
+connectionmigration and handshakeloss failed; both ECN directions were never
+run because Docker service restart failed. Those outcomes remain failures and
+unexecuted cells until a new exact-commit qualification succeeds.
+
+Core b92a1fe adds proofs and regressions over cbc42c9d, with no changes to src,
+Cargo.toml or Cargo.lock. The snapshot is exact, not a local vendor patch.
+Client 1-RTT ACK confirmation follows RFC 9001 section 4.1.2 using the existing
+scoped receipts for actually published and authenticated acknowledged packets.
+Zero-RTT ACKs do not supply those receipts. The existing Hibana confirmation,
+key retirement and join still carry the transition; no extra phase flag is added.
+
+Local evidence for the current ACK change:
+- The 1-RTT ACK regression fails before the repair and passes afterward; all
+  461 library tests pass. The connected encrypted test can drop every actual
+  HANDSHAKE_DONE and still confirms, transfers and joins through real ACKs.
+- Actual native loss, preferred-address migration and ECN transfers pass in both
+  candidate directions with unchanged pinned Neqo. These are local diagnostics,
+  not official runner verdicts.
+- A concurrent 50-connection native HQ stress also fails on the previous binary.
+  The unchanged reference server stores partial requests by StreamId without a
+  connection key; its log combines different connections' GET paths. Keep that
+  failure visible and use the unchanged official quiche control for L1 rather
+  than modifying the reference or counting the native stress as a pass.
+- Python diagnostic tests include real authenticated encryption/decryption for
+  both the existing operator recipient and a separate local diagnostic recipient.
+  Only public certificates enter the repository; neither private key enters CI.
+- Docker startup retry is limited to an actual systemd start-limit-hit result.
+  Other daemon failures remain failures, with a bounded diagnostic result.
+- Strict library Clippy currently reports existing diagnostics outside the
+  changed recovery code; it is not claimed clean.
+
+## Earlier qualification boundary (2026-10-07)
 
 ECN run37546867484/artifact11450514076 on source d25b9cb passed the unchanged
 Neqo control and both candidate directions with the actual official E verdict.
@@ -57,7 +91,7 @@ sections below remain historical checkpoints.
 ## Architecture
 
 The pinned Hibana branch is development/rolled-route-ownership at
-c3d89f787aa1a8e066b310a5307fdf7cb076ee26, with no local vendor patches.
+b92a1fe4153e6b2404a183c9231245efd58e3237, with no local vendor patches.
 The actual connection uses global choreography and explicit local endpoint
 send/recv/offer/resolver calls. RX, TX, key, timer, source/sink and retirement
 roles run on the bounded caller-owned async runtime; the host supplies an actual

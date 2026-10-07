@@ -80,7 +80,26 @@ settings['allow-direct-routing']=True
 path.parent.mkdir(parents=True,exist_ok=True)
 path.write_text(json.dumps(settings,indent=2)+'\n')
 ROUTING
-sudo systemctl restart docker
+if ! sudo systemctl restart docker; then
+  # Package post-install restarts can exhaust systemd's start allowance before
+  # this explicit restart. Retry only that diagnosed service admission failure;
+  # do not hide a daemon/configuration failure behind unconditional retries.
+  DOCKER_START_RESULT=$(systemctl show docker.service --property=Result --value)
+  export DOCKER_START_RESULT
+  python3 - <<'START_FAILURE'
+import json,os
+from pathlib import Path
+result=os.environ['DOCKER_START_RESULT']
+allowed={'start-limit-hit','exit-code','signal','timeout','resources','protocol','success'}
+Path('ci-safe-results/docker-start-failure.json').write_text(json.dumps({
+ 'service_result':result if result in allowed else 'unclassified',
+ 'testcases_started':False,
+ 'retry_permitted':result=='start-limit-hit'},indent=2)+'\n')
+START_FAILURE
+  [[ $DOCKER_START_RESULT == start-limit-hit ]] || exit 1
+  sudo systemctl reset-failed docker.service
+  sudo systemctl restart docker.service
+fi
 for attempt in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
 sudo --preserve-env=CONFIG_BEFORE python3 - <<'VERIFY_ROUTING'
 import json,os

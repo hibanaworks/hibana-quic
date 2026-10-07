@@ -537,7 +537,9 @@ fn execute<F: Future>(clock: &TestClock, future: F, trace: impl Fn()) -> F::Outp
         if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
             return result;
         }
-        if std::env::var_os("HIBANA_TRACE_POLLS").is_some() { trace(); }
+        if std::env::var_os("HIBANA_TRACE_POLLS").is_some() {
+            trace();
+        }
     }
     panic!("connection exceeded the bounded executor poll budget");
 }
@@ -619,6 +621,7 @@ enum Loss {
     DuplexPacketMask { client: u64, server: u64 },
     ServerHandshakeAck,
     HandshakeDone,
+    AllHandshakeDone,
 }
 struct Tx<'a, 'scope> {
     path: &'a Path,
@@ -670,7 +673,7 @@ impl DatagramTx for Tx<'_, '_> {
                 Loss::ServerHandshakeAck => classification
                     .as_ref()
                     .is_some_and(|packet| packet.handshake_ack),
-                Loss::HandshakeDone => classification
+                Loss::HandshakeDone | Loss::AllHandshakeDone => classification
                     .as_ref()
                     .is_some_and(|packet| packet.handshake_done),
             };
@@ -678,6 +681,7 @@ impl DatagramTx for Tx<'_, '_> {
                 && (matches!(
                     self.loss,
                     Loss::ServerApplicationAcks
+                        | Loss::AllHandshakeDone
                         | Loss::ServerApplicationAcksPersistentServer
                         | Loss::ServerPacketBurst { .. }
                         | Loss::ClientPacketBurst { .. }
@@ -970,6 +974,11 @@ fn accepted_but_lost_server_final_handshake_ack_does_not_gate_application() {
 #[test]
 fn lost_authenticated_handshake_done_is_retransmitted_before_client_completion() {
     run_connection(3, Loss::HandshakeDone);
+}
+
+#[test]
+fn authenticated_one_rtt_ack_confirms_when_every_handshake_done_is_lost() {
+    run_connection(3, Loss::AllHandshakeDone);
 }
 
 fn run_connection(count: usize, loss: Loss) {
@@ -1529,7 +1538,9 @@ fn connection_case_with_failure(
     }
     if matches!(
         loss,
-        Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer
+        Loss::ServerApplicationAcks
+            | Loss::ServerApplicationAcksPersistentServer
+            | Loss::AllHandshakeDone
     ) {
         assert!(to_client.dropped.get() > 0);
     } else if let Loss::DuplexPacketMask { server, .. } = loss {
