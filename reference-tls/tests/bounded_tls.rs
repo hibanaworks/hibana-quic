@@ -250,6 +250,7 @@ fn bounded_case(case: Case) {
             tls: RefCell::new(
                 BoundedTls::client_with_policy(
                     ClientConfig {
+                        version: hibana_quic::version::Version::V1,
                         server_name: if case.wrong_name {
                             "wrong.invalid"
                         } else {
@@ -272,6 +273,7 @@ fn bounded_case(case: Case) {
             tls: RefCell::new(
                 BoundedTls::server_with_policy(
                     ServerConfig {
+                        version: hibana_quic::version::Version::V1,
                         certificate_chain: &chain,
                         signing_key: &identity.signing,
                         transport_parameters: SERVER_PARAMS,
@@ -582,6 +584,7 @@ fn reference_case(candidate_client: bool, retry: bool) {
     let bounded = if candidate_client {
         BoundedTls::client(
             ClientConfig {
+                version: hibana_quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),
@@ -594,6 +597,7 @@ fn reference_case(candidate_client: bool, retry: bool) {
         .unwrap()
     } else {
         let config = ServerConfig {
+            version: hibana_quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: SERVER_PARAMS,
@@ -763,6 +767,7 @@ fn caller_entropy_failure_does_not_construct_a_provider() {
     assert!(matches!(
         BoundedTls::client(
             ClientConfig {
+                version: hibana_quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),

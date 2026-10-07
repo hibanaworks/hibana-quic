@@ -75,6 +75,7 @@ fn actual_owned_tls_keys_and_finished_are_affine_scoped_and_allocation_free() {
             let server_installation = server_scope.claim().unwrap();
             let mut client = BoundedTls::client_with_policy(
                 ClientConfig {
+                    version: crate::version::Version::V1,
                     server_name: "localhost",
                     trust_anchors: &anchors,
                     now: fixture::now(),
@@ -96,6 +97,7 @@ fn actual_owned_tls_keys_and_finished_are_affine_scoped_and_allocation_free() {
             );
             let mut server = BoundedTls::server_with_policy(
                 ServerConfig {
+                    version: crate::version::Version::V1,
                     certificate_chain: &chain,
                     signing_key: &signer,
                     transport_parameters: SERVER_PARAMS,

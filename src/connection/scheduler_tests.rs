@@ -36,6 +36,7 @@ fn fixed_connection_preflight_bounds_original_id_without_banning_zero_peer_id() 
     let ids = [0; 21];
     for length in 0..=21 {
         let config = Config {
+            version: crate::version::Version::V1,
             side: Side::Client,
             local_connection_id: &[],
             original_destination_id: &ids[..length],
@@ -46,6 +47,7 @@ fn fixed_connection_preflight_bounds_original_id_without_banning_zero_peer_id() 
         assert_eq!(config.validate().is_ok(), (8..=20).contains(&length));
     }
     let valid = Config {
+        version: crate::version::Version::V1,
         side: Side::Client,
         local_connection_id: &[],
         original_destination_id: &ids[..8],
@@ -56,6 +58,7 @@ fn fixed_connection_preflight_bounds_original_id_without_banning_zero_peer_id() 
     assert!(valid.validate().is_ok());
     assert!(
         Config {
+            version: crate::version::Version::V1,
             local_connection_id: &ids,
             ..valid
         }

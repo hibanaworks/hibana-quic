@@ -39,6 +39,7 @@ fn authenticated_initial<const N: usize>(
         return Ok(false);
     };
     let Header::Long {
+        version,
         kind: LongType::Initial,
         destination_id,
         packet_number_offset,
@@ -47,13 +48,16 @@ fn authenticated_initial<const N: usize>(
     else {
         return Ok(false);
     };
-    if destination_id != config.local_connection_id || packet.bytes.len() > N {
+    if (version != config.version && version != crate::version::Version::V1)
+        || destination_id != config.local_connection_id
+        || packet.bytes.len() > N
+    {
         return Ok(false);
     }
     let mut opened = [0; N];
     opened[..packet.bytes.len()].copy_from_slice(packet.bytes);
     let bytes = &mut opened[..packet.bytes.len()];
-    let guard = keys.read();
+    let guard = keys.read_version(version);
     let key = guard.as_ref().ok_or(Error::Binding)?;
     let pn_len = match key.unprotect_header(bytes, packet_number_offset) {
         Ok(n) => n,

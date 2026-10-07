@@ -54,12 +54,24 @@ fn random<const N: usize>() -> Result<[u8; N]> {
     Ok(bytes)
 }
 fn parameters(
+    version: hibana_quic::version::Version,
     local: &[u8],
     original: Option<&[u8]>,
     application_limits: Option<hibana_quic::streams::Limits>,
     retry_source: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
+    if version == hibana_quic::version::Version::V2 {
+        let chosen = if original.is_some() {
+            version.wire()
+        } else {
+            1
+        };
+        bytes.extend_from_slice(&[0x11, 12]);
+        bytes.extend_from_slice(&chosen.to_be_bytes());
+        bytes.extend_from_slice(&version.wire().to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+    }
     let mut encoded = [0; 8];
     for (kind, value) in [(15, Some(local)), (0, original), (16, retry_source)] {
         if let Some(value) = value {
@@ -614,6 +626,7 @@ async fn run_async<const S: usize, const T: usize>(
 ) -> Result<Report> {
     match options {
         Options::Client {
+            version,
             connect,
             server_name,
             cipher,
@@ -656,6 +669,7 @@ async fn run_async<const S: usize, const T: usize>(
                             reactor,
                             clock,
                             Options::Client {
+                                version,
                                 connect,
                                 server_name,
                                 ca,
@@ -776,6 +790,7 @@ async fn run_async<const S: usize, const T: usize>(
                 let local = random::<8>()?;
                 let original = random::<8>()?;
                 let parameters = parameters(
+                    version,
                     &local,
                     None,
                     files.as_ref().map(direct_bootstrap::Files::local_limits),
@@ -788,6 +803,7 @@ async fn run_async<const S: usize, const T: usize>(
                         .map_err(|_| "system clock precedes Unix epoch")?,
                 );
                 let config = ClientConfig {
+                    version,
                     server_name: &server_name,
                     trust_anchors: &anchors,
                     now,
@@ -841,6 +857,7 @@ async fn run_async<const S: usize, const T: usize>(
                     clock,
                     address,
                     Config {
+                        version,
                         side: Side::Client,
                         local_connection_id: &local,
                         original_destination_id: &original,
@@ -897,6 +914,7 @@ async fn run_async<const S: usize, const T: usize>(
             previous.ok_or_else(|| "no client connection executed".into())
         }
         Options::Server {
+            version,
             require_retry,
             listen,
             cert,
@@ -916,6 +934,7 @@ async fn run_async<const S: usize, const T: usize>(
                     (&cert, &key),
                     files.as_ref().ok_or("parallel server requires files")?,
                     cipher,
+                    version,
                     connections,
                 )
                 .await;
@@ -1010,6 +1029,7 @@ async fn run_async<const S: usize, const T: usize>(
                     .map(|admitted| admitted.token.retry_source_id());
                 let local = random::<8>()?;
                 let parameters = parameters(
+                    version,
                     &local,
                     Some(&original),
                     files.as_ref().map(direct_bootstrap::Files::local_limits),
@@ -1017,6 +1037,7 @@ async fn run_async<const S: usize, const T: usize>(
                 )?;
                 let mut buffers = TlsBuffers::new();
                 let config = ServerConfig {
+                    version,
                     certificate_chain: &chain,
                     signing_key: &key,
                     transport_parameters: &parameters,
@@ -1072,6 +1093,7 @@ async fn run_async<const S: usize, const T: usize>(
                     clock,
                     address,
                     Config {
+                        version,
                         side: Side::Server,
                         local_connection_id: &local,
                         original_destination_id: &original,

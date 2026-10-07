@@ -57,14 +57,20 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             }
         };
         self.offset += untrusted.bytes.len();
-        let (level, index, pn_offset, source_id) = match untrusted.header {
+        let (level, index, pn_offset, source_id, wire_version) = match untrusted.header {
             Header::Long {
+                version,
                 kind,
                 destination_id,
                 source_id,
                 packet_number_offset,
                 ..
             } => {
+                if version != config.version
+                    && !(kind == LongType::Initial && version == crate::version::Version::V1)
+                {
+                    return Ok(true);
+                }
                 if destination_id != config.local_connection_id
                     && !(config.side == Side::Server
                         && matches!(kind, LongType::Initial | LongType::ZeroRtt)
@@ -77,9 +83,15 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                 }
                 match kind {
                     LongType::Initial if config.side != Side::Server || self.len >= 1200 => {
-                        (Level::Initial, 0, packet_number_offset, source_id)
+                        (Level::Initial, 0, packet_number_offset, source_id, version)
                     }
-                    LongType::Handshake => (Level::Handshake, 1, packet_number_offset, source_id),
+                    LongType::Handshake => (
+                        Level::Handshake,
+                        1,
+                        packet_number_offset,
+                        source_id,
+                        version,
+                    ),
                     LongType::ZeroRtt if config.side == Side::Server => {
                         if source_id == slots.peer.borrow().bytes()
                             && let Some(pending) = slots.early_packets.borrow_mut().as_mut()
@@ -101,7 +113,7 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
         };
         // Both Initial key access and AEAD end before the retirement edge can await.
         let (authentication, header_len, pn) = {
-            let initial_key = self.initial.read();
+            let initial_key = self.initial.read_version(wire_version);
             let key = if index == 0 {
                 match initial_key.as_ref() {
                     Some(key) => key,
@@ -764,6 +776,15 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
                 label if label == p::InitialFlight::LOGICAL_LABEL => {
                     response.recv::<p::InitialFlight>().await?;
                     let flight = slots.flight.take()?;
+                    if config.side == Side::Server {
+                        initial.select_write_version(
+                            config.version,
+                            config
+                                .retry_source_id
+                                .unwrap_or(config.original_destination_id),
+                            config.side,
+                        )?;
+                    }
                     endpoint.send::<p::InitialTaken>(&()).await?;
                     let mut offset = 0;
                     while offset < flight.bytes().len() {
@@ -934,6 +955,13 @@ pub(super) async fn transmit<'scope, 'book, const N: usize, const P: usize>(
     }
     endpoint.recv::<p::WriteHandshake>().await?;
     let handshake = slots.write_handshake.take()?;
+    initial.select_write_version(
+        config.version,
+        config
+            .retry_source_id
+            .unwrap_or(config.original_destination_id),
+        config.side,
+    )?;
     if !core::ptr::eq(scope, handshake.scope()) {
         return Err(Error::Binding);
     }

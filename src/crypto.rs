@@ -13,6 +13,7 @@
 //! instance. Keep one `IntegrityBudget` for the entire connection, including old
 //! receive generations. No operation allocates or obtains random numbers.
 
+use crate::version::Version;
 use aes::Aes128;
 use aes::cipher::{
     BlockEncrypt, KeyInit, KeyIvInit, StreamCipherCore, StreamCipherSeekCore, consts::U10,
@@ -36,7 +37,17 @@ const INITIAL_SALT: [u8; 20] = [
     0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad,
     0xcc, 0xbb, 0x7f, 0x0a,
 ];
-// RFC 9001 §5.8 public Retry-integrity constants, NOT traffic secrets.
+const INITIAL_SALT_V2: [u8; 20] = [
+    0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93, 0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb,
+    0xf9, 0xbd, 0x2e, 0xd9,
+];
+const RETRY_KEY_V2: [u8; 16] = [
+    0x8f, 0xb4, 0xb0, 0x1b, 0x56, 0xac, 0x48, 0xe2, 0x60, 0xfb, 0xcb, 0xce, 0xad, 0x7c, 0xcc, 0x92,
+];
+const RETRY_NONCE_V2: [u8; 12] = [
+    0xd8, 0x69, 0x69, 0xbc, 0x2d, 0x7c, 0x6d, 0x99, 0x90, 0xef, 0xb0, 0x4a,
+];
+// Public Retry integrity constants, not traffic secrets.
 const RETRY_KEY: [u8; 16] = [
     0xbe, 0x0c, 0x69, 0x0b, 0x9f, 0x66, 0x57, 0x5a, 0x1d, 0x76, 0x6b, 0x54, 0xe3, 0x68, 0xc8, 0x4e,
 ];
@@ -193,6 +204,7 @@ impl IntegrityBudget {
 /// Raw keys are private, non-Clone, not Debug, and zeroized on discard/drop.
 /// This does not claim every temporary inside dependencies is zeroized.
 pub struct PacketKey {
+    version: Version,
     suite: CipherSuite,
     kind: KeyKind,
     secret: [u8; 32],
@@ -212,10 +224,19 @@ impl PacketKey {
         kind: KeyKind,
         secret: &[u8; 32],
     ) -> Result<Self, Error> {
+        Self::from_secret_for_version(Version::V1, suite, kind, secret)
+    }
+    pub fn from_secret_for_version(
+        version: Version,
+        suite: CipherSuite,
+        kind: KeyKind,
+        secret: &[u8; 32],
+    ) -> Result<Self, Error> {
         if kind == KeyKind::Initial && suite != CipherSuite::Aes128GcmSha256 {
             return Err(Error::KeyDerivation);
         }
         let mut this = Self {
+            version,
             suite,
             kind,
             secret: *secret,
@@ -226,12 +247,19 @@ impl PacketKey {
             last_sealed: None,
             sealed: 0,
         };
-        expand_label(secret, b"quic key", &mut this.key[..suite.key_len()])?;
-        expand_label(secret, b"quic iv", &mut this.iv)?;
-        expand_label(secret, b"quic hp", &mut this.hp[..suite.key_len()])?;
+        expand_label(
+            secret,
+            version.key_label(),
+            &mut this.key[..suite.key_len()],
+        )?;
+        expand_label(secret, version.iv_label(), &mut this.iv)?;
+        expand_label(secret, version.hp_label(), &mut this.hp[..suite.key_len()])?;
         Ok(this)
     }
 
+    pub const fn version(&self) -> Version {
+        self.version
+    }
     pub const fn suite(&self) -> CipherSuite {
         self.suite
     }
@@ -289,11 +317,15 @@ impl PacketKey {
         if self.kind != KeyKind::OneRtt {
             return Err(Error::KeyUpdateNotAllowed);
         }
-        let next = Zeroizing::new(next_traffic_secret(&self.secret)?);
+        let next = Zeroizing::new(next_traffic_secret_for_version(self.version, &self.secret)?);
         let mut key = Zeroizing::new([0; 32]);
         let mut iv = Zeroizing::new([0; 12]);
-        expand_label(&next, b"quic key", &mut key[..self.suite.key_len()])?;
-        expand_label(&next, b"quic iv", &mut *iv)?;
+        expand_label(
+            &next,
+            self.version.key_label(),
+            &mut key[..self.suite.key_len()],
+        )?;
+        expand_label(&next, self.version.iv_label(), &mut *iv)?;
         self.secret.zeroize();
         self.key.zeroize();
         self.iv.zeroize();
@@ -310,8 +342,8 @@ impl PacketKey {
         if self.kind != KeyKind::OneRtt {
             return Err(Error::KeyUpdateNotAllowed);
         }
-        let secret = Zeroizing::new(next_traffic_secret(&self.secret)?);
-        let mut next = Self::from_secret(self.suite, self.kind, &secret)?;
+        let secret = Zeroizing::new(next_traffic_secret_for_version(self.version, &self.secret)?);
+        let mut next = Self::from_secret_for_version(self.version, self.suite, self.kind, &secret)?;
         next.hp.copy_from_slice(&self.hp);
         Ok(next)
     }
@@ -498,17 +530,39 @@ pub struct InitialKeys {
 /// After Retry, pass the new destination CID, but do not reset the transport's
 /// Initial packet-number space. Initial authentication does not prove identity.
 pub fn initial_keys(destination_connection_id: &[u8]) -> Result<InitialKeys, Error> {
+    initial_keys_for_version(Version::V1, destination_connection_id)
+}
+pub fn initial_keys_for_version(
+    version: Version,
+    destination_connection_id: &[u8],
+) -> Result<InitialKeys, Error> {
     if destination_connection_id.len() > 20 {
         return Err(Error::InvalidConnectionId);
     }
-    let hkdf = Hkdf::<Sha256>::new(Some(&INITIAL_SALT), destination_connection_id);
+    let hkdf = Hkdf::<Sha256>::new(
+        Some(match version {
+            Version::V1 => &INITIAL_SALT,
+            Version::V2 => &INITIAL_SALT_V2,
+        }),
+        destination_connection_id,
+    );
     let mut client = Zeroizing::new([0; 32]);
     let mut server = Zeroizing::new([0; 32]);
     expand_with(&hkdf, b"client in", &mut *client)?;
     expand_with(&hkdf, b"server in", &mut *server)?;
     Ok(InitialKeys {
-        client: PacketKey::from_secret(CipherSuite::Aes128GcmSha256, KeyKind::Initial, &client)?,
-        server: PacketKey::from_secret(CipherSuite::Aes128GcmSha256, KeyKind::Initial, &server)?,
+        client: PacketKey::from_secret_for_version(
+            version,
+            CipherSuite::Aes128GcmSha256,
+            KeyKind::Initial,
+            &client,
+        )?,
+        server: PacketKey::from_secret_for_version(
+            version,
+            CipherSuite::Aes128GcmSha256,
+            KeyKind::Initial,
+            &server,
+        )?,
     })
 }
 
@@ -525,8 +579,14 @@ pub fn packet_nonce(iv: &[u8; 12], packet_number: u64) -> Result<[u8; 12], Error
 }
 
 pub fn next_traffic_secret(secret: &[u8; 32]) -> Result<[u8; 32], Error> {
+    next_traffic_secret_for_version(Version::V1, secret)
+}
+pub fn next_traffic_secret_for_version(
+    version: Version,
+    secret: &[u8; 32],
+) -> Result<[u8; 32], Error> {
     let mut next = [0; 32];
-    expand_label(secret, b"quic ku", &mut next)?;
+    expand_label(secret, version.ku_label(), &mut next)?;
     Ok(next)
 }
 
@@ -536,12 +596,12 @@ fn expand_label(secret: &[u8; 32], label: &[u8], out: &mut [u8]) -> Result<(), E
 }
 
 fn expand_with(hkdf: &Hkdf<Sha256>, label: &[u8], out: &mut [u8]) -> Result<(), Error> {
-    // All this module's labels fit 9 bytes. Fixed storage deliberately avoids
+    // All this module's labels fit 10 bytes. Fixed storage deliberately avoids
     // general variable-length TLS label/context allocation.
-    if label.len() > 9 || out.len() > 32 {
+    if label.len() > 10 || out.len() > 32 {
         return Err(Error::KeyDerivation);
     }
-    let mut info = [0; 19];
+    let mut info = [0; 20];
     info[..2].copy_from_slice(&(out.len() as u16).to_be_bytes());
     info[2] = (6 + label.len()) as u8;
     info[3..9].copy_from_slice(b"tls13 ");
@@ -589,23 +649,47 @@ pub fn retry_integrity_tag(
     retry_without_tag: &[u8],
     scratch: &mut [u8],
 ) -> Result<[u8; TAG_LEN], Error> {
+    retry_integrity_tag_for_version(Version::V1, odcid, retry_without_tag, scratch)
+}
+pub fn retry_integrity_tag_for_version(
+    version: Version,
+    odcid: &[u8],
+    retry_without_tag: &[u8],
+    scratch: &mut [u8],
+) -> Result<[u8; TAG_LEN], Error> {
+    let (key, nonce) = match version {
+        Version::V1 => (&RETRY_KEY, &RETRY_NONCE),
+        Version::V2 => (&RETRY_KEY_V2, &RETRY_NONCE_V2),
+    };
     let aad = retry_pseudo_packet(odcid, retry_without_tag, scratch)?;
-    let tag = Aes128Gcm::new((&RETRY_KEY).into())
-        .encrypt_in_place_detached((&RETRY_NONCE).into(), aad, &mut [])
+    let tag = Aes128Gcm::new(key.into())
+        .encrypt_in_place_detached(nonce.into(), aad, &mut [])
         .map_err(|_| Error::EncryptionFailed)?;
     Ok(tag.into())
 }
 
 /// Verify Retry's appended integrity tag using the AEAD's constant-time check.
 pub fn verify_retry(odcid: &[u8], retry_with_tag: &[u8], scratch: &mut [u8]) -> Result<(), Error> {
+    verify_retry_for_version(Version::V1, odcid, retry_with_tag, scratch)
+}
+pub fn verify_retry_for_version(
+    version: Version,
+    odcid: &[u8],
+    retry_with_tag: &[u8],
+    scratch: &mut [u8],
+) -> Result<(), Error> {
+    let (key, nonce) = match version {
+        Version::V1 => (&RETRY_KEY, &RETRY_NONCE),
+        Version::V2 => (&RETRY_KEY_V2, &RETRY_NONCE_V2),
+    };
     let len = retry_with_tag
         .len()
         .checked_sub(TAG_LEN)
         .ok_or(Error::BufferTooSmall)?;
     let (retry, tag) = retry_with_tag.split_at(len);
     let aad = retry_pseudo_packet(odcid, retry, scratch)?;
-    Aes128Gcm::new((&RETRY_KEY).into())
-        .decrypt_in_place_detached((&RETRY_NONCE).into(), aad, &mut [], tag.into())
+    Aes128Gcm::new(key.into())
+        .decrypt_in_place_detached(nonce.into(), aad, &mut [], tag.into())
         .map_err(|_| Error::AuthenticationFailed)
 }
 
@@ -630,6 +714,60 @@ mod tests {
         out
     }
 
+    #[test]
+    fn rfc9369_initial_keys() {
+        let k = initial_keys_for_version(Version::V2, &hex::<8>("8394c8f03e515708")).unwrap();
+        assert_eq!(
+            k.client.key[..16],
+            hex::<16>("8b1a0bc121284290a29e0971b5cd045d")
+        );
+        assert_eq!(k.client.iv, hex::<12>("91f73e2351d8fa91660e909f"));
+        assert_eq!(
+            k.client.hp[..16],
+            hex::<16>("45b95e15235d6f45a6b19cbcb0294ba9")
+        );
+        assert_eq!(
+            k.server.key[..16],
+            hex::<16>("82db637861d55e1d011f19ea71d5d2a7")
+        );
+        assert_eq!(k.server.iv, hex::<12>("dd13c276499c0249d3310652"));
+        assert_eq!(
+            k.server.hp[..16],
+            hex::<16>("edf6d05c83121201b436e16877593c3a")
+        );
+        assert_ne!(
+            k.client.key,
+            initial_keys(&hex::<8>("8394c8f03e515708"))
+                .unwrap()
+                .client
+                .key
+        );
+    }
+    #[test]
+    fn version_two_key_update_domain() {
+        for suite in [
+            CipherSuite::Aes128GcmSha256,
+            CipherSuite::ChaCha20Poly1305Sha256,
+        ] {
+            let mut k =
+                PacketKey::from_secret_for_version(Version::V2, suite, KeyKind::OneRtt, &[7; 32])
+                    .unwrap();
+            let next = k.derive_next().unwrap();
+            let hp = k.hp;
+            k.update_key().unwrap();
+            assert_eq!(k.version(), Version::V2);
+            assert_eq!(k.key, next.key);
+            assert_eq!(k.iv, next.iv);
+            assert_eq!(k.hp, hp);
+            assert_eq!(next.hp, hp);
+            assert_ne!(
+                k.key,
+                PacketKey::from_secret(suite, KeyKind::OneRtt, &k.secret)
+                    .unwrap()
+                    .key
+            );
+        }
+    }
     #[test]
     fn rfc9001_a1_initial_keys() {
         let keys = initial_keys(&hex::<8>("8394c8f03e515708")).unwrap();

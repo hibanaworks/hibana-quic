@@ -247,6 +247,9 @@ impl<'a> LocalCidTable<'a> {
         self.peer_active_limit = limit;
         Ok(())
     }
+    pub const fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
     pub fn can_issue(&self) -> bool {
         self.available_history() > 0
             && (self

@@ -188,6 +188,7 @@ fn connect_clocks_with_cipher(
     let mut rng = OsRng;
     let mut entropy = OsRng;
     let cfg = ClientConfig {
+        version: hibana_quic::version::Version::V1,
         server_name: "localhost",
         trust_anchors: anchors,
         now: now(),
@@ -214,6 +215,7 @@ fn connect_clocks_with_cipher(
     .unwrap();
     let mut server = BoundedTls::server_with_tickets_and_policy(
         ServerConfig {
+            version: hibana_quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: params,
@@ -415,6 +417,7 @@ fn changed_trust_anchor_or_verification_limits_cannot_reuse_old_offer() {
         let mut buffers = Buffers::new();
         let result = BoundedTls::client_resuming(
             ClientConfig {
+                version: hibana_quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: changed,
                 now: now(),
@@ -463,6 +466,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     let mut entropy = OsRng;
     let mut client = BoundedTls::client_resuming(
         ClientConfig {
+            version: hibana_quic::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: now(),
@@ -480,6 +484,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     .unwrap();
     let mut server = BoundedTls::server_with_tickets(
         ServerConfig {
+            version: hibana_quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: SERVER_PARAMS,
@@ -665,6 +670,7 @@ fn strict_chacha_ticket_roundtrip_and_policy_mismatch_before_output() {
         let mut buffers = Buffers::new();
         let result = BoundedTls::client_resuming_with_policy(
             ClientConfig {
+                version: hibana_quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),

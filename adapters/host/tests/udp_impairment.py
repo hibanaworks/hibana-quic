@@ -318,3 +318,56 @@ class EarlyWireProbe(UdpProxy):
             packets.append((('initial', 'zero_rtt', 'handshake')[kind], end - offset))
             offset = end
         return packets
+
+
+class VersionWireProbe(UdpProxy):
+    """Read actual invariant headers without decrypting or changing packets."""
+    @staticmethod
+    def _varint(data, offset):
+        if offset >= len(data): raise ValueError('truncated varint')
+        n = 1 << (data[offset] >> 6)
+        if offset+n > len(data): raise ValueError('truncated varint')
+        return int.from_bytes(data[offset:offset+n],'big') & ((1 << (n*8-2))-1), offset+n
+    def _enqueue(self,direction,data):
+        offset=0
+        try:
+            while offset<len(data) and data[offset]&0x80:
+                start=offset; version=int.from_bytes(data[start+1:start+5],'big')
+                if version not in (1,0x6b3343cf): break
+                kind=(data[start]>>4)&3
+                if version==0x6b3343cf: kind=(kind-1)&3
+                self.stats[f'{direction}_v{version:x}_type{kind}']+=1
+                offset+=5; offset+=1+data[offset]; offset+=1+data[offset]
+                if kind==3: break
+                if kind==0:
+                    n,offset=self._varint(data,offset); offset+=n
+                n,offset=self._varint(data,offset);offset+=n
+                if offset>len(data): raise ValueError('truncated packet')
+        except (IndexError,ValueError): self.stats['malformed_invariant_headers']+=1
+        super()._enqueue(direction,data)
+
+class RebindingWireProbe(UdpProxy):
+    """Finite loopback NAT changes; never changes host network settings."""
+    def __init__(self,server,*,change_address=False):
+        super().__init__(server,delay=0.002)
+        self._change_address=change_address;self._next_change=1<<20;self._changes=0
+        self.paths=[self._back.getsockname()]
+    def _run(self):
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(self._front,selectors.EVENT_READ,'to_server')
+                selector.register(self._back,selectors.EVENT_READ,'to_client')
+                while not self._stop.is_set():
+                    if self._wire_bytes>=self._next_change and self._changes<2:
+                        old=self._back;fresh=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);self._changes+=1
+                        fresh.bind((f'127.0.0.{self._changes+1}' if self._change_address else '127.0.0.1',0));fresh.connect(self.server)
+                        selector.unregister(old);selector.register(fresh,selectors.EVENT_READ,'to_client');self._back=fresh;old.close()
+                        self.paths.append(fresh.getsockname());self.stats['actual_rebindings']+=1;self._next_change+=2<<20
+                    self._flush();timeout=0.01
+                    if self._queue:timeout=min(timeout,max(0,self._queue[0][0]-time.monotonic()))
+                    for key,_ in selector.select(timeout):
+                        try:data,sender=key.fileobj.recvfrom(65535)
+                        except ConnectionRefusedError:self.stats['destination_unavailable']+=1;continue
+                        if key.data=='to_server' and not self._accept_client(sender):self.stats['foreign_client_drops']+=1;continue
+                        self._enqueue(key.data,data)
+        except BaseException as error:self._error=error;self._stop.set()

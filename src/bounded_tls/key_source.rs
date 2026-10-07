@@ -87,6 +87,9 @@ impl<'scope, 'cfg, 'buf> KeySource<'scope, 'cfg, 'buf> {
     pub const fn scope(&self) -> &'scope ApplicationKeyScope {
         self.scope
     }
+    pub fn version(&self) -> crate::version::Version {
+        self.provider.version()
+    }
     pub fn state(&self) -> State {
         self.provider.state()
     }
@@ -439,6 +442,9 @@ impl<'scope> ReceivePacketKey<'scope> {
     pub const fn scope(&self) -> &'scope ApplicationKeyScope {
         self.scope
     }
+    pub const fn version(&self) -> crate::version::Version {
+        self.key.version()
+    }
     pub const fn kind(&self) -> KeyKind {
         self.key.kind()
     }
@@ -518,6 +524,9 @@ pub struct TransmitPacketKey<'scope> {
 impl<'scope> TransmitPacketKey<'scope> {
     pub const fn scope(&self) -> &'scope ApplicationKeyScope {
         self.scope
+    }
+    pub const fn version(&self) -> crate::version::Version {
+        self.key.version()
     }
     pub const fn kind(&self) -> KeyKind {
         self.key.kind()

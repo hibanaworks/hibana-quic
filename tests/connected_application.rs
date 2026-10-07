@@ -1039,6 +1039,7 @@ fn connection_case_with_failure(
     let mut inspector = inspection_keys(
         &mut observation_scope,
         ClientConfig {
+            version: hibana_quic::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: fixture::now(),
@@ -1046,6 +1047,7 @@ fn connection_case_with_failure(
             transport_parameters: &client_params,
         },
         ServerConfig {
+            version: hibana_quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &signing,
             transport_parameters: &server_params,
@@ -1055,6 +1057,7 @@ fn connection_case_with_failure(
     let mut server_tls_buffers = fixture::Buffers::new();
     let client_tls = BoundedTls::client(
         ClientConfig {
+            version: hibana_quic::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: fixture::now(),
@@ -1080,6 +1083,7 @@ fn connection_case_with_failure(
     .unwrap();
     let mut ticket_entropy = fixture::TestRandom(992);
     let server_config = ServerConfig {
+        version: hibana_quic::version::Version::V1,
         certificate_chain: &chain,
         signing_key: &signing,
         transport_parameters: &server_params,
@@ -1197,11 +1201,13 @@ fn connection_case_with_failure(
     let mut client_refs = [PacketReference::EMPTY; 64];
     let mut server_refs = [PacketReference::EMPTY; 64];
     let client_setup = application::Setup {
+        local_ids: None,
         server_token: None,
         local_idle_timeout_ms: 0,
         key_update_target: 0,
         early: None,
         config: Config {
+            version: hibana_quic::version::Version::V1,
             side: Side::Client,
             local_connection_id: CLIENT_ID,
             original_destination_id: ORIGINAL,
@@ -1222,11 +1228,13 @@ fn connection_case_with_failure(
         },
     };
     let server_setup = application::Setup {
+        local_ids: None,
         server_token: None,
         local_idle_timeout_ms: 0,
         key_update_target: 0,
         early: None,
         config: Config {
+            version: hibana_quic::version::Version::V1,
             side: Side::Server,
             local_connection_id: SERVER_ID,
             original_destination_id: ORIGINAL,

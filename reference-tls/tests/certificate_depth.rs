@@ -206,6 +206,7 @@ fn ten_chain_is_rejected_by_bounded_wrapper() {
     assert!(matches!(
         measured(|| BoundedTls::server(
             ServerConfig {
+                version: hibana_quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &c.signing,
                 transport_parameters: &[4, 1, 63]
@@ -372,6 +373,7 @@ fn full_handshake(
     measured(|| {
         let mut client = BoundedTls::client(
             ClientConfig {
+                version: hibana_quic::version::Version::V1,
                 server_name: name,
                 trust_anchors: &anchors,
                 now: time,
@@ -384,6 +386,7 @@ fn full_handshake(
         .unwrap();
         let mut server = BoundedTls::server(
             ServerConfig {
+                version: hibana_quic::version::Version::V1,
                 certificate_chain: chain,
                 signing_key: signing,
                 transport_parameters: &[4, 1, 63],
@@ -446,6 +449,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
     measured(|| {
         let mut client = BoundedTls::client(
             ClientConfig {
+                version: hibana_quic::version::Version::V1,
                 server_name: "server.allowed.test",
                 trust_anchors: &anchors,
                 now: time,
@@ -458,6 +462,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
         .unwrap();
         let mut server = BoundedTls::server(
             ServerConfig {
+                version: hibana_quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
                 transport_parameters: &[4, 1, 63],
@@ -481,6 +486,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
         measured(|| {
             let mut client = BoundedTls::client(
                 ClientConfig {
+                    version: hibana_quic::version::Version::V1,
                     server_name: name,
                     trust_anchors: trust,
                     now: time,
@@ -493,6 +499,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
             .unwrap();
             let mut server = BoundedTls::server(
                 ServerConfig {
+                    version: hibana_quic::version::Version::V1,
                     certificate_chain: &chain,
                     signing_key: &id.signing,
                     transport_parameters: &[4, 1, 63],

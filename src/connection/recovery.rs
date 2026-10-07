@@ -4180,6 +4180,7 @@ mod tests {
         );
         let mut client = BoundedTls::client(
             ClientConfig {
+                version: crate::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: fixture::now(),
@@ -4194,6 +4195,7 @@ mod tests {
         .unwrap();
         let mut server = BoundedTls::server(
             ServerConfig {
+                version: crate::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &signer,
                 transport_parameters: &sp,

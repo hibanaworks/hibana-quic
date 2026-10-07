@@ -75,6 +75,10 @@ impl<'a> Parameters<'a> {
                         return Err(Error::InvalidValue);
                     }
                 }
+                0x11 => {
+                    crate::version::Information::parse(value, peer == Peer::Client)
+                        .map_err(|_| Error::InvalidValue)?;
+                }
                 13 => {
                     if value.len() < 41 {
                         return Err(Error::InvalidValue);

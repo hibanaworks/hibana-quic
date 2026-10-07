@@ -142,6 +142,9 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
     pub fn scope(&self) -> &'scope ApplicationKeyScope {
         self.source.scope()
     }
+    pub fn version(&self) -> crate::version::Version {
+        self.source.version()
+    }
     pub fn side(&self) -> crate::tls_schedule::Side {
         self.source.side()
     }

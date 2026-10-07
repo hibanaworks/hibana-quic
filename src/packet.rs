@@ -19,6 +19,8 @@
 /// Largest QUIC variable-length integer, offset or packet number.
 pub const MAX_VARINT: u64 = (1u64 << 62) - 1;
 pub const QUIC_V1: u32 = 1;
+pub const QUIC_V2: u32 = 0x6b3343cf;
+use crate::version::Version;
 pub const MAX_CONNECTION_ID_LEN: usize = 20;
 pub const MAX_STREAM_COUNT: u64 = 1u64 << 60;
 
@@ -211,6 +213,7 @@ impl LongType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Header<'a> {
     Long {
+        version: Version,
         kind: LongType,
         destination_id: &'a [u8],
         source_id: &'a [u8],
@@ -222,6 +225,7 @@ pub enum Header<'a> {
         packet_number_offset: usize,
     },
     Retry {
+        version: Version,
         destination_id: &'a [u8],
         source_id: &'a [u8],
         token: &'a [u8],
@@ -346,12 +350,12 @@ fn parse_packet(datagram: &[u8], short_id_len: usize) -> Result<Packet<'_>, Erro
         version_bytes[3],
     ]);
     let destination_len = usize::from(cursor.byte()?);
-    if version == QUIC_V1 && destination_len > MAX_CONNECTION_ID_LEN {
+    if Version::from_wire(version).is_some() && destination_len > MAX_CONNECTION_ID_LEN {
         return Err(Error::InvalidConnectionIdLength);
     }
     let destination_id = cursor.take(destination_len)?;
     let source_len = usize::from(cursor.byte()?);
-    if version == QUIC_V1 && source_len > MAX_CONNECTION_ID_LEN {
+    if Version::from_wire(version).is_some() && source_len > MAX_CONNECTION_ID_LEN {
         return Err(Error::InvalidConnectionIdLength);
     }
     let source_id = cursor.take(source_len)?;
@@ -369,7 +373,7 @@ fn parse_packet(datagram: &[u8], short_id_len: usize) -> Result<Packet<'_>, Erro
             bytes: datagram,
         });
     }
-    if version != QUIC_V1 {
+    if Version::from_wire(version).is_none() {
         return Ok(Packet {
             header: Header::UnsupportedVersion {
                 version,
@@ -382,7 +386,12 @@ fn parse_packet(datagram: &[u8], short_id_len: usize) -> Result<Packet<'_>, Erro
     if first & 0x40 == 0 {
         return Err(Error::InvalidFixedBit);
     }
-    let kind = match (first >> 4) & 3 {
+    let version = Version::from_wire(version).ok_or(Error::InvalidVersionNegotiation)?;
+    let ty = (first >> 4) & 3;
+    let kind = match match version {
+        Version::V1 => ty,
+        Version::V2 => ty.wrapping_sub(1) & 3,
+    } {
         0 => LongType::Initial,
         1 => LongType::ZeroRtt,
         2 => LongType::Handshake,
@@ -399,6 +408,7 @@ fn parse_packet(datagram: &[u8], short_id_len: usize) -> Result<Packet<'_>, Erro
             let integrity_tag = <&[u8; 16]>::try_from(tag).map_err(|_| Error::Truncated)?;
             return Ok(Packet {
                 header: Header::Retry {
+                    version,
                     destination_id,
                     source_id,
                     token,
@@ -421,6 +431,7 @@ fn parse_packet(datagram: &[u8], short_id_len: usize) -> Result<Packet<'_>, Erro
     cursor.take(length)?;
     Ok(Packet {
         header: Header::Long {
+            version,
             kind,
             destination_id,
             source_id,
@@ -1250,11 +1261,19 @@ pub fn encode_long_header(
     protected_payload_len: usize,
     output: &mut [u8],
 ) -> Result<usize, Error> {
+    encode_long_header_for_version(Version::V1, header, protected_payload_len, output)
+}
+pub fn encode_long_header_for_version(
+    version: Version,
+    header: &LongHeader<'_>,
+    protected_payload_len: usize,
+    output: &mut [u8],
+) -> Result<usize, Error> {
     let mut counter = Writer {
         output: None,
         position: 0,
     };
-    write_long_header(header, protected_payload_len, &mut counter)?;
+    write_long_header(version, header, protected_payload_len, &mut counter)?;
     if output.len() < counter.position {
         return Err(Error::BufferTooShort);
     }
@@ -1262,11 +1281,12 @@ pub fn encode_long_header(
         output: Some(output),
         position: 0,
     };
-    write_long_header(header, protected_payload_len, &mut writer)?;
+    write_long_header(version, header, protected_payload_len, &mut writer)?;
     Ok(writer.position)
 }
 
 fn write_long_header(
+    version: Version,
     header: &LongHeader<'_>,
     payload_len: usize,
     writer: &mut Writer<'_>,
@@ -1287,8 +1307,12 @@ fn write_long_header(
         LongType::ZeroRtt => 0x10,
         LongType::Handshake => 0x20,
     };
+    let ty = match version {
+        Version::V1 => ty,
+        Version::V2 => (ty + 0x10) & 0x30,
+    };
     writer.byte(0xc0 | ty | (header.packet_number_len - 1))?;
-    writer.bytes(&QUIC_V1.to_be_bytes())?;
+    writer.bytes(&version.wire().to_be_bytes())?;
     writer.byte(header.destination_id.len() as u8)?;
     writer.bytes(header.destination_id)?;
     writer.byte(header.source_id.len() as u8)?;
@@ -1344,6 +1368,33 @@ fn validate_header_fields(id: &[u8], pn: u64, pn_len: u8) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn both_versions_long_types_roundtrip() {
+        for version in [Version::V1, Version::V2] {
+            for (i, kind) in [LongType::Initial, LongType::ZeroRtt, LongType::Handshake]
+                .into_iter()
+                .enumerate()
+            {
+                let h = LongHeader {
+                    kind,
+                    destination_id: b"destination",
+                    source_id: b"source",
+                    token: &[],
+                    packet_number: 3,
+                    packet_number_len: 4,
+                };
+                let mut b = [0; 128];
+                let n = encode_long_header_for_version(version, &h, 16, &mut b).unwrap();
+                assert_eq!(
+                    (b[0] >> 4) & 3,
+                    (i as u8 + if version == Version::V2 { 1 } else { 0 }) & 3
+                );
+                assert!(
+                    matches!(parse_packet(&b[..n+16],0).unwrap().header,Header::Long{version:v,kind:k,..} if v==version&&k==kind)
+                );
+            }
+        }
+    }
     fn first_frame(bytes: &[u8]) -> Result<Frame<'_>, Error> {
         FrameIter::new(bytes, EncryptionLevel::OneRtt, ParseLimits::default())?
             .next()
@@ -1541,6 +1592,7 @@ mod tests {
                 source_id,
                 token,
                 packet_number_offset,
+                ..
             } => {
                 assert_eq!(kind, LongType::Initial);
                 assert_eq!(destination_id, &[1, 2]);

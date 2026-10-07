@@ -225,6 +225,7 @@ fn bounded_client_early_keys_interoperate_with_rustls_and_explicit_rejection() {
             };
             let mut buffers = Buffers::new();
             let client = ClientConfig {
+                version: hibana_quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),
@@ -335,6 +336,7 @@ fn rustls_client_early_keys_interoperate_and_real_hrr_rejects_early_only() {
             let held = [QuarantineSlot::<1024>::EMPTY, QuarantineSlot::EMPTY];
             let mut entropy = OsRng;
             let server = ServerConfig {
+                version: hibana_quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
                 transport_parameters: SERVER_PARAMS,

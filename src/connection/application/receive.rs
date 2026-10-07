@@ -52,6 +52,8 @@ pub(crate) async fn run<
     termination: &termination::Exchange<'_, '_, 'scope>,
     initial_confirmation: Option<recovery::HandshakeConfirmed<'scope>>,
     key_update_target: u64,
+    responses: &crate::path::responses::Responses,
+    local_ids: &RefCell<Option<crate::path::ids::Ids<'_, 'scope>>>,
     mut pending_application: Option<([u8; N], connection::ReceivedDatagram)>,
 ) -> Result<(), Error> {
     let scope = material.application.scope();
@@ -264,7 +266,10 @@ pub(crate) async fn run<
                     }
                     offset += packet.bytes.len();
                     let result = match packet.header {
-                        Header::Short { .. } => {
+                        Header::Short {
+                            destination_id: destination,
+                            ..
+                        } => {
                             async {
                                 let endpoint = &mut *rx_keys;
                                 let keys = &mut keys;
@@ -279,11 +284,20 @@ pub(crate) async fn run<
                                 let now = clock.now();
                                 let pto = book.pto_duration_us()?;
                                 material.application.maintain(now, pto)?;
+                                if !local_ids
+                                    .borrow()
+                                    .as_ref()
+                                    .map_or(destination == config.local_connection_id, |ids| {
+                                        ids.routes(destination)
+                                    })
+                                {
+                                    return Ok(None);
+                                }
                                 let mut opened = match application_wire::open::<N>(
                                     &mut material.application,
                                     &mut material.integrity,
                                     packet,
-                                    config.local_connection_id,
+                                    destination,
                                     *largest,
                                     now,
                                     pto,
@@ -523,15 +537,27 @@ pub(crate) async fn run<
                                             // Additional peer CIDs are optional on this fixed path. The
                                             // current handshake-selected CID remains valid at sequence 0.
                                         }
+                                        Frame::RetireConnectionId { sequence } => {
+                                            local_ids
+                                                .borrow_mut()
+                                                .as_mut()
+                                                .ok_or(Error::Binding)?
+                                                .retire(sequence, destination)
+                                                .map_err(|_| Error::Binding)?;
+                                            control.changed()?;
+                                        }
+                                        Frame::PathChallenge { data } => {
+                                            responses
+                                                .observe(*data)
+                                                .map_err(|_| Error::Capacity)?;
+                                            control.changed()?;
+                                        }
                                         Frame::Padding { .. }
                                         | Frame::Ping
                                         | Frame::Ack { .. }
                                         | Frame::HandshakeDone
                                         | Frame::PathResponse { .. } => {}
-                                        Frame::NewToken { .. }
-                                        | Frame::NewConnectionId { .. }
-                                        | Frame::RetireConnectionId { .. }
-                                        | Frame::PathChallenge { .. } => {
+                                        Frame::NewToken { .. } | Frame::NewConnectionId { .. } => {
                                             return Err(connection::Error::UnsupportedFrame.into());
                                         }
                                     }
@@ -845,6 +871,7 @@ fn old<'book, 'scope, const N: usize>(
     ecn: Option<crate::ecn::Codepoint>,
 ) -> Result<Option<u64>, Error> {
     let Header::Long {
+        version,
         kind,
         destination_id,
         source_id,
@@ -854,6 +881,9 @@ fn old<'book, 'scope, const N: usize>(
     else {
         return Ok(None);
     };
+    if kind == LongType::Handshake && version != config.version {
+        return Ok(None);
+    }
     if destination_id != config.local_connection_id
         && !(config.side == Side::Server
             && kind == LongType::Initial

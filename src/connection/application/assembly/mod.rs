@@ -215,6 +215,7 @@ async fn connected<
         return Err(Error::Binding);
     }
     let Setup {
+        local_ids,
         server_token,
         local_idle_timeout_ms,
         key_update_target,
@@ -273,6 +274,7 @@ async fn connected<
     if peer.max_udp_payload() < (CHUNK + 192) as u64 {
         return Err(Error::Capacity);
     }
+    let peer_cid_limit = peer.active_connection_id_limit();
     let peer_id = ConnectionId::new(received.material.peer_connection_id())?;
     let accepted_early = if let Some(requests) = client_early.as_deref() {
         match requests.decision(peer.finished())? {
@@ -342,7 +344,13 @@ async fn connected<
         &reclaim_exchange,
     )
     .await?;
-    let publication_state = transmit::State::new(book_publication, publication);
+    let ids = local_ids
+        .map(|storage| {
+            crate::path::ids::Ids::new(storage, scope, config.local_connection_id, peer_cid_limit)
+        })
+        .transpose()
+        .map_err(|_| Error::Binding)?;
+    let publication_state = transmit::State::new(book_publication, publication, ids);
     let ecn_exchange = transmit::ecn::Exchange::new();
 
     let acknowledgments = super::acknowledgments::Exchange::new();
@@ -443,6 +451,8 @@ async fn connected<
                 &terminal,
                 confirmation,
                 key_update_target,
+                &publication_state.responses,
+                &publication_state.ids,
                 pending_application,
             )
             .await

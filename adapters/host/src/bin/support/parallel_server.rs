@@ -82,6 +82,7 @@ pub async fn run<const S: usize, const T: usize>(
     credentials: (&std::path::Path, &std::path::Path),
     files: &cli::ServerFiles,
     cipher: hibana_quic::bounded_tls::CipherPolicy,
+    version: hibana_quic::version::Version,
     count: usize,
 ) -> Result<Report> {
     if count == 0 || count > MAX {
@@ -147,6 +148,7 @@ pub async fn run<const S: usize, const T: usize>(
                 server.completion_limit = core::num::NonZeroUsize::new(1);
                 let files = direct_bootstrap::Files::Server(server);
                 let parameters = parameters(
+                    version,
                     &admission.local,
                     Some(&admission.original),
                     Some(files.local_limits()),
@@ -157,6 +159,7 @@ pub async fn run<const S: usize, const T: usize>(
                 let mut entropy = OsRng;
                 let tls = BoundedTls::server_with_tickets_and_policy(
                     ServerConfig {
+                        version,
                         certificate_chain: chain,
                         signing_key: key,
                         transport_parameters: &parameters,
@@ -179,6 +182,7 @@ pub async fn run<const S: usize, const T: usize>(
                     clock,
                     admission.address,
                     Config {
+                        version,
                         side: Side::Server,
                         local_connection_id: &admission.local,
                         original_destination_id: &admission.original,

@@ -7,6 +7,7 @@ use hibana::g::Message;
 pub(super) struct Keys<'scope> {
     scope: &'scope ApplicationKeyScope,
     read: RefCell<Option<ReceivePacketKey<'scope>>>,
+    alternate_read: RefCell<Option<ReceivePacketKey<'scope>>>,
     write: RefCell<Option<crypto::PacketKey>>,
     publication_waker: RefCell<Option<Waker>>,
 }
@@ -23,6 +24,7 @@ impl<'scope> Keys<'scope> {
         Ok(Self {
             scope,
             read: RefCell::new(Some(ReceivePacketKey::from_initial(scope, read)?)),
+            alternate_read: RefCell::new(None),
             write: RefCell::new(Some(write)),
             publication_waker: RefCell::new(None),
         })
@@ -30,16 +32,66 @@ impl<'scope> Keys<'scope> {
     /// Called only after the projected pre-Retry publication join. Both actual
     /// key directions are replaced together; no outstanding native send exists.
     pub(super) fn replace_for_retry(&self, destination: &[u8]) -> Result<(), Error> {
-        let material = crypto::initial_keys(destination)?;
+        let mut material = crypto::initial_keys(destination)?;
+        let mut write = self.write.borrow_mut();
+        material
+            .client
+            .inherit_send_usage(write.as_ref().ok_or(Error::Binding)?)?;
         let read = ReceivePacketKey::from_initial(self.scope, material.server)?;
+        let mut alternate = self.alternate_read.borrow_mut();
+        if let Some(previous) = alternate.as_ref() {
+            let pair = crypto::initial_keys_for_version(previous.version(), destination)?;
+            *alternate = Some(ReceivePacketKey::from_initial(self.scope, pair.server)?);
+        }
         *self.read.borrow_mut() = Some(read);
-        *self.write.borrow_mut() = Some(material.client);
+        *write = Some(material.client);
         Ok(())
+    }
+    pub(super) fn install_alternate_read(&self, key: crypto::PacketKey) -> Result<(), Error> {
+        let mut a = self.alternate_read.borrow_mut();
+        if a.is_some() {
+            return Err(Error::Binding);
+        }
+        *a = Some(ReceivePacketKey::from_initial(self.scope, key)?);
+        Ok(())
+    }
+    pub(super) fn select_write_version(
+        &self,
+        version: crate::version::Version,
+        destination: &[u8],
+        side: Side,
+    ) -> Result<(), Error> {
+        let mut w = self.write.borrow_mut();
+        let previous = w.as_ref().ok_or(Error::Binding)?;
+        if previous.version() == version {
+            return Ok(());
+        }
+        let pair = crypto::initial_keys_for_version(version, destination)?;
+        let mut next = match side {
+            Side::Client => pair.client,
+            Side::Server => pair.server,
+        };
+        next.inherit_send_usage(previous)?;
+        *w = Some(next);
+        Ok(())
+    }
+    pub(super) fn read_version(
+        &self,
+        version: crate::version::Version,
+    ) -> Ref<'_, Option<ReceivePacketKey<'scope>>> {
+        let primary = self.read.borrow();
+        if primary.as_ref().is_some_and(|k| k.version() == version) {
+            primary
+        } else {
+            drop(primary);
+            self.alternate_read.borrow()
+        }
     }
     pub fn available(&self) -> bool {
         self.write.borrow().is_some()
     }
     /// This guard is used only within the synchronous packet-open block.
+    #[cfg(test)]
     pub fn read(&self) -> Ref<'_, Option<ReceivePacketKey<'scope>>> {
         self.read.borrow()
     }
@@ -62,6 +114,8 @@ impl<'scope> Keys<'scope> {
         if !core::ptr::eq(self.scope, evidence.scope()) {
             return Err(Error::Binding);
         }
+        let alternate = self.alternate_read.borrow_mut().take();
+        drop(alternate);
         let read = self.read.borrow_mut().take();
         let write = self.write.borrow_mut().take();
         drop(read);

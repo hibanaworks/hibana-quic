@@ -304,7 +304,8 @@ impl BoundedTls<'_, '_> {
         self.transcript.append(message)?;
         if self.early_status == EarlyStatus::AcceptedPendingFinished {
             let secret = self.schedule.client_early_traffic(&self.transcript)?;
-            self.early_key = Some(PacketKey::from_secret(
+            self.early_key = Some(PacketKey::from_secret_for_version(
+                self.version(),
                 suite_from_wire(suite)?,
                 KeyKind::ZeroRtt,
                 secret.as_bytes(),

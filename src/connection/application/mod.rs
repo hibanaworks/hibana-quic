@@ -69,6 +69,7 @@ pub struct EarlyServer<'a, const RX: usize> {
     pub policy: crate::early_data::ServerPolicy,
 }
 pub struct Setup<'a, const RX: usize, const CHUNK: usize> {
+    pub local_ids: Option<crate::path::ids::Storage<'a>>,
     /// Opaque server-issued address token, published only after authenticated Finished.
     pub server_token: Option<&'a [u8]>,
     /// Must match the local max_idle_timeout actually advertised in TLS.

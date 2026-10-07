@@ -399,6 +399,7 @@ dependencies = [
  "rand_core",
  "rcgen",
  "rustls-pki-types",
+ "zeroize",
 ]
 
 [[package]]

@@ -215,6 +215,7 @@ fn bounded_client_resumes_with_rustls_server() {
         }
         let mut buffers = Buffers::new();
         let cfg = ClientConfig {
+            version: hibana_quic::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: now(),
@@ -279,6 +280,7 @@ fn rustls_client_resumes_with_bounded_server_including_real_group_hrr() {
             let mut buffers = Buffers::new();
             let mut entropy = OsRng;
             let server = ServerConfig {
+                version: hibana_quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
                 transport_parameters: SERVER_PARAMS,

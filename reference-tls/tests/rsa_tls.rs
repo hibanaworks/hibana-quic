@@ -357,6 +357,7 @@ fn run(bits: u16, corrupt_cv: bool) {
     let mut client = measured(|| {
         BoundedTls::client(
             ClientConfig {
+                version: hibana_quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: UnixTime::since_unix_epoch(Duration::from_secs(1_800_000_000)),

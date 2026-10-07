@@ -11,13 +11,14 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import subprocess
 import tempfile
 import time
 
-from udp_impairment import UdpProxy, EarlyWireProbe, MultiEndpointProxy
+from udp_impairment import UdpProxy, EarlyWireProbe, MultiEndpointProxy, VersionWireProbe, RebindingWireProbe
 
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location('fixture', HERE / 'test_direct_handshake_localhost.py')
@@ -87,7 +88,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('hq', 'neqo-client', 'neqo-server', 'nss', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect', 'multiplexing'), default='clean')
+    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect', 'multiplexing', 'v2', 'rebind-port', 'rebind-addr'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--require-ecn', action='store_true', help='require actual ECN send, authenticated feedback, received marks and accepted ACK_ECN in clean native transfers')
     parser.add_argument('--client-retry', action='store_true', help='native Retry reception, forward clean direction only')
@@ -127,6 +128,10 @@ def main():
     env.pop('SSLKEYLOGFILE', None)
     ipv6 = args.scenario == 'ipv6'
     sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario in ('chacha20', 'keyupdate') else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
+    if args.scenario == 'v2':
+        sizes = [1024]
+    if args.scenario in ('rebind-port','rebind-addr'):
+        sizes = [10 << 20]
     if args.scenario == 'multiconnect':
         sizes = list(range(1024, 1074))
     if args.scenario == 'multiplexing':
@@ -216,6 +221,11 @@ def main():
                 server_command = [str(hq), 'server', '--listen', server_address, '--cert', str(root / 'server.pem'), '--key', str(root / 'server.key'), '--www', str(www), '--max-requests', str(64 if args.scenario in ('resumption', 'zerortt') else len(names)), '--timeout-seconds', str(args.timeout_seconds)]
             else:
                 server_command = [str(ns), '-a', 'hq-interop', '-Q', '1', '-d', str(db), '-k', 'native-peer', '--idle', str(args.timeout_seconds), server_address]
+            if args.scenario == 'v2':
+                if direction == 'reverse': server_command += ['--version','2']
+                else:
+                    server_command[server_command.index('-Q')+1]='6b3343cf'
+                    server_command += ['-Q','1']
             if args.client_retry:
                 server_command += ['--retry']
             if args.server_retry:
@@ -244,6 +254,8 @@ def main():
                         # after startup. Unlike its QNS mode, do not shift its clock.
                         time.sleep(11)
                     proxy_context = (EarlyWireProbe(('127.0.0.1', server_port), client_endpoints=2 if direction == 'forward' else 1, drop_first_early=args.client_early_loss) if args.scenario == 'zerortt' else (MultiEndpointProxy if args.scenario == 'multiconnect' else UdpProxy)(('127.0.0.1', server_port), **options) if options else nullcontext(None))
+                    if args.scenario == 'v2': proxy_context = VersionWireProbe(('127.0.0.1',server_port))
+                    if args.scenario in ('rebind-port','rebind-addr'): proxy_context = RebindingWireProbe(('127.0.0.1',server_port),change_address=args.scenario=='rebind-addr')
                     with proxy_context as proxy:
                         client_port = proxy.address[1] if proxy else server_port
                         address = f'[::1]:{client_port}' if ipv6 else f'127.0.0.1:{client_port}'
@@ -261,7 +273,9 @@ def main():
                             for url in urls:
                                 command += ['--request', url]
                         else:
-                            command = [str(nc), '--qns-test', args.scenario if args.scenario in ('resumption', 'zerortt', 'keyupdate', 'multiconnect') else 'transfer', '-Q', '1', '--ipv6-only' if ipv6 else '--ipv4-only', '--output-dir', str(destination), '--idle', str(args.timeout_seconds)] + urls
+                            command = [str(nc), '--qns-test', args.scenario if args.scenario in ('resumption', 'zerortt', 'keyupdate', 'multiconnect', 'v2') else 'transfer', '-Q', '1', '--ipv6-only' if ipv6 else '--ipv4-only', '--output-dir', str(destination), '--idle', str(args.timeout_seconds)] + urls
+                        if args.scenario == 'v2':
+                            command += ['--version','2'] if direction=='forward' else ['-Q','6b3343cf','-Q','1']
                         if args.scenario == 'chacha20':
                             command += ['--cipher', 'chacha20'] if direction == 'forward' else ['-c', 'TLS_CHACHA20_POLY1305_SHA256']
                         started = time.monotonic()
@@ -388,6 +402,32 @@ def main():
                                 assert actual['key_generation'] >= 1 and actual['lifecycle_closed'], actual
                             else:
                                 assert 'Initiating key update' in result.stderr, 'reference never actually initiated key update'
+                        if args.scenario == 'v2' and returncode == 0:
+                            actual=dict(proxy.stats)
+                            assert actual.get('to_server_v1_type0',0)>0,actual
+                            assert actual.get('to_client_v6b3343cf_type0',0)>0,actual
+                            for side in ('to_server','to_client'):
+                                assert actual.get(side+'_v6b3343cf_type2',0)>0,actual
+                                assert actual.get(side+'_v1_type2',0)==0,actual
+                            row['version_wire_observations']=actual
+                        if args.scenario in ('rebind-port','rebind-addr') and returncode == 0:
+                            assert proxy.stats['actual_rebindings']==2,proxy.stats
+                            assert len(set(proxy.paths))==3,proxy.paths
+                            if args.scenario=='rebind-addr': assert len({p[0] for p in proxy.paths})==3,proxy.paths
+                            row['observed_paths']=proxy.paths
+                            if direction!='reverse':
+                                text=log_path.read_text()
+                                sent=set(re.findall(r'TX -> PathChallenge \{ data: (\[[0-9, ]+\])',text))
+                                received=set(re.findall(r'-> RX PathResponse \{ data: (\[[0-9, ]+\])',text))
+                                assert len(sent&received)>=2,(len(sent),len(received))
+                                row['peer_matched_path_responses']=len(sent&received)
+                        if args.scenario in ('v2','rebind-port','rebind-addr') and returncode==0 and direction!='baseline':
+                            if direction=='reverse': server.wait(timeout=5)
+                            text=result.stdout if direction=='forward' else log_path.read_text()
+                            terminal=next(json.loads(line) for line in reversed(text.splitlines()) if line.startswith('{'))
+                            assert terminal['tls_finished_authenticated'] and terminal['http_transfer_complete'] and terminal['resources_retired'] and terminal['lifecycle_closed'],terminal
+                            row.update(resources_retired=True,lifecycle_closed=True)
+                            report['transfer_observations'][-1]['retirement_verified']=True
                         if args.client_retry and returncode == 0:
                             assert 'Send retry for' in log_path.read_text(), 'reference never actually issued Retry'
                             terminal = next(json.loads(line) for line in reversed(result.stdout.splitlines()) if line.startswith('{'))

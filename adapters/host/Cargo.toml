@@ -11,6 +11,7 @@ description = "Host adapters for the bounded hibana-quic TLS/transport profile; 
 resolver = "3"
 
 [dependencies]
+zeroize = { version = "=1.8.2", default-features = false }
 nix = { version = "=0.31.3", default-features = false, features = ["socket", "net", "uio", "event"] }
 hibana-quic = { path = "../.." }
 hibana = { path = "../../vendor/hibana", default-features = false }

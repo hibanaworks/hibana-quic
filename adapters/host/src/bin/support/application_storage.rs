@@ -36,6 +36,8 @@ pub fn local_limits<const RX: usize>(side: Side, stream_capacity: usize) -> Limi
     }
 }
 pub struct Storage<const RX: usize> {
+    cid_slots: Vec<hibana_quic::connection_id::LocalCidSlot>,
+    cid_seed: zeroize::Zeroizing<[u8; 32]>,
     initial: Vec<u8>,
     handshake: Vec<u8>,
     application: Vec<u8>,
@@ -51,7 +53,14 @@ impl<const RX: usize> Storage<RX> {
         if stream_capacity == 0 || stream_capacity > STREAMS {
             return Err("stream storage capacity must be 1..=64".into());
         }
+        let mut cid_seed = zeroize::Zeroizing::new([0u8; 32]);
+        use rand_core::RngCore;
+        rand_core::OsRng
+            .try_fill_bytes(&mut *cid_seed)
+            .map_err(|_| "CID entropy unavailable")?;
         Ok(Self {
+            cid_slots: vec![hibana_quic::connection_id::LocalCidSlot::EMPTY; 16],
+            cid_seed,
             initial: vec![0; 8192],
             handshake: vec![0; 16384],
             application: vec![0; 8192],
@@ -68,6 +77,10 @@ impl<const RX: usize> Storage<RX> {
         config: Config<'a>,
     ) -> Result<application::Setup<'a, RX, CHUNK_BYTES>, String> {
         Ok(application::Setup {
+            local_ids: Some(hibana_quic::path::ids::Storage {
+                slots: &mut self.cid_slots,
+                seed: &self.cid_seed,
+            }),
             server_token: None,
             local_idle_timeout_ms: 30_000,
             key_update_target: 0,

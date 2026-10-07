@@ -7,7 +7,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit
 
-SUPPORTED = {'handshake', 'transfer', 'chacha20', 'resumption', 'zerortt', 'keyupdate', 'multiconnect', 'retry', 'ecn'}
+SUPPORTED = {'handshake', 'transfer', 'chacha20', 'resumption', 'zerortt', 'keyupdate', 'multiconnect', 'retry', 'ecn', 'v2'}
 
 class Unsupported(ValueError):
     pass
@@ -21,6 +21,8 @@ def command(env, resolve=socket.getaddrinfo):
     if env.get('CLIENT_PARAMS', '') or env.get('SERVER_PARAMS', ''):
         raise ValueError('extra parameter strings are not accepted or evaluated')
     args = ['/usr/local/bin/hibana-quic-hq', role]
+    if case == 'v2':
+        args += ['--version', '2']
     if case == 'retry' and role == 'server':
         args += ['--retry', 'required']
     if case == 'keyupdate' and role == 'client':

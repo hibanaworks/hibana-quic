@@ -70,6 +70,8 @@ struct Pending<'book, 'streams, const N: usize> {
     stream: Option<application_stream::Transmission<'streams>>,
     acknowledgment: Option<recovery::AckSnapshot<'book>>,
     close_deadline: Option<u64>,
+    response: Option<crate::path::responses::Response>,
+    cid: Option<crate::connection_id::LocalCid>,
 }
 
 /// The slot transfers the actual packet on the declared Datagram edge. It
@@ -84,6 +86,8 @@ pub(crate) struct State<
     const RX: usize,
     const CHUNK: usize,
 > {
+    pub(crate) responses: crate::path::responses::Responses,
+    pub(crate) ids: RefCell<Option<crate::path::ids::Ids<'storage, 'scope>>>,
     pending: RefCell<Option<Pending<'book, 'streams, N>>>,
     owners: RefCell<Owners<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>>,
     delivery: crate::connection::tls::Inbox<application_stream::Delivered<'streams>>,
@@ -107,8 +111,11 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
     pub(crate) const fn new(
         book: recovery::Publication<'book, 'scope, N>,
         streams: application_stream::Publication<'streams, 'storage, 'scope, RX, CHUNK>,
+        ids: Option<crate::path::ids::Ids<'storage, 'scope>>,
     ) -> Self {
         Self {
+            responses: crate::path::responses::Responses::new(),
+            ids: RefCell::new(ids),
             pending: RefCell::new(None),
             owners: RefCell::new(Owners { book, streams }),
             delivery: crate::connection::tls::Inbox::new(),
@@ -144,9 +151,20 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         accepted_at: Option<u64>,
         ecn: crate::ecn::Codepoint,
     ) -> Result<(), Error> {
+        if accepted_at.is_some()
+            && let Some(cid) = packet.cid
+        {
+            self.ids
+                .try_borrow_mut()
+                .map_err(|_| Error::Binding)?
+                .as_mut()
+                .ok_or(Error::Binding)?
+                .accepted(cid, packet.sealed.reservation().packet().value)
+                .map_err(|_| Error::Binding)?;
+        }
         let mut owners = self.owners.try_borrow_mut().map_err(|_| Error::Binding)?;
         let Owners { book, streams } = &mut *owners;
-        settle(packet, book, streams, accepted_at, ecn)
+        settle(packet, book, streams, &self.responses, accepted_at, ecn)
     }
     pub(crate) fn cancel_pending(&self) -> Result<(), Error> {
         let pending = self
@@ -166,7 +184,14 @@ impl<const N: usize, const RX: usize, const CHUNK: usize> Drop
     fn drop(&mut self) {
         if let Some(packet) = self.pending.get_mut().take() {
             let Owners { book, streams } = self.owners.get_mut();
-            let _ = settle(packet, book, streams, None, crate::ecn::Codepoint::NotEct);
+            let _ = settle(
+                packet,
+                book,
+                streams,
+                &self.responses,
+                None,
+                crate::ecn::Codepoint::NotEct,
+            );
         }
     }
 }
@@ -221,6 +246,7 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
     packet: Pending<'book, '_, N>,
     book: &mut recovery::Publication<'book, '_, N>,
     streams: &mut application_stream::Publication<'_, '_, '_, RX, CHUNK>,
+    responses: &crate::path::responses::Responses,
     accepted_at: Option<u64>,
     ecn: crate::ecn::Codepoint,
 ) -> Result<(), Error> {
@@ -230,6 +256,8 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
         stream,
         acknowledgment,
         close_deadline: _,
+        response,
+        cid: _,
     } = packet;
     let (reservation, long_ack) = sealed.into_parts();
     // Complete both numeric owners in this synchronous turn even if one owner
@@ -246,6 +274,11 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
     };
     recovery_result?;
     stream_result?;
+    if accepted_at.is_some()
+        && let Some(response) = response
+    {
+        responses.accepted(response).map_err(|_| Error::Binding)?;
+    }
     if accepted_at.is_some()
         && let Some(ack) = acknowledgment.or(long_ack)
     {
@@ -354,7 +387,16 @@ pub(crate) async fn run<
                 streams.forget_lost(history_floor)?;
                 history_floor += 1;
             }
-            let pending = prepare(keys, book, streams, config, peer, clock.now())?;
+            let pending = prepare(
+                keys,
+                book,
+                streams,
+                config,
+                peer,
+                clock.now(),
+                &state.responses,
+                &state.ids,
+            )?;
             let Some(pending) = pending else {
                 control.wait(4, revision).await;
                 continue;
@@ -419,6 +461,8 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     config: Config<'_>,
     peer: &ConnectionId,
     now: u64,
+    responses: &crate::path::responses::Responses,
+    ids: &RefCell<Option<crate::path::ids::Ids<'_, '_>>>,
 ) -> Result<Option<Pending<'book, 'streams, N>>, Error> {
     let available = keys.available_levels()?;
     // Initial/Handshake receive and recovery survive until their actual scoped
@@ -461,6 +505,8 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
                 stream: None,
                 acknowledgment: None,
                 close_deadline: None,
+                response: None,
+                cid: None,
             }));
         }
     }
@@ -574,6 +620,32 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
             &mut plaintext[..],
         )?;
     }
+    let cid = ids
+        .try_borrow_mut()
+        .map_err(|_| Error::Binding)?
+        .as_mut()
+        .map(|i| i.prepare())
+        .transpose()
+        .map_err(|_| Error::Binding)?
+        .flatten();
+    if let Some(c) = &cid {
+        len += packet::encode_frame(
+            &Frame::NewConnectionId {
+                sequence: c.sequence,
+                retire_prior_to: c.retire_prior_to,
+                id: c.cid.as_bytes(),
+                reset_token: c.token.as_ref().ok_or(Error::Binding)?.as_bytes(),
+            },
+            &mut plaintext[len..],
+        )?;
+    }
+    let response = responses.pending().map_err(|_| Error::Binding)?;
+    if let Some(r) = response {
+        len += packet::encode_frame(
+            &Frame::PathResponse { data: &r.data },
+            &mut plaintext[len..],
+        )?;
+    }
     let prepared = streams.prepare::<N>(probe)?;
     let overhead = short_overhead(peer)?;
     let had_prepared = prepared.is_some();
@@ -633,6 +705,8 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
             stream: transmission,
             acknowledgment,
             close_deadline: None,
+            response,
+            cid,
         })),
         Err((error, reservation)) => {
             let recovery_result = book.cancel(reservation);
@@ -682,6 +756,8 @@ fn long_packet<'book, 'scope, const N: usize>(
             stream: None,
             acknowledgment: None,
             close_deadline: None,
+            response: None,
+            cid: None,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -723,6 +799,8 @@ fn application_control_packet<'book, 'streams, 'scope, const N: usize>(
             stream: None,
             acknowledgment: None,
             close_deadline: None,
+            response: None,
+            cid: None,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -909,6 +987,9 @@ pub(crate) async fn publish<
                 let packet = offered.recv::<p::ApplyLoss>().await?;
                 let grant = acknowledgments.loss.take().map_err(|_| Error::Binding)?;
                 check(grant.packet().value, packet)?;
+                if let Some(ids) = state.ids.borrow_mut().as_mut() {
+                    ids.loss(&grant).map_err(|_| Error::Binding)?;
+                }
                 reset_owner.apply_loss(grant)?;
                 endpoint.send::<p::LossApplied>(&packet).await?;
                 check(endpoint.recv::<p::LossSettled>().await?, packet)?;
@@ -917,6 +998,9 @@ pub(crate) async fn publish<
             178 => {
                 offered.recv::<p::ApplyAcknowledgments>().await?;
                 let grant = acknowledgments.pending.take().map_err(|_| Error::Binding)?;
+                if let Some(ids) = state.ids.borrow_mut().as_mut() {
+                    ids.acknowledge(&grant).map_err(|_| Error::Binding)?;
+                }
                 reset_owner.acknowledge(grant)?;
                 endpoint.send::<p::AcknowledgmentsApplied>(&()).await?;
                 while let Some(receipt) = reset_owner.take_delivery()? {
@@ -1201,6 +1285,8 @@ fn close_packet<'book, 'streams, const N: usize>(
             stream: None,
             acknowledgment: None,
             close_deadline: Some(deadline),
+            response: None,
+            cid: None,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -1398,6 +1484,8 @@ mod tests {
             stream: Some(stream),
             acknowledgment: None,
             close_deadline: None,
+            response: None,
+            cid: None,
         }
     }
 
@@ -1429,7 +1517,7 @@ mod tests {
         );
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
         let guard = actor_test_allocator::NoAlloc::start();
-        let state = State::new(book_publication, publication);
+        let state = State::new(book_publication, publication, None);
         let packet = stream_packet(&mut book_tx, &mut tx, &mut write);
         assert!(state.put(packet).is_ok());
         assert_eq!(book_tx.snapshot().pending_publications, [0, 0, 1]);
@@ -1497,7 +1585,7 @@ mod tests {
         );
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
         let guard = actor_test_allocator::NoAlloc::start();
-        let state = State::new(book_publication, publication);
+        let state = State::new(book_publication, publication, None);
         let packet = stream_packet(&mut book_tx, &mut tx, &mut write);
         assert!(state.put(packet).is_ok());
         let polls = Cell::new(0);
@@ -1564,7 +1652,7 @@ mod tests {
         let application_stream::Facets { publication, .. } = numbers.split();
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
         let guard = actor_test_allocator::NoAlloc::start();
-        let state = State::new(book_publication, publication);
+        let state = State::new(book_publication, publication, None);
         // Burn numbers before filling the ordinary admission quota. PTO headroom
         // remains reserved, while close still requires actual ordinary retirement.
         for expected in 0..3 {
@@ -1591,6 +1679,8 @@ mod tests {
                 stream: None,
                 acknowledgment: None,
                 close_deadline: None,
+                response: None,
+                cid: None,
             };
             let mut pending = InFlight {
                 packet: Some(packet),

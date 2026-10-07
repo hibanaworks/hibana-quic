@@ -15,6 +15,7 @@ pub struct ServerFiles {
 #[derive(Debug)]
 pub enum Options {
     Client {
+        version: hibana_quic::version::Version,
         connect: SocketAddr,
         server_name: String,
         ca: PathBuf,
@@ -27,6 +28,7 @@ pub enum Options {
         files: Option<ClientFiles>,
     },
     Server {
+        version: hibana_quic::version::Version,
         listen: SocketAddr,
         cert: PathBuf,
         key: PathBuf,
@@ -94,6 +96,11 @@ pub fn options(args: &[String]) -> Result<Options> {
         "chacha20" => CipherPolicy::ChaCha20Only,
         _ => return Err("--cipher must be auto, aes128 or chacha20".into()),
     };
+    let version = match flags.remove("--version").unwrap_or("1") {
+        "1" => hibana_quic::version::Version::V1,
+        "2" => hibana_quic::version::Version::V2,
+        _ => return Err("--version must be 1 or 2".into()),
+    };
     let session = flags.remove("--session").unwrap_or("single");
     let resumption = match session {
         "single" => false,
@@ -145,7 +152,11 @@ pub fn options(args: &[String]) -> Result<Options> {
                     );
                 }
             };
-            if early && files.as_ref().is_some_and(|files| files.requests.len() > 64) {
+            if early
+                && files
+                    .as_ref()
+                    .is_some_and(|files| files.requests.len() > 64)
+            {
                 return Err("early replay storage supports at most 64 requests".into());
             }
             let key_update_target = match flags.remove("--key-update").unwrap_or("none") {
@@ -168,6 +179,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 return Err("connections must be 1..=64".into());
             }
             Options::Client {
+                version,
                 connect,
                 server_name,
                 ca,
@@ -233,6 +245,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 _ => return Err("--retry required supports one non-early connection".into()),
             };
             Options::Server {
+                version,
                 require_retry,
                 early,
                 listen,
@@ -247,6 +260,27 @@ pub fn options(args: &[String]) -> Result<Options> {
         }
         _ => return Err(USAGE.into()),
     };
+    if version == hibana_quic::version::Version::V2
+        && matches!(
+            &result,
+            Options::Client { early: true, .. }
+                | Options::Client {
+                    resumption: true,
+                    ..
+                }
+                | Options::Server { early: true, .. }
+                | Options::Server {
+                    resumption: true,
+                    ..
+                }
+                | Options::Server {
+                    require_retry: true,
+                    ..
+                }
+        )
+    {
+        return Err("v2 requires a fresh non-Retry connection".into());
+    }
     if let Some(flag) = flags.keys().next() {
         return Err(format!("unsupported option {flag}"));
     }
@@ -398,11 +432,20 @@ mod tests {
 
     #[test]
     fn multiplexing_admits_many_requests_without_expanding_early_or_connection_limits() {
-        let mut values = args("client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem --downloads output");
+        let mut values = args(
+            "client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem --downloads output",
+        );
         for index in 0..1999 {
             values.extend(["--request".into(), format!("/file-{index}")]);
         }
-        let Options::Client { files: Some(files), connections, .. } = options(&values).unwrap() else { panic!("files") };
+        let Options::Client {
+            files: Some(files),
+            connections,
+            ..
+        } = options(&values).unwrap()
+        else {
+            panic!("files")
+        };
         assert_eq!(files.requests.len(), 1999);
         assert_eq!(connections, 1);
         let mut early = values.clone();

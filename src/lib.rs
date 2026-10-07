@@ -12,6 +12,7 @@ pub mod accounting;
 pub mod bounded_tls;
 pub mod carrier;
 pub mod crypto;
+pub mod version;
 
 pub mod flights;
 pub mod flow;

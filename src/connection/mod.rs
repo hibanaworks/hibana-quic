@@ -51,6 +51,7 @@ pub enum Side {
 
 #[derive(Clone, Copy)]
 pub struct Config<'a> {
+    pub version: crate::version::Version,
     pub side: Side,
     pub local_connection_id: &'a [u8],
     pub original_destination_id: &'a [u8],
@@ -457,7 +458,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         Side::Client => crate::tls_schedule::Side::Client,
         Side::Server => crate::tls_schedule::Side::Server,
     };
-    if source.side() != expected_side {
+    if source.side() != expected_side || source.version() != config.version {
         return Err(Error::Binding);
     }
     storage.claim()?;
@@ -474,6 +475,18 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         Side::Server => (initial.client, initial.server),
     };
     let initial = initial::Keys::new(scope, read, write)?;
+    if config.version != crate::version::Version::V1 {
+        let pair = crypto::initial_keys_for_version(
+            config.version,
+            config
+                .retry_source_id
+                .unwrap_or(config.original_destination_id),
+        )?;
+        initial.install_alternate_read(match config.side {
+            Side::Client => pair.server,
+            Side::Server => pair.client,
+        })?;
+    }
     let initial_exchange = initial::Exchange::new();
     // These are the actual write keys, shared only for synchronous owner access.
     // Timer readiness is derived from them, never a mirrored phase/availability flag.

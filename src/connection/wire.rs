@@ -166,7 +166,12 @@ impl<const N: usize> PlainPacket<N> {
             packet_number: 0,
             packet_number_len: 4,
         };
-        let mut hlen = packet::encode_long_header(&header, plen + 16, &mut bytes.data)?;
+        let mut hlen = packet::encode_long_header_for_version(
+            config.version,
+            &header,
+            plen + 16,
+            &mut bytes.data,
+        )?;
         if level == Level::Initial {
             loop {
                 let padded_len = encoded_len.max(1200usize.saturating_sub(hlen + 16));
@@ -177,7 +182,12 @@ impl<const N: usize> PlainPacket<N> {
                 if plen > N {
                     return Err(Error::Capacity);
                 }
-                hlen = packet::encode_long_header(&header, plen + 16, &mut bytes.data)?;
+                hlen = packet::encode_long_header_for_version(
+                    config.version,
+                    &header,
+                    plen + 16,
+                    &mut bytes.data,
+                )?;
             }
         }
         let len = hlen + plen + 16;
@@ -268,6 +278,29 @@ impl<const N: usize> PlainPacket<N> {
                         && core::ptr::eq(k.scope(), reservation.scope()) => {}
                 _ => return Err(Error::Binding),
             }
+            let version = match &key {
+                BorrowedWriteKey::Initial(k) => k.version(),
+                BorrowedWriteKey::Handshake(k) => k.version(),
+            };
+            let ty = match self.level {
+                Level::Initial => {
+                    if version == crate::version::Version::V1 {
+                        0
+                    } else {
+                        0x10
+                    }
+                }
+                Level::Handshake => {
+                    if version == crate::version::Version::V1 {
+                        0x20
+                    } else {
+                        0x30
+                    }
+                }
+                _ => return Err(Error::Binding),
+            };
+            self.bytes.data[0] = (self.bytes.data[0] & !0x30) | ty;
+            self.bytes.data[1..5].copy_from_slice(&version.wire().to_be_bytes());
             let pn = reservation.packet().value;
             self.bytes.data[self.header_len - 4..self.header_len]
                 .copy_from_slice(&pn.to_be_bytes()[4..]);
@@ -315,6 +348,7 @@ mod initial_ack_tests {
     #[test]
     fn retained_crypto_fits_the_existing_initial_ack_datagram() {
         let config = Config {
+            version: crate::version::Version::V1,
             side: Side::Server,
             local_connection_id: b"serverid",
             original_destination_id: b"original",

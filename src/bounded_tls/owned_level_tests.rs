@@ -36,12 +36,15 @@ fn owned_level_receipt_binds_actual_aead_scope_packet_and_exact_plaintext() {
         let mut buffer = [0; 64];
         buffer[..5].copy_from_slice(b"exact");
         let len = tx.seal(7, b"authenticated header", &mut buffer, 5).unwrap();
-        let receipt = rx.open_authenticated(
-            7, b"authenticated header", &mut buffer[..len], &mut budget,
-        ).unwrap();
+        let receipt = rx
+            .open_authenticated(7, b"authenticated header", &mut buffer[..len], &mut budget)
+            .unwrap();
         assert!(core::ptr::eq(receipt.scope(), &first));
         assert!(!core::ptr::eq(receipt.scope(), &other));
-        assert_eq!(receipt.scope().connection_generation(), other.connection_generation());
+        assert_eq!(
+            receipt.scope().connection_generation(),
+            other.connection_generation()
+        );
         assert_eq!(receipt.kind(), kind);
         assert_eq!(receipt.packet_number(), 7);
         assert_eq!(receipt.len(), 5);
@@ -56,7 +59,9 @@ fn owned_level_receipt_binds_actual_aead_scope_packet_and_exact_plaintext() {
         // A zero-byte AEAD result is represented faithfully; transport decides
         // whether an empty QUIC payload is acceptable. No metadata is invented.
         let len = tx.seal(8, b"header", &mut buffer, 0).unwrap();
-        let empty = rx.open_authenticated(8, b"header", &mut buffer[..len], &mut budget).unwrap();
+        let empty = rx
+            .open_authenticated(8, b"header", &mut buffer[..len], &mut budget)
+            .unwrap();
         assert!(empty.is_empty());
         assert_eq!(empty.len(), 0);
         assert_eq!(empty.packet_number(), 8);
@@ -90,7 +95,9 @@ fn owned_level_tamper_wipes_buffer_and_counts_failure_without_minting_receipt() 
         assert!(buffer[..len].iter().all(|byte| *byte == 0));
         assert_eq!(budget.failed_packets(), 1);
         let mut buffer = valid;
-        let receipt = rx.open_authenticated(1, b"header", &mut buffer[..len], &mut budget).unwrap();
+        let receipt = rx
+            .open_authenticated(1, b"header", &mut buffer[..len], &mut budget)
+            .unwrap();
         assert!(receipt.authenticates_plaintext(b"data"));
         assert_eq!(budget.failed_packets(), 1);
         no_alloc.finish();
@@ -116,7 +123,10 @@ fn owned_level_rejects_wrong_kind_before_aead_and_discarded_initial_attachment()
     for kind in [KeyKind::ZeroRtt, KeyKind::OneRtt] {
         // Test only: fabricate neither a receipt nor public metadata. Construct
         // the private key holder to exercise its mandatory level rejection.
-        let rx = ReceivePacketKey { scope: &scope, key: raw_key(CipherSuite::Aes128GcmSha256, kind) };
+        let rx = ReceivePacketKey {
+            scope: &scope,
+            key: raw_key(CipherSuite::Aes128GcmSha256, kind),
+        };
         let mut tx = raw_key(CipherSuite::Aes128GcmSha256, kind);
         let mut buffer = [0; 20];
         buffer[..4].copy_from_slice(b"data");
@@ -147,28 +157,65 @@ fn failed_source_polls_are_fatal_and_ordinary_absence_is_temporary() {
     let mut buffers = fixture::Buffers::new();
     let mut scope = ApplicationKeyScope::new(37);
     let no_alloc = NoAlloc::start();
-    let mut source = BoundedTls::client(ClientConfig {
-        server_name: "localhost", trust_anchors: &anchors, now: fixture::now(),
-        certificate_limits: Limits::default(), transport_parameters: fixture::CLIENT_PARAMS,
-    }, buffers.storage(), &mut fixture::TestRandom(97)).unwrap()
-        .into_key_source(scope.claim().unwrap()).unwrap();
+    let mut source = BoundedTls::client(
+        ClientConfig {
+            version: crate::version::Version::V1,
+            server_name: "localhost",
+            trust_anchors: &anchors,
+            now: fixture::now(),
+            certificate_limits: Limits::default(),
+            transport_parameters: fixture::CLIENT_PARAMS,
+        },
+        buffers.storage(),
+        &mut fixture::TestRandom(97),
+    )
+    .unwrap()
+    .into_key_source(scope.claim().unwrap())
+    .unwrap();
     assert_eq!(source.side(), Side::Client);
-    assert!(matches!(source.take_handshake_keys(), Err(tls::Error::KeysUnavailable)));
-    assert!(matches!(source.take_application_keys(), Err(tls::Error::KeysUnavailable)));
-    assert!(matches!(source.take_early_key(), Err(tls::Error::KeysUnavailable)));
-    assert!(matches!(source.take_finished(), Err(tls::Error::KeysUnavailable)));
+    assert!(matches!(
+        source.take_handshake_keys(),
+        Err(tls::Error::KeysUnavailable)
+    ));
+    assert!(matches!(
+        source.take_application_keys(),
+        Err(tls::Error::KeysUnavailable)
+    ));
+    assert!(matches!(
+        source.take_early_key(),
+        Err(tls::Error::KeysUnavailable)
+    ));
+    assert!(matches!(
+        source.take_finished(),
+        Err(tls::Error::KeysUnavailable)
+    ));
     let _budget = source.take_integrity_budget().unwrap();
-    assert!(matches!(source.take_integrity_budget(), Err(tls::Error::KeysUnavailable)));
+    assert!(matches!(
+        source.take_integrity_budget(),
+        Err(tls::Error::KeysUnavailable)
+    ));
     // A complete message at the wrong TLS level causes a genuine fatal source
     // transition, rather than changing private state merely to test polling.
     assert!(source.receive(Level::Handshake, &[1, 0, 0, 0]).is_err());
     assert_eq!(source.state(), State::Failed);
     assert!(source.last_failure().is_some());
-    assert!(matches!(source.take_handshake_keys(), Err(tls::Error::Handshake)));
-    assert!(matches!(source.take_application_keys(), Err(tls::Error::Handshake)));
-    assert!(matches!(source.take_early_key(), Err(tls::Error::Handshake)));
+    assert!(matches!(
+        source.take_handshake_keys(),
+        Err(tls::Error::Handshake)
+    ));
+    assert!(matches!(
+        source.take_application_keys(),
+        Err(tls::Error::Handshake)
+    ));
+    assert!(matches!(
+        source.take_early_key(),
+        Err(tls::Error::Handshake)
+    ));
     assert!(matches!(source.take_finished(), Err(tls::Error::Handshake)));
-    assert!(matches!(source.take_integrity_budget(), Err(tls::Error::Handshake)));
+    assert!(matches!(
+        source.take_integrity_budget(),
+        Err(tls::Error::Handshake)
+    ));
     assert_eq!(source.transmit(&mut [0; 64]), Err(tls::Error::Handshake));
     no_alloc.finish();
 }

@@ -52,6 +52,7 @@ pub struct Storage<'a> {
 }
 
 pub struct ClientConfig<'a> {
+    pub version: crate::version::Version,
     pub server_name: &'a str,
     pub trust_anchors: &'a [TrustAnchor<'a>],
     pub now: UnixTime,
@@ -59,6 +60,7 @@ pub struct ClientConfig<'a> {
     pub transport_parameters: &'a [u8],
 }
 pub struct ServerConfig<'a> {
+    pub version: crate::version::Version,
     /// DER leaf first, then intermediate certificates. Do not include private keys.
     pub certificate_chain: &'a [&'a [u8]],
     pub signing_key: &'a SigningKey,
@@ -462,7 +464,8 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
         this.early_status = EarlyStatus::Offered;
         this.encode_psk_start(Some((offer.identity(), age)))?;
         let secret = this.schedule.client_early_traffic(&this.transcript)?;
-        this.early_key = Some(PacketKey::from_secret(
+        this.early_key = Some(PacketKey::from_secret_for_version(
+            this.version(),
             suite_from_wire(offer.suite())?,
             KeyKind::ZeroRtt,
             secret.as_bytes(),
@@ -836,7 +839,35 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
         error
     }
 
+    pub const fn version(&self) -> crate::version::Version {
+        match &self.mode {
+            Mode::Client(c) => c.version,
+            Mode::Server(c) => c.version,
+        }
+    }
     fn save_parameters(&mut self, bytes: &[u8]) -> Result<(), Failure> {
+        let peer_client = self.side() == Side::Server;
+        let information = crate::version::information_from_parameters(bytes, peer_client)
+            .map_err(|_| Failure::InvalidConfig)?;
+        match information {
+            Some(info) => {
+                let expected = if peer_client {
+                    crate::version::Version::V1
+                } else {
+                    self.version()
+                };
+                info.verify_fixed(expected)
+                    .map_err(|_| Failure::InvalidConfig)?;
+                if peer_client && !info.available().any(|v| v == self.version().wire()) {
+                    return Err(Failure::InvalidConfig);
+                }
+            }
+            None if self.version() != crate::version::Version::V1 => {
+                return Err(Failure::InvalidConfig);
+            }
+            None => {}
+        }
+
         if bytes.len() > self.parameters.len() {
             return Err(Failure::Capacity);
         }
@@ -921,8 +952,18 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             Side::Server => (server, client),
         };
         Ok(DirectionalKeys {
-            local: PacketKey::from_secret(suite, kind, local.as_bytes())?,
-            remote: PacketKey::from_secret(suite, kind, remote.as_bytes())?,
+            local: PacketKey::from_secret_for_version(
+                self.version(),
+                suite,
+                kind,
+                local.as_bytes(),
+            )?,
+            remote: PacketKey::from_secret_for_version(
+                self.version(),
+                suite,
+                kind,
+                remote.as_bytes(),
+            )?,
         })
     }
     fn install_application(&mut self) -> Result<(), Failure> {
