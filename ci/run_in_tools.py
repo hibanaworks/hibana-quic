@@ -545,6 +545,9 @@ def preserve_failed_capture(logs, client, server, phase_name, status):
                         return {'state': 'invalid-case'}
                     prefix = (server + '_' + client, case)
                     sources = [(('sim', 'trace_node_' + side + '.pcap'), MAX_CAPTURE_BYTES) for side in ('left', 'right')]
+                    # Preserve the bounded failure explanation with the same
+                    # encrypted recipients as its capture, never as public text.
+                    sources += [(('output.txt',), MAX_LOG_BYTES), (('sim', 'sim.log'), MAX_LOG_BYTES)]
                     sources += [((role, filename), limit) for role in ('client', 'server') for filename, limit in [('keys.log', 1024 * 1024), ('log.txt', MAX_LOG_BYTES), (role + '.log', MAX_LOG_BYTES)]]
                     for parts, limit in sources:
                         fd = None

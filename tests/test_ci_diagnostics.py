@@ -320,14 +320,18 @@ class Diagnostics(unittest.TestCase):
             'certificate': cert.read_text(), 'diagnostic_certificate': diagnostic_cert.read_text()}))
         packet = b'PRIVATE_SYNTHETIC_PACKET_BYTES'
         secret = b'PRIVATE_SYNTHETIC_TRAFFIC_KEY'
+        explanation = b'PRIVATE_SYNTHETIC_SIMULATOR_FAILURE'
         self.put('sim/trace_node_left.pcap', packet)
         self.put('server/keys.log', secret)
+        self.put('output.txt', explanation)
+        self.put('sim/sim.log', explanation)
         self.put('server/UNREQUESTED_SECRET', b'MUST_NOT_BE_READ')
         result = self.module.preserve_failed_capture(self.logs, 'hibana-quic', 'neqo', 'bounded-client', 'FAILED')
         self.assertEqual(result['state'], 'encrypted')
         sealed = self.module.SAFE / result['artifact']
         self.assertNotIn(packet, sealed.read_bytes())
         self.assertNotIn(secret, sealed.read_bytes())
+        self.assertNotIn(explanation, sealed.read_bytes())
         self.assertEqual(sorted(p.name for p in self.module.SAFE.iterdir()), ['bounded-client-failure.cms'])
         recovered = self.root / 'private-recovered.tar'
         command = ['openssl', 'cms', '-decrypt', '-binary', '-inform', 'DER',
@@ -342,6 +346,8 @@ class Diagnostics(unittest.TestCase):
         with tarfile.open(recovered) as archive:
             self.assertEqual(archive.extractfile('transfer/sim/trace_node_left.pcap').read(), packet)
             self.assertEqual(archive.extractfile('transfer/server/keys.log').read(), secret)
+            self.assertEqual(archive.extractfile('transfer/output.txt').read(), explanation)
+            self.assertEqual(archive.extractfile('transfer/sim/sim.log').read(), explanation)
             self.assertNotIn('transfer/server/UNREQUESTED_SECRET', archive.getnames())
         damaged = bytearray(sealed.read_bytes())
         damaged[-1] ^= 1
