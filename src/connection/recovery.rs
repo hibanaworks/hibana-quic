@@ -4313,6 +4313,7 @@ mod tests {
         );
         let mut client = BoundedTls::client(
             ClientConfig {
+                protocol: Default::default(),
                 version: crate::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
@@ -4328,6 +4329,7 @@ mod tests {
         .unwrap();
         let mut server = BoundedTls::server(
             ServerConfig {
+                protocol: Default::default(),
                 version: crate::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &signer,

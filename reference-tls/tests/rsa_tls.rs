@@ -357,6 +357,7 @@ fn run(bits: u16, corrupt_cv: bool) {
     let mut client = measured(|| {
         BoundedTls::client(
             ClientConfig {
+                protocol: Default::default(),
                 version: hibana_quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,

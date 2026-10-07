@@ -1,9 +1,11 @@
 //! Bounded HTTP/3 wire data. Protocol progression belongs to projected locals;
 //! these routines only interpret bytes, lengths and immutable field values.
+pub(crate) mod control;
 mod tables;
 pub const FIELD_LIMIT: usize = 4096;
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Protocol {
+    #[default]
     Http09,
     Http3,
 }
@@ -258,8 +260,10 @@ pub fn decode_fields(input: &[u8]) -> Result<Fields, Error> {
     if required != 0 {
         return Err(Error::DynamicReference);
     }
-    let (base, b) = integer(input.get(a..).ok_or(Error::Truncated)?, 7)?;
-    if base != 0 || input[a] & 128 != 0 {
+    let (_base, b) = integer(input.get(a..).ok_or(Error::Truncated)?, 7)?;
+    // With no dynamic references, any nonnegative Base is valid (RFC 9204 4.5.1).
+    // A negative sign with Required Insert Count zero would underflow.
+    if input[a] & 128 != 0 {
         return Err(Error::DynamicReference);
     }
     let mut pos = a + b;
@@ -330,6 +334,76 @@ pub fn frame_header(kind: u64, length: u64, out: &mut [u8]) -> Result<usize, Err
     let m = crate::packet::encode_varint(length, &mut out[n..]).map_err(|_| Error::Integer)?;
     Ok(n + m)
 }
+
+/// Actual bytes of this endpoint's control stream prefix. Dynamic compression
+/// is disabled; the peer may still open both QPACK critical streams.
+pub const CONTROL_PREFIX: &[u8] = &[0, 4, 7, 1, 0, 7, 0, 6, 0x50, 0];
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameHeader {
+    pub kind: u64,
+    pub length: u64,
+    pub encoded_len: usize,
+}
+pub fn decode_frame_header(input: &[u8]) -> Result<FrameHeader, Error> {
+    let (kind, a) = crate::packet::decode_varint(input).map_err(|_| Error::Truncated)?;
+    let (length, b) = crate::packet::decode_varint(&input[a..]).map_err(|_| Error::Truncated)?;
+    if matches!(kind, 2 | 6 | 8 | 9) {
+        return Err(Error::Frame);
+    }
+    Ok(FrameHeader {
+        kind,
+        length,
+        encoded_len: a + b,
+    })
+}
+/// Peer-advertised limits, not a second control-stream state machine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Settings {
+    pub max_field_section_size: u64,
+    pub qpack_max_table_capacity: u64,
+    pub qpack_blocked_streams: u64,
+}
+pub fn decode_settings(input: &[u8]) -> Result<Settings, Error> {
+    if input.len() > FIELD_LIMIT {
+        return Err(Error::Capacity);
+    }
+    let mut result = Settings {
+        max_field_section_size: u64::MAX,
+        qpack_max_table_capacity: 0,
+        qpack_blocked_streams: 0,
+    };
+    let mut pos = 0;
+    // Bound parse work by the actual bounded payload. Re-scan only the preceding
+    // fields for duplicates, avoiding an unrelated capacity for unknown settings.
+    while pos < input.len() {
+        let start = pos;
+        let (id, n) = crate::packet::decode_varint(&input[pos..]).map_err(|_| Error::Truncated)?;
+        pos += n;
+        let (value, n) =
+            crate::packet::decode_varint(&input[pos..]).map_err(|_| Error::Truncated)?;
+        pos += n;
+        let mut prior = 0;
+        while prior < start {
+            let (old, n) =
+                crate::packet::decode_varint(&input[prior..]).map_err(|_| Error::Truncated)?;
+            prior += n;
+            let (_, n) =
+                crate::packet::decode_varint(&input[prior..]).map_err(|_| Error::Truncated)?;
+            prior += n;
+            if old == id {
+                return Err(Error::Duplicate);
+            }
+        }
+        match id {
+            0 | 2..=5 => return Err(Error::Field),
+            1 => result.qpack_max_table_capacity = value,
+            6 => result.max_field_section_size = value,
+            7 => result.qpack_blocked_streams = value,
+            _ => {}
+        }
+    }
+    Ok(result)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,5 +438,51 @@ mod tests {
             decode_fields(&[0, 0, 0xd9, 0xd9]).unwrap_err(),
             Error::Duplicate
         );
+    }
+    #[test]
+    fn settings_are_bounded_actual_values_and_reject_duplicate_unknown_ids() {
+        let header = decode_frame_header(&CONTROL_PREFIX[1..]).unwrap();
+        assert_eq!(header.kind, 4);
+        assert_eq!(header.length, 7);
+        assert_eq!(
+            decode_settings(&CONTROL_PREFIX[3..]).unwrap(),
+            Settings {
+                max_field_section_size: 4096,
+                qpack_max_table_capacity: 0,
+                qpack_blocked_streams: 0,
+            }
+        );
+        assert_eq!(decode_settings(&[33, 0, 33, 1]), Err(Error::Duplicate));
+        for id in [0, 2, 3, 4, 5] {
+            assert_eq!(decode_settings(&[id, 0]), Err(Error::Field));
+        }
+        assert!(decode_settings(&[1]).is_err());
+        assert!(decode_settings(&[33, 0]).is_ok());
+        for kind in [2, 6, 8, 9] {
+            assert_eq!(decode_frame_header(&[kind, 0]), Err(Error::Frame));
+        }
+    }
+    #[test]
+    fn static_qpack_allows_nonzero_base_without_dynamic_references() {
+        assert_eq!(decode_fields(&[0, 1, 0xd9]).unwrap().status, Some(200));
+        assert!(decode_fields(&[0, 0x80, 0xd9]).is_err());
+    }
+    #[test]
+    fn malformed_qpack_inputs_and_short_output_never_panic() {
+        let mut valid = [0; 128];
+        let n = request_fields(b"localhost", b"/item", &mut valid).unwrap();
+        for end in 0..n {
+            let _ = decode_fields(&valid[..end]);
+        }
+        for i in 0..n {
+            for byte in 0..=255 {
+                let mut changed = valid;
+                changed[i] = byte;
+                let _ = decode_fields(&changed[..n]);
+            }
+        }
+        for len in 0..n {
+            assert!(request_fields(b"localhost", b"/item", &mut valid[..len]).is_err());
+        }
     }
 }

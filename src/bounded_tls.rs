@@ -52,6 +52,7 @@ pub struct Storage<'a> {
 }
 
 pub struct ClientConfig<'a> {
+    pub protocol: crate::http3::Protocol,
     pub version: crate::version::Version,
     pub server_name: &'a str,
     pub trust_anchors: &'a [TrustAnchor<'a>],
@@ -60,6 +61,7 @@ pub struct ClientConfig<'a> {
     pub transport_parameters: &'a [u8],
 }
 pub struct ServerConfig<'a> {
+    pub protocol: crate::http3::Protocol,
     pub version: crate::version::Version,
     /// DER leaf first, then intermediate certificates. Do not include private keys.
     pub certificate_chain: &'a [&'a [u8]],
@@ -326,7 +328,7 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             &this.share,
             &this.x25519_share,
             config.server_name,
-            ALPN,
+            config.protocol.alpn(),
             config.transport_parameters,
             policy,
         )?;
@@ -398,7 +400,7 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
     ) -> Result<Self, Failure> {
         let context =
             ticket::VerificationContext::new(config.trust_anchors, config.certificate_limits)?;
-        let origin = ticket::Binding::new(config.server_name, ALPN, &[])?;
+        let origin = ticket::Binding::new(config.server_name, config.protocol.alpn(), &[])?;
         // Independently enforce trust/origin even if caller used an unfiltered lookup.
         offer.verify_context(context, &origin)?;
         if !policy.permits(offer.suite()) {
@@ -445,7 +447,7 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             ticket::VerificationContext::new(config.trust_anchors, config.certificate_limits)?;
         offer.verify_context(
             context,
-            &ticket::Binding::new(config.server_name, ALPN, &[])?,
+            &ticket::Binding::new(config.server_name, config.protocol.alpn(), &[])?,
         )?;
         let limits = offer
             .remembered_early_limits()
@@ -482,14 +484,16 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             &self.share,
             &self.x25519_share,
             config.server_name,
-            ALPN,
+            config.protocol.alpn(),
             config.transport_parameters,
             offer,
             self.early_status == EarlyStatus::Offered,
             self.cipher_policy,
         )?;
         self.transcript = Transcript::new();
-        if let Some(psk) = wire::parse_client_hello_early(&self.tx[..n])?.psk {
+        if let Some(psk) =
+            wire::parse_client_hello_early_for_protocol(&self.tx[..n], config.protocol)?.psk
+        {
             let (prefix, offset) = (psk.binder_prefix, psk.binder_offset);
             let hash = self.transcript.binder_hash(&self.tx[..prefix])?;
             let binder = self.schedule.binder(schedule::PskKind::Resumption, &hash)?;
@@ -790,7 +794,10 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
     }
     pub fn negotiated_alpn(&self) -> Option<&'static [u8]> {
         if self.state == State::Connected {
-            Some(ALPN)
+            Some(match &self.mode {
+                Mode::Client(c) => c.protocol.alpn(),
+                Mode::Server(c) => c.protocol.alpn(),
+            })
         } else {
             None
         }
@@ -1091,7 +1098,7 @@ impl<'cfg, 'buf> BoundedTls<'cfg, 'buf> {
             return Err(Failure::State);
         };
         let profile = transport_profile(&self.parameters[..self.parameters_len], &[])?;
-        let binding = ticket::Binding::new(client.server_name, ALPN, &profile)?;
+        let binding = ticket::Binding::new(client.server_name, client.protocol.alpn(), &profile)?;
         let metadata = ticket::ReceivedTicket {
             ticket: received.ticket,
             lifetime_seconds: received.lifetime_seconds,

@@ -159,6 +159,7 @@ fn failed_source_polls_are_fatal_and_ordinary_absence_is_temporary() {
     let no_alloc = NoAlloc::start();
     let mut source = BoundedTls::client(
         ClientConfig {
+            protocol: Default::default(),
             version: crate::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,

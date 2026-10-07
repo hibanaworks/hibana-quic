@@ -107,7 +107,13 @@ impl BoundedTls<'_, '_> {
         }
     }
     pub(super) fn client_extensions(&mut self, message: &[u8]) -> Result<(), Failure> {
-        let extensions = wire::parse_encrypted_extensions_early(message)?;
+        let extensions = wire::parse_encrypted_extensions_early_for_protocol(
+            message,
+            match &self.mode {
+                Mode::Client(c) => c.protocol,
+                Mode::Server(_) => return Err(Failure::State),
+            },
+        )?;
         if extensions.early_data {
             if self.early_status != EarlyStatus::Offered || !self.resumed {
                 return Err(Failure::State);
@@ -166,19 +172,24 @@ impl BoundedTls<'_, '_> {
         Ok(())
     }
     pub(super) fn server_hello(&mut self, message: &[u8], retry: bool) -> Result<bool, Failure> {
+        let protocol = match &self.mode {
+            Mode::Server(c) => c.protocol,
+            Mode::Client(_) => return Err(Failure::State),
+        };
         let hello = if retry {
             let hrr = wire::HelloRetryRequest {
                 suite: self.retry_suite.ok_or(Failure::State)?,
                 selected_group: self.retry_group,
                 cookie: None,
             };
-            wire::validate_client_hello_retry_early(
+            wire::validate_client_hello_retry_early_for_protocol(
                 &self.certificates[..self.first_hello_len],
                 message,
                 &hrr,
+                protocol,
             )?
         } else {
-            wire::parse_client_hello_early(message)?
+            wire::parse_client_hello_early_for_protocol(message, protocol)?
         };
         if hello.early_data {
             self.early_status = EarlyStatus::Rejected;
@@ -206,7 +217,7 @@ impl BoundedTls<'_, '_> {
             let profile = transport_profile(server.transport_parameters, config.policy)?;
             let binding = ticket::Binding::new(
                 hello.server_name.ok_or(Failure::InvalidConfig)?,
-                ALPN,
+                server.protocol.alpn(),
                 &profile,
             )?;
             self.ticket_binding = Some(binding);
@@ -346,7 +357,7 @@ impl BoundedTls<'_, '_> {
         };
         let n = wire::encode_encrypted_extensions_early(
             &mut self.tx[self.tx_len..],
-            ALPN,
+            config.protocol.alpn(),
             config.transport_parameters,
             self.early_status == EarlyStatus::AcceptedPendingFinished,
         )?;

@@ -288,7 +288,11 @@ fn parse_sni(data: &[u8]) -> Result<&str, Error> {
     }
     Ok(name)
 }
-fn parse_alpn(data: &[u8], server: bool) -> Result<&[u8], Error> {
+fn parse_alpn(
+    data: &[u8],
+    server: bool,
+    expected: Option<crate::http3::Protocol>,
+) -> Result<&[u8], Error> {
     let mut r = Reader::new(data);
     let list = r.vector16()?;
     r.finished()?;
@@ -304,11 +308,13 @@ fn parse_alpn(data: &[u8], server: bool) -> Result<&[u8], Error> {
         if name.is_empty() {
             return Err(Error::Malformed);
         }
-        if name == ALPN {
-            if found.is_some() {
+        if expected.map_or(name == ALPN || name == b"h3", |p| name == p.alpn()) {
+            if found == Some(name) {
                 return Err(Error::Malformed);
             }
-            found = Some(name);
+            if found.is_none() {
+                found = Some(name);
+            }
         }
     }
     if count == 0 || (server && count != 1) {
@@ -388,20 +394,46 @@ fn parse_client_shares(data: &[u8]) -> Result<(&[u8], &[u8]), Error> {
 /// parser: cookies require validate_client_hello_retry and retained CH1 state.
 /// PSK/early-data/post-handshake-auth requests are not negotiated.
 pub fn parse_client_hello(message: &[u8]) -> Result<ClientHello<'_>, Error> {
-    parse_client_hello_context(message, false, false, false)
+    parse_client_hello_context(
+        message,
+        false,
+        false,
+        false,
+        Some(crate::http3::Protocol::Http09),
+    )
 }
 /// Bounded PSK_DHE offer parser. It does not authenticate the binder or ticket.
 pub fn parse_client_hello_psk(message: &[u8]) -> Result<ClientHello<'_>, Error> {
-    parse_client_hello_context(message, false, true, false)
+    parse_client_hello_context(
+        message,
+        false,
+        true,
+        false,
+        Some(crate::http3::Protocol::Http09),
+    )
 }
 pub fn parse_client_hello_early(message: &[u8]) -> Result<ClientHello<'_>, Error> {
-    parse_client_hello_context(message, false, true, true)
+    parse_client_hello_context(
+        message,
+        false,
+        true,
+        true,
+        Some(crate::http3::Protocol::Http09),
+    )
+}
+/// Parse the offered ALPN against the endpoint's immutable application protocol.
+pub fn parse_client_hello_early_for_protocol(
+    message: &[u8],
+    protocol: crate::http3::Protocol,
+) -> Result<ClientHello<'_>, Error> {
+    parse_client_hello_context(message, false, true, true, Some(protocol))
 }
 fn parse_client_hello_context(
     message: &[u8],
     retry: bool,
     allow_psk: bool,
     allow_early: bool,
+    expected: Option<crate::http3::Protocol>,
 ) -> Result<ClientHello<'_>, Error> {
     let mut r = Reader::new(body(message, 1)?);
     if r.u16()? != 0x0303 {
@@ -452,7 +484,7 @@ fn parse_client_hello_context(
                 // not authorize PKCS1 for TLS1.3 CertificateVerify.
                 vector16_contains(data, SIGNATURE_P256_SHA256)?;
             }
-            16 => alpn = Some(parse_alpn(data, false)?),
+            16 => alpn = Some(parse_alpn(data, false, expected)?),
             21 if data.iter().any(|byte| *byte != 0) => return Err(Error::Malformed),
             43 => {
                 let mut versions = Reader::new(data);
@@ -736,7 +768,7 @@ fn validate_hello_retry_request_context(
     allow_early: bool,
 ) -> Result<(), Error> {
     check_retry(retry)?;
-    let hello = parse_client_hello_context(first, false, allow_psk, allow_early)?;
+    let hello = parse_client_hello_context(first, false, allow_psk, allow_early, None)?;
     if !(retry.suite == 0x1301 && hello.offers_1301 || retry.suite == 0x1303 && hello.offers_1303) {
         return Err(Error::Malformed);
     }
@@ -799,7 +831,7 @@ pub fn validate_client_hello_retry<'a>(
     second: &'a [u8],
     retry: &HelloRetryRequest<'_>,
 ) -> Result<ClientHello<'a>, Error> {
-    validate_client_hello_retry_context(first, second, retry, false, false)
+    validate_client_hello_retry_context(first, second, retry, false, false, None)
 }
 /// PSK-aware CH2 validation still preserves the exact single identity. Only its
 /// age and binder bytes may change; binder authentication belongs to Provider.
@@ -808,14 +840,22 @@ pub fn validate_client_hello_retry_psk<'a>(
     second: &'a [u8],
     retry: &HelloRetryRequest<'_>,
 ) -> Result<ClientHello<'a>, Error> {
-    validate_client_hello_retry_context(first, second, retry, true, false)
+    validate_client_hello_retry_context(first, second, retry, true, false, None)
 }
 pub fn validate_client_hello_retry_early<'a>(
     first: &[u8],
     second: &'a [u8],
     retry: &HelloRetryRequest<'_>,
 ) -> Result<ClientHello<'a>, Error> {
-    validate_client_hello_retry_context(first, second, retry, true, true)
+    validate_client_hello_retry_context(first, second, retry, true, true, None)
+}
+pub fn validate_client_hello_retry_early_for_protocol<'a>(
+    first: &[u8],
+    second: &'a [u8],
+    retry: &HelloRetryRequest<'_>,
+    protocol: crate::http3::Protocol,
+) -> Result<ClientHello<'a>, Error> {
+    validate_client_hello_retry_context(first, second, retry, true, true, Some(protocol))
 }
 fn validate_client_hello_retry_context<'a>(
     first: &[u8],
@@ -823,10 +863,11 @@ fn validate_client_hello_retry_context<'a>(
     retry: &HelloRetryRequest<'_>,
     allow_psk: bool,
     allow_early: bool,
+    expected: Option<crate::http3::Protocol>,
 ) -> Result<ClientHello<'a>, Error> {
     validate_hello_retry_request_context(first, retry, allow_psk, allow_early)?;
-    let original = parse_client_hello_context(first, false, allow_psk, allow_early)?;
-    let hello = parse_client_hello_context(second, true, allow_psk, allow_early)?;
+    let original = parse_client_hello_context(first, false, allow_psk, allow_early, expected)?;
+    let hello = parse_client_hello_context(second, true, allow_psk, allow_early, expected)?;
     match (original.psk, hello.psk) {
         (None, None) => {}
         (Some(a), Some(b)) if a.identity == b.identity => {}
@@ -970,14 +1011,21 @@ fn parse_server_hello_context(message: &[u8], allow_psk: bool) -> Result<ServerH
 }
 
 pub fn parse_encrypted_extensions(message: &[u8]) -> Result<EncryptedExtensions<'_>, Error> {
-    parse_encrypted_extensions_context(message, false)
+    parse_encrypted_extensions_context(message, false, crate::http3::Protocol::Http09)
 }
 pub fn parse_encrypted_extensions_early(message: &[u8]) -> Result<EncryptedExtensions<'_>, Error> {
-    parse_encrypted_extensions_context(message, true)
+    parse_encrypted_extensions_context(message, true, crate::http3::Protocol::Http09)
+}
+pub fn parse_encrypted_extensions_early_for_protocol(
+    message: &[u8],
+    protocol: crate::http3::Protocol,
+) -> Result<EncryptedExtensions<'_>, Error> {
+    parse_encrypted_extensions_context(message, true, protocol)
 }
 fn parse_encrypted_extensions_context(
     message: &[u8],
     allow_early: bool,
+    protocol: crate::http3::Protocol,
 ) -> Result<EncryptedExtensions<'_>, Error> {
     let mut r = Reader::new(body(message, 8)?);
     let ext = r.vector16()?;
@@ -998,7 +1046,7 @@ fn parse_encrypted_extensions_context(
                 groups.finished()?;
                 contains16(list, GROUP_P256)?;
             }
-            16 => alpn = Some(parse_alpn(data, true)?),
+            16 => alpn = Some(parse_alpn(data, true, Some(protocol))?),
             57 => params = Some(data),
             42 if allow_early => {
                 if !data.is_empty() {
@@ -1373,7 +1421,7 @@ fn encode_client_hello_inner(
     if !valid_name(server_name) {
         return Err(Error::Malformed);
     }
-    if alpn != ALPN {
+    if alpn != ALPN && alpn != b"h3" {
         return Err(Error::Unsupported);
     }
     encode(out, 1, |w| {
@@ -1559,7 +1607,7 @@ fn encode_client_hello_retry_context(
         }
         valid_share_group(group, share)?;
     }
-    let hello = parse_client_hello_context(first, false, true, allow_early)?;
+    let hello = parse_client_hello_context(first, false, true, allow_early, None)?;
     let (prefix, ext) = client_hello_parts(first)?;
     let n = encode(out, 1, |w| {
         w.bytes(prefix)?;
@@ -1588,7 +1636,7 @@ fn encode_client_hello_retry_context(
             Ok(())
         })
     })?;
-    validate_client_hello_retry_context(first, &out[..n], retry, true, allow_early)?;
+    validate_client_hello_retry_context(first, &out[..n], retry, true, allow_early, None)?;
     Ok(n)
 }
 
@@ -1695,7 +1743,7 @@ pub fn encode_encrypted_extensions_early(
     params: &[u8],
     early: bool,
 ) -> Result<usize, Error> {
-    if alpn != ALPN {
+    if alpn != ALPN && alpn != b"h3" {
         return Err(Error::Unsupported);
     }
     encode(out, 8, |w| {
@@ -2416,7 +2464,7 @@ mod tests {
             Err(Error::Unsupported)
         );
         assert_eq!(
-            encode_client_hello(&mut out, &[1; 32], &key, "localhost", b"h3", &[]),
+            encode_client_hello(&mut out, &[1; 32], &key, "localhost", b"h2", &[]),
             Err(Error::Unsupported)
         );
         for name in ["", "-bad.test", "bad..test", "name\0.test", "bad.test."] {
@@ -3420,5 +3468,70 @@ mod early_tests {
         for end in 0..n {
             assert!(parse_new_session_ticket(&bytes[..end]).is_err());
         }
+    }
+    #[test]
+    fn configured_http3_alpn_and_retry_preserve_exact_selection() {
+        use crate::http3::Protocol;
+        let mut first = [0; 2048];
+        let n =
+            encode_client_hello(&mut first, &[1; 32], &share(), "localhost", b"h3", &[]).unwrap();
+        assert_eq!(
+            parse_client_hello_early_for_protocol(&first[..n], Protocol::Http3)
+                .unwrap()
+                .alpn,
+            b"h3"
+        );
+        assert!(parse_client_hello_early_for_protocol(&first[..n], Protocol::Http09).is_err());
+        let retry = HelloRetryRequest {
+            suite: 0x1301,
+            selected_group: None,
+            cookie: Some(b"cookie"),
+        };
+        let mut second = [0; 2048];
+        let m = encode_client_hello_retry(&mut second, &first[..n], &share(), &retry).unwrap();
+        assert_eq!(
+            validate_client_hello_retry_early_for_protocol(
+                &first[..n],
+                &second[..m],
+                &retry,
+                Protocol::Http3
+            )
+            .unwrap()
+            .alpn,
+            b"h3"
+        );
+        assert!(
+            validate_client_hello_retry_early_for_protocol(
+                &first[..n],
+                &second[..m],
+                &retry,
+                Protocol::Http09
+            )
+            .is_err()
+        );
+        let n = encode_encrypted_extensions(&mut first, b"h3", &[]).unwrap();
+        assert_eq!(
+            parse_encrypted_extensions_early_for_protocol(&first[..n], Protocol::Http3)
+                .unwrap()
+                .alpn,
+            b"h3"
+        );
+        assert!(
+            parse_encrypted_extensions_early_for_protocol(&first[..n], Protocol::Http09).is_err()
+        );
+    }
+    #[test]
+    fn alpn_offer_selects_configured_protocol_not_first_known_name() {
+        use crate::http3::Protocol;
+        let list = b"\x00\x0e\x0ahq-interop\x02h3";
+        assert_eq!(
+            parse_alpn(list, false, Some(Protocol::Http3)).unwrap(),
+            b"h3"
+        );
+        assert_eq!(
+            parse_alpn(list, false, Some(Protocol::Http09)).unwrap(),
+            b"hq-interop"
+        );
+        assert!(parse_alpn(list, true, Some(Protocol::Http3)).is_err());
     }
 }

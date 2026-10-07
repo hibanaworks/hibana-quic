@@ -188,6 +188,7 @@ fn connect_clocks_with_cipher(
     let mut rng = OsRng;
     let mut entropy = OsRng;
     let cfg = ClientConfig {
+        protocol: Default::default(),
         version: hibana_quic::version::Version::V1,
         server_name: "localhost",
         trust_anchors: anchors,
@@ -215,6 +216,7 @@ fn connect_clocks_with_cipher(
     .unwrap();
     let mut server = BoundedTls::server_with_tickets_and_policy(
         ServerConfig {
+            protocol: Default::default(),
             version: hibana_quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
@@ -417,6 +419,7 @@ fn changed_trust_anchor_or_verification_limits_cannot_reuse_old_offer() {
         let mut buffers = Buffers::new();
         let result = BoundedTls::client_resuming(
             ClientConfig {
+                protocol: Default::default(),
                 version: hibana_quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: changed,
@@ -466,6 +469,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     let mut entropy = OsRng;
     let mut client = BoundedTls::client_resuming(
         ClientConfig {
+            protocol: Default::default(),
             version: hibana_quic::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
@@ -484,6 +488,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     .unwrap();
     let mut server = BoundedTls::server_with_tickets(
         ServerConfig {
+            protocol: Default::default(),
             version: hibana_quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
@@ -670,6 +675,7 @@ fn strict_chacha_ticket_roundtrip_and_policy_mismatch_before_output() {
         let mut buffers = Buffers::new();
         let result = BoundedTls::client_resuming_with_policy(
             ClientConfig {
+                protocol: Default::default(),
                 version: hibana_quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,

@@ -132,6 +132,7 @@ fn pump(client: &mut BoundedTls<'_, '_>, server: &mut BoundedTls<'_, '_>) {
 }
 fn client_config<'a>(anchors: &'a [TrustAnchor<'a>]) -> ClientConfig<'a> {
     ClientConfig {
+        protocol: Default::default(),
         version: hibana_quic::version::Version::V1,
         server_name: "localhost",
         trust_anchors: anchors,
@@ -174,6 +175,7 @@ fn issue_ticket(
     .unwrap();
     let mut server = BoundedTls::server_with_early_data_and_policy(
         ServerConfig {
+            protocol: Default::default(),
             version: hibana_quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
@@ -266,6 +268,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             .unwrap();
             let mut server = BoundedTls::server_with_early_data_and_policy(
                 ServerConfig {
+                    protocol: Default::default(),
                     version: hibana_quic::version::Version::V1,
                     certificate_chain: &chain,
                     signing_key: &id.signing,
@@ -466,6 +469,7 @@ fn explicit_server_decline_keeps_real_one_rtt_resumption() {
     .unwrap();
     let mut server = BoundedTls::server_with_tickets(
         ServerConfig {
+            protocol: Default::default(),
             version: hibana_quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
@@ -545,6 +549,7 @@ fn replayed_clienthello_cannot_admit_early_after_first_owner_aborts() {
         .unwrap();
         let mut server = BoundedTls::server_with_early_data(
             ServerConfig {
+                protocol: Default::default(),
                 version: hibana_quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
@@ -643,6 +648,7 @@ fn broad_one_rtt_tolerance_cannot_silently_authorize_stale_early_data() {
         .unwrap();
         let mut server = BoundedTls::server_with_early_data(
             ServerConfig {
+                protocol: Default::default(),
                 version: hibana_quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,

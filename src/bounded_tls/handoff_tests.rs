@@ -75,6 +75,7 @@ fn actual_owned_tls_keys_and_finished_are_affine_scoped_and_allocation_free() {
             let server_installation = server_scope.claim().unwrap();
             let mut client = BoundedTls::client_with_policy(
                 ClientConfig {
+                    protocol: Default::default(),
                     version: crate::version::Version::V1,
                     server_name: "localhost",
                     trust_anchors: &anchors,
@@ -97,6 +98,7 @@ fn actual_owned_tls_keys_and_finished_are_affine_scoped_and_allocation_free() {
             );
             let mut server = BoundedTls::server_with_policy(
                 ServerConfig {
+                    protocol: Default::default(),
                     version: crate::version::Version::V1,
                     certificate_chain: &chain,
                     signing_key: &signer,
@@ -210,4 +212,47 @@ fn actual_owned_tls_keys_and_finished_are_affine_scoped_and_allocation_free() {
             allocation.finish();
         }
     }
+}
+
+#[test]
+fn http3_finished_authenticates_application_protocol_without_allocation() {
+    let root = CertificateDer::from(fixture::ROOT_DER);
+    let anchors = [trust_anchor_from_der(&root).unwrap()];
+    let chain = [fixture::LEAF_DER];
+    let signer = fixture::signing_key();
+    let mut cb = Buffers::new();
+    let mut sb = Buffers::new();
+    let allocation = NoAlloc::start();
+    let mut client = BoundedTls::client(
+        ClientConfig {
+            protocol: crate::http3::Protocol::Http3,
+            version: crate::version::Version::V1,
+            server_name: "localhost",
+            trust_anchors: &anchors,
+            now: fixture::now(),
+            certificate_limits: Limits::default(),
+            transport_parameters: CLIENT_PARAMS,
+        },
+        cb.storage(),
+        &mut TestRandom(731),
+    )
+    .unwrap();
+    let mut server = BoundedTls::server(
+        ServerConfig {
+            protocol: crate::http3::Protocol::Http3,
+            version: crate::version::Version::V1,
+            certificate_chain: &chain,
+            signing_key: &signer,
+            transport_parameters: SERVER_PARAMS,
+        },
+        sb.storage(),
+        &mut TestRandom(739),
+    )
+    .unwrap();
+    assert_eq!(client.negotiated_alpn(), None);
+    assert_eq!(server.negotiated_alpn(), None);
+    async_fixture::handshake(&mut client, &mut server);
+    assert_eq!(client.negotiated_alpn(), Some(b"h3".as_slice()));
+    assert_eq!(server.negotiated_alpn(), Some(b"h3".as_slice()));
+    allocation.finish();
 }

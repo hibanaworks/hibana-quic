@@ -1040,6 +1040,7 @@ fn connection_case_with_failure(
     let mut inspector = inspection_keys(
         &mut observation_scope,
         ClientConfig {
+            protocol: Default::default(),
             version: hibana_quic::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
@@ -1048,6 +1049,7 @@ fn connection_case_with_failure(
             transport_parameters: &client_params,
         },
         ServerConfig {
+            protocol: Default::default(),
             version: hibana_quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &signing,
@@ -1058,6 +1060,7 @@ fn connection_case_with_failure(
     let mut server_tls_buffers = fixture::Buffers::new();
     let client_tls = BoundedTls::client(
         ClientConfig {
+            protocol: Default::default(),
             version: hibana_quic::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
@@ -1084,6 +1087,7 @@ fn connection_case_with_failure(
     .unwrap();
     let mut ticket_entropy = fixture::TestRandom(992);
     let server_config = ServerConfig {
+        protocol: Default::default(),
         version: hibana_quic::version::Version::V1,
         certificate_chain: &chain,
         signing_key: &signing,

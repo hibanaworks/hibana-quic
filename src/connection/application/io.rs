@@ -518,8 +518,47 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                                 Input::Chunk(chunk) => {
                                     admit(control, app, &mut production, &chunk, false).await
                                 }
-                                Input::Body(body) => {
-                                    read_body(control, app, &mut production, body).await
+                                // The local owns the actual reader until EOF or interruption.
+                                // No second EOF flag or body-progress dispatcher is needed.
+                                Input::Body(mut body) => {
+                                    async {
+                                        let mut work = 0usize;
+                                        while !control.stopping() {
+                                            let mut chunk = Chunk {
+                                                bytes: [0; CHUNK],
+                                                len: 0,
+                                            };
+                                            let len = match control
+                                                .until_stop(1, body.read(&mut chunk.bytes))
+                                                .await
+                                            {
+                                                Some(result) => {
+                                                    result.map_err(|_| Error::Application)?
+                                                }
+                                                None => return Ok(Admission::Interrupted),
+                                            };
+                                            if len > CHUNK {
+                                                return Err(Error::Capacity);
+                                            }
+                                            if len == 0 {
+                                                return Ok(Admission::Accepted);
+                                            }
+                                            chunk.len = len;
+                                            let accepted =
+                                                admit(control, app, &mut production, &chunk, false)
+                                                    .await?;
+                                            if accepted != Admission::Accepted {
+                                                return Ok(accepted);
+                                            }
+                                            work += 1;
+                                            if work == 16 {
+                                                work = 0;
+                                                crate::runtime::yield_now().await;
+                                            }
+                                        }
+                                        Ok(Admission::Interrupted)
+                                    }
+                                    .await
                                 }
                             };
                             let accepted = match result {
@@ -597,44 +636,6 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
             label => return Err(Error::UnexpectedLabel(label)),
         }
     }
-}
-
-// A body is a data resource, not a control phase. Only a real zero-length
-// read means EOF. No FIN or successful completion is manufactured on stop.
-async fn read_body<B: BodyReader, const RX: usize, const CHUNK: usize>(
-    control: &Control<'_, '_>,
-    app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
-    production: &mut Production<'_>,
-    mut body: B,
-) -> Result<Admission, Error> {
-    let mut work = 0usize;
-    while !control.stopping() {
-        let mut chunk = Chunk {
-            bytes: [0; CHUNK],
-            len: 0,
-        };
-        let len = match control.until_stop(1, body.read(&mut chunk.bytes)).await {
-            Some(result) => result.map_err(|_| Error::Application)?,
-            None => return Ok(Admission::Interrupted),
-        };
-        if len > CHUNK {
-            return Err(Error::Capacity);
-        }
-        if len == 0 {
-            return Ok(Admission::Accepted);
-        }
-        chunk.len = len;
-        let accepted = admit(control, app, production, &chunk, false).await?;
-        if accepted != Admission::Accepted {
-            return Ok(accepted);
-        }
-        work += 1;
-        if work == 16 {
-            work = 0;
-            crate::runtime::yield_now().await;
-        }
-    }
-    Ok(Admission::Interrupted)
 }
 
 async fn admit<const RX: usize, const CHUNK: usize>(

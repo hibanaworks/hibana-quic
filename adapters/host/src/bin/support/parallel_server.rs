@@ -141,7 +141,7 @@ pub async fn run<const S: usize, const T: usize>(
                 let tx = reactor
                     .register_udp(raw.try_clone().map_err(|e| format!("UDP clone: {e}"))?)
                     .map_err(|e| format!("TX registration: {e}"))?;
-                let mut server = host_files::FileServer::new(
+                let mut server = host_files::FileServer::new(Default::default(), 
                     &files.www,
                     files.max_requests.unwrap_or(host_files::MAX_REQUESTS),
                 )?;
@@ -159,6 +159,7 @@ pub async fn run<const S: usize, const T: usize>(
                 let mut entropy = OsRng;
                 let tls = BoundedTls::server_with_tickets_and_policy(
                     ServerConfig {
+                        protocol: Default::default(),
                         version,
                         certificate_chain: chain,
                         signing_key: key,

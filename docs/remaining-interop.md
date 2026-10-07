@@ -54,3 +54,30 @@ responses need further review before broad migration support is claimed.
 Strict Clippy is not clean: the baseline independently reproduces 19 diagnostics;
 the current candidate retains 18 shared baseline diagnostics.
 No blanket lint waiver or protocol weakening was used to turn this into a pass.
+
+## HTTP/3 work in progress (04:30 UTC)
+
+- Explicit immutable TLS application selection binds both ALPN directions,
+  retained retry ClientHello validation, authenticated Finished observations and
+  ticket origins. HQ remains the default at existing native call sites.
+- The static-only QPACK decoder has bounded field storage and RFC Huffman
+  validation. Nonzero nonnegative Base with zero Required Insert Count is legal;
+  dynamic references and negative underflow are rejected. SETTINGS duplicates,
+  HTTP/2-reserved identifiers and frame types fail closed.
+- Local unidirectional streams carry only their real production half; peer
+  unidirectional streams carry only their real input half. Released input is not
+  repeatedly offered as a new FIN.
+- HTTP/3 staging-file decoding has an explicit global with reader/writer locals
+  for informational headers, final headers, bounded data, trailers and end.
+  Physical writes acknowledge consumed chunks. Only a complete, length-checked
+  response is truncated and made eligible for the existing atomic publication.
+  Three projected file tests passed before the new host adapter integration.
+- The old file-body EOF flag and single-use read_body progression helper were
+  removed; actual reads and EOF return are visible in the ingress local.
+- A control-stream startup global is drafted but not yet connected. Native H3
+  ALPN selection, critical-stream input/ownership, CLI, both peer directions and
+  final regression remain unfinished. No HTTP/3 interop pass is claimed.
+
+Normative sources: RFC 9114 sections 4, 6, 7; RFC 9204 sections 3.2.3 and 4.5.1.
+Dynamic table capacity zero prohibits encoder instructions, including capacity
+updates; it still requires accepting creation of peer QPACK streams.

@@ -356,6 +356,19 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         Ok(stream)
     }
 
+    /// Open a local unidirectional stream with authenticated peer stream credit.
+    /// Its production lease has no fictitious receive-half release capability.
+    pub fn open_local_uni(&mut self) -> Result<StreamHandle, Error> {
+        let mut n = self
+            .core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?;
+        let stream = n.table.open_local(false)?;
+        n.register(stream)?;
+        Ok(stream)
+    }
+
     pub(super) fn take_production(
         &mut self,
         stream: StreamHandle,
@@ -489,6 +502,9 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         let mut ready = [None; MAX_LIVE_STREAMS];
         let mut count = 0;
         for stream in n.table.live_handles() {
+            if !n.table.can_receive(stream.id()) || n.state(stream)?.input_release.is_none() {
+                continue;
+            }
             let view = n.table.receive(stream)?;
             if !view.first.is_empty() || !view.second.is_empty() || view.fin || view.reset.is_some()
             {
@@ -1103,8 +1119,8 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
         };
         self.streams[stream.slot()] = StreamState {
             handle: Some(stream),
-            production: Some(stream),
-            input_release: Some(stream),
+            production: self.table.can_send(stream.id()).then_some(stream),
+            input_release: self.table.can_receive(stream.id()).then_some(stream),
             credit: Credit::new(maximum),
             ..StreamState::EMPTY
         };
@@ -2162,5 +2178,70 @@ mod tests {
         assert!(Credit::new(8).should_update(12, 8));
         assert!(!Credit::new(8).should_update(8, 8));
         assert!(Credit::new(streams::MAX_OFFSET - 3).should_update(streams::MAX_OFFSET, 1024));
+    }
+    #[test]
+    fn unidirectional_streams_own_only_their_real_half() {
+        for role in [Role::Client, Role::Server] {
+            let scope = ApplicationKeyScope::new(741);
+            let mut slots = [StreamSlot::<8>::EMPTY; 2];
+            let mut chunks = [SendChunk::<8>::EMPTY; 2];
+            let mut references = [PacketReference::EMPTY; 4];
+            let limits = Limits {
+                max_data: 16,
+                max_streams_uni: 1,
+                stream_data_uni: 8,
+                ..Limits::ZERO
+            };
+            let mut core = StreamNumbers::new(
+                &scope,
+                role,
+                limits,
+                limits,
+                &mut slots,
+                &mut chunks,
+                &mut references,
+            )
+            .unwrap();
+            let roles = core.split();
+            let mut app = roles.app;
+            let mut rx = roles.rx;
+            let local = app.open_local_uni().unwrap();
+            let mut production = app.take_production(local).unwrap();
+            assert!(app.take_production(local).is_err());
+            assert!(
+                app.core
+                    .numbers
+                    .borrow()
+                    .state(local)
+                    .unwrap()
+                    .input_release
+                    .is_none()
+            );
+            assert!(app.ready_streams().unwrap().iter().all(Option::is_none));
+            assert_eq!(
+                app.enqueue_prefix(&mut production, b"control", false)
+                    .unwrap(),
+                7
+            );
+            let peer_id = if role == Role::Client { 3 } else { 2 };
+            rx.apply(&Frame::Stream {
+                id: peer_id,
+                offset: 0,
+                fin: true,
+                data: b"settings",
+            })
+            .unwrap();
+            let peer = app.readable_stream().unwrap().unwrap();
+            assert_eq!(peer.id(), peer_id);
+            assert!(app.take_production(peer).is_err());
+            let mut bytes = [0; 8];
+            let read = app.read(peer, &mut bytes).unwrap();
+            assert!(read.fin);
+            assert_eq!(&bytes, b"settings");
+            assert!(app.release_input(peer.id()).unwrap().is_some());
+            assert!(app.release_input(peer.id()).unwrap().is_none());
+            assert!(app.ready_streams().unwrap().iter().all(Option::is_none));
+            assert!(app.open_local_uni().is_err());
+        }
     }
 }

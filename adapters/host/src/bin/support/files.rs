@@ -78,7 +78,7 @@ impl SafeRoot {
         let (parent, name) = self.parent(components, true)?;
         if fs::symlink_metadata(fd_path(&parent, &name)).is_ok() { return Err("download destination already exists; refusing overwrite".into()); }
         let temp = format!(".hibana-{:016x}.part", u64::from_be_bytes(random::<8>()?));
-        let file = OpenOptions::new().write(true).create_new(true).custom_flags(O_NOFOLLOW).open(fd_path(&parent, &temp)).map_err(|e| format!("create bounded download staging file: {e}"))?;
+        let file = OpenOptions::new().read(true).write(true).create_new(true).custom_flags(O_NOFOLLOW).open(fd_path(&parent, &temp)).map_err(|e| format!("create bounded download staging file: {e}"))?;
         Ok(Download { file, parent, name, temp: Some(temp) })
     }
 }
