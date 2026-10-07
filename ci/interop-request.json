@@ -1,5 +1,5 @@
 {
-  "request": "Qualify all 44 cells after authenticated ACK confirmation, bounded reordered Handshake retention and delayed path-response CID admission; use one explicit async parser lifecycle in the tool smoke check",
+  "request": "Qualify all 44 cells after authenticated ACK confirmation, bounded reordered Handshake retention and delayed path-response CID admission; use one explicit async parser lifecycle and two bounded address-validation PTO probes",
   "requested_at": "2026-10-07T08:38:33Z",
   "scope": [
     "same source commit across all qualification groups",

@@ -462,7 +462,7 @@ impl RecoveryTimer {
             TimerKind::Loss(space) => TimeoutAction::DetectLoss(space),
             TimerKind::Probe {
                 space,
-                anti_deadlock,
+                anti_deadlock: _,
             } => {
                 let count = self
                     .pto_count
@@ -471,7 +471,10 @@ impl RecoveryTimer {
                 self.pto_count = count;
                 TimeoutAction::Probe {
                     space,
-                    max_datagrams: if anti_deadlock { 1 } else { 2 },
+                    // RFC 9002 section 6.2.4 permits two probes per PTO.
+                    // The empty-flight address-validation case needs the same
+                    // resilience to a lost first probe as ordinary recovery.
+                    max_datagrams: 2,
                     minimum_datagram_size: if space == PacketNumberSpace::Initial {
                         1200
                     } else {
@@ -1309,7 +1312,7 @@ mod tests {
             timer.on_timeout(next.at).unwrap(),
             Some(TimeoutAction::Probe {
                 space: PacketNumberSpace::Handshake,
-                max_datagrams: 1,
+                max_datagrams: 2,
                 minimum_datagram_size: 0
             })
         );
@@ -1344,7 +1347,7 @@ mod tests {
         assert!(matches!(
             timer.on_timeout(999_000),
             Ok(Some(TimeoutAction::Probe {
-                max_datagrams: 1,
+                max_datagrams: 2,
                 ..
             }))
         ));

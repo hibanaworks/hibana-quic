@@ -3362,6 +3362,41 @@ mod tests {
     }
 
     #[test]
+    fn empty_flight_handshake_pto_has_two_actual_publications_and_no_third_credit() {
+        book!(book, scope, installation, arena, Side::Client, 721);
+        let (mut tx, _, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let deadline = clock.update(0, [true, true]).unwrap().unwrap();
+        let at = deadline.at();
+        assert!(matches!(
+            clock.expire(deadline, at).unwrap(),
+            Some(TimeoutAction::Probe {
+                space: PacketNumberSpace::Handshake,
+                max_datagrams: 2,
+                ..
+            })
+        ));
+        for number in 0..2 {
+            let probe = tx
+                .reserve(Level::Handshake, 64, None, true, false, true, at)
+                .unwrap();
+            assert_eq!(probe.packet().value, number);
+            publication
+                .settle(Completion::from_adapter(
+                    probe,
+                    Some(at),
+                    crate::ecn::Codepoint::NotEct,
+                ))
+                .unwrap();
+        }
+        assert_eq!(tx.snapshot().probe_credits, 0);
+        assert!(
+            tx.reserve(Level::Handshake, 64, None, true, false, true, at)
+                .is_err()
+        );
+        retirement.disarm();
+    }
+
+    #[test]
     fn lost_first_flight_pto_retains_data_burns_new_numbers_and_refunds_rejected_probe() {
         book!(book, scope, installation, arena, Side::Client, 72);
         let (mut tx, _, mut clock, mut publication, mut retirement) = book.split().unwrap();
