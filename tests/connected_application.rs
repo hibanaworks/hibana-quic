@@ -537,6 +537,7 @@ fn execute<F: Future>(clock: &TestClock, future: F, trace: impl Fn()) -> F::Outp
         if let Poll::Ready(result) = future.as_mut().poll(&mut cx) {
             return result;
         }
+        if std::env::var_os("HIBANA_TRACE_POLLS").is_some() { trace(); }
     }
     panic!("connection exceeded the bounded executor poll budget");
 }

@@ -35,7 +35,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
           persist-credentials: false
           fetch-depth: 1
-      - name: Validate all 42 cells and freeze the source commit
+      - name: Validate all 44 cells and freeze the source commit
         id: plan
         run: |
           python3 ci/audit_source.py --check
@@ -96,7 +96,7 @@ jobs:
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --pattern "interop-pilot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-*" \
             --dir .ci-work/matrix-artifacts
-      - name: Require 42 actual candidate passes and 21 passing controls on one commit
+      - name: Require 44 actual candidate passes and 22 passing controls on one commit
         run: ROOT="$PWD" python3 ci/run_in_tools.py --verify-matrix .ci-work/matrix-artifacts
       - name: Upload the verified qualification matrix
         if: always()

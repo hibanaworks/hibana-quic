@@ -123,19 +123,25 @@ impl Files {
                 if application_storage::client_uses_large_window(client.count) {
                     application_storage::local_limits::<{ application_storage::CLIENT_RECEIVE_BYTES }>(
                         Side::Client,
-                        client.count.min(application_storage::STREAMS),
+                        application_storage::capacity(client.protocol, client.count),
+                        client.protocol,
                     )
                 } else {
                     application_storage::local_limits::<{ application_storage::RECEIVE_BYTES }>(
                         Side::Client,
-                        client.count.min(application_storage::STREAMS),
+                        application_storage::capacity(client.protocol, client.count),
+                        client.protocol,
                     )
                 }
             }
             Self::Server(server) => {
                 application_storage::local_limits::<{ application_storage::RECEIVE_BYTES }>(
                     Side::Server,
-                    application_storage::server_capacity(server.completion_limit),
+                    application_storage::capacity(
+                        server.protocol,
+                        application_storage::server_capacity(server.completion_limit),
+                    ),
+                    server.protocol,
                 )
             }
         }
@@ -253,7 +259,8 @@ pub async fn files<'scope, const S: usize, const T: usize>(
                 macro_rules! run_client {
                     ($rx:expr) => {{
                         let mut storage = application_storage::Storage::<$rx>::new(
-                            client.count.min(application_storage::STREAMS),
+                            application_storage::capacity(client.protocol, client.count),
+                            client.protocol,
                         )?;
                         let mut setup = storage.setup(config)?;
                         setup.key_update_target = key_update_target;
@@ -315,7 +322,11 @@ pub async fn files<'scope, const S: usize, const T: usize>(
             Files::Server(server) => {
                 let mut storage =
                     application_storage::Storage::<{ application_storage::RECEIVE_BYTES }>::new(
-                        application_storage::server_capacity(server.completion_limit),
+                        application_storage::capacity(
+                            server.protocol,
+                            application_storage::server_capacity(server.completion_limit),
+                        ),
+                        server.protocol,
                     )?;
                 let mut setup = storage.setup(config)?;
                 setup.server_token = server_token;

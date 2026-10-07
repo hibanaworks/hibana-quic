@@ -88,7 +88,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('hq', 'neqo-client', 'neqo-server', 'nss', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect', 'multiplexing', 'v2', 'rebind-port', 'rebind-addr', 'connectionmigration'), default='clean')
+    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect', 'multiplexing', 'v2', 'rebind-port', 'rebind-addr', 'connectionmigration', 'http3'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--require-ecn', action='store_true', help='require actual ECN send, authenticated feedback, received marks and accepted ACK_ECN in clean native transfers')
     parser.add_argument('--client-retry', action='store_true', help='native Retry reception, forward clean direction only')
@@ -128,6 +128,8 @@ def main():
     env.pop('SSLKEYLOGFILE', None)
     ipv6 = args.scenario == 'ipv6'
     sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario in ('chacha20', 'keyupdate') else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
+    if args.scenario == 'http3':
+        sizes = [5 << 10, 10 << 10, 500 << 10]
     if args.scenario == 'v2':
         sizes = [1024]
     if args.scenario == 'connectionmigration':
@@ -223,7 +225,9 @@ def main():
             if direction == 'reverse':
                 server_command = [str(hq), 'server', '--listen', server_address, '--cert', str(root / 'server.pem'), '--key', str(root / 'server.key'), '--www', str(www), '--max-requests', str(64 if args.scenario in ('resumption', 'zerortt') else len(names)), '--timeout-seconds', str(args.timeout_seconds)]
             else:
-                server_command = [str(ns), '-a', 'hq-interop', '-Q', '1', '-d', str(db), '-k', 'native-peer', '--idle', str(args.timeout_seconds), server_address]
+                server_command = [str(ns), '-a', 'h3' if args.scenario == 'http3' else 'hq-interop', '-Q', '1', '-d', str(db), '-k', 'native-peer', '--idle', str(args.timeout_seconds), server_address]
+            if args.scenario == 'http3' and direction == 'reverse':
+                server_command += ['--http', '3']
             if args.scenario == 'connectionmigration':
                 if direction == 'reverse': server_command += ['--preferred-port', str(preferred_port)]
                 else: server_command += ['--preferred-address-v4', f'127.0.0.1:{preferred_port}']
@@ -279,7 +283,9 @@ def main():
                             for url in urls:
                                 command += ['--request', url]
                         else:
-                            command = [str(nc), '--qns-test', args.scenario if args.scenario in ('resumption', 'zerortt', 'keyupdate', 'multiconnect', 'v2') else 'transfer', '-Q', '1', '--ipv6-only' if ipv6 else '--ipv4-only', '--output-dir', str(destination), '--idle', str(args.timeout_seconds)] + urls
+                            command = [str(nc), '--qns-test', args.scenario if args.scenario in ('resumption', 'zerortt', 'keyupdate', 'multiconnect', 'v2', 'http3') else 'transfer', '-Q', '1', '--ipv6-only' if ipv6 else '--ipv4-only', '--output-dir', str(destination), '--idle', str(args.timeout_seconds)] + urls
+                        if args.scenario == 'http3' and direction == 'forward':
+                            command += ['--http', '3']
                         if args.scenario == 'v2':
                             command += ['--version','2'] if direction=='forward' else ['-Q','6b3343cf','-Q','1']
                         if args.scenario == 'chacha20':
@@ -438,11 +444,19 @@ def main():
                                 responses=set(re.findall(r'TX -> PathResponse \{ data: (\[[0-9, ]+\])',text))
                                 assert len(challenges&responses)>=2,(len(challenges),len(responses))
                                 row['peer_matched_path_responses']=len(challenges&responses)
-                        if args.scenario in ('v2','rebind-port','rebind-addr','connectionmigration') and returncode==0 and direction!='baseline':
-                            if direction=='reverse': server.wait(timeout=5)
+                        if args.scenario in ('v2','rebind-port','rebind-addr','connectionmigration','http3') and returncode==0 and direction!='baseline':
+                            if direction=='reverse':
+                                server.wait(timeout=5)
+                                row['candidate_server_exit'] = server.returncode
+                                assert server.returncode == 0, f'{args.scenario}/{direction}: candidate server exited {server.returncode}'
                             text=result.stdout if direction=='forward' else log_path.read_text()
-                            terminal=next(json.loads(line) for line in reversed(text.splitlines()) if line.startswith('{'))
+                            terminal=next((json.loads(line) for line in reversed(text.splitlines()) if line.startswith('{')), None)
+                            assert terminal is not None, f'{args.scenario}/{direction}: candidate did not publish terminal JSON'
                             assert terminal['tls_finished_authenticated'] and terminal['http_transfer_complete'] and terminal['resources_retired'] and terminal['lifecycle_closed'],terminal
+                            if args.scenario == 'http3':
+                                assert terminal['connections'] == 1, terminal
+                                assert terminal['body_bytes'] == sum(case_sizes), terminal
+                                row['application_protocol'] = 'h3'
                             if args.scenario == 'connectionmigration':
                                 assert terminal['validated_paths'] >= 1,terminal
                                 if direction=='forward': assert terminal['preferred_address_used'],terminal

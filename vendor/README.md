@@ -1,16 +1,16 @@
 # Selected upstream snapshot
 
-`hibana/` is the tracked source of `development/rolled-route-ownership`
-at `c3d89f787aa1a8e066b310a5307fdf7cb076ee26`, without local patches.
-The update removes the intrinsic send-preview scan of unselected descendant
-contracts, so an interior matching send cannot hide the real outer entry.
-It also preserves an already completed containing prefix when only a nested
-rolled route reenters. The prepared commit's actual fresh suffix bounds the
-reset; completion alone does not authorize resetting a retained ancestor.
-It also includes the upstream cleanup of source-spelling and fixed-count audits.
-No public API, stored runtime field or capacity is added by the entry repair.
-All changed files were checked against the upstream Git blob identities.
-Consumer regressions and native interoperability are qualified separately.
+`hibana/` is the exact committed source at
+`1b28efffe3cc5c93080dc21682c25b87ae5b84a3` on
+`development/rolled-route-ownership`, without local patches.
+All 1198 files pass `python3 vendor/check_hibana.py`.
+
+The new HTTP/3 integration requires the separate parallel-offer collecting-path
+repair supplied in the core handoff ZIP. Before publishing this QUIC candidate,
+commit that repair in Hibana and import the actual resulting commit as a new
+exact snapshot. Do not silently patch this vendor directory while retaining the
+old upstream revision. The handoff importer updates the manifest, Cargo metadata
+and CI pin together. Consumer tests must then be rerun on that exact commit.
 
 # Historical audited dependency snapshots
 

@@ -1,7 +1,7 @@
 use super::host_files::{MAX_REQUESTS, Request};
 use hibana_quic::bounded_tls::CipherPolicy;
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
-pub const USAGE: &str = "Direct Hibana QUIC v1 / hq-interop\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume|multi] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--cipher auto|aes128|chacha20] [--session single|resume|multi]\n\nOne connection, two ticket-resuming connections with --session resume, or one full connection per request with --session multi (server: --connections 1..64); at most 4096 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
+pub const USAGE: &str = "Direct Hibana QUIC v1/v2 / hq-interop or h3\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi]\n\nOne connection, two ticket-resuming connections with --session resume, or one full connection per request with --session multi (server: --connections 1..64); at most 4096 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
 #[derive(Debug)]
 pub struct ClientFiles {
     pub requests: Vec<Request>,
@@ -15,6 +15,7 @@ pub struct ServerFiles {
 #[derive(Debug)]
 pub enum Options {
     Client {
+        protocol: hibana_quic::http3::Protocol,
         version: hibana_quic::version::Version,
         connect: SocketAddr,
         server_name: String,
@@ -29,6 +30,7 @@ pub enum Options {
     },
     Server {
         preferred_port: Option<u16>,
+        protocol: hibana_quic::http3::Protocol,
         version: hibana_quic::version::Version,
         listen: SocketAddr,
         cert: PathBuf,
@@ -96,6 +98,11 @@ pub fn options(args: &[String]) -> Result<Options> {
         "aes128" => CipherPolicy::Aes128Only,
         "chacha20" => CipherPolicy::ChaCha20Only,
         _ => return Err("--cipher must be auto, aes128 or chacha20".into()),
+    };
+    let protocol = match flags.remove("--http").unwrap_or("hq") {
+        "hq" => hibana_quic::http3::Protocol::Http09,
+        "3" if application => hibana_quic::http3::Protocol::Http3,
+        _ => return Err("--http must be hq or 3; HTTP/3 requires file mode".into()),
     };
     let version = match flags.remove("--version").unwrap_or("1") {
         "1" => hibana_quic::version::Version::V1,
@@ -180,6 +187,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 return Err("connections must be 1..=64".into());
             }
             Options::Client {
+                protocol,
                 version,
                 connect,
                 server_name,
@@ -256,6 +264,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 return Err("preferred address requires one non-early file connection".into());
             }
             Options::Server {
+                protocol,
                 preferred_port,
                 version,
                 require_retry,
@@ -292,6 +301,30 @@ pub fn options(args: &[String]) -> Result<Options> {
         )
     {
         return Err("v2 requires a fresh non-Retry connection".into());
+    }
+    if protocol == hibana_quic::http3::Protocol::Http3
+        && matches!(
+            &result,
+            Options::Client {
+                resumption: true,
+                ..
+            } | Options::Client { early: true, .. }
+                | Options::Server {
+                    resumption: true,
+                    ..
+                }
+                | Options::Server { early: true, .. }
+                | Options::Client {
+                    connections: 2..,
+                    ..
+                }
+                | Options::Server {
+                    connections: 2..,
+                    ..
+                }
+        )
+    {
+        return Err("HTTP/3 currently requires one fresh non-early file connection".into());
     }
     if let Some(flag) = flags.keys().next() {
         return Err(format!("unsupported option {flag}"));

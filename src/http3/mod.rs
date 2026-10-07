@@ -10,6 +10,27 @@ pub enum Protocol {
     Http3,
 }
 impl Protocol {
+    pub const fn success_code(self) -> u64 {
+        match self {
+            Self::Http09 => 0,
+            Self::Http3 => 0x100,
+        }
+    }
+    pub const fn failure_code(self) -> u64 {
+        match self {
+            Self::Http09 => 0x100,
+            Self::Http3 => 0x102,
+        }
+    }
+    /// RFC 9114 section 8 requires unknown application close codes to be
+    /// treated as H3_NO_ERROR. Preserve the actual peer code in the outcome;
+    /// this classification never supplies missing response FINs or ACKs.
+    pub(crate) const fn peer_application_close_is_clean(self, code: u64) -> bool {
+        match self {
+            Self::Http09 => code == 0,
+            Self::Http3 => !matches!(code, 0x101..=0x110 | 0x200..=0x202),
+        }
+    }
     pub const fn alpn(self) -> &'static [u8] {
         match self {
             Self::Http09 => b"hq-interop",
@@ -30,7 +51,7 @@ pub enum Error {
     Frame,
     Length,
 }
-fn integer(bytes: &[u8], prefix: u8) -> Result<(u64, usize), Error> {
+pub(crate) fn decode_prefix_integer(bytes: &[u8], prefix: u8) -> Result<(u64, usize), Error> {
     let first = *bytes.first().ok_or(Error::Truncated)?;
     let mask = (1u16 << prefix) - 1;
     let mut value = u64::from(first) & u64::from(mask);
@@ -104,7 +125,7 @@ fn string(
     huffman_bit: u8,
     out: &mut [u8],
 ) -> Result<(usize, usize), Error> {
-    let (length, head) = integer(input, prefix)?;
+    let (length, head) = decode_prefix_integer(input, prefix)?;
     let length = usize::try_from(length).map_err(|_| Error::Capacity)?;
     let end = head.checked_add(length).ok_or(Error::Capacity)?;
     let raw = input.get(head..end).ok_or(Error::Truncated)?;
@@ -256,11 +277,11 @@ impl Fields {
     }
 }
 pub fn decode_fields(input: &[u8]) -> Result<Fields, Error> {
-    let (required, a) = integer(input, 8)?;
+    let (required, a) = decode_prefix_integer(input, 8)?;
     if required != 0 {
         return Err(Error::DynamicReference);
     }
-    let (_base, b) = integer(input.get(a..).ok_or(Error::Truncated)?, 7)?;
+    let (_base, b) = decode_prefix_integer(input.get(a..).ok_or(Error::Truncated)?, 7)?;
     // With no dynamic references, any nonnegative Base is valid (RFC 9204 4.5.1).
     // A negative sign with Required Insert Count zero would underflow.
     if input[a] & 128 != 0 {
@@ -276,7 +297,7 @@ pub fn decode_fields(input: &[u8]) -> Result<Fields, Error> {
             if x & 64 == 0 {
                 return Err(Error::DynamicReference);
             }
-            let (index, n) = integer(&input[pos..], 6)?;
+            let (index, n) = decode_prefix_integer(&input[pos..], 6)?;
             let (nm, val) = *tables::STATIC
                 .get(usize::try_from(index).map_err(|_| Error::Integer)?)
                 .ok_or(Error::Field)?;
@@ -286,7 +307,7 @@ pub fn decode_fields(input: &[u8]) -> Result<Fields, Error> {
             if x & 16 == 0 {
                 return Err(Error::DynamicReference);
             }
-            let (index, n) = integer(&input[pos..], 4)?;
+            let (index, n) = decode_prefix_integer(&input[pos..], 4)?;
             let (nm, _) = *tables::STATIC
                 .get(usize::try_from(index).map_err(|_| Error::Integer)?)
                 .ok_or(Error::Field)?;
@@ -484,5 +505,21 @@ mod tests {
         for len in 0..n {
             assert!(request_fields(b"localhost", b"/item", &mut valid[..len]).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod close_code_tests {
+    use super::Protocol;
+    #[test]
+    fn unknown_h3_peer_codes_are_no_error_without_reclassifying_known_errors() {
+        for code in [0, 0x21, 0x100, 0x111, 0x203, (1u64 << 62) - 1] {
+            assert!(Protocol::Http3.peer_application_close_is_clean(code));
+        }
+        for code in (0x101..=0x110).chain(0x200..=0x202) {
+            assert!(!Protocol::Http3.peer_application_close_is_clean(code));
+        }
+        assert!(Protocol::Http09.peer_application_close_is_clean(0));
+        assert!(!Protocol::Http09.peer_application_close_is_clean(0x100));
     }
 }

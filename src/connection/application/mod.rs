@@ -3,6 +3,7 @@
 
 mod acknowledgments;
 mod assembly;
+mod http3;
 mod io;
 mod keys;
 pub mod protocol;
@@ -34,6 +35,12 @@ pub trait BodyReader {
 }
 /// The request is the actual authenticated, FIN-complete HTTP/0.9 request.
 pub trait ServerHandler {
+    /// Actual authenticated HTTP/3 SETTINGS, delivered after the projected
+    /// control receipt. Adapters that do not implement HTTP/3 reject this mode.
+    fn peer_settings(&mut self, _settings: crate::http3::Settings) -> Result<(), Error> {
+        Err(Error::Application)
+    }
+
     type Body: BodyReader;
     /// A finite application workload, sampled once before receiving requests.
     /// None keeps serving until peer termination. Reaching this count retires
@@ -49,6 +56,12 @@ pub trait ServerHandler {
 }
 /// A pending request stays pending until exactly one successful `started`.
 pub trait ClientRequests {
+    /// Actual authenticated HTTP/3 SETTINGS, delivered after the projected
+    /// control receipt. Adapters that do not implement HTTP/3 reject this mode.
+    fn peer_settings(&mut self, _settings: crate::http3::Settings) -> Result<(), Error> {
+        Err(Error::Application)
+    }
+
     fn next(&mut self, output: &mut [u8]) -> impl Future<Output = Result<Option<usize>, ()>>;
     fn started(&mut self, stream_id: u64) -> Result<(), ()>;
 }
@@ -232,6 +245,7 @@ impl From<keys::Error> for Error {
 pub(crate) enum CloseKind {
     Local { application: bool, code: u64 },
     Peer { code: u64 },
+    PeerApplication { code: u64 },
     IdleExpired,
 }
 

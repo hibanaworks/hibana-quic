@@ -507,7 +507,7 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(self.module.requested_cases(['keyupdate']), {'keyupdate'})
         self.assertEqual(self.module.requested_cases(['amplificationlimit']), {'amplificationlimit'})
         self.assertEqual(self.module.requested_cases(['longrtt', 'transferloss', 'transfercorruption', 'ipv6']), {'longrtt', 'transferloss', 'transfercorruption', 'ipv6'})
-        for invalid in ([], ['transfer', 'transfer'], ['unknown'], ['../secret'], ['http3'], 'transfer', [None]):
+        for invalid in ([], ['transfer', 'transfer'], ['unknown'], ['../secret'], ['unimplemented-extension'], 'transfer', [None]):
             with self.assertRaises(RuntimeError):
                 self.module.requested_cases(invalid)
 

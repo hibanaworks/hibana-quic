@@ -21,21 +21,39 @@ pub fn server_capacity(limit: Option<core::num::NonZeroUsize>) -> usize {
 pub const CHUNK_BYTES: usize = 1024;
 pub const SEND_CHUNKS: usize = 64;
 pub const PACKET_REFERENCES: usize = 128;
-pub fn local_limits<const RX: usize>(side: Side, stream_capacity: usize) -> Limits {
+pub fn capacity(protocol: hibana_quic::http3::Protocol, files: usize) -> usize {
+    let reserved = if protocol == hibana_quic::http3::Protocol::Http3 {
+        6
+    } else {
+        0
+    };
+    files.min(STREAMS - reserved) + reserved
+}
+pub fn local_limits<const RX: usize>(
+    side: Side,
+    stream_capacity: usize,
+    protocol: hibana_quic::http3::Protocol,
+) -> Limits {
+    let reserved = if protocol == hibana_quic::http3::Protocol::Http3 {
+        6
+    } else {
+        0
+    };
     Limits {
         max_data: (stream_capacity * RX) as u64,
         stream_data_bidi_local: RX as u64,
         stream_data_bidi_remote: RX as u64,
-        stream_data_uni: 0,
+        stream_data_uni: if reserved == 0 { 0 } else { RX as u64 },
         max_streams_bidi: if side == Side::Server {
-            stream_capacity as u64
+            stream_capacity.saturating_sub(reserved) as u64
         } else {
             0
         },
-        max_streams_uni: 0,
+        max_streams_uni: if reserved == 0 { 0 } else { 3 },
     }
 }
 pub struct Storage<const RX: usize> {
+    protocol: hibana_quic::http3::Protocol,
     cid_slots: Vec<hibana_quic::connection_id::LocalCidSlot>,
     peer_cid_slots: Vec<hibana_quic::connection_id::PeerCidSlot<4>>,
     cid_seed: zeroize::Zeroizing<[u8; 32]>,
@@ -50,7 +68,10 @@ pub struct Storage<const RX: usize> {
     references: Vec<PacketReference>,
 }
 impl<const RX: usize> Storage<RX> {
-    pub fn new(stream_capacity: usize) -> Result<Self, String> {
+    pub fn new(
+        stream_capacity: usize,
+        protocol: hibana_quic::http3::Protocol,
+    ) -> Result<Self, String> {
         if stream_capacity == 0 || stream_capacity > STREAMS {
             return Err("stream storage capacity must be 1..=64".into());
         }
@@ -59,7 +80,11 @@ impl<const RX: usize> Storage<RX> {
         rand_core::OsRng
             .try_fill_bytes(&mut *cid_seed)
             .map_err(|_| "CID entropy unavailable")?;
+        if protocol == hibana_quic::http3::Protocol::Http3 && stream_capacity <= 6 {
+            return Err("HTTP/3 needs backed file and critical-stream slots".into());
+        }
         Ok(Self {
+            protocol,
             cid_slots: vec![hibana_quic::connection_id::LocalCidSlot::EMPTY; 16],
             peer_cid_slots: (0..16)
                 .map(|_| hibana_quic::connection_id::PeerCidSlot::EMPTY)
@@ -94,7 +119,7 @@ impl<const RX: usize> Storage<RX> {
             key_update_target: 0,
             early: None,
             config,
-            local_limits: local_limits::<RX>(config.side, self.streams.len()),
+            local_limits: local_limits::<RX>(config.side, self.streams.len(), self.protocol),
             handshake_crypto: [
                 CryptoBuffer::new(&mut self.initial, &mut self.initial_bitmap)
                     .map_err(|e| format!("Initial CRYPTO storage: {e:?}"))?,
@@ -155,8 +180,8 @@ mod tests {
     fn finite_server_credit_matches_owned_slots() {
         for count in [1, 2, STREAMS] {
             let capacity = server_capacity(core::num::NonZeroUsize::new(count));
-            let storage = Storage::<1024>::new(capacity).unwrap();
-            let limits = local_limits::<1024>(Side::Server, capacity);
+            let storage = Storage::<1024>::new(capacity, Default::default()).unwrap();
+            let limits = local_limits::<1024>(Side::Server, capacity, Default::default());
             assert_eq!(storage.streams.len(), count);
             assert_eq!(limits.max_streams_bidi, count as u64);
             assert_eq!(limits.max_data, (count * 1024) as u64);
@@ -170,9 +195,10 @@ mod tests {
     #[test]
     fn client_limits_are_backed_by_exact_requested_slot_count() {
         for count in [1, 2, 40, STREAMS] {
-            let storage = Storage::<1024>::new(count).unwrap();
+            let storage = Storage::<1024>::new(count, Default::default()).unwrap();
             assert_eq!(storage.streams.len(), count);
-            let limits = local_limits::<1024>(Side::Client, storage.streams.len());
+            let limits =
+                local_limits::<1024>(Side::Client, storage.streams.len(), Default::default());
             assert_eq!(limits.max_data, (count * 1024) as u64);
             assert_eq!(limits.stream_data_bidi_local, 1024);
             assert_eq!(limits.max_streams_bidi, 0);
@@ -182,8 +208,8 @@ mod tests {
 
     #[test]
     fn server_keeps_its_actual_full_stream_capacity() {
-        let storage = Storage::<1024>::new(STREAMS).unwrap();
-        let limits = local_limits::<1024>(Side::Server, storage.streams.len());
+        let storage = Storage::<1024>::new(STREAMS, Default::default()).unwrap();
+        let limits = local_limits::<1024>(Side::Server, storage.streams.len(), Default::default());
         assert_eq!(limits.max_streams_bidi, STREAMS as u64);
         assert_eq!(limits.max_data, (STREAMS * 1024) as u64);
     }
@@ -206,7 +232,7 @@ mod tests {
 
     #[test]
     fn invalid_slot_counts_are_rejected_before_allocation() {
-        assert!(Storage::<1024>::new(0).is_err());
-        assert!(Storage::<1024>::new(STREAMS + 1).is_err());
+        assert!(Storage::<1024>::new(0, Default::default()).is_err());
+        assert!(Storage::<1024>::new(STREAMS + 1, Default::default()).is_err());
     }
 }

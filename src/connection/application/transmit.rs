@@ -1545,9 +1545,12 @@ pub(crate) async fn close<
         } else {
             deadline
         }));
-    let mut close_accepted = matches!(kind, CloseKind::Peer { .. });
+    let mut close_accepted = matches!(
+        kind,
+        CloseKind::Peer { .. } | CloseKind::PeerApplication { .. }
+    );
     match kind {
-        CloseKind::Peer { .. } | CloseKind::IdleExpired => {
+        CloseKind::Peer { .. } | CloseKind::PeerApplication { .. } | CloseKind::IdleExpired => {
             // Peer-initiated draining publishes no packets.
             endpoint.send::<p::Drain>(&()).await?;
             endpoint.recv::<p::Drained>().await?;

@@ -7,7 +7,8 @@ pub(super) mod ownership;
 
 use super::{
     BodyReader, ClientRequests, Control, Error, OrdinaryRetired, Outcomes, Report, Roles,
-    ServerHandler, Setup, StreamSink, io, keys, receive, reset, termination, timer, transmit,
+    ServerHandler, Setup, StreamSink, http3, io, keys, receive, reset, termination, timer,
+    transmit,
 };
 use crate::{
     connection::publication_gate::{Issuer, Stop},
@@ -266,6 +267,11 @@ async fn connected<
         let pending = storage.pending_application.borrow_mut().take();
         (read, write, pending)
     };
+    let application_protocol = match source.material().negotiated_alpn() {
+        Some(b"hq-interop") => crate::http3::Protocol::Http09,
+        Some(b"h3") => crate::http3::Protocol::Http3,
+        _ => return Err(Error::Binding),
+    };
     let (mut received, write, transcript) =
         ownership::transfer(roles, source, config, read, write).await?;
     let owner = keys::KeyOwner::new(scope, write)?;
@@ -370,7 +376,8 @@ async fn connected<
     .await?;
     let control = Control::new(stop);
     let state = io::State::<CHUNK, H::Body>::new();
-    let terminal = termination::Exchange::new(&control, scope);
+    let http3_input = http3::Ingress::new();
+    let terminal = termination::Exchange::new(&control, scope, application_protocol);
     let reset_exchange = reset::Exchange::new();
     let reclaim_exchange = super::reclaim::Exchange::new();
     early_client::admit::<N, RX, CHUNK, H::Body>(
@@ -416,8 +423,27 @@ async fn connected<
 
     let result = {
         let source = async {
+            use crate::http3::{Protocol, control as h3};
+            match application_protocol {
+                Protocol::Http09 => roles.source.send::<h3::Plain>(&()).await?,
+                Protocol::Http3 => roles.source.send::<h3::Http3>(&()).await?,
+            }
+            // Both control outcomes settle startup exactly once. This is not
+            // a success grant: the actual revocation and SETTINGS receipt below
+            // determine whether any application resource may be admitted.
+            roles.source.recv::<h3::StartupSettled>().await?;
             let result = match source_io {
                 Source::Client(requests) => {
+                    if application_protocol == crate::http3::Protocol::Http3 && !control.stopping()
+                    {
+                        let settings = http3_input
+                            .settings
+                            .borrow()
+                            .as_ref()
+                            .copied()
+                            .ok_or(Error::Binding)?;
+                        requests.peer_settings(settings)?;
+                    }
                     if let Some(retained) = client_early.as_deref() {
                         let mut replay = retained.replay(accepted_early);
                         io::client_source(&mut roles.source, &control, &state, &app, &mut replay)
@@ -427,6 +453,16 @@ async fn connected<
                     }
                 }
                 Source::Server(handler) => {
+                    if application_protocol == crate::http3::Protocol::Http3 && !control.stopping()
+                    {
+                        let settings = http3_input
+                            .settings
+                            .borrow()
+                            .as_ref()
+                            .copied()
+                            .ok_or(Error::Binding)?;
+                        handler.peer_settings(settings)?;
+                    }
                     io::server_source(
                         &mut roles.source,
                         &control,
@@ -456,6 +492,17 @@ async fn connected<
             &reclaim_exchange,
         );
         let sink = async {
+            use crate::http3::{Protocol, control as h3};
+            let auxiliary = match application_protocol {
+                Protocol::Http09 => {
+                    roles.sink.recv::<h3::PlainSink>().await?;
+                    None
+                }
+                Protocol::Http3 => {
+                    roles.sink.recv::<h3::Http3Sink>().await?;
+                    Some(&http3_input)
+                }
+            };
             match sink_io {
                 Sink::Client(sink) => {
                     io::client_sink(
@@ -465,6 +512,7 @@ async fn connected<
                         &app,
                         sink,
                         &reclaim_exchange,
+                        auxiliary,
                     )
                     .await
                 }
@@ -476,6 +524,7 @@ async fn connected<
                         &app,
                         &mut request_sender,
                         &reclaim_exchange,
+                        auxiliary,
                     )
                     .await
                 }
@@ -547,6 +596,14 @@ async fn connected<
         );
         let marking =
             transmit::ecn::owner(&mut roles.ecn_owner, &ecn_exchange, &completion_book, clock);
+        let http3_control = http3::owner(
+            &mut roles.handshake.initial_owner,
+            application_protocol,
+            &http3_input,
+            &app,
+            &control,
+            config.side,
+        );
         let path_validation = crate::path::validation::owner(
             &mut roles.handshake.initial_event,
             &publication_state.paths,
@@ -575,6 +632,28 @@ async fn connected<
             super::reclaim::input(&mut roles.input_collector, &reclaim_exchange, &control);
         let delivery_collector =
             super::reclaim::delivery(&mut roles.delivery_collector, &reclaim_exchange, &control);
+        // Executor boundary: pin each role in its existing local storage before
+        // joining references. Moving all large role futures into MaybeDone adds
+        // avoidable transient stack usage in an unoptimized host poll.
+        futures_util::pin_mut!(
+            source,
+            ingress,
+            sink,
+            receiving,
+            key_control,
+            clock_role,
+            timer_receive,
+            transmitting,
+            publishing,
+            marking,
+            path_validation,
+            http3_control,
+            completion,
+            terminal_receive,
+            source_collector,
+            input_collector,
+            delivery_collector,
+        );
         futures_util::try_join!(
             source,
             ingress,
@@ -587,6 +666,7 @@ async fn connected<
             publishing,
             marking,
             path_validation,
+            http3_control,
             completion,
             terminal_receive,
             source_collector,
@@ -652,14 +732,18 @@ async fn connected<
     if let Some(error) = control.take_protocol_error() {
         return Err(error);
     }
-    if !matches!(
-        close_kind,
+    let clean_close = match close_kind {
         super::CloseKind::Local {
             application: true,
-            code: 0
-        } | super::CloseKind::Peer { code: 0 }
-            | super::CloseKind::IdleExpired
-    ) {
+            code,
+        } => code == application_protocol.success_code(),
+        super::CloseKind::PeerApplication { code } => {
+            application_protocol.peer_application_close_is_clean(code)
+        }
+        super::CloseKind::Peer { code: 0 } | super::CloseKind::IdleExpired => true,
+        _ => false,
+    };
+    if !clean_close {
         return Err(Error::Application);
     }
     // An authenticated peer close ends retransmission (RFC 9000 section10.2.2).

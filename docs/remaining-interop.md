@@ -1,83 +1,53 @@
-# Remaining interoperability work — 2026-10-07
+# Remaining interop handoff — 2026-10-07
 
-The unchanged runner registers 22 cases, hence 44 candidate case/direction cells.
-Historical official evidence is 34/44 cumulatively across different commits. The
-latest same-commit 34-cell attempt (266e9d37, run 37549439439, attempt 2) passed
-33/34, with client handshakecorruption failing; its 17 controls passed. That
-failure is not erased by historical evidence or local tests.
+## Read this first
 
-## Current local evidence
+The implementation and CI adapter now include HTTP/3. Five local native Neqo
+scenarios have passed in both candidate roles, using one executable: v2,
+rebind-port, rebind-addr, connectionmigration and http3. The peer's five unchanged
+self-controls also passed. These ten native-loopback cells are NOT official
+ns-3/interop-runner passes. Machine-readable evidence identifies each executable.
 
-The pinned, unmodified Neqo peer was rebuilt at
-ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95 with NSS 3.126. Both candidate directions
-and the peer self-control completed for:
+The passing candidate uses a separate Hibana parallel-offer repair on top of
+1b28efff. The vendored source in this handoff deliberately remains exact,
+unpatched 1b28efff until the core repair has a real commit identity. First apply
+the core ZIP, then import that actual commit and rerun qualification. Do not push
+this tree as a fully qualified exact-core snapshot before that dependency step.
 
-- v2: actual v1 client Initial, v2 server Initial and both v2 Handshake directions;
-  the 1 KiB file matched and candidate roles retired.
-- rebind-port: 10 MiB file matched across two actual UDP port changes; matching
-  challenge responses were observed and candidate roles retired.
-- rebind-addr: the same checks with actual loopback IP and port changes.
-- connectionmigration: 2 MiB file matched in both directions after use of the
-  authenticated preferred address, peer path validation and candidate role retirement.
-  The preceding three scenarios also passed again with this release executable.
+## HTTP/3 fixes and boundaries
 
-Machine-readable local reports are under artifacts/remaining-interop/20261007-local.
-These loopback tests are not the runner's ns-3 scenario or an official pass.
+- Explicit authenticated ALPN selection, bounded static QPACK/Huffman parsing,
+  three critical unidirectional streams, and projected control/SETTINGS ownership.
+- SETTINGS startup settles the source before releasing the sink to send another
+  coalesced control frame. A one-slot-carrier regression fails before and passes
+  after this literal global/local order change; no capacity or timeout change.
+- Streaming file decode has projected reader/write/receipt/FIN boundaries.
+- RFC 9114 section 8 requires unknown peer application-close codes to be treated
+  as H3_NO_ERROR. Actual codes stay preserved; known H3/QPACK failures stay errors,
+  and missing file FINs/ACKs are never fabricated. This matters because the pinned
+  Neqo test client closes its successful H3 connection with Application(0).
+- Role futures are pinned at the existing executor join boundary before joining
+  references. The connected suite passes on the default host test stack.
 
-## Implementation
+Normative close-code source: https://www.rfc-editor.org/rfc/rfc9114.html#section-8
+Pinned reference: Neqo ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95.
 
-Version-specific keys/header encoding and authenticated compatible-version
-selection retain packet-number and cryptographic usage accounting. Path
-validation is a projected route/roll continuation, reusing role18 after its
-Initial-retirement prefix. It has explicit request, physical settlement and
-terminal/join edges. A 64-byte challenge can establish address reachability under
-low amplification credit; a fresh nonce in a 1200-byte challenge then proves MTU.
-An authenticated matching response can arrive on any path. New-IP adoption resets
-RTT/congestion estimates and excludes earlier packets from their updates; port-only
-rebinding retains those estimates. Existing ECN capability is not inherited by a
-new path. Pending CID advertisements and response frames are consumed only by
-actual physical acceptance or their authenticated acknowledgment/retirement.
+## CI status and remaining limitations
 
-The intermediate CI request has 42 candidate cells and 21 mandatory controls.
-Every cell must come from the same source/run. Failed, unsupported, missing and
-null observations remain failures. Original runner/deadline/capacity constraints
-remain unchanged.
+The CI plan now requests all 44 candidate case/direction cells and 22 mandatory
+controls on one source commit/run. HTTP/3 abbreviation `3` is read from unchanged
+runner 740c05a10b61d65e8abd3ad38d60898004d335d9. Missing, failed, unsupported or null
+cells cannot qualify. Adapter and matrix failure-path tests are included.
 
-## Still open
+No new official CI run or remote push occurred in this handoff. Historical
+same-commit run37549439439 attempt2 passed33/34, controls17/17; candidate-client
+handshakecorruption failed. Historical cumulative34/44 is not a current pass.
 
-HTTP/3 (two directions) is unfinished. The initial bounded static-QPACK/frame
-codec has three passing unit tests, but no HTTP/3 native interchange has passed.
-The other eight remaining case/direction cells have local evidence only.
-The existing handshakecorruption failure still needs root-cause evidence.
-Multi-connection routing of newly issued CIDs and non-current-path challenge
-responses need further review before broad migration support is claimed.
-Strict Clippy is not clean: the baseline independently reproduces 19 diagnostics;
-the current candidate retains 18 shared baseline diagnostics.
-No blanket lint waiver or protocol weakening was used to turn this into a pass.
+Strict Clippy for the QUIC codebase is still not clean. Same-command all-target
+checks reproduced75 baseline errors and57 before final cleanup of newly introduced
+SETTINGS error signatures/range style. No blanket lint waiver was added. The
+separate Hibana repair passes strict Clippy. General H3 production completeness,
+full dynamic QPACK, broader GOAWAY admission, and official interop are not implied
+by the finite native cases. Preserve existing resource and wire-check limits.
 
-## HTTP/3 work in progress (04:30 UTC)
-
-- Explicit immutable TLS application selection binds both ALPN directions,
-  retained retry ClientHello validation, authenticated Finished observations and
-  ticket origins. HQ remains the default at existing native call sites.
-- The static-only QPACK decoder has bounded field storage and RFC Huffman
-  validation. Nonzero nonnegative Base with zero Required Insert Count is legal;
-  dynamic references and negative underflow are rejected. SETTINGS duplicates,
-  HTTP/2-reserved identifiers and frame types fail closed.
-- Local unidirectional streams carry only their real production half; peer
-  unidirectional streams carry only their real input half. Released input is not
-  repeatedly offered as a new FIN.
-- HTTP/3 staging-file decoding has an explicit global with reader/writer locals
-  for informational headers, final headers, bounded data, trailers and end.
-  Physical writes acknowledge consumed chunks. Only a complete, length-checked
-  response is truncated and made eligible for the existing atomic publication.
-  Three projected file tests passed before the new host adapter integration.
-- The old file-body EOF flag and single-use read_body progression helper were
-  removed; actual reads and EOF return are visible in the ingress local.
-- A control-stream startup global is drafted but not yet connected. Native H3
-  ALPN selection, critical-stream input/ownership, CLI, both peer directions and
-  final regression remain unfinished. No HTTP/3 interop pass is claimed.
-
-Normative sources: RFC 9114 sections 4, 6, 7; RFC 9204 sections 3.2.3 and 4.5.1.
-Dynamic table capacity zero prohibits encoder instructions, including capacity
-updates; it still requires accepting creation of peer QPACK streams.
+See the ZIP's README_FIRST.ja.md for exact import, test and push instructions.

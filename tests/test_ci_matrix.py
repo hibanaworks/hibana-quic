@@ -1,4 +1,4 @@
-"""One source commit, exact 42-cell coverage, and mandatory reference controls."""
+"""One source commit, exact 44-cell coverage, and mandatory reference controls."""
 import copy
 from contextlib import redirect_stdout
 import importlib.util
@@ -70,14 +70,14 @@ class Matrix(unittest.TestCase):
     def report(self):
         return json.loads((self.root / 'ci-safe-results/summary.json').read_text())
 
-    def test_exact_42_same_commit_and_21_controls(self):
+    def test_exact_44_same_commit_and_22_controls(self):
         self.assertEqual(self.verify(), 0)
         result = self.report()
-        self.assertEqual((result['candidate_results'], result['candidate_passed'], result['control_results'], result['control_passed']), (42, 42, 21, 21))
+        self.assertEqual((result['candidate_results'], result['candidate_passed'], result['control_results'], result['control_passed']), (44, 44, 22, 22))
         self.assertEqual(result['source_commit'], COMMIT)
-        self.assertTrue(result['same_commit_all_42_executed'])
-        self.assertFalse(result['full_44_case_direction_matrix'])
-        self.assertEqual(sum(cell['reference'] == 'neqo' for cell in result['candidate_cells']), 32)
+        self.assertTrue(result['same_commit_all_44_executed'])
+        self.assertTrue(result['full_44_case_direction_matrix'])
+        self.assertEqual(sum(cell['reference'] == 'neqo' for cell in result['candidate_cells']), 34)
         self.assertEqual(sum(cell['reference'] == 'quiche' for cell in result['candidate_cells']), 10)
 
     def test_group_selection_cannot_silently_choose_or_reduce_scope(self):
@@ -110,10 +110,10 @@ class Matrix(unittest.TestCase):
                 self.put(group, 'bounded-client-verdict.json', verdict)
                 self.put(group, 'summary.json', summary)
                 self.assertEqual(self.verify(), 1)
-                self.assertEqual(self.report()['candidate_passed'], 41)
+                self.assertEqual(self.report()['candidate_passed'], 43)
                 self.assertEqual(self.report()['candidate_unexecuted'], int(outcome is None))
 
-    def test_failed_control_cannot_promote_42_candidate_passes(self):
+    def test_failed_control_cannot_promote_44_candidate_passes(self):
         group = next(group for group in self.request['groups'] if group['name'] == 'neqo-ecn')
         verdict = self.get(group, 'neqo-baseline-verdict.json')
         verdict['results'][0]['result'] = 'failed'
@@ -123,8 +123,8 @@ class Matrix(unittest.TestCase):
         self.put(group, 'neqo-baseline-verdict.json', verdict)
         self.put(group, 'summary.json', summary)
         self.assertEqual(self.verify(), 1)
-        self.assertEqual(self.report()['candidate_passed'], 42)
-        self.assertEqual(self.report()['control_passed'], 20)
+        self.assertEqual(self.report()['candidate_passed'], 44)
+        self.assertEqual(self.report()['control_passed'], 21)
         self.assertEqual(self.report()['status'], 'NOT_PASSED')
 
     def test_source_run_group_reference_and_pins_must_match(self):

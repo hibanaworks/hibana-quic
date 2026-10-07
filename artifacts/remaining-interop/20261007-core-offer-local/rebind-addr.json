@@ -1,0 +1,189 @@
+{
+  "scope": "native-peer-diagnostics",
+  "official_interop_pass": false,
+  "scenario": "rebind-addr",
+  "server_retry": false,
+  "client_retry": false,
+  "impairment": null,
+  "ordinary_files": 1,
+  "coverage_gaps": [
+    "not ns-3 topology or exact stochastic impairment",
+    "no packet-trace verdicts",
+    "forward ordinary-Neqo generated-zero payloads"
+  ],
+  "binaries": {
+    "hq": "cb008ff6176ebf12c826d8db8362cf705159172334eece7d2b52eddf7240a1a5",
+    "neqo-client": "495378d2bc27d2f7134602b9b470722f85a41b1800d6dc43ff888fc9938f7df9",
+    "neqo-server": "0b90c1315966f972b45b6cd4cc325b5bc99e73ecd01e09328bccb2b154e20c7e"
+  },
+  "runs": [
+    {
+      "direction": "baseline",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.365,
+      "post_client_verification_and_retirement_seconds": 0.046,
+      "elapsed_seconds": 0.411,
+      "files": [
+        {
+          "name": "10485760",
+          "bytes": 10485760,
+          "expected_sha256": "e5b844cc57f57094ea4585e235f36c78c1cd222262bb89d53c94dcb4d6b3e55d",
+          "received_sha256": "e5b844cc57f57094ea4585e235f36c78c1cd222262bb89d53c94dcb4d6b3e55d"
+        }
+      ],
+      "proxy": {
+        "to_server_received": 467,
+        "peak_queued_bytes": 343688,
+        "to_server_forwarded": 467,
+        "to_client_received": 817,
+        "to_client_forwarded": 817,
+        "actual_rebindings": 2
+      },
+      "connections": null,
+      "resources_retired": null,
+      "idle_expired_connections": null,
+      "lifecycle_closed": null,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0,
+      "observed_paths": [
+        [
+          "127.0.0.1",
+          40941
+        ],
+        [
+          "127.0.0.2",
+          53053
+        ],
+        [
+          "127.0.0.3",
+          44947
+        ]
+      ],
+      "peer_matched_path_responses": 4
+    },
+    {
+      "direction": "forward",
+      "client_exit": 0,
+      "client_elapsed_seconds": 1.295,
+      "post_client_verification_and_retirement_seconds": 0.036,
+      "elapsed_seconds": 1.331,
+      "files": [
+        {
+          "name": "10485760",
+          "bytes": 10485760,
+          "expected_sha256": "e5b844cc57f57094ea4585e235f36c78c1cd222262bb89d53c94dcb4d6b3e55d",
+          "received_sha256": "e5b844cc57f57094ea4585e235f36c78c1cd222262bb89d53c94dcb4d6b3e55d"
+        }
+      ],
+      "proxy": {
+        "to_server_received": 558,
+        "peak_queued_bytes": 279721,
+        "to_server_forwarded": 558,
+        "to_client_received": 7518,
+        "to_client_forwarded": 7518,
+        "actual_rebindings": 2
+      },
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0,
+      "observed_paths": [
+        [
+          "127.0.0.1",
+          40512
+        ],
+        [
+          "127.0.0.2",
+          36861
+        ],
+        [
+          "127.0.0.3",
+          38947
+        ]
+      ],
+      "peer_matched_path_responses": 4
+    },
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 13.01,
+      "post_client_verification_and_retirement_seconds": 0.036,
+      "elapsed_seconds": 13.046,
+      "files": [
+        {
+          "name": "10485760",
+          "bytes": 10485760,
+          "expected_sha256": "16400e243e3bfb6c3ec3e4d6312d8cccc59c75ff57e5442003faa517f8356d9c",
+          "received_sha256": "16400e243e3bfb6c3ec3e4d6312d8cccc59c75ff57e5442003faa517f8356d9c"
+        }
+      ],
+      "proxy": {
+        "to_server_received": 5192,
+        "peak_queued_bytes": 5684,
+        "to_server_forwarded": 5192,
+        "to_client_received": 10250,
+        "to_client_forwarded": 10250,
+        "actual_rebindings": 2
+      },
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0,
+      "observed_paths": [
+        [
+          "127.0.0.1",
+          53744
+        ],
+        [
+          "127.0.0.2",
+          56712
+        ],
+        [
+          "127.0.0.3",
+          49015
+        ]
+      ],
+      "peer_matched_path_responses": 4,
+      "candidate_server_exit": 0
+    }
+  ],
+  "transfer_observations": [
+    {
+      "direction": "baseline",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.365,
+      "expected_files": 1,
+      "matching_files": 1,
+      "retirement_verified": false
+    },
+    {
+      "direction": "forward",
+      "client_exit": 0,
+      "client_elapsed_seconds": 1.295,
+      "expected_files": 1,
+      "matching_files": 1,
+      "retirement_verified": true
+    },
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 13.01,
+      "expected_files": 1,
+      "matching_files": 1,
+      "retirement_verified": true
+    }
+  ]
+}

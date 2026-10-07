@@ -29,6 +29,7 @@ impl<'scope> Permission<'scope> {
 }
 
 pub(crate) struct Exchange<'a, 'gate, 'scope> {
+    pub(super) protocol: crate::http3::Protocol,
     control: &'a Control<'gate, 'scope>,
     scope: &'scope ApplicationKeyScope,
     pub(super) peer: Inbox<Permission<'scope>>,
@@ -39,8 +40,10 @@ impl<'a, 'gate, 'scope> Exchange<'a, 'gate, 'scope> {
     pub(crate) const fn new(
         control: &'a Control<'gate, 'scope>,
         scope: &'scope ApplicationKeyScope,
+        protocol: crate::http3::Protocol,
     ) -> Self {
         Self {
+            protocol,
             control,
             scope,
             peer: Inbox::new(),
@@ -91,7 +94,7 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
                 offered.recv::<p::SourceFailed>().await?;
                 return Ok::<_, Error>(Some(CloseKind::Local {
                     application: true,
-                    code: 0x100,
+                    code: exchange.protocol.failure_code(),
                 }));
             }
             label => return Err(Error::UnexpectedLabel(label)),
@@ -115,7 +118,7 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
                 {
                     return Ok(Some(CloseKind::Local {
                         application: true,
-                        code: 0,
+                        code: exchange.protocol.success_code(),
                     }));
                 }
             }
@@ -187,15 +190,15 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
     match reason {
         Some(CloseKind::Local {
             application: true,
-            code: 0,
-        }) => match side {
+            code,
+        }) if code == exchange.protocol.success_code() => match side {
             Side::Client => endpoint.send::<p::ResponsesComplete>(&()).await?,
             Side::Server => endpoint.send::<p::FilesComplete>(&()).await?,
         },
         Some(CloseKind::Local {
             application: true,
-            code: 0x100,
-        }) => {
+            code,
+        }) if code == exchange.protocol.failure_code() => {
             endpoint.send::<p::ApplicationFailed>(&()).await?;
         }
         Some(CloseKind::IdleExpired) => {
@@ -239,7 +242,10 @@ pub(crate) async fn receive<'scope>(
                 44 => {
                     offered.recv::<p::PeerClose>().await?;
                     let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
-                    if !matches!(permission.kind, CloseKind::Peer { .. }) {
+                    if !matches!(
+                        permission.kind,
+                        CloseKind::Peer { .. } | CloseKind::PeerApplication { .. }
+                    ) {
                         return Err(Error::Binding);
                     }
                     exchange.apply(&permission)?;
@@ -267,8 +273,8 @@ pub(crate) async fn receive<'scope>(
                         permission.kind,
                         CloseKind::Local {
                             application: true,
-                            code: 0x100
-                        }
+                            code
+                        } if code == exchange.protocol.failure_code()
                     ) {
                         return Err(Error::Binding);
                     }
@@ -298,8 +304,8 @@ pub(crate) async fn receive<'scope>(
                         permission.kind,
                         CloseKind::Local {
                             application: true,
-                            code: 0
-                        }
+                            code
+                        } if code == exchange.protocol.success_code()
                     ) {
                         return Err(Error::Binding);
                     }
@@ -313,8 +319,8 @@ pub(crate) async fn receive<'scope>(
                         permission.kind,
                         CloseKind::Local {
                             application: true,
-                            code: 0
-                        }
+                            code
+                        } if code == exchange.protocol.success_code()
                     ) {
                         return Err(Error::Binding);
                     }
@@ -328,8 +334,8 @@ pub(crate) async fn receive<'scope>(
                         permission.kind,
                         CloseKind::Local {
                             application: true,
-                            code: 0x100
-                        }
+                            code
+                        } if code == exchange.protocol.failure_code()
                     ) {
                         return Err(Error::Binding);
                     }

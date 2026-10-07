@@ -1,20 +1,20 @@
 {
-  "request": "Qualify prior 34 cells plus locally validated v2, NAT rebinding and preferred-address migration directions",
-  "requested_at": "2026-10-07T01:56:00Z",
+  "request": "Qualify all 44 case/direction cells, including native-validated HTTP3",
+  "requested_at": "2026-10-07T06:36:08Z",
   "scope": [
     "same source commit across all qualification groups",
-    "21 mandatory unchanged reference self-controls",
-    "42 actual candidate client/server verdicts"
+    "22 mandatory unchanged reference self-controls",
+    "44 actual candidate client/server verdicts"
   ],
-  "approval": "User requested implementation of remaining cases, both local directions before push and CI, and authorized publication.",
-  "local_evidence": "docs/direct-locals.md",
+  "approval": "User requested separate core and QUIC handoff ZIPs with push instructions. The receiving operator must follow the user-authorized publication scope.",
+  "local_evidence": "docs/remaining-interop.md",
   "candidate_directions": [
     "client",
     "server"
   ],
-  "qualification": "All 42 distinct candidate results and 21 controls must come from the same source/run. The unchanged pinned runner, original phase deadlines and capacities apply. Local tests do not count as official passes. HTTP3 is outside this intermediate matrix. Existing certificate_depth failures remain unqualified.",
+  "qualification": "All 44 distinct candidate results and 22 controls must come from the same source/run. Preserve the unchanged pinned runner, original deadlines and capacities. Local tests are not official passes. Import the core parallel-offer repair as an exact committed snapshot before running this matrix.",
   "formal_models": false,
-  "candidate_case_direction_results": 42,
+  "candidate_case_direction_results": 44,
   "groups": [
     {
       "name": "neqo-basic",
@@ -83,6 +83,13 @@
       "reference_implementation": "neqo",
       "cases": [
         "connectionmigration"
+      ]
+    },
+    {
+      "name": "neqo-http3",
+      "reference_implementation": "neqo",
+      "cases": [
+        "http3"
       ]
     }
   ]

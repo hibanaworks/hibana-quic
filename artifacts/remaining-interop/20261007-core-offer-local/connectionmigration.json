@@ -1,0 +1,127 @@
+{
+  "scope": "native-peer-diagnostics",
+  "official_interop_pass": false,
+  "scenario": "connectionmigration",
+  "server_retry": false,
+  "client_retry": false,
+  "impairment": null,
+  "ordinary_files": 1,
+  "coverage_gaps": [
+    "not ns-3 topology or exact stochastic impairment",
+    "no packet-trace verdicts",
+    "forward ordinary-Neqo generated-zero payloads"
+  ],
+  "binaries": {
+    "hq": "cb008ff6176ebf12c826d8db8362cf705159172334eece7d2b52eddf7240a1a5",
+    "neqo-client": "495378d2bc27d2f7134602b9b470722f85a41b1800d6dc43ff888fc9938f7df9",
+    "neqo-server": "0b90c1315966f972b45b6cd4cc325b5bc99e73ecd01e09328bccb2b154e20c7e"
+  },
+  "runs": [
+    {
+      "direction": "baseline",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.023,
+      "post_client_verification_and_retirement_seconds": 0.009,
+      "elapsed_seconds": 0.032,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        }
+      ],
+      "proxy": null,
+      "connections": null,
+      "resources_retired": null,
+      "idle_expired_connections": null,
+      "lifecycle_closed": null,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0
+    },
+    {
+      "direction": "forward",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.156,
+      "post_client_verification_and_retirement_seconds": 0.008,
+      "elapsed_seconds": 0.164,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        }
+      ],
+      "proxy": null,
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0,
+      "validated_paths": 1,
+      "preferred_address_used": true
+    },
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 2.727,
+      "post_client_verification_and_retirement_seconds": 0.007,
+      "elapsed_seconds": 2.734,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a",
+          "received_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a"
+        }
+      ],
+      "proxy": null,
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0,
+      "candidate_server_exit": 0,
+      "validated_paths": 1,
+      "preferred_address_used": false
+    }
+  ],
+  "transfer_observations": [
+    {
+      "direction": "baseline",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.023,
+      "expected_files": 1,
+      "matching_files": 1,
+      "retirement_verified": false
+    },
+    {
+      "direction": "forward",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.156,
+      "expected_files": 1,
+      "matching_files": 1,
+      "retirement_verified": true
+    },
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 2.727,
+      "expected_files": 1,
+      "matching_files": 1,
+      "retirement_verified": true
+    }
+  ]
+}

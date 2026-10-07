@@ -12,10 +12,10 @@ mod direct_bootstrap;
 mod direct_wire;
 #[path = "support/files.rs"]
 mod files;
-#[path = "support/http3_files.rs"]
-mod http3_files;
 #[path = "support/host_files.rs"]
 mod host_files;
+#[path = "support/http3_files.rs"]
+mod http3_files;
 #[path = "support/parallel_server.rs"]
 mod parallel_server;
 #[path = "../pem.rs"]
@@ -638,6 +638,7 @@ async fn run_async<const S: usize, const T: usize>(
 ) -> Result<Report> {
     match options {
         Options::Client {
+            protocol,
             version,
             connect,
             server_name,
@@ -681,6 +682,7 @@ async fn run_async<const S: usize, const T: usize>(
                             reactor,
                             clock,
                             Options::Client {
+                                protocol,
                                 version,
                                 connect,
                                 server_name,
@@ -771,7 +773,7 @@ async fn run_async<const S: usize, const T: usize>(
             while let Some(files) = groups.next() {
                 let files = files
                     .map(|files| {
-                        host_files::Client::new(Default::default(), &files.downloads, files.requests)
+                        host_files::Client::new(protocol, &files.downloads, files.requests)
                             .map(direct_bootstrap::Files::Client)
                     })
                     .transpose()?;
@@ -815,7 +817,7 @@ async fn run_async<const S: usize, const T: usize>(
                         .map_err(|_| "system clock precedes Unix epoch")?,
                 );
                 let config = ClientConfig {
-                    protocol: Default::default(),
+                    protocol,
                     version,
                     server_name: &server_name,
                     trust_anchors: &anchors,
@@ -930,6 +932,7 @@ async fn run_async<const S: usize, const T: usize>(
             previous.ok_or_else(|| "no client connection executed".into())
         }
         Options::Server {
+            protocol,
             preferred_port,
             version,
             require_retry,
@@ -1026,7 +1029,8 @@ async fn run_async<const S: usize, const T: usize>(
                 let files = files
                     .as_ref()
                     .map(|files| {
-                        host_files::FileServer::new(Default::default(), 
+                        host_files::FileServer::new(
+                            protocol,
                             &files.www,
                             files.max_requests.unwrap_or(host_files::MAX_REQUESTS),
                         )
@@ -1096,7 +1100,7 @@ async fn run_async<const S: usize, const T: usize>(
                     parameters.extend_from_slice(&encoded[..len]);
                 }
                 let config = ServerConfig {
-                    protocol: Default::default(),
+                    protocol,
                     version,
                     certificate_chain: &chain,
                     signing_key: &key,

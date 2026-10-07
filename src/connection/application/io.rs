@@ -109,7 +109,7 @@ impl<const CHUNK: usize, B> State<'_, CHUNK, B> {
         let total = self
             .completed_total
             .get()
-            .checked_add(1)
+            .checked_add(usize::from(stream.id() & 2 == 0))
             .ok_or(Error::Capacity)?;
         *slot = Some(stream);
         self.completed_total.set(total);
@@ -708,6 +708,7 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     sink: &mut impl StreamSink,
     reclaim: &super::reclaim::Exchange<'book>,
+    auxiliary: Option<&super::http3::Ingress>,
 ) -> Result<(), Error> {
     loop {
         let offered = endpoint.offer().await?;
@@ -718,6 +719,47 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                     Ok(Delivery::Interrupted)
                 } else if state.is_complete(stream_id) {
                     Ok(Delivery::Fin)
+                } else if stream_id & 2 != 0 {
+                    async {
+                        use crate::http3::control as h3;
+                        let auxiliary = auxiliary.ok_or(Error::Application)?;
+                        let stream = ready_handle(app, stream_id)?;
+                        let mut bytes = [0; RX];
+                        let read = app
+                            .try_borrow_mut()
+                            .map_err(|_| Error::Binding)?
+                            .read(stream, &mut bytes)?;
+                        control.changed()?;
+                        if read.reset.is_some() {
+                            return Err(Error::Application);
+                        }
+                        auxiliary.append(stream, &bytes[..read.len], read.fin)?;
+                        while let Some(frame) = auxiliary.next_frame(stream)? {
+                            auxiliary
+                                .frame
+                                .put(Some(frame))
+                                .map_err(|_| Error::Binding)?;
+                            endpoint.send::<h3::Input>(&()).await?;
+                            let offered = endpoint.offer().await?;
+                            match offered.label() {
+                                245 => {
+                                    offered.recv::<h3::SettingsStored>().await?;
+                                }
+                                246 => {
+                                    offered.recv::<h3::Stored>().await?;
+                                }
+                                label => return Err(Error::UnexpectedLabel(label)),
+                            }
+                        }
+                        if read.fin {
+                            state.complete(stream)?;
+                            control.changed()?;
+                            Ok(Delivery::Fin)
+                        } else {
+                            Ok(Delivery::More)
+                        }
+                    }
+                    .await
                 } else {
                     deliver(control, state, app, sink, stream_id).await
                 };
@@ -750,6 +792,21 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
             }
             9 => {
                 offered.recv::<p::ReceiveRetire>().await?;
+                if let Some(auxiliary) = auxiliary {
+                    use crate::http3::control as h3;
+                    auxiliary.frame.put(None).map_err(|_| Error::Binding)?;
+                    endpoint.send::<h3::Input>(&()).await?;
+                    let offered = endpoint.offer().await?;
+                    match offered.label() {
+                        247 => {
+                            offered.recv::<h3::EarlyClosed>().await?;
+                        }
+                        248 => {
+                            offered.recv::<h3::Closed>().await?;
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    }
+                }
                 endpoint.send::<p::InputReclaimsDone>(&()).await?;
                 endpoint.recv::<p::InputReclaimsClosed>().await?;
                 endpoint.send::<p::ReceiveRetired>(&()).await?;
@@ -810,6 +867,7 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut Sender<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
     reclaim: &super::reclaim::Exchange<'book>,
+    auxiliary: Option<&super::http3::Ingress>,
 ) -> Result<(), Error> {
     let mut pending: [Option<PendingRequest>; MAX_LIVE_STREAMS] =
         [const { None }; MAX_LIVE_STREAMS];
@@ -822,6 +880,47 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                     Ok(Delivery::Interrupted)
                 } else if state.is_complete(stream_id) {
                     Ok(Delivery::Fin)
+                } else if stream_id & 2 != 0 {
+                    async {
+                        use crate::http3::control as h3;
+                        let auxiliary = auxiliary.ok_or(Error::Application)?;
+                        let stream = ready_handle(app, stream_id)?;
+                        let mut bytes = [0; RX];
+                        let read = app
+                            .try_borrow_mut()
+                            .map_err(|_| Error::Binding)?
+                            .read(stream, &mut bytes)?;
+                        control.changed()?;
+                        if read.reset.is_some() {
+                            return Err(Error::Application);
+                        }
+                        auxiliary.append(stream, &bytes[..read.len], read.fin)?;
+                        while let Some(frame) = auxiliary.next_frame(stream)? {
+                            auxiliary
+                                .frame
+                                .put(Some(frame))
+                                .map_err(|_| Error::Binding)?;
+                            endpoint.send::<h3::Input>(&()).await?;
+                            let offered = endpoint.offer().await?;
+                            match offered.label() {
+                                245 => {
+                                    offered.recv::<h3::SettingsStored>().await?;
+                                }
+                                246 => {
+                                    offered.recv::<h3::Stored>().await?;
+                                }
+                                label => return Err(Error::UnexpectedLabel(label)),
+                            }
+                        }
+                        if read.fin {
+                            state.complete(stream)?;
+                            control.changed()?;
+                            Ok(Delivery::Fin)
+                        } else {
+                            Ok(Delivery::More)
+                        }
+                    }
+                    .await
                 } else {
                     receive_request(control, state, app, requests, &mut pending, stream_id).await
                 };
@@ -854,6 +953,21 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
             }
             9 => {
                 offered.recv::<p::ReceiveRetire>().await?;
+                if let Some(auxiliary) = auxiliary {
+                    use crate::http3::control as h3;
+                    auxiliary.frame.put(None).map_err(|_| Error::Binding)?;
+                    endpoint.send::<h3::Input>(&()).await?;
+                    let offered = endpoint.offer().await?;
+                    match offered.label() {
+                        247 => {
+                            offered.recv::<h3::EarlyClosed>().await?;
+                        }
+                        248 => {
+                            offered.recv::<h3::Closed>().await?;
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    }
+                }
                 requests.close();
                 endpoint.send::<p::InputReclaimsDone>(&()).await?;
                 endpoint.recv::<p::InputReclaimsClosed>().await?;
@@ -1534,7 +1648,8 @@ mod interrupted_delivery_tests {
                     &state,
                     &app,
                     &mut sink,
-                    &reclaim
+                    &reclaim,
+                    None
                 ),
                 super::super::reclaim::input(&mut collector, &reclaim, &control),
             ),

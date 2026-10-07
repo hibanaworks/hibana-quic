@@ -547,8 +547,12 @@ pub(crate) async fn run<
                                                     .map_err(connection::Error::from)?;
                                             }
                                         }
-                                        Frame::ConnectionClose { error_code, .. } => {
-                                            return Ok(Some(error_code));
+                                        Frame::ConnectionClose {
+                                            error_code,
+                                            frame_type,
+                                            ..
+                                        } => {
+                                            return Ok(Some((frame_type.is_none(), error_code)));
                                         }
                                         Frame::NewToken { .. } if config.side == Side::Client => {
                                             // This fixed-path request session does not save resumption or
@@ -673,7 +677,7 @@ pub(crate) async fn run<
                         _ => Ok(None),
                     };
                     match result {
-                        Ok(Some(code)) => {
+                        Ok(Some((application, code))) => {
                             // Preserve delivery of already authenticated buffered FINs
                             // before publishing the actual peer-close observation.
                             async {
@@ -725,7 +729,11 @@ pub(crate) async fn run<
                                 .peer
                                 .put(termination::Permission {
                                     scope,
-                                    kind: CloseKind::Peer { code },
+                                    kind: if application {
+                                        CloseKind::PeerApplication { code }
+                                    } else {
+                                        CloseKind::Peer { code }
+                                    },
                                 })
                                 .map_err(|_| Error::Binding)?;
 
@@ -875,7 +883,7 @@ pub(crate) async fn run<
                     scope,
                     kind: CloseKind::Local {
                         application: true,
-                        code: 0x100,
+                        code: termination.protocol.failure_code(),
                     },
                 })
                 .map_err(|_| Error::Binding)?;
@@ -913,7 +921,7 @@ fn old<'book, 'scope, const N: usize>(
     book: &mut recovery::Rx<'book, 'scope, N>,
     now: u64,
     ecn: Option<crate::ecn::Codepoint>,
-) -> Result<Option<u64>, Error> {
+) -> Result<Option<(bool, u64)>, Error> {
     let Header::Long {
         version,
         kind,
@@ -1012,7 +1020,11 @@ fn old<'book, 'scope, const N: usize>(
                         return Err(connection::Error::UnsupportedFrame.into());
                     }
                 }
-                Frame::ConnectionClose { error_code, .. } => return Ok(Some(error_code)),
+                Frame::ConnectionClose {
+                    error_code,
+                    frame_type,
+                    ..
+                } => return Ok(Some((frame_type.is_none(), error_code))),
                 Frame::Padding { .. } | Frame::Ping | Frame::Ack { .. } => {}
                 _ => return Err(connection::Error::UnsupportedFrame.into()),
             }

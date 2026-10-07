@@ -99,8 +99,15 @@ class EndpointCommand(unittest.TestCase):
                 self.assertNotIn('--connections', args)
                 self.assertEqual(args.count('--request'), 2)
 
+    def test_http3_selects_explicit_alpn_policy_in_both_roles(self):
+        for role in ('client', 'server'):
+            env = self.env(); env.update(ROLE=role, TESTCASE='http3')
+            args = module.command(env, resolve)
+            self.assertEqual(args[args.index('--http') + 1], '3')
+            self.assertNotIn('--session', args)
+
     def test_unsupported_is_explicit(self):
-        for case in ('http3', 'unknown'):
+        for case in ('unknown', 'unimplemented-extension'):
             with self.assertRaises(module.Unsupported):
                 module.command({'ROLE':'client', 'TESTCASE':case}, resolve)
     def test_extra_params_not_evaluated(self):
