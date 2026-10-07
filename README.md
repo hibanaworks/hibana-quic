@@ -54,10 +54,10 @@ alone. Passing interop does not complete this migration.
 ## Status
 
 This is **not production-ready** and is not yet a fully qualified QUIC stack.
-The latest complete CI attempt on `b7c11ee` reports **43 of 44 candidate cells
+The latest complete CI attempt on `c586426` reports **43 of 44 candidate cells
 passed**, with client `handshakeloss` still failed. All 44 cells ran and all
 22 reference controls passed. See
-[run 37619334396](https://github.com/hibanaworks/hibana-quic/actions/runs/37619334396).
+[run 37633239843](https://github.com/hibanaworks/hibana-quic/actions/runs/37633239843).
 This is not a passing qualification of all 44 cells. Local fixes and new tests
 still require qualification on their exact resulting commit.
 

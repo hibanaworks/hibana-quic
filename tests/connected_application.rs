@@ -578,6 +578,7 @@ struct Path {
     reader: RefCell<Option<Waker>>,
     writer: RefCell<Option<Waker>>,
     accepted: Cell<usize>,
+    short_packets: Cell<usize>,
     delivered: Cell<usize>,
     dropped: Cell<usize>,
 }
@@ -589,6 +590,7 @@ impl Path {
             reader: RefCell::new(None),
             writer: RefCell::new(None),
             accepted: Cell::new(0),
+            short_packets: Cell::new(0),
             delivered: Cell::new(0),
             dropped: Cell::new(0),
         }
@@ -646,6 +648,7 @@ enum Loss {
     AllHandshakeDone,
     HandshakeBeforeServerHello,
     HandshakeBeforeAnyInitial,
+    LostConfirmationAndFirstApplicationFlight,
 }
 struct Tx<'a, 'scope> {
     path: &'a Path,
@@ -668,6 +671,11 @@ impl DatagramTx for Tx<'_, '_> {
             }
             assert!(bytes.len() <= DATAGRAM);
             self.path.accepted.set(self.path.accepted.get() + 1);
+            if bytes[0] & 0x80 == 0 {
+                self.path
+                    .short_packets
+                    .set(self.path.short_packets.get() + 1);
+            }
             let classification = self
                 .inspector
                 .as_mut()
@@ -700,6 +708,13 @@ impl DatagramTx for Tx<'_, '_> {
                 Loss::HandshakeDone | Loss::AllHandshakeDone => classification
                     .as_ref()
                     .is_some_and(|packet| packet.handshake_done),
+                Loss::LostConfirmationAndFirstApplicationFlight => {
+                    if let Some(packet) = classification.as_ref() {
+                        packet.handshake_ack || packet.handshake_done
+                    } else {
+                        bytes[0] & 0x80 == 0 && self.path.short_packets.get() <= 3
+                    }
+                }
                 Loss::HandshakeBeforeAnyInitial => {
                     let initial = matches!(
                         hibana_quic::packet::PacketIter::new(bytes, CLIENT_ID.len(), 1)
@@ -730,6 +745,7 @@ impl DatagramTx for Tx<'_, '_> {
                         | Loss::AllHandshakeDone
                         | Loss::HandshakeBeforeServerHello
                         | Loss::HandshakeBeforeAnyInitial
+                        | Loss::LostConfirmationAndFirstApplicationFlight
                         | Loss::ServerApplicationAcksPersistentServer
                         | Loss::ServerPacketBurst { .. }
                         | Loss::ClientPacketBurst { .. }
@@ -1037,6 +1053,11 @@ fn reordered_handshake_ciphertext_survives_missing_server_hello_and_retransmissi
 #[test]
 fn handshake_ciphertext_before_any_authenticated_initial_survives_retry_prefix() {
     run_connection(3, Loss::HandshakeBeforeAnyInitial);
+}
+
+#[test]
+fn handshake_pto_also_recovers_lost_application_before_confirmation() {
+    run_connection(1, Loss::LostConfirmationAndFirstApplicationFlight);
 }
 
 fn run_connection(count: usize, loss: Loss) {
@@ -1358,6 +1379,7 @@ fn connection_case_with_failure(
             Loss::ClientPacketBurst { .. }
                 | Loss::DuplexPacketMask { .. }
                 | Loss::MissingEcnMetadata
+                | Loss::LostConfirmationAndFirstApplicationFlight
                 | Loss::BleachedEcn
         ) {
             loss
@@ -1587,7 +1609,9 @@ fn connection_case_with_failure(
     }
     assert!(to_client.accepted.get() >= to_client.delivered.get());
     assert!(to_server.accepted.get() >= to_server.delivered.get());
-    if let Loss::ClientPacketBurst { count, .. } = loss {
+    if matches!(loss, Loss::LostConfirmationAndFirstApplicationFlight) {
+        assert_eq!(to_server.dropped.get(), 3);
+    } else if let Loss::ClientPacketBurst { count, .. } = loss {
         assert!(to_server.dropped.get() > 0 && to_server.dropped.get() <= count);
     } else if let Loss::DuplexPacketMask { client, .. } = loss {
         assert!(to_server.dropped.get() <= client.count_ones() as usize);
@@ -1601,6 +1625,7 @@ fn connection_case_with_failure(
             | Loss::AllHandshakeDone
             | Loss::HandshakeBeforeServerHello
             | Loss::HandshakeBeforeAnyInitial
+            | Loss::LostConfirmationAndFirstApplicationFlight
     ) {
         assert!(to_client.dropped.get() > 0);
     } else if let Loss::DuplexPacketMask { server, .. } = loss {

@@ -2010,6 +2010,25 @@ fn settle<const B: usize>(
         }
     }
     n.pending[index] -= 1;
+    // RFC 9002 section 6.2.4: a Handshake PTO should also probe in-flight
+    // Application Data. Allocate the remaining existing credit only after
+    // the required Handshake probe has actually been accepted. No new timer,
+    // confirmation flag, loss declaration, or additional credit is created.
+    if accepted_at.is_some()
+        && reservation.probe_epoch == Some(n.probe_epoch)
+        && n.probe_space == Some(PacketNumberSpace::Handshake)
+        && packet.space == PacketNumberSpace::Handshake
+        && n.probe_credits == 1
+        && n.pending.iter().all(|pending| *pending == 0)
+        && n.side == Side::Client
+        && !n.retired_space[2]
+        && n.ledger.outstanding_sent().any(|sent| {
+            sent.ack_eliciting && n.ledger.sent_kind(sent.packet) == Some(PacketKind::OneRtt)
+        })
+    {
+        n.probe_space = Some(PacketNumberSpace::ApplicationData);
+        n.probe_minimum = 0;
+    }
     if accepted_at.is_some() {
         // A later-PN ACK may have arrived while this record was still Reserved.
         // Re-evaluate newly accepted history using the observation bound, with
@@ -3358,6 +3377,71 @@ mod tests {
         tx.retry_initial(100).unwrap();
         assert_eq!(tx.flight_data(flight).unwrap().bytes(), b"retained");
         assert_eq!(tx.snapshot().next_packet_number[0], Some(1));
+        retirement.disarm();
+    }
+
+    #[test]
+    fn handshake_probe_publication_hands_second_credit_to_one_rtt_and_cancel_preserves_it() {
+        book!(book, scope, installation, arena, Side::Client, 722);
+        let (mut tx, _, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let app = tx.reserve_application(&[1], 0, 64, false, 0).unwrap();
+        publication
+            .settle(Completion::from_adapter(
+                app,
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
+            .unwrap();
+        let handshake = tx
+            .reserve(Level::Handshake, 64, None, true, false, false, 0)
+            .unwrap();
+        publication
+            .settle(Completion::from_adapter(
+                handshake,
+                Some(0),
+                crate::ecn::Codepoint::NotEct,
+            ))
+            .unwrap();
+        let deadline = clock
+            .update_application(0, [false, true, true])
+            .unwrap()
+            .unwrap();
+        let at = deadline.at();
+        clock.expire(deadline, at).unwrap();
+        assert_eq!(tx.pending_probe(), Some(Level::Handshake));
+        let cancelled = tx
+            .reserve(Level::Handshake, 64, None, true, false, true, at)
+            .unwrap();
+        assert_eq!(tx.pending_probe(), Some(Level::Handshake));
+        publication.cancel(cancelled).unwrap();
+        assert_eq!(tx.snapshot().probe_credits, 2);
+        let first = tx
+            .reserve(Level::Handshake, 64, None, true, false, true, at)
+            .unwrap();
+        publication
+            .settle(Completion::from_adapter(
+                first,
+                Some(at),
+                crate::ecn::Codepoint::NotEct,
+            ))
+            .unwrap();
+        assert_eq!(tx.pending_probe(), Some(Level::OneRtt));
+        assert_eq!(tx.snapshot().probe_credits, 1);
+        let cancelled = tx.reserve_application(&[1], 0, 64, true, at).unwrap();
+        publication.cancel(cancelled).unwrap();
+        assert_eq!(tx.pending_probe(), Some(Level::OneRtt));
+        assert_eq!(tx.snapshot().probe_credits, 1);
+        let second = tx.reserve_application(&[1], 0, 64, true, at).unwrap();
+        publication
+            .settle(Completion::from_adapter(
+                second,
+                Some(at),
+                crate::ecn::Codepoint::NotEct,
+            ))
+            .unwrap();
+        assert_eq!(tx.pending_probe(), None);
+        assert_eq!(tx.snapshot().probe_credits, 0);
+        assert!(tx.reserve_application(&[1], 0, 64, true, at).is_err());
         retirement.disarm();
     }
 
