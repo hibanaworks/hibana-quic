@@ -53,7 +53,7 @@ jobs:
           INTEROP_DIAGNOSTIC_DIRECTIONS: ${{ inputs.diagnostic_directions }}
         run: |
           python3 ci/audit_source.py --check
-          python3 -m unittest discover -s tests -p 'test_ci*.py'
+          env -u INTEROP_DIAGNOSTIC_CASES -u INTEROP_DIAGNOSTIC_DIRECTIONS python3 -m unittest discover -s tests -p 'test_ci*.py'
           groups=$(ROOT="$PWD" python3 ci/run_in_tools.py --matrix)
           echo "groups=$groups" >> "$GITHUB_OUTPUT"
           echo "source_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
