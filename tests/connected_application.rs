@@ -645,6 +645,7 @@ enum Loss {
     HandshakeDone,
     AllHandshakeDone,
     HandshakeBeforeServerHello,
+    HandshakeBeforeAnyInitial,
 }
 struct Tx<'a, 'scope> {
     path: &'a Path,
@@ -699,6 +700,22 @@ impl DatagramTx for Tx<'_, '_> {
                 Loss::HandshakeDone | Loss::AllHandshakeDone => classification
                     .as_ref()
                     .is_some_and(|packet| packet.handshake_done),
+                Loss::HandshakeBeforeAnyInitial => {
+                    let initial = matches!(
+                        hibana_quic::packet::PacketIter::new(bytes, CLIENT_ID.len(), 1)
+                            .ok()
+                            .and_then(|mut p| p.next())
+                            .and_then(Result::ok)
+                            .map(|p| p.header),
+                        Some(hibana_quic::packet::Header::Long {
+                            kind: hibana_quic::packet::LongType::Initial,
+                            ..
+                        })
+                    );
+                    (initial && self.inspector.as_ref().unwrap().handshake_crypto == 0)
+                        || (classification.as_ref().is_some_and(|p| p.handshake_crypto)
+                            && self.inspector.as_ref().unwrap().handshake_crypto > 1)
+                }
                 Loss::HandshakeBeforeServerHello => {
                     (classification.as_ref().is_some_and(|p| p.initial_crypto)
                         && self.path.dropped.get() == 0)
@@ -712,6 +729,7 @@ impl DatagramTx for Tx<'_, '_> {
                     Loss::ServerApplicationAcks
                         | Loss::AllHandshakeDone
                         | Loss::HandshakeBeforeServerHello
+                        | Loss::HandshakeBeforeAnyInitial
                         | Loss::ServerApplicationAcksPersistentServer
                         | Loss::ServerPacketBurst { .. }
                         | Loss::ClientPacketBurst { .. }
@@ -1014,6 +1032,11 @@ fn authenticated_one_rtt_ack_confirms_when_every_handshake_done_is_lost() {
 #[test]
 fn reordered_handshake_ciphertext_survives_missing_server_hello_and_retransmissions() {
     run_connection(3, Loss::HandshakeBeforeServerHello);
+}
+
+#[test]
+fn handshake_ciphertext_before_any_authenticated_initial_survives_retry_prefix() {
+    run_connection(3, Loss::HandshakeBeforeAnyInitial);
 }
 
 fn run_connection(count: usize, loss: Loss) {
@@ -1577,6 +1600,7 @@ fn connection_case_with_failure(
             | Loss::ServerApplicationAcksPersistentServer
             | Loss::AllHandshakeDone
             | Loss::HandshakeBeforeServerHello
+            | Loss::HandshakeBeforeAnyInitial
     ) {
         assert!(to_client.dropped.get() > 0);
     } else if let Loss::DuplexPacketMask { server, .. } = loss {

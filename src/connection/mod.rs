@@ -520,6 +520,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         .map_err(|_| Error::Binding)?;
     let message_slot = crate::bounded_tls::locals::MessageSlot::new(message_buffer);
     let (mut tx, mut rx, mut clock_book, mut publication, mut retirement) = book.split()?;
+    let mut pending_handshake = None;
     let first_response = retry_client::run(
         &mut roles.tls_tx,
         &mut roles.udp,
@@ -536,6 +537,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         clock,
         issuer,
         &mut integrity,
+        &mut pending_handshake,
     )
     .await?;
     let config = if let Some(retry) = first_response
@@ -589,6 +591,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
                     receive_initial.as_deref_mut(),
                     integrity,
                     first_response.as_ref(),
+                    pending_handshake.take(),
                     reassembly,
                     &mut rx,
                     clock,

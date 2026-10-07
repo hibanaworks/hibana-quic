@@ -25,6 +25,48 @@ pub(super) struct Response<const N: usize> {
     pub retry: Option<RetryData>,
 }
 
+// Retained ciphertext has no authenticated protocol effects. The same bounded
+// owner moves from the Retry prefix into the ordinary receive continuation.
+pub(super) fn retain_handshake<const N: usize>(
+    pending: &mut Option<([u8; N], ReceivedDatagram)>,
+    bytes: &[u8],
+    received: ReceivedDatagram,
+    config: Config<'_>,
+) {
+    if pending.is_some() {
+        return;
+    }
+    let Ok(packets) = PacketIter::new(bytes, config.local_connection_id.len(), 16) else {
+        return;
+    };
+    for packet in packets {
+        let Ok(packet) = packet else {
+            break;
+        };
+        if let Header::Long {
+            version,
+            kind: LongType::Handshake,
+            destination_id,
+            ..
+        } = packet.header
+            && version == config.version
+            && destination_id == config.local_connection_id
+            && packet.bytes.len() <= N
+        {
+            let mut retained = [0; N];
+            retained[..packet.bytes.len()].copy_from_slice(packet.bytes);
+            *pending = Some((
+                retained,
+                ReceivedDatagram {
+                    len: packet.bytes.len(),
+                    ..received
+                },
+            ));
+            break;
+        }
+    }
+}
+
 // Packet validation only. No progression or communication is hidden here.
 fn authenticated_initial<const N: usize>(
     bytes: &[u8],
@@ -91,6 +133,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
     clock: &impl Clock,
     issuer: &mut publication_gate::Issuer<'_, 'scope>,
     integrity: &mut IntegrityBudget,
+    pending_handshake: &mut Option<([u8; N], ReceivedDatagram)>,
 ) -> Result<Option<Response<N>>, Error> {
     let datagram = Inbox::<wire::Datagram<'book, N>>::new();
     let observation = Inbox::<([u8; N], ReceivedDatagram)>::new();
@@ -239,6 +282,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                         len: checked.token().len(),
                     };
                 }
+                retain_handshake(pending_handshake, &bytes[..len], received, config);
                 if authenticated_initial::<N>(&bytes[..len], config, initial, integrity)? {
                     owner.send::<p::Quiesce>(&()).await?;
                     owner.recv::<p::Quiescent>().await?;
@@ -258,6 +302,8 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             owner.recv::<p::Quiescent>().await?;
             owner.send::<p::Rekey>(&()).await?;
             owner.recv::<p::Rekeyed>().await?;
+            // Retry creates a new Initial binding; old ciphertext cannot cross it.
+            *pending_handshake = None;
             tx.retry_initial(clock.now())?;
             initial.replace_for_retry(retry.source.bytes())?;
             let peer = retry.source;
@@ -328,6 +374,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 };
                 let len = received.len;
                 rx.received_datagram(len as u64)?;
+                retain_handshake(pending_handshake, &bytes[..len], received, config);
                 if authenticated_initial::<N>(&bytes[..len], config, initial, integrity)? {
                     break (bytes, received);
                 }

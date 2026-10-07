@@ -230,6 +230,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
     mut initial_endpoint: Option<&mut Endpoint<'_, { p::INITIAL_EVENT }>>,
     integrity: IntegrityBudget,
     first_response: Option<&retry_client::Response<N>>,
+    pending_handshake: Option<([u8; N], ReceivedDatagram)>,
     reassembly: [CryptoBuffer<'_>; 2],
     book: &mut recovery::Rx<'_, 'scope, N>,
     clock: &impl Clock,
@@ -246,7 +247,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
         path: None,
         offset: 0,
         opened: [0; N],
-        pending_handshake: None,
+        pending_handshake,
     };
     if let Some(first) = first_response {
         if first.received.len > N {
