@@ -18,13 +18,20 @@ RUN python3 -c 'import re,subprocess; s=subprocess.check_output(["tshark","--ver
 # Exercise the exact unmodified pyshark + interpreter + tshark subprocess path.
 # This is a synthetic empty capture, with no traffic, keys or peer data.
 RUN python3 - <<'PYSMOKE'
-import pathlib, struct, tempfile, sys, pyshark
+import asyncio, pathlib, struct, tempfile, sys, pyshark
 assert sys.version_info[:2] == (3, 12)
+async def check(path):
+    # Use the interpreter's running loop and child watcher. Creating an
+    # implicit pyshark loop replaces that watcher with SafeChildWatcher;
+    # use one async capture lifecycle instead of iteration plus a second close.
+    capture = pyshark.FileCapture(str(path), keep_packets=False,
+                                  eventloop=asyncio.get_running_loop())
+    packets = []
+    await capture.packets_from_tshark(packets.append)
+    assert packets == []
 with tempfile.TemporaryDirectory() as directory:
     path = pathlib.Path(directory) / 'empty.pcap'
     path.write_bytes(struct.pack('<IHHIIII', 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))
-    capture = pyshark.FileCapture(str(path), keep_packets=False)
-    assert list(capture) == []
-    capture.close()
+    asyncio.run(check(path))
 print('pyshark empty-pcap parsing smoke PASSED on Python', sys.version.split()[0])
 PYSMOKE
