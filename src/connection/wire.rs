@@ -348,6 +348,7 @@ mod initial_ack_tests {
     #[test]
     fn retained_crypto_fits_the_existing_initial_ack_datagram() {
         let config = Config {
+            initial_path: None,
             version: crate::version::Version::V1,
             side: Side::Server,
             local_connection_id: b"serverid",

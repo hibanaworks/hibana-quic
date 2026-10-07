@@ -54,6 +54,7 @@ pub(crate) async fn run<
     key_update_target: u64,
     responses: &crate::path::responses::Responses,
     local_ids: &RefCell<Option<crate::path::ids::Ids<'_, 'scope>>>,
+    paths: &crate::path::validation::Paths<'_>,
     mut pending_application: Option<([u8; N], connection::ReceivedDatagram)>,
 ) -> Result<(), Error> {
     let scope = material.application.scope();
@@ -473,6 +474,11 @@ pub(crate) async fn run<
                                 if outcome.duplicate {
                                     return Ok(None);
                                 }
+                                paths.observe(
+                                    received.path,
+                                    opened.packet_number(),
+                                    packet.len(),
+                                )?;
                                 for frame in received_frames(
                                     opened.plaintext(),
                                     packet::EncryptionLevel::OneRtt,
@@ -548,15 +554,22 @@ pub(crate) async fn run<
                                         }
                                         Frame::PathChallenge { data } => {
                                             responses
-                                                .observe(*data)
+                                                .observe(*data, received.path)
                                                 .map_err(|_| Error::Capacity)?;
+                                            control.changed()?;
+                                        }
+                                        Frame::PathResponse { data } => {
+                                            paths.response(
+                                                received.path,
+                                                opened.packet_number(),
+                                                *data,
+                                            )?;
                                             control.changed()?;
                                         }
                                         Frame::Padding { .. }
                                         | Frame::Ping
                                         | Frame::Ack { .. }
-                                        | Frame::HandshakeDone
-                                        | Frame::PathResponse { .. } => {}
+                                        | Frame::HandshakeDone => {}
                                         Frame::NewToken { .. } | Frame::NewConnectionId { .. } => {
                                             return Err(connection::Error::UnsupportedFrame.into());
                                         }

@@ -432,6 +432,12 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                         {
                             ControlFlow::Break(result) => {
                                 let received = result?;
+                                if config.initial_path.is_some()
+                                    && received.path != config.initial_path
+                                {
+                                    continue;
+                                }
+
                                 if received.len > N {
                                     return Err(Error::Capacity);
                                 }
@@ -509,6 +515,18 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                                 {
                                     ControlFlow::Break(result) => {
                                         let received = result?;
+                                        if config.initial_path.is_some()
+                                            && received.path != config.initial_path
+                                        {
+                                            continue;
+                                        }
+
+                                        if config.initial_path.is_some()
+                                            && received.path != config.initial_path
+                                        {
+                                            continue;
+                                        }
+
                                         if received.len > N {
                                             return Err(Error::Capacity);
                                         }

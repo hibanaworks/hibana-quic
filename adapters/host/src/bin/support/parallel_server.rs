@@ -182,6 +182,7 @@ pub async fn run<const S: usize, const T: usize>(
                     clock,
                     admission.address,
                     Config {
+                        initial_path: Some(admission.address),
                         version,
                         side: Side::Server,
                         local_connection_id: &admission.local,

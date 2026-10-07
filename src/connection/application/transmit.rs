@@ -4,6 +4,8 @@
 //! bytes. Key borrows finish before any endpoint or adapter is awaited.
 pub(crate) mod ecn;
 use crate::ecn::protocol as ep;
+use crate::path::protocol as pp;
+use hibana::g::Message;
 
 use super::{CloseKind, Control, Error, assembly::ownership, keys, protocol as p};
 use crate::{
@@ -72,6 +74,8 @@ struct Pending<'book, 'streams, const N: usize> {
     close_deadline: Option<u64>,
     response: Option<crate::path::responses::Response>,
     cid: Option<crate::connection_id::LocalCid>,
+    path: Option<crate::path::Address>,
+    probe: Option<[u8; 8]>,
 }
 
 /// The slot transfers the actual packet on the declared Datagram edge. It
@@ -87,6 +91,7 @@ pub(crate) struct State<
     const CHUNK: usize,
 > {
     pub(crate) responses: crate::path::responses::Responses,
+    pub(crate) paths: crate::path::validation::Paths<'storage>,
     pub(crate) ids: RefCell<Option<crate::path::ids::Ids<'storage, 'scope>>>,
     pending: RefCell<Option<Pending<'book, 'streams, N>>>,
     owners: RefCell<Owners<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>>,
@@ -112,8 +117,10 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         book: recovery::Publication<'book, 'scope, N>,
         streams: application_stream::Publication<'streams, 'storage, 'scope, RX, CHUNK>,
         ids: Option<crate::path::ids::Ids<'storage, 'scope>>,
+        paths: crate::path::validation::Paths<'storage>,
     ) -> Self {
         Self {
+            paths,
             responses: crate::path::responses::Responses::new(),
             ids: RefCell::new(ids),
             pending: RefCell::new(None),
@@ -127,13 +134,16 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
     }
     fn put(
         &self,
-        packet: Pending<'book, 'streams, N>,
+        mut packet: Pending<'book, 'streams, N>,
     ) -> Result<(), (Error, Pending<'book, 'streams, N>)> {
         let Ok(mut slot) = self.pending.try_borrow_mut() else {
             return Err((Error::Binding, packet));
         };
         if slot.is_some() {
             return Err((Error::Binding, packet));
+        }
+        if packet.path.is_none() {
+            packet.path = self.paths.current().path;
         }
         *slot = Some(packet);
         Ok(())
@@ -151,6 +161,10 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         accepted_at: Option<u64>,
         ecn: crate::ecn::Codepoint,
     ) -> Result<(), Error> {
+        if let Some(at) = accepted_at {
+            self.paths
+                .accepted(packet.path, packet.probe, packet.sealed.bytes().len(), at)?;
+        }
         if accepted_at.is_some()
             && let Some(cid) = packet.cid
         {
@@ -221,6 +235,9 @@ impl<const N: usize, const RX: usize, const CHUNK: usize>
             .sealed
             .bytes()
     }
+    fn path(&self) -> Option<crate::path::Address> {
+        self.packet.as_ref().and_then(|p| p.path)
+    }
     fn complete(
         &mut self,
         accepted_at: Option<u64>,
@@ -258,6 +275,8 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
         close_deadline: _,
         response,
         cid: _,
+        path: _,
+        probe: _,
     } = packet;
     let (reservation, long_ack) = sealed.into_parts();
     // Complete both numeric owners in this synchronous turn even if one owner
@@ -387,6 +406,62 @@ pub(crate) async fn run<
                 streams.forget_lost(history_floor)?;
                 history_floor += 1;
             }
+            state
+                .paths
+                .request
+                .put(Some(crate::path::validation::Requested {
+                    pto: book.pto_duration_us()?,
+                }))
+                .map_err(|_| Error::Binding)?;
+            endpoint.send::<pp::Request>(&()).await?;
+            loop {
+                let offered = endpoint.offer().await?;
+                match offered.label() {
+                    label if label == pp::Current::LOGICAL_LABEL => {
+                        offered.recv::<pp::Current>().await?;
+                        break;
+                    }
+                    label if label == pp::Probe::LOGICAL_LABEL => {
+                        offered.recv::<pp::Probe>().await?;
+                        break;
+                    }
+                    label if label == pp::Hold::LOGICAL_LABEL => {
+                        offered.recv::<pp::Hold>().await?;
+                        break;
+                    }
+                    label if label == pp::ProbePause::LOGICAL_LABEL => {
+                        offered.recv::<pp::ProbePause>().await?;
+                        endpoint.send::<pp::ProbePaused>(&()).await?;
+                        continue;
+                    }
+                    label if label == pp::Expand::LOGICAL_LABEL => {
+                        offered.recv::<pp::Expand>().await?;
+                    }
+                    label if label == pp::Begin::LOGICAL_LABEL => {
+                        offered.recv::<pp::Begin>().await?;
+                    }
+                    label if label == pp::Resolved::LOGICAL_LABEL => {
+                        offered.recv::<pp::Resolved>().await?;
+                        let (old, new) =
+                            state.paths.migration.take().map_err(|_| Error::Binding)?;
+                        book.validated_path(old, new, clock.now())?;
+                    }
+                    label if label == pp::Abandoned::LOGICAL_LABEL => {
+                        offered.recv::<pp::Abandoned>().await?;
+                    }
+                    label => return Err(Error::UnexpectedLabel(label)),
+                }
+                endpoint.send::<pp::Settled>(&()).await?;
+                state
+                    .paths
+                    .request
+                    .put(Some(crate::path::validation::Requested {
+                        pto: book.pto_duration_us()?,
+                    }))
+                    .map_err(|_| Error::Binding)?;
+                endpoint.send::<pp::Request>(&()).await?;
+            }
+            let grant = state.paths.grant.take().map_err(|_| Error::Binding)?;
             let pending = prepare(
                 keys,
                 book,
@@ -396,9 +471,19 @@ pub(crate) async fn run<
                 clock.now(),
                 &state.responses,
                 &state.ids,
+                grant,
             )?;
             let Some(pending) = pending else {
-                control.wait(4, revision).await;
+                endpoint.send::<pp::Settled>(&()).await?;
+                if let Some(deadline) = state.paths.deadline(clock.now()) {
+                    let _ = crate::runtime::select(
+                        control.wait(4, revision),
+                        clock.wait_until(deadline),
+                    )
+                    .await;
+                } else {
+                    control.wait(4, revision).await;
+                }
                 continue;
             };
             if let Err((error, pending)) = state.put(pending) {
@@ -415,6 +500,7 @@ pub(crate) async fn run<
                     offered.recv::<p::Rejected>().await?;
                     if !control.stopping() {
                         endpoint.send::<p::Settled>(&()).await?;
+                        endpoint.send::<pp::Settled>(&()).await?;
                         control.revoke()?;
                         return Err(Error::Connection(connection::Error::Io(
                             connection::IoError::Rejected,
@@ -424,12 +510,48 @@ pub(crate) async fn run<
                 label => return Err(Error::UnexpectedLabel(label)),
             }
             endpoint.send::<p::Settled>(&()).await?;
+            endpoint.send::<pp::Settled>(&()).await?;
 
             crate::runtime::yield_now().await;
         }
         Ok::<(), Error>(())
     }
     .await;
+    state.paths.request.put(None).map_err(|_| Error::Binding)?;
+    endpoint.send::<pp::Request>(&()).await?;
+    loop {
+        let offered = endpoint.offer().await?;
+        match offered.label() {
+            label if label == pp::Pause::LOGICAL_LABEL => {
+                offered.recv::<pp::Pause>().await?;
+                endpoint.send::<pp::Paused>(&()).await?;
+                endpoint.recv::<pp::End>().await?;
+                break;
+            }
+            label if label == pp::ProbePause::LOGICAL_LABEL => {
+                offered.recv::<pp::ProbePause>().await?;
+                endpoint.send::<pp::ProbePaused>(&()).await?;
+                continue;
+            }
+            label if label == pp::End::LOGICAL_LABEL => {
+                offered.recv::<pp::End>().await?;
+                break;
+            }
+            label if label == pp::Resolved::LOGICAL_LABEL => {
+                offered.recv::<pp::Resolved>().await?;
+                let (old, new) = state.paths.migration.take().map_err(|_| Error::Binding)?;
+                book.validated_path(old, new, clock.now())?;
+            }
+            label if label == pp::Abandoned::LOGICAL_LABEL => {
+                offered.recv::<pp::Abandoned>().await?;
+            }
+            label => return Err(Error::UnexpectedLabel(label)),
+        }
+        endpoint.send::<pp::Settled>(&()).await?;
+        state.paths.request.put(None).map_err(|_| Error::Binding)?;
+        endpoint.send::<pp::Request>(&()).await?;
+    }
+    endpoint.send::<pp::Joined>(&()).await?;
     endpoint.send::<p::StopPublication>(&()).await?;
     endpoint.recv::<p::PublicationStopped>().await?;
     endpoint.send::<p::DeliveryReclaimsDone>(&()).await?;
@@ -463,7 +585,64 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     now: u64,
     responses: &crate::path::responses::Responses,
     ids: &RefCell<Option<crate::path::ids::Ids<'_, '_>>>,
+    grant: crate::path::validation::Grant,
 ) -> Result<Option<Pending<'book, 'streams, N>>, Error> {
+    if let Some(data) = grant.challenge {
+        let overhead = short_overhead(peer)?;
+        if N < 1200 || overhead + 9 > 1200 {
+            return Err(Error::Capacity);
+        }
+        let mut plaintext = Zeroizing::new([0u8; N]);
+        let mut used =
+            packet::encode_frame(&Frame::PathChallenge { data: &data }, &mut plaintext[..])?;
+        let response = responses
+            .pending()
+            .map_err(|_| Error::Binding)?
+            .filter(|r| r.path == grant.path);
+        if let Some(r) = response {
+            used += packet::encode_frame(
+                &Frame::PathResponse { data: &r.data },
+                &mut plaintext[used..],
+            )?;
+        }
+        if grant.probe_size < overhead + used || grant.probe_size > N {
+            return Err(Error::Capacity);
+        }
+        let len = grant.probe_size - overhead;
+        packet::encode_frame(
+            &Frame::Padding { length: len - used },
+            &mut plaintext[used..],
+        )?;
+        let reservation = match book.reserve_application(
+            &plaintext[..len],
+            keys.generation()?,
+            grant.probe_size as u64,
+            false,
+            now,
+        ) {
+            Ok(r) => r,
+            Err(e) if limited(&e) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let scope = reservation.scope();
+        return match keys.seal(reservation, peer.bytes(), &plaintext[..len]) {
+            Ok(sealed) => Ok(Some(Pending {
+                scope,
+                sealed: Sealed::Application(sealed),
+                stream: None,
+                acknowledgment: None,
+                close_deadline: None,
+                response,
+                cid: None,
+                path: grant.path,
+                probe: Some(data),
+            })),
+            Err((e, r)) => {
+                book.cancel(r)?;
+                Err(e.into())
+            }
+        };
+    }
     let available = keys.available_levels()?;
     // Initial/Handshake receive and recovery survive until their actual scoped
     // retirement, including ACKs and CRYPTO retransmission after TLS Finished.
@@ -507,6 +686,8 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
                 close_deadline: None,
                 response: None,
                 cid: None,
+                path: None,
+                probe: None,
             }));
         }
     }
@@ -639,7 +820,10 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
             &mut plaintext[len..],
         )?;
     }
-    let response = responses.pending().map_err(|_| Error::Binding)?;
+    let response = responses
+        .pending()
+        .map_err(|_| Error::Binding)?
+        .filter(|r| r.path.is_none() || r.path == grant.path);
     if let Some(r) = response {
         len += packet::encode_frame(
             &Frame::PathResponse { data: &r.data },
@@ -652,7 +836,7 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     let prepared = prepared.filter(|prepared| {
         len.checked_add(prepared.bytes().len())
             .and_then(|n| n.checked_add(overhead))
-            .is_some_and(|n| n <= N)
+            .is_some_and(|n| n <= N.min(book.path_datagram_limit()))
     });
     if had_prepared && prepared.is_none() && len == 0 && !probe {
         return Err(Error::Capacity);
@@ -665,6 +849,19 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     }
     if len == 0 {
         return Ok(None);
+    }
+    if response.is_some() && len + overhead < 1200 {
+        let padded = 1200usize.checked_sub(overhead).ok_or(Error::Capacity)?;
+        if padded > N {
+            return Err(Error::Capacity);
+        }
+        packet::encode_frame(
+            &Frame::Padding {
+                length: padded - len,
+            },
+            &mut plaintext[len..],
+        )?;
+        len = padded;
     }
     pad_probe(
         &mut plaintext,
@@ -707,6 +904,8 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
             close_deadline: None,
             response,
             cid,
+            path: grant.path,
+            probe: grant.challenge,
         })),
         Err((error, reservation)) => {
             let recovery_result = book.cancel(reservation);
@@ -758,6 +957,8 @@ fn long_packet<'book, 'scope, const N: usize>(
             close_deadline: None,
             response: None,
             cid: None,
+            path: None,
+            probe: None,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -801,6 +1002,8 @@ fn application_control_packet<'book, 'streams, 'scope, const N: usize>(
             close_deadline: None,
             response: None,
             cid: None,
+            path: None,
+            probe: None,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -955,7 +1158,11 @@ pub(crate) async fn publish<
                         };
                     };
                     let result = match issuer.begin() {
-                        Ok(permit) => permit.submit(socket.send(pending.bytes(), mark)).await,
+                        Ok(permit) => {
+                            permit
+                                .submit(socket.send_on_path(pending.bytes(), mark, pending.path()))
+                                .await
+                        }
                         Err(error) => Err(error),
                     };
                     let accepted_at = match result {
@@ -1287,6 +1494,8 @@ fn close_packet<'book, 'streams, const N: usize>(
             close_deadline: Some(deadline),
             response: None,
             cid: None,
+            path: None,
+            probe: None,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -1333,7 +1542,11 @@ pub(crate) async fn publish_close<
                         state,
                     };
                     let accepted_at = match crate::runtime::select(
-                        socket.send(pending.bytes(), crate::ecn::Codepoint::NotEct),
+                        socket.send_on_path(
+                            pending.bytes(),
+                            crate::ecn::Codepoint::NotEct,
+                            pending.path(),
+                        ),
                         clock.wait_until(deadline),
                     )
                     .await
@@ -1486,6 +1699,8 @@ mod tests {
             close_deadline: None,
             response: None,
             cid: None,
+            path: None,
+            probe: None,
         }
     }
 
@@ -1517,7 +1732,12 @@ mod tests {
         );
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
         let guard = actor_test_allocator::NoAlloc::start();
-        let state = State::new(book_publication, publication, None);
+        let state = State::new(
+            book_publication,
+            publication,
+            None,
+            crate::path::validation::Paths::new(None, connection::Side::Client, None),
+        );
         let packet = stream_packet(&mut book_tx, &mut tx, &mut write);
         assert!(state.put(packet).is_ok());
         assert_eq!(book_tx.snapshot().pending_publications, [0, 0, 1]);
@@ -1585,7 +1805,12 @@ mod tests {
         );
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
         let guard = actor_test_allocator::NoAlloc::start();
-        let state = State::new(book_publication, publication, None);
+        let state = State::new(
+            book_publication,
+            publication,
+            None,
+            crate::path::validation::Paths::new(None, connection::Side::Client, None),
+        );
         let packet = stream_packet(&mut book_tx, &mut tx, &mut write);
         assert!(state.put(packet).is_ok());
         let polls = Cell::new(0);
@@ -1652,7 +1877,12 @@ mod tests {
         let application_stream::Facets { publication, .. } = numbers.split();
         let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
         let guard = actor_test_allocator::NoAlloc::start();
-        let state = State::new(book_publication, publication, None);
+        let state = State::new(
+            book_publication,
+            publication,
+            None,
+            crate::path::validation::Paths::new(None, connection::Side::Client, None),
+        );
         // Burn numbers before filling the ordinary admission quota. PTO headroom
         // remains reserved, while close still requires actual ordinary retirement.
         for expected in 0..3 {
@@ -1681,13 +1911,19 @@ mod tests {
                 close_deadline: None,
                 response: None,
                 cid: None,
+                path: None,
+                probe: None,
             };
             let mut pending = InFlight {
                 packet: Some(packet),
                 state: &state,
             };
             let accepted_at = {
-                let mut send = pin!(socket.send(pending.bytes(), crate::ecn::Codepoint::NotEct));
+                let mut send = pin!(socket.send_on_path(
+                    pending.bytes(),
+                    crate::ecn::Codepoint::NotEct,
+                    pending.path()
+                ));
                 let mut context = Context::from_waker(Waker::noop());
                 match send.as_mut().poll(&mut context) {
                     Poll::Ready(Ok(at)) => at,

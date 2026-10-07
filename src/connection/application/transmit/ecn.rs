@@ -35,6 +35,7 @@ pub(crate) async fn owner<const N: usize>(
         let observed = observer.ecn_observation()?;
         if requested.is_none()
             || observed.first_failure.is_some()
+            || observed.path_changes != 0
             || observed.validated != 0
             || (observed.accepted != 0 && observed.lost == observed.accepted)
         {
@@ -64,6 +65,7 @@ pub(crate) async fn owner<const N: usize>(
     if requested.is_none() {
         endpoint.send::<e::ProbeEnd>(&()).await?;
     } else if observed.first_failure.is_some()
+        || observed.path_changes != 0
         || (observed.accepted != 0 && observed.lost == observed.accepted && observed.validated == 0)
     {
         endpoint.send::<e::ProbeFailed>(&()).await?;
@@ -98,7 +100,11 @@ pub(crate) async fn owner<const N: usize>(
         endpoint.recv::<e::Request>().await?;
         requested = exchange.requested.take().map_err(|_| Error::Binding)?;
         loop {
-            if requested.is_none() || observer.ecn_observation()?.first_failure.is_some() {
+            let observation = observer.ecn_observation()?;
+            if requested.is_none()
+                || observation.first_failure.is_some()
+                || observation.path_changes != 0
+            {
                 break;
             }
             let packet = requested.as_ref().ok_or(Error::Binding)?;

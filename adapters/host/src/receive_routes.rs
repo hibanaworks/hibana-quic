@@ -21,11 +21,16 @@ struct Inner<const BYTES: usize> {
     queue_capacity: usize,
 }
 pub struct Packet<const BYTES: usize> {
+    address: Address,
     bytes: [u8; BYTES],
     len: usize,
     ecn: Option<hibana_quic::ecn::Codepoint>,
 }
 impl<const BYTES: usize> Packet<BYTES> {
+    pub fn address(&self) -> Address {
+        self.address
+    }
+
     pub fn ecn(&self) -> Option<hibana_quic::ecn::Codepoint> {
         self.ecn
     }
@@ -129,6 +134,7 @@ impl<const BYTES: usize> Dispatcher<BYTES> {
                 return Delivery::Full;
             }
             let mut packet = Packet {
+                address,
                 bytes: [0; BYTES],
                 len: bytes.len(),
                 ecn,

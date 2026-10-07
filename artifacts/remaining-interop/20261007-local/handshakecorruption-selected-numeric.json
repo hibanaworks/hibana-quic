@@ -1,0 +1,1012 @@
+{
+  "source_commit": "266e9d37f279f19d969feacaf5a1c16e729a01da",
+  "run": 37549439439,
+  "attempt": 2,
+  "case": "handshakecorruption",
+  "perspective": "candidate client",
+  "interpretation": "Observed missing server Initial CRYPTO across the two capture points; root cause not yet established. Numeric coalesced fields are independent lists.",
+  "captures": [
+    {
+      "side": "left",
+      "rows": [
+        {
+          "frame.number": [
+            48
+          ],
+          "time_us": 644977,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            0
+          ],
+          "quic.frame_type": [
+            6,
+            0
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            283
+          ]
+        },
+        {
+          "frame.number": [
+            479
+          ],
+          "time_us": 1650098,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            1
+          ],
+          "quic.frame_type": [
+            6,
+            0
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            283
+          ]
+        },
+        {
+          "frame.number": [
+            485
+          ],
+          "time_us": 1656398,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            2
+          ],
+          "quic.frame_type": [
+            6,
+            0
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            283
+          ]
+        },
+        {
+          "frame.number": [
+            798
+          ],
+          "time_us": 2680289,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            2
+          ]
+        },
+        {
+          "frame.number": [
+            799
+          ],
+          "time_us": 2680335,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            2
+          ]
+        },
+        {
+          "frame.number": [
+            875
+          ],
+          "time_us": 3656772,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            3
+          ],
+          "quic.frame_type": [
+            6,
+            0
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            283
+          ]
+        },
+        {
+          "frame.number": [
+            877
+          ],
+          "time_us": 3658206,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            4
+          ],
+          "quic.frame_type": [
+            6,
+            0
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            283
+          ]
+        },
+        {
+          "frame.number": [
+            976
+          ],
+          "time_us": 5679569,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            8
+          ],
+          "quic.frame_type": [
+            2,
+            1
+          ],
+          "quic.ack.largest_acknowledged": [
+            4
+          ],
+          "quic.ack.first_ack_range": [
+            0
+          ],
+          "quic.ack.gap": [
+            1
+          ],
+          "quic.ack.ack_range": [
+            1
+          ]
+        },
+        {
+          "frame.number": [
+            977
+          ],
+          "time_us": 5684651,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            5
+          ],
+          "quic.frame_type": [
+            3,
+            0
+          ],
+          "quic.ack.largest_acknowledged": [
+            8
+          ],
+          "quic.ack.first_ack_range": [
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            1075
+          ],
+          "time_us": 30259368,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            6
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            1078
+          ],
+          "time_us": 78934869,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            7
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            1079
+          ],
+          "time_us": 78935439,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            8
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            1085
+          ],
+          "time_us": 176234235,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            9
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            1086
+          ],
+          "time_us": 176234844,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            18
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            10
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "side": "right",
+      "rows": [
+        {
+          "frame.number": [
+            39
+          ],
+          "time_us": 671191,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            0
+          ],
+          "quic.frame_type": [
+            6,
+            0
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            283
+          ]
+        },
+        {
+          "frame.number": [
+            40
+          ],
+          "time_us": 671673,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0,
+            2
+          ],
+          "quic.packet_number": [
+            0,
+            1
+          ],
+          "quic.frame_type": [
+            2,
+            6,
+            6
+          ],
+          "quic.crypto.offset": [
+            0,
+            0
+          ],
+          "quic.crypto.length": [
+            90,
+            696
+          ],
+          "quic.ack.largest_acknowledged": [
+            0
+          ],
+          "quic.ack.first_ack_range": [
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            415
+          ],
+          "time_us": 1671313,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            2
+          ],
+          "quic.frame_type": [
+            2,
+            6
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            90
+          ],
+          "quic.ack.largest_acknowledged": [
+            0
+          ],
+          "quic.ack.first_ack_range": [
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            419
+          ],
+          "time_us": 1674025,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            1
+          ],
+          "quic.frame_type": [
+            6,
+            0
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            283
+          ]
+        },
+        {
+          "frame.number": [
+            420
+          ],
+          "time_us": 1674184,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            3
+          ],
+          "quic.frame_type": [
+            2
+          ],
+          "quic.ack.largest_acknowledged": [
+            1
+          ],
+          "quic.ack.first_ack_range": [
+            1
+          ]
+        },
+        {
+          "frame.number": [
+            702
+          ],
+          "time_us": 2670494,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            2
+          ],
+          "quic.packet_number": [
+            4
+          ],
+          "quic.frame_type": [
+            6
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            696
+          ]
+        },
+        {
+          "frame.number": [
+            703
+          ],
+          "time_us": 2670745,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            2
+          ],
+          "quic.packet_number": [
+            5
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            785
+          ],
+          "time_us": 3680887,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            4
+          ],
+          "quic.frame_type": [
+            6,
+            0
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            283
+          ]
+        },
+        {
+          "frame.number": [
+            786
+          ],
+          "time_us": 3681015,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            6
+          ],
+          "quic.frame_type": [
+            2
+          ],
+          "quic.ack.largest_acknowledged": [
+            4
+          ],
+          "quic.ack.first_ack_range": [
+            0
+          ],
+          "quic.ack.gap": [
+            1
+          ],
+          "quic.ack.ack_range": [
+            1
+          ]
+        },
+        {
+          "frame.number": [
+            875
+          ],
+          "time_us": 5668437,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            7
+          ],
+          "quic.frame_type": [
+            2,
+            6
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            90
+          ],
+          "quic.ack.largest_acknowledged": [
+            4
+          ],
+          "quic.ack.first_ack_range": [
+            0
+          ],
+          "quic.ack.gap": [
+            1
+          ],
+          "quic.ack.ack_range": [
+            1
+          ]
+        },
+        {
+          "frame.number": [
+            876
+          ],
+          "time_us": 5668634,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            8
+          ],
+          "quic.frame_type": [
+            2,
+            1
+          ],
+          "quic.ack.largest_acknowledged": [
+            4
+          ],
+          "quic.ack.first_ack_range": [
+            0
+          ],
+          "quic.ack.gap": [
+            1
+          ],
+          "quic.ack.ack_range": [
+            1
+          ]
+        },
+        {
+          "frame.number": [
+            946
+          ],
+          "time_us": 10663044,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            2
+          ],
+          "quic.packet_number": [
+            9
+          ],
+          "quic.frame_type": [
+            6
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            696
+          ]
+        },
+        {
+          "frame.number": [
+            947
+          ],
+          "time_us": 10663155,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            2
+          ],
+          "quic.packet_number": [
+            10
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            969
+          ],
+          "time_us": 21654938,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            11
+          ],
+          "quic.frame_type": [
+            2,
+            6
+          ],
+          "quic.crypto.offset": [
+            0
+          ],
+          "quic.crypto.length": [
+            90
+          ],
+          "quic.ack.largest_acknowledged": [
+            4
+          ],
+          "quic.ack.first_ack_range": [
+            0
+          ],
+          "quic.ack.gap": [
+            1
+          ],
+          "quic.ack.ack_range": [
+            1
+          ]
+        },
+        {
+          "frame.number": [
+            970
+          ],
+          "time_us": 21655050,
+          "udp.srcport": [
+            443
+          ],
+          "udp.dstport": [
+            48566
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            12
+          ],
+          "quic.frame_type": [
+            2,
+            1
+          ],
+          "quic.ack.largest_acknowledged": [
+            4
+          ],
+          "quic.ack.first_ack_range": [
+            0
+          ],
+          "quic.ack.gap": [
+            1
+          ],
+          "quic.ack.ack_range": [
+            1
+          ]
+        },
+        {
+          "frame.number": [
+            981
+          ],
+          "time_us": 78957076,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            7
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            982
+          ],
+          "time_us": 78958034,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            8
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            987
+          ],
+          "time_us": 176258409,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            9
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        },
+        {
+          "frame.number": [
+            988
+          ],
+          "time_us": 176258437,
+          "udp.srcport": [
+            48566
+          ],
+          "udp.dstport": [
+            443
+          ],
+          "quic.connection.number": [
+            13
+          ],
+          "quic.long.packet_type": [
+            0
+          ],
+          "quic.packet_number": [
+            10
+          ],
+          "quic.frame_type": [
+            1,
+            0
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -20,7 +20,7 @@ RUNNER = ROOT / '.ci-work/runner'
 SAFE = ROOT / 'ci-safe-results'
 RAW = ROOT / '.ci-work/raw'
 EXPECTED = {'handshake', 'transfer'}
-CASE_ABBREVIATIONS = {'handshake': 'H', 'transfer': 'DC', 'longrtt': 'LR', 'transferloss': 'L2', 'transfercorruption': 'C2', 'ipv6': '6', 'chacha20': 'C20', 'resumption': 'R', 'zerortt': 'Z', 'blackhole': 'B', 'keyupdate': 'U', 'amplificationlimit': 'A', 'handshakeloss': 'L1', 'handshakecorruption': 'C1', 'multiplexing': 'M', 'retry': 'S', 'ecn': 'E', 'v2': 'V2'}
+CASE_ABBREVIATIONS = {'handshake': 'H', 'transfer': 'DC', 'longrtt': 'LR', 'transferloss': 'L2', 'transfercorruption': 'C2', 'ipv6': '6', 'chacha20': 'C20', 'resumption': 'R', 'zerortt': 'Z', 'blackhole': 'B', 'keyupdate': 'U', 'amplificationlimit': 'A', 'handshakeloss': 'L1', 'handshakecorruption': 'C1', 'multiplexing': 'M', 'retry': 'S', 'ecn': 'E', 'v2': 'V2', 'rebind-port': 'BP', 'rebind-addr': 'BA'}
 REFERENCE = 'neqo'
 IMPLEMENTATIONS = {'neqo', 'quiche', 'hibana-quic'}
 # Diagnostics are untrusted input, including logs produced by the peer. Nothing
@@ -836,8 +836,8 @@ def qualification_groups(request):
         require(not cases & selected, 'duplicate matrix case')
         cases.update(selected)
     require(cases == set(CASE_ABBREVIATIONS), 'incomplete qualification matrix')
-    require(len(cases) * len(directions) == request.get('candidate_case_direction_results') == 34,
-            'qualification matrix must contain 34 candidate results')
+    require(len(cases) * len(directions) == request.get('candidate_case_direction_results') == 40,
+            'qualification matrix must contain 40 candidate results')
     return groups
 
 def selected_request(request, group_name):
@@ -857,7 +857,7 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
     SAFE.mkdir(exist_ok=True)
     write('summary.json', {'status': 'NOT_PASSED', 'source_commit': source_commit,
                           'run_id': run_id, 'run_attempt': run_attempt,
-                          'expected_candidate_results': 34, 'same_commit_all_34_executed': False})
+                          'expected_candidate_results': 40, 'same_commit_all_40_executed': False})
     expected_pins = dict(line.split('=', 1) for line in (ROOT / 'ci/pins.env').read_text().splitlines()
                          if line and not line.startswith('#'))
     cells, controls, verified_groups = [], [], []
@@ -933,10 +933,10 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
         passed = all(phase_passed) and summary.get('status') == 'PASSED' and summary.get('candidate_diagnostic_after_failed_control') is False
         all_passed = all_passed and passed
         verified_groups.append({'name': group['name'], 'reference': reference, 'cases': sorted(expected), 'status': 'PASSED' if passed else 'NOT_PASSED'})
-    require(len(cells) == 34 and len({(cell['case'], cell['direction']) for cell in cells}) == 34, 'matrix candidate coverage mismatch')
+    require(len(cells) == 40 and len({(cell['case'], cell['direction']) for cell in cells}) == 40, 'matrix candidate coverage mismatch')
     report = {'status': 'PASSED' if all_passed else 'NOT_PASSED', 'source_commit': source_commit,
-              'run_id': run_id, 'run_attempt': run_attempt, 'same_commit_all_34_executed': all(cell['result'] is not None for cell in cells),
-              'expected_candidate_results': 34, 'candidate_results': len(cells),
+              'run_id': run_id, 'run_attempt': run_attempt, 'same_commit_all_40_executed': all(cell['result'] is not None for cell in cells),
+              'expected_candidate_results': 40, 'candidate_results': len(cells),
               'candidate_passed': sum(cell['result'] == 'succeeded' for cell in cells),
               'candidate_unexecuted': sum(cell['result'] is None for cell in cells),
               'control_results': len(controls), 'control_passed': sum(cell['result'] == 'succeeded' for cell in controls),

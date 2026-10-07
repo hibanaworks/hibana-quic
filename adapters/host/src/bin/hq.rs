@@ -857,6 +857,7 @@ async fn run_async<const S: usize, const T: usize>(
                     clock,
                     address,
                     Config {
+                        initial_path: Some(address),
                         version,
                         side: Side::Client,
                         local_connection_id: &local,
@@ -1093,6 +1094,7 @@ async fn run_async<const S: usize, const T: usize>(
                     clock,
                     address,
                     Config {
+                        initial_path: Some(address),
                         version,
                         side: Side::Server,
                         local_connection_id: &local,

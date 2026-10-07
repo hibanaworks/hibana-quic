@@ -51,6 +51,7 @@ pub enum Side {
 
 #[derive(Clone, Copy)]
 pub struct Config<'a> {
+    pub initial_path: Option<crate::path::Address>,
     pub version: crate::version::Version,
     pub side: Side,
     pub local_connection_id: &'a [u8],
@@ -89,6 +90,7 @@ pub enum IoError {
 /// metadata is not evidence of Not-ECT. Authentication still precedes counting.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReceivedDatagram {
+    pub path: Option<crate::path::Address>,
     pub len: usize,
     pub ecn: Option<crate::ecn::Codepoint>,
 }
@@ -101,6 +103,20 @@ pub trait DatagramRx {
 /// Success is the actual monotonic microsecond timestamp of UDP acceptance.
 /// A pending or dropped future must not have accepted this datagram.
 pub trait DatagramTx {
+    fn send_on_path(
+        &mut self,
+        bytes: &[u8],
+        ecn: crate::ecn::Codepoint,
+        path: Option<crate::path::Address>,
+    ) -> impl Future<Output = Result<u64, IoError>> {
+        async move {
+            if path.is_some() {
+                Err(IoError::Rejected)
+            } else {
+                self.send(bytes, ecn).await
+            }
+        }
+    }
     fn send(
         &mut self,
         bytes: &[u8],
@@ -355,6 +371,7 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
         &self,
         packet: &[u8],
         ecn: Option<crate::ecn::Codepoint>,
+        path: Option<crate::path::Address>,
     ) -> Result<(), Error> {
         if packet.is_empty() || packet.len() > N {
             return Err(Error::Capacity);
@@ -366,6 +383,7 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
             *pending = Some((
                 bytes,
                 ReceivedDatagram {
+                    path,
                     len: packet.len(),
                     ecn,
                 },
@@ -665,9 +683,9 @@ mod retained_application_tests {
     fn first_packet_is_owned_and_not_overwritten() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
         let mut packet = [1, 2, 3];
-        storage.retain_application(&packet, None).unwrap();
+        storage.retain_application(&packet, None, None).unwrap();
         packet.fill(9);
-        storage.retain_application(&packet, None).unwrap();
+        storage.retain_application(&packet, None, None).unwrap();
         let (bytes, len) = storage.pending_application.borrow_mut().take().unwrap();
         assert_eq!(&bytes[..len.len], &[1, 2, 3]);
         assert!(storage.pending_application.borrow_mut().take().is_none());
@@ -676,7 +694,7 @@ mod retained_application_tests {
     fn cleanup_preserves_ciphertext_for_successful_single_use_transfer() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
         storage.claim().unwrap();
-        storage.retain_application(&[7], None).unwrap();
+        storage.retain_application(&[7], None, None).unwrap();
         storage.clear();
         assert!(storage.claim().is_err());
         let (bytes, len) = storage.pending_application.borrow_mut().take().unwrap();
@@ -685,8 +703,8 @@ mod retained_application_tests {
     #[test]
     fn invalid_packet_lengths_do_not_publish_a_buffer() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
-        assert!(storage.retain_application(&[], None).is_err());
-        assert!(storage.retain_application(&[1; 9], None).is_err());
+        assert!(storage.retain_application(&[], None, None).is_err());
+        assert!(storage.retain_application(&[1; 9], None, None).is_err());
         assert!(storage.pending_application.borrow().is_none());
     }
 }

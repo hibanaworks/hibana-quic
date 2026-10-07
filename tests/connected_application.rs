@@ -599,6 +599,7 @@ impl DatagramRx for Rx<'_> {
             wake.wake();
         }
         Ok(hibana_quic::connection::ReceivedDatagram {
+            path: None,
             len: packet.len,
             ecn: packet.ecn,
         })
@@ -1207,6 +1208,7 @@ fn connection_case_with_failure(
         key_update_target: 0,
         early: None,
         config: Config {
+            initial_path: None,
             version: hibana_quic::version::Version::V1,
             side: Side::Client,
             local_connection_id: CLIENT_ID,
@@ -1234,6 +1236,7 @@ fn connection_case_with_failure(
         key_update_target: 0,
         early: None,
         config: Config {
+            initial_path: None,
             version: hibana_quic::version::Version::V1,
             side: Side::Server,
             local_connection_id: SERVER_ID,

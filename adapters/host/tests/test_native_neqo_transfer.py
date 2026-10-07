@@ -421,6 +421,12 @@ def main():
                                 received=set(re.findall(r'-> RX PathResponse \{ data: (\[[0-9, ]+\])',text))
                                 assert len(sent&received)>=2,(len(sent),len(received))
                                 row['peer_matched_path_responses']=len(sent&received)
+                            else:
+                                text=result.stdout+result.stderr
+                                challenges=set(re.findall(r'-> RX PathChallenge \{ data: (\[[0-9, ]+\])',text))
+                                responses=set(re.findall(r'TX -> PathResponse \{ data: (\[[0-9, ]+\])',text))
+                                assert len(challenges&responses)>=2,(len(challenges),len(responses))
+                                row['peer_matched_path_responses']=len(challenges&responses)
                         if args.scenario in ('v2','rebind-port','rebind-addr') and returncode==0 and direction!='baseline':
                             if direction=='reverse': server.wait(timeout=5)
                             text=result.stdout if direction=='forward' else log_path.read_text()

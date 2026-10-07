@@ -415,7 +415,7 @@ pub type BaseActive = g::Par<
     SourceFlow,
     g::Par<ReceiveFlow, g::Par<KeyFlow, g::Par<TimerFlow, g::Par<PublicationFlow, Terminal>>>>,
 >;
-pub type Active = g::Par<BaseActive, e::Flow>;
+pub type Active = g::Par<g::Par<BaseActive, e::Flow>, crate::path::protocol::Flow>;
 pub type Retirement = g::Seq<
     g::Par<
         g::Send<TRANSMIT, CLOSE_JOIN, PublicationRetired>,
@@ -791,7 +791,10 @@ pub fn choreography() -> g::Program<Flow> {
             g::par(keys, g::par(timer, g::par(publication, terminal))),
         ),
     );
-    let ordinary = g::par(ordinary_base, e::choreography());
+    let ordinary = g::par(
+        g::par(ordinary_base, e::choreography()),
+        crate::path::protocol::choreography(),
+    );
     // The fresh close owner passes the actual accumulated grant to one
     // retired owner at a time. Each response requires consuming that grant;
     // no unsolicited input can occupy a capacity-one carrier ahead of it.

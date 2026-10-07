@@ -4,6 +4,7 @@ use core::cell::RefCell;
 const CAPACITY: usize = 4;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Response {
+    pub(crate) path: Option<crate::path::Address>,
     sequence: u64,
     pub(crate) data: [u8; 8],
 }
@@ -21,15 +22,27 @@ impl Responses {
             accepted: 0,
         }))
     }
-    pub(crate) fn observe(&self, data: [u8; 8]) -> Result<(), ()> {
+    pub(crate) fn observe(
+        &self,
+        data: [u8; 8],
+        path: Option<crate::path::Address>,
+    ) -> Result<(), ()> {
         let mut n = self.0.try_borrow_mut().map_err(|_| ())?;
-        if n.pending.iter().flatten().any(|r| r.data == data) {
+        if n.pending
+            .iter()
+            .flatten()
+            .any(|r| r.data == data && r.path == path)
+        {
             return Ok(());
         }
         let slot = n.pending.iter().position(Option::is_none).ok_or(())?;
         let sequence = n.next;
         n.next = n.next.checked_add(1).ok_or(())?;
-        n.pending[slot] = Some(Response { sequence, data });
+        n.pending[slot] = Some(Response {
+            sequence,
+            data,
+            path,
+        });
         Ok(())
     }
     pub(crate) fn pending(&self) -> Result<Option<Response>, ()> {
@@ -61,15 +74,15 @@ mod tests {
     #[test]
     fn retain_until_matching_actual_acceptance() {
         let q = Responses::new();
-        q.observe([1; 8]).unwrap();
+        q.observe([1; 8], None).unwrap();
         let first = q.pending().unwrap().unwrap();
-        q.observe([1; 8]).unwrap();
-        q.observe([2; 8]).unwrap();
+        q.observe([1; 8], None).unwrap();
+        q.observe([2; 8], None).unwrap();
         assert_eq!(q.pending().unwrap(), Some(first));
         q.accepted(first).unwrap();
         assert!(q.accepted(first).is_err());
         assert_eq!(q.pending().unwrap().unwrap().data, [2; 8]);
-        q.observe([1; 8]).unwrap();
+        q.observe([1; 8], None).unwrap();
         q.accepted(q.pending().unwrap().unwrap()).unwrap();
         let repeat = q.pending().unwrap().unwrap();
         assert_ne!(first.sequence, repeat.sequence);
@@ -81,10 +94,10 @@ mod tests {
     fn overflow_preserves_retained_data() {
         let q = Responses::new();
         for n in 0..CAPACITY {
-            q.observe([n as u8; 8]).unwrap();
+            q.observe([n as u8; 8], None).unwrap();
         }
         let first = q.pending().unwrap();
-        assert!(q.observe([9; 8]).is_err());
+        assert!(q.observe([9; 8], None).is_err());
         assert_eq!(q.pending().unwrap(), first);
     }
 }

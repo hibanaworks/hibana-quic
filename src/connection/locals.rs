@@ -19,6 +19,7 @@ struct ReceiveWire<'keys, 'scope, 'buf, const N: usize> {
     datagram: [u8; N],
     len: usize,
     ecn: Option<crate::ecn::Codepoint>,
+    path: Option<crate::path::Address>,
     offset: usize,
     opened: [u8; N],
 }
@@ -33,8 +34,13 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
     ) -> Result<bool, Error> {
         if self.offset >= self.len {
             let received = io.receive(&mut self.datagram).await?;
+            if config.initial_path.is_some() && received.path != config.initial_path {
+                return Ok(true);
+            }
+
             let len = received.len;
             self.ecn = received.ecn;
+            self.path = received.path;
             if len > N {
                 return Err(Error::Capacity);
             }
@@ -105,7 +111,7 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             }
             Header::Short { destination_id, .. } => {
                 if destination_id == config.local_connection_id {
-                    slots.retain_application(untrusted.bytes, self.ecn)?;
+                    slots.retain_application(untrusted.bytes, self.ecn, self.path)?;
                 }
                 return Ok(true);
             }
@@ -203,6 +209,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
         datagram: [0; N],
         len: 0,
         ecn: None,
+        path: None,
         offset: 0,
         opened: [0; N],
     };
@@ -213,6 +220,7 @@ pub(super) async fn receive<'scope, const N: usize, const P: usize>(
         wire.datagram[..first.received.len].copy_from_slice(&first.bytes[..first.received.len]);
         wire.len = first.received.len;
         wire.ecn = first.received.ecn;
+        wire.path = first.received.path;
     }
     use crate::bounded_tls::{locals as direct, protocol as tls};
     struct Input<F>(F);

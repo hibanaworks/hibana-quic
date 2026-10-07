@@ -396,6 +396,7 @@ dependencies = [
  "p256",
  "rand_core",
  "rustls-pki-types",
+ "zeroize",
 ]
 
 [[package]]

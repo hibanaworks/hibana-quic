@@ -344,13 +344,18 @@ async fn connected<
         &reclaim_exchange,
     )
     .await?;
+    let paths = crate::path::validation::Paths::new(
+        config.initial_path,
+        config.side,
+        local_ids.as_ref().map(|storage| storage.seed),
+    );
     let ids = local_ids
         .map(|storage| {
             crate::path::ids::Ids::new(storage, scope, config.local_connection_id, peer_cid_limit)
         })
         .transpose()
         .map_err(|_| Error::Binding)?;
-    let publication_state = transmit::State::new(book_publication, publication, ids);
+    let publication_state = transmit::State::new(book_publication, publication, ids, paths);
     let ecn_exchange = transmit::ecn::Exchange::new();
 
     let acknowledgments = super::acknowledgments::Exchange::new();
@@ -453,6 +458,7 @@ async fn connected<
                 key_update_target,
                 &publication_state.responses,
                 &publication_state.ids,
+                &publication_state.paths,
                 pending_application,
             )
             .await
@@ -493,6 +499,8 @@ async fn connected<
         );
         let marking =
             transmit::ecn::owner(&mut roles.ecn_owner, &ecn_exchange, &completion_book, clock);
+        let path_validation =
+            crate::path::validation::owner(&mut roles.handshake.initial_event, &publication_state.paths, clock);
         let completion = termination::completion(
             &mut roles.files_event,
             &mut roles.source_join,
@@ -527,6 +535,7 @@ async fn connected<
             transmitting,
             publishing,
             marking,
+            path_validation,
             completion,
             terminal_receive,
             source_collector,

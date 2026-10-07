@@ -1,4 +1,4 @@
-"""One source commit, exact 34-cell coverage, and mandatory reference controls."""
+"""One source commit, exact 40-cell coverage, and mandatory reference controls."""
 import copy
 from contextlib import redirect_stdout
 import importlib.util
@@ -70,14 +70,14 @@ class Matrix(unittest.TestCase):
     def report(self):
         return json.loads((self.root / 'ci-safe-results/summary.json').read_text())
 
-    def test_exact_34_same_commit_and_17_controls(self):
+    def test_exact_40_same_commit_and_20_controls(self):
         self.assertEqual(self.verify(), 0)
         result = self.report()
-        self.assertEqual((result['candidate_results'], result['candidate_passed'], result['control_results'], result['control_passed']), (34, 34, 17, 17))
+        self.assertEqual((result['candidate_results'], result['candidate_passed'], result['control_results'], result['control_passed']), (40, 40, 20, 20))
         self.assertEqual(result['source_commit'], COMMIT)
-        self.assertTrue(result['same_commit_all_34_executed'])
+        self.assertTrue(result['same_commit_all_40_executed'])
         self.assertFalse(result['full_44_case_direction_matrix'])
-        self.assertEqual(sum(cell['reference'] == 'neqo' for cell in result['candidate_cells']), 24)
+        self.assertEqual(sum(cell['reference'] == 'neqo' for cell in result['candidate_cells']), 30)
         self.assertEqual(sum(cell['reference'] == 'quiche' for cell in result['candidate_cells']), 10)
 
     def test_group_selection_cannot_silently_choose_or_reduce_scope(self):
@@ -98,7 +98,7 @@ class Matrix(unittest.TestCase):
                 self.module.qualification_groups(request)
 
     def test_failed_unsupported_or_null_candidate_never_qualifies(self):
-        group = self.request['groups'][-1]
+        group = next(group for group in self.request['groups'] if group['name'] == 'neqo-ecn')
         original = self.get(group, 'bounded-client-verdict.json')
         original_summary = self.get(group, 'summary.json')
         for outcome in ('failed', 'unsupported', None):
@@ -110,11 +110,11 @@ class Matrix(unittest.TestCase):
                 self.put(group, 'bounded-client-verdict.json', verdict)
                 self.put(group, 'summary.json', summary)
                 self.assertEqual(self.verify(), 1)
-                self.assertEqual(self.report()['candidate_passed'], 33)
+                self.assertEqual(self.report()['candidate_passed'], 39)
                 self.assertEqual(self.report()['candidate_unexecuted'], int(outcome is None))
 
-    def test_failed_control_cannot_promote_34_candidate_passes(self):
-        group = self.request['groups'][-1]
+    def test_failed_control_cannot_promote_40_candidate_passes(self):
+        group = next(group for group in self.request['groups'] if group['name'] == 'neqo-ecn')
         verdict = self.get(group, 'neqo-baseline-verdict.json')
         verdict['results'][0]['result'] = 'failed'
         verdict.update(status='FAILED', passed=False)
@@ -123,8 +123,8 @@ class Matrix(unittest.TestCase):
         self.put(group, 'neqo-baseline-verdict.json', verdict)
         self.put(group, 'summary.json', summary)
         self.assertEqual(self.verify(), 1)
-        self.assertEqual(self.report()['candidate_passed'], 34)
-        self.assertEqual(self.report()['control_passed'], 16)
+        self.assertEqual(self.report()['candidate_passed'], 40)
+        self.assertEqual(self.report()['control_passed'], 19)
         self.assertEqual(self.report()['status'], 'NOT_PASSED')
 
     def test_source_run_group_reference_and_pins_must_match(self):
@@ -160,7 +160,7 @@ class Matrix(unittest.TestCase):
                 self.put(group, filename, original)
 
     def test_rejected_cleanup_or_boolean_exit_code_never_qualifies(self):
-        group = self.request['groups'][-1]
+        group = next(group for group in self.request['groups'] if group['name'] == 'neqo-ecn')
         filename = 'bounded-client-verdict.json'
         original = self.get(group, filename)
         for key, value in [('exit_code', 1), ('cleanup_exit_code', 1), ('exit_code', False)]:

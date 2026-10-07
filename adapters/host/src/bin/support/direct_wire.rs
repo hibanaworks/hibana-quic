@@ -146,6 +146,7 @@ impl<const S: usize, const T: usize> DatagramRx for Receive<'_, '_, S, T> {
                 .received
                 .set(self.statistics.received.get() + 1);
             return Ok(hibana_quic::connection::ReceivedDatagram {
+                path: Some(self.address),
                 len: first.len(),
                 ecn,
             });
@@ -160,6 +161,7 @@ impl<const S: usize, const T: usize> DatagramRx for Receive<'_, '_, S, T> {
                 .received
                 .set(self.statistics.received.get() + 1);
             return Ok(hibana_quic::connection::ReceivedDatagram {
+                path: Some(packet.address()),
                 len: packet.bytes().len(),
                 ecn: packet.ecn(),
             });
@@ -177,19 +179,22 @@ impl<const S: usize, const T: usize> DatagramRx for Receive<'_, '_, S, T> {
                     return Err(IoError::Closed);
                 }
             };
-            if received.source == self.address.remote && received.local == self.address.local {
+            if received.source != self.address.remote || received.local != self.address.local {
                 self.statistics
-                    .received
-                    .set(self.statistics.received.get() + 1);
-                return Ok(hibana_quic::connection::ReceivedDatagram {
-                    len: received.len,
-                    ecn: received.ecn,
-                });
+                    .foreign
+                    .set(self.statistics.foreign.get() + 1);
             }
             self.statistics
-                .foreign
-                .set(self.statistics.foreign.get() + 1);
-            hibana_quic::runtime::yield_now().await;
+                .received
+                .set(self.statistics.received.get() + 1);
+            return Ok(hibana_quic::connection::ReceivedDatagram {
+                len: received.len,
+                ecn: received.ecn,
+                path: Some(Address {
+                    local: received.local,
+                    remote: received.source,
+                }),
+            });
         }
     }
 }
@@ -200,33 +205,41 @@ pub struct Transmit<'a, 'r, const S: usize = 4, const T: usize = 8> {
     pub statistics: &'a Statistics,
 }
 impl<const S: usize, const T: usize> DatagramTx for Transmit<'_, '_, S, T> {
-    async fn send(
+    async fn send(&mut self, bytes: &[u8], ecn: Codepoint) -> Result<u64, IoError> {
+        self.send_on_path(bytes, ecn, Some(self.address)).await
+    }
+    async fn send_on_path(
         &mut self,
         bytes: &[u8],
-        ecn: hibana_quic::ecn::Codepoint,
+        ecn: Codepoint,
+        path: Option<Address>,
     ) -> Result<u64, IoError> {
         if ecn == Codepoint::Ce {
             return Err(IoError::Rejected);
         }
-        match self.socket.send_from(bytes, self.address, ecn).await {
+        match self
+            .socket
+            .send_from(bytes, path.unwrap_or(self.address), ecn)
+            .await
+        {
             Ok(len) if len == bytes.len() => {
-                // Receipt only after full real sendmsg acceptance.
-                let accepted = self.clock.now();
+                let at = self.clock.now();
                 self.statistics.sent.set(self.statistics.sent.get() + 1);
-                self.statistics.last_accepted.set(Some(accepted));
-                Ok(accepted)
+                self.statistics.last_accepted.set(Some(at));
+                Ok(at)
             }
             Ok(_) => {
                 self.clock.fail(io::ErrorKind::WriteZero.into());
                 Err(IoError::Rejected)
             }
-            Err(error) => {
-                self.clock.fail(error);
+            Err(e) => {
+                self.clock.fail(e);
                 Err(IoError::Rejected)
             }
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -386,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn foreign_peer_cannot_credit_the_admitted_path() {
+    fn receive_preserves_each_physical_path_for_core_admission() {
         let reactor = HostReactor::<4, 8>::new().unwrap();
         let socket = reactor
             .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
@@ -418,9 +431,29 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
-        assert_eq!(&bytes[..len.len], b"admitted");
+        assert_eq!(&bytes[..len.len], b"foreign");
+        assert_eq!(
+            len.path,
+            Some(Address {
+                local: address.local,
+                remote: foreign.local_addr().unwrap()
+            })
+        );
         assert_eq!(len.ecn, Some(Codepoint::NotEct));
-        assert_eq!(statistics.received.get(), 1);
+        let admitted = reactor
+            .block_on(before_deadline(
+                &clock,
+                clock.start + Duration::from_secs(1),
+                async { rx.receive(&mut bytes).await.map_err(|e| format!("{e:?}")) },
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(&bytes[..admitted.len], b"admitted");
+        assert_eq!(admitted.path, Some(address));
+        // These are physical observations, not amplification or authentication credit.
+        // The handshake prefix filters the initial address before credit; the
+        // application path owner only sees observations after AEAD admission.
+        assert_eq!(statistics.received.get(), 2);
         assert_eq!(statistics.foreign.get(), 1);
     }
     #[test]

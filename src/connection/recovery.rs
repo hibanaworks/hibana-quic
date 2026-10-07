@@ -127,6 +127,7 @@ impl<const B: usize> CompletionObserver<'_, '_, B> {
             validated: n.validated_ecn_packets,
             first_sent_at: n.first_ecn_sent_at,
             first_failure: n.first_ecn_failure,
+            path_changes: n.path_changes,
             probe_period: n
                 .rtt
                 .pto_duration_us(n.max_ack_delay_us, 0)?
@@ -501,12 +502,15 @@ pub(crate) struct EcnObservation {
     pub validated: u64,
     pub first_sent_at: Option<u64>,
     pub first_failure: Option<EcnFailure>,
+    pub path_changes: u64,
     pub probe_period: u64,
 }
 struct Numbers<'scope, const B: usize> {
     side: Side,
     generation: u64,
     max_datagram_size: u64,
+    path_start: Option<u64>,
+    path_changes: u64,
     ledger: SentLedger<LEDGER_CAPACITY>,
     flights: FlightStore<FLIGHT_CAPACITY, B, REFERENCE_CAPACITY>,
     path: PathBudget<LEDGER_CAPACITY>,
@@ -675,6 +679,8 @@ impl<'scope, const B: usize> Recovery<'scope, B> {
                 side,
                 generation,
                 max_datagram_size,
+                path_start: None,
+                path_changes: 0,
                 ledger: SentLedger::new(generation),
                 flights: FlightStore::new(),
                 path,
@@ -1057,7 +1063,12 @@ impl<const B: usize> Numbers<'_, B> {
                         .ok_or(Error::Capacity)?;
                     *free = Some(packet.packet);
                 }
-                if bytes_removed_from_flight != 0 {
+                if bytes_removed_from_flight != 0
+                    && self.path_start.is_none_or(|first| {
+                        packet.packet.space == PacketNumberSpace::ApplicationData
+                            && packet.packet.value >= first
+                    })
+                {
                     self.congestion.on_congestion_event(now, packet.sent_at)?;
                 }
             }
@@ -1186,6 +1197,41 @@ impl<'scope, const B: usize> InitialRetirementOwner<'_, 'scope, B> {
 }
 
 impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
+    pub(crate) fn path_datagram_limit(&self) -> usize {
+        self.book.numbers.borrow().max_datagram_size as usize
+    }
+    pub(crate) fn validated_path(
+        &mut self,
+        old: crate::path::Address,
+        new: crate::path::Address,
+        now: u64,
+    ) -> Result<(), Error> {
+        let mut n = self.book.numbers.borrow_mut();
+        n.ordinary()?;
+        if n.pending.iter().any(|count| *count != 0) {
+            return Err(Error::Binding);
+        }
+        n.check_time(now)?;
+        let limit = n.max_datagram_size.min(1200);
+        if old.local.ip() != new.local.ip() || old.remote.ip() != new.remote.ip() {
+            let first = n
+                .ledger
+                .next_packet_number(PacketNumberSpace::ApplicationData)
+                .ok_or(Error::Capacity)?;
+            let congestion = NewReno::new(limit)?;
+            let rtt = RttEstimator::new(333_000)?;
+            n.path_start = Some(first);
+            n.congestion = congestion;
+            n.rtt = rtt;
+            n.timer = RecoveryTimer::new();
+            n.loss_time = [None; 3];
+        }
+        n.max_datagram_size = limit;
+        n.path_changes = n.path_changes.checked_add(1).ok_or(Error::Capacity)?;
+        n.changed()?;
+        Ok(())
+    }
+
     /// Numerical effect of the projected client Retry join. The caller must
     /// consume its one-shot Retry branch and settle every actual publication
     /// before invoking this effect. No TLS input/output or PN allocator is reset.
@@ -1819,7 +1865,17 @@ fn reserve_kind<'book, const B: usize>(
         None
     };
     if !n.congestion.can_send(
-        n.ledger.bytes_in_flight(),
+        n.ledger
+            .outstanding_sent()
+            .filter(|packet| {
+                packet.in_flight
+                    && n.path_start.is_none_or(|first| {
+                        packet.packet.space == PacketNumberSpace::ApplicationData
+                            && packet.packet.value >= first
+                    })
+            })
+            .map(|packet| packet.bytes)
+            .sum(),
         n.ledger.reserved_in_flight(),
         bytes,
         ack_eliciting || padded,
@@ -2320,6 +2376,7 @@ fn apply_ack<'scope, const B: usize>(
     // RFC 9000 13.4.2.1: reordered ACKs that do not increase Largest
     // Acknowledged cannot fail validation or advance the ECN baseline.
     if n.first_ecn_failure.is_none()
+        && n.path_changes == 0
         && n.largest_acked[index].is_none_or(|previous| largest > previous)
     {
         let newly = packets[..count].iter().flatten().fold(
@@ -2411,7 +2468,12 @@ fn apply_ack<'scope, const B: usize>(
     } else {
         0
     };
-    if let Some(packet) = largest_sent {
+    if let Some(packet) = largest_sent.filter(|packet| {
+        n.path_start.is_none_or(|first| {
+            packet.packet.space == PacketNumberSpace::ApplicationData
+                && packet.packet.value >= first
+        })
+    }) {
         n.rtt.on_ack(RttSample {
             now,
             sent_at: packet.sent_at,
@@ -2427,6 +2489,11 @@ fn apply_ack<'scope, const B: usize>(
     let summary = n.ledger.acknowledge(space, ranges)?;
     n.flights.acknowledge(space, ranges);
     for packet in packets[..count].iter().flatten() {
+        if n.path_start.is_some_and(|first| {
+            packet.packet.space != PacketNumberSpace::ApplicationData || packet.packet.value < first
+        }) {
+            continue;
+        }
         n.congestion.on_ack(
             now,
             packet.sent_at,
@@ -2641,6 +2708,72 @@ mod tests {
             output,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn migrated_path_does_not_inherit_old_packet_rtt_or_congestion_growth() {
+        book!(book, scope, installation, arena, Side::Client, 204);
+        let scope = book.scope();
+        let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
+        let old = crate::path::Address {
+            local: "127.0.0.1:1000".parse().unwrap(),
+            remote: "127.0.0.1:2000".parse().unwrap(),
+        };
+        let new = crate::path::Address {
+            remote: "127.0.0.2:2000".parse().unwrap(),
+            ..old
+        };
+        let flight = tx.store_crypto(Level::Initial, 0, b"old flight").unwrap();
+        let reservation = tx
+            .reserve(Level::Initial, 1200, Some(flight), true, true, false, 0)
+            .unwrap();
+        let pn = reservation.packet().value;
+        assert!(tx.validated_path(old, new, 0).is_err());
+        publication
+            .settle(Completion::from_adapter(
+                reservation,
+                Some(1),
+                crate::ecn::Codepoint::NotEct,
+            ))
+            .unwrap();
+        tx.validated_path(old, new, 10).unwrap();
+        let initial_window = tx.book.numbers.borrow().congestion.congestion_window();
+        let mut plaintext = [0; 64];
+        let len = ack(pn, &mut plaintext);
+        let receipt = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 0, &plaintext[..len]);
+        rx.apply_packet(receipt, &plaintext[..len], 100, None)
+            .unwrap();
+        let n = tx.book.numbers.borrow();
+        assert_eq!(n.rtt.smoothed_us(), 333_000);
+        assert_eq!(n.congestion.congestion_window(), initial_window);
+        assert_eq!(n.ledger.bytes_in_flight(), 0);
+        assert_eq!(n.path_start, Some(0));
+        assert_eq!(n.path_changes, 1);
+        assert!(n.first_ecn_failure.is_none());
+        drop(n);
+        retirement.disarm();
+    }
+
+    #[test]
+    fn port_only_rebinding_keeps_rtt_but_invalidates_inherited_ecn_capability() {
+        book!(book, scope, installation, arena, Side::Client, 205);
+        let (mut tx, _, _, _, mut retirement) = book.split().unwrap();
+        let old = crate::path::Address {
+            local: "127.0.0.1:1000".parse().unwrap(),
+            remote: "127.0.0.1:2000".parse().unwrap(),
+        };
+        let new = crate::path::Address {
+            remote: "127.0.0.1:3000".parse().unwrap(),
+            ..old
+        };
+        tx.book.numbers.borrow_mut().rtt = RttEstimator::new(42_000).unwrap();
+        tx.validated_path(old, new, 1).unwrap();
+        let n = tx.book.numbers.borrow();
+        assert_eq!(n.rtt.smoothed_us(), 42_000);
+        assert_eq!(n.path_start, None);
+        assert_eq!(n.path_changes, 1);
+        drop(n);
+        retirement.disarm();
     }
 
     #[test]
