@@ -166,5 +166,6 @@ docker run --rm --cpus=2 \
   -v /tmp:/tmp -v "$ROOT:$ROOT" -w "$ROOT" \
   -e "HOME=$ROOT/.ci-work/tools-home" \
   -e ROOT -e INTEROP_GROUP -e SIM_IMAGE -e REFERENCE_IMAGE -e BOUNDED_IMAGE \
+  -e INTEROP_DIAGNOSTIC_CASES -e INTEROP_DIAGNOSTIC_DIRECTIONS \
   -e RUNNER_REVISION -e NEQO_REVISION \
   "$TOOLS_IMAGE" python3 ci/run_in_tools.py
