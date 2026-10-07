@@ -1,0 +1,16 @@
+{
+  "quic": {
+    "name": "hibana",
+    "version": "0.9.6",
+    "id": "path+file:///workspace/hibana-quic/vendor/hibana#0.9.6",
+    "source": null,
+    "manifest_path": "/workspace/hibana-quic/vendor/hibana/Cargo.toml"
+  },
+  "host": {
+    "name": "hibana",
+    "version": "0.9.6",
+    "id": "path+file:///workspace/hibana-quic/vendor/hibana#0.9.6",
+    "source": null,
+    "manifest_path": "/workspace/hibana-quic/vendor/hibana/Cargo.toml"
+  }
+}

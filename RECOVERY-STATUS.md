@@ -233,3 +233,69 @@ Commands, exits, proof logs, minimal failing trace, source identities, resource
 comparison and all 120 cell statuses are preserved under
 `artifacts/recovery-20261006-nested-visit/`. Changes are on the recovery branch;
 main was not merged.
+
+## 2026-10-08: 8302a07b immutable admission and parallel ingress integrated
+
+Selected Hibana is `8302a07b5f0f2d224229afdba4d0afef62d6aa2b` on
+`development/rolled-route-ownership`, exact 1,207-file snapshot including
+executable modes and no local patches. Root/host Cargo resolves this single
+source; pins/provenance agree. It retains all prior route/roll/par/offer fixes.
+The final proof-only commit's Rust/Cargo/.github equals parent cf084d22.
+Both parent CI 37664144837 and latest CI 37668496444 were independently
+confirmed completed/success, superseding the supplied in-progress status.
+The original worktrees were clean and the core checkout was preserved.
+
+QUIC code is published at `064af9affb112f20699497d0b5f4faa6ddd6ebc7`, tree
+`386d6c27d4d28fb5d96c288fa5f622a07c8b276f`, identical to the locally tested
+code commit. Actual core lib execution passes 479 tests with 8 existing
+ignored; actual event-admission cursor tests (2), delayed-offer test (1),
+and core workspace strict Clippy pass. Fresh Lean/Z3 replay passes event
+admission 4/6 UNSAT/4 SAT, parallel ingress 14/8/2, pending scan 7/4/2.
+Both Option-presence and None-payload comparison mutations are detected.
+These are scoped contracts, not a proof of the entire Rust implementation.
+
+The new QUIC `parallel_offer_carrier` regression uses the real capacity-one
+carrier, projected global/direct async locals, 64 KiB caller slab and the
+existing join/yield executor. Six delayed payloads survive preview cancellation,
+are received/ACKed once, and complete the close/retirement trace. The same
+unmodified test on previous C3 fails exit 101 because peers are parked without
+a registered wake. It passes at 8302 in debug and release/LTO. Publication
+and four nested-visit regressions also pass in both profiles: six Q=1 tests
+per profile. Rust 1.95.0 completes all six requested commands in order with
+exit 0, including 4 + 7 + 27 actual wire/connection/host tests. No compiler,
+stack or capacity limit, assertion, FSM, wrapper or fallback was introduced.
+
+Broad QUIC library/all-targets suites were not rerun at this SHA; the previously
+recorded early-owner const-evaluation/retirement and path-owner stack failures
+remain unqualified. Full-core Lean/Miri evidence comes from upstream CI, not
+fresh consumer execution of those suites.
+
+Current upstream resource/compile-pressure gate passes: actual stack
+2,503/3,663 bytes, modeled SRAM 5,202/8,954 bytes, flash 96,826/169,965
+bytes. Budgets were unchanged from C3. Against the original unchanged RSS
+ceilings, causal route 131/129 MiB and causal roll 130/129 MiB still fail;
+route-arm-1 samples 132/132. Flash is 650 bytes smaller than the C3
+observation; no QUIC runtime performance improvement is claimed. QUIC strict
+Clippy still exits 101 on 51 existing production diagnostics. Warning-mode
+Clippy exits 0 with no new-test diagnostics. Comparable performance remains
+unmeasured, and legacy RSS qualification remains incomplete.
+
+Fresh native Neqo baseline passes 2/2. Rebuilt release hq at clean published
+source passes both directions' handshake/transfer, 4/4 with actual 1 KiB and
+2/3/5 MiB file equality at 60 seconds. Binary SHA256 is
+`02de1e2e8de0d7623c92d2e0eede69cc41c2371e4b966130c3d5d7a01a1fe790`.
+This is hq-interop native diagnosis, not official runner/HTTP3 qualification.
+Formal counts remain **0 passed / 0 executed / 120 target**, 0/0/60 per
+direction, 0/0/40 per repetition and 0/0/3 per case-direction. All cells
+remain unexecuted; handshake/transfer are implemented, the other 18 cases
+unimplemented, and no upstream unsupported verdict was obtained. The actual
+managed Docker socket check exits 1; OS-root recovery remains required before
+official baseline/pilot/matrix. Runner and Neqo pins and all verdict/file
+comparison conditions remain unchanged.
+
+Commands, real exits, proof/solver output, Option mutation results, exact old
+failure trace, source/binary identities, byte comparisons, resource limits
+and 120 formal-cell statuses are saved in
+`artifacts/recovery-20261008-event-admission/`. No subagent, new external task,
+or sound-producing check was used. Changes remain on the recovery branch;
+main was not merged.

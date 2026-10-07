@@ -1,0 +1,9 @@
+   Compiling hibana v0.9.6 (/workspace/hibana-8302)
+    Finished `test` profile [unoptimized] target(s) in 17.24s
+     Running tests/parallel_offer_delayed_ingress.rs (/workspace/targets/hibana-core/debug/deps/parallel_offer_delayed_ingress-46382b5cb010ae7a)
+
+running 1 test
+test offer_observes_delayed_receive_in_parallel_with_local_send_route ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

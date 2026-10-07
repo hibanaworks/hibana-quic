@@ -1,0 +1,120 @@
+{
+  "recorded_utc": "2026-10-07T19:43:18.389407+00:00",
+  "core_revision": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+  "code_commit": "064af9affb112f20699497d0b5f4faa6ddd6ebc7",
+  "snapshot_files": 1207,
+  "local_patches": [],
+  "requested_six_exits": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "requested_rust_tests_passed": 38,
+  "capacity_one_tests": {
+    "debug": 6,
+    "release_lto": 6
+  },
+  "old_core_repro": {
+    "revision": "c3d89f787aa1a8e066b310a5307fdf7cb076ee26",
+    "exit": 101,
+    "reason": "Pending without a registered wake",
+    "same_test_sha256": "38694939d4e2344ea92358e60f926e86c53ef91e9239f03b803da2426cfc4c6f"
+  },
+  "core_local": {
+    "lib_passed": 479,
+    "lib_ignored": 8,
+    "event_admission_passed": 2,
+    "parallel_offer_passed": 1,
+    "strict_clippy_exit": 0
+  },
+  "fresh_proofs": {
+    "event_admission": {
+      "lean": 4,
+      "unsat": 6,
+      "sat": 4
+    },
+    "parallel_offer": {
+      "lean": 14,
+      "unsat": 8,
+      "sat": 2
+    },
+    "pending_events": {
+      "lean": 7,
+      "unsat": 4,
+      "sat": 2
+    },
+    "option_mutations_caught": 2
+  },
+  "native": [
+    {
+      "mode": "baseline",
+      "case": "handshake",
+      "client_exit": 0,
+      "files_equal": true,
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "hq_sha256": "78bb47952075d03f8eb6537a8ee71c2c7bfb9f29f62965166d2f8dc460d87a76"
+    },
+    {
+      "mode": "baseline",
+      "case": "transfer",
+      "client_exit": 0,
+      "files_equal": true,
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "hq_sha256": "78bb47952075d03f8eb6537a8ee71c2c7bfb9f29f62965166d2f8dc460d87a76"
+    },
+    {
+      "mode": "client",
+      "case": "handshake",
+      "client_exit": 0,
+      "files_equal": true,
+      "source_commit": "064af9affb112f20699497d0b5f4faa6ddd6ebc7",
+      "hq_sha256": "02de1e2e8de0d7623c92d2e0eede69cc41c2371e4b966130c3d5d7a01a1fe790"
+    },
+    {
+      "mode": "client",
+      "case": "transfer",
+      "client_exit": 0,
+      "files_equal": true,
+      "source_commit": "064af9affb112f20699497d0b5f4faa6ddd6ebc7",
+      "hq_sha256": "02de1e2e8de0d7623c92d2e0eede69cc41c2371e4b966130c3d5d7a01a1fe790"
+    },
+    {
+      "mode": "server",
+      "case": "handshake",
+      "client_exit": 0,
+      "files_equal": true,
+      "source_commit": "064af9affb112f20699497d0b5f4faa6ddd6ebc7",
+      "hq_sha256": "02de1e2e8de0d7623c92d2e0eede69cc41c2371e4b966130c3d5d7a01a1fe790"
+    },
+    {
+      "mode": "server",
+      "case": "transfer",
+      "client_exit": 0,
+      "files_equal": true,
+      "source_commit": "064af9affb112f20699497d0b5f4faa6ddd6ebc7",
+      "hq_sha256": "02de1e2e8de0d7623c92d2e0eede69cc41c2371e4b966130c3d5d7a01a1fe790"
+    }
+  ],
+  "formal": {
+    "passed": 0,
+    "executed": 0,
+    "target": 120,
+    "per_direction_target": 60,
+    "per_repetition_target": 40,
+    "per_case_direction_target": 3,
+    "unsupported_verdicts": 0,
+    "unimplemented_cases": 18
+  },
+  "current_resource_gate_exit": 0,
+  "legacy_rss_comparison_pass": false,
+  "quic_strict_clippy_exit": 101,
+  "new_test_clippy_diagnostics": 0,
+  "rust_version": "1.95.0",
+  "neqo_revision": "ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95",
+  "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
+  "docker": "Original daemon unavailable; managed socket check exit 1",
+  "performance_improvement": "NOT_CLAIMED"
+}

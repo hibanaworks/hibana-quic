@@ -1,0 +1,14 @@
+'Hibana.ParallelOfferIngress.owned_is_evidence' does not depend on any axioms
+'Hibana.ParallelOfferIngress.waiting_requires_empty' depends on axioms: [propext]
+'Hibana.ParallelOfferIngress.carried_frame_bypasses_active' does not depend on any axioms
+'Hibana.ParallelOfferIngress.selected_evidence_bypasses_active' does not depend on any axioms
+'Hibana.ParallelOfferIngress.selected_failure_bypasses_active' does not depend on any axioms
+'Hibana.ParallelOfferIngress.independent_frame_is_carried' does not depend on any axioms
+'Hibana.ParallelOfferIngress.no_actual_frame_keeps_waiting' does not depend on any axioms
+'Hibana.ParallelOfferIngress.active_failure_is_terminal' does not depend on any axioms
+'Hibana.ParallelOfferIngress.context_is_preserved' does not depend on any axioms
+'Hibana.ParallelOfferIngress.selecting_requires_actual_empty' depends on axioms: [propext]
+'Hibana.ParallelOfferIngress.scan_frame_was_observed' depends on axioms: [propext]
+'Hibana.ParallelOfferIngress.pending_prefix_preserves_scan' does not depend on any axioms
+'Hibana.ParallelOfferIngress.first_failure_precedes_later_frame' does not depend on any axioms
+'Hibana.ParallelOfferIngress.historical_blocking_witness' does not depend on any axioms

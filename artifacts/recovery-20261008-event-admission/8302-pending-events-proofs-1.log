@@ -1,0 +1,8 @@
+'Hibana.PendingEvents.mask_exact' depends on axioms: [propext, Classical.choice, Quot.sound]
+'Hibana.PendingEvents.clear_selected' depends on axioms: [propext, Classical.choice, Quot.sound]
+'Hibana.PendingEvents.lowest_present' depends on axioms: [propext, Classical.choice, Quot.sound]
+'Hibana.PendingEvents.word_in_backing' depends on axioms: [propext, Quot.sound]
+'Hibana.PendingEvents.yielded_step_in_range' does not depend on any axioms
+'Hibana.PendingEvents.admission_equivalent' does not depend on any axioms
+'Hibana.PendingEvents.compact_word_arithmetic' depends on axioms: [propext, Quot.sound]
+Pending-event scan: Lean 7 theorems; Z3 4 UNSAT obligations, 2 SAT premises. Evidence: /workspace/validation/8302-pending-events-proofs

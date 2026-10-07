@@ -1,0 +1,4 @@
+'Hibana.ImmutableAdmission.immutable_read_reuse_preserves_live_observation' depends on axioms: [propext]
+'Hibana.ImmutableAdmission.missing_row_rejects_without_live_observation' depends on axioms: [propext]
+'Hibana.ImmutableAdmission.identity_mismatch_rejects_without_live_observation' depends on axioms: [propext]
+'Hibana.ImmutableAdmission.later_admission_uses_its_current_live_check' depends on axioms: [propext]

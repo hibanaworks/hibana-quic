@@ -1,0 +1,35 @@
+{
+  "recorded_utc": "2026-10-07T19:33:08.869919+00:00",
+  "uid": "1000",
+  "default_socket_exists": false,
+  "command": [
+    "docker",
+    "version",
+    "--format",
+    "{{json .}}"
+  ],
+  "exit_code": 1,
+  "stdout": "{\"Client\":{\"Version\":\"28.4.0\",\"ApiVersion\":\"1.51\",\"DefaultAPIVersion\":\"1.51\",\"GitCommit\":\"d8eb465\",\"GoVersion\":\"go1.24.7\",\"Os\":\"linux\",\"Arch\":\"amd64\",\"BuildTime\":\"Wed Sep  3 20:56:28 2025\",\"Context\":\"default\"},\"Server\":null}\n",
+  "stderr": "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n",
+  "managed_socket_check": {
+    "command": [
+      "env",
+      "-u",
+      "DOCKER_HOST",
+      "-u",
+      "DOCKER_CONTEXT",
+      "-u",
+      "DOCKER_TLS",
+      "-u",
+      "DOCKER_TLS_VERIFY",
+      "-u",
+      "DOCKER_CERT_PATH",
+      "docker",
+      "--host=unix:///var/run/docker.sock",
+      "info"
+    ],
+    "exit_code": 1,
+    "stdout": "Client:\n Version:    28.4.0\n Context:    default\n Debug Mode: false\n Plugins:\n  buildx: Docker Buildx (Docker Inc.)\n    Version:  v0.31.0\n    Path:     /usr/libexec/docker/cli-plugins/docker-buildx\n  compose: Docker Compose (Docker Inc.)\n    Version:  v2.40.3\n    Path:     /usr/libexec/docker/cli-plugins/docker-compose\n\nServer:\n",
+    "stderr": "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n"
+  }
+}

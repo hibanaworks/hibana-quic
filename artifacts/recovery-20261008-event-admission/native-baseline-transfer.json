@@ -1,0 +1,71 @@
+{
+  "core_revision": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+  "source_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+  "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+  "source_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+  "purpose": "native loopback diagnosis; NOT official interop qualification",
+  "timeout_seconds": 60,
+  "mode": "baseline",
+  "case": "transfer",
+  "server_command": [
+    "unshare",
+    "--user",
+    "--map-root-user",
+    "--mount",
+    "--pid",
+    "--fork",
+    "--mount-proc",
+    "--kill-child=SIGKILL",
+    "sh",
+    "/workspace/interop/native-neqo-server.sh",
+    "/workspace/interop/native-8302-20261007T192930Z/www",
+    "/workspace/interop/neqo-artifacts/bin/neqo-server",
+    "--cc",
+    "cubic",
+    "--qns-test",
+    "transfer",
+    "-d",
+    "/workspace/interop/native-8302-20261007T192930Z/db",
+    "-k",
+    "cert",
+    "127.0.0.1:16745"
+  ],
+  "client_command": [
+    "/workspace/interop/neqo-artifacts/bin/neqo-client",
+    "--cc",
+    "cubic",
+    "--qns-test",
+    "transfer",
+    "--output-dir",
+    "/workspace/interop/native-8302-20261007T192930Z/baseline-transfer-192938/downloads",
+    "https://127.0.0.1:16745/two.dat",
+    "https://127.0.0.1:16745/three.dat",
+    "https://127.0.0.1:16745/five.dat"
+  ],
+  "hq_sha256": "78bb47952075d03f8eb6537a8ee71c2c7bfb9f29f62965166d2f8dc460d87a76",
+  "started_utc": "2026-10-07T19:29:38.664404+00:00",
+  "client_exit_code": 0,
+  "server_running_after_client": true,
+  "server_exit_code": -9,
+  "files": [
+    {
+      "name": "two.dat",
+      "expected_bytes": 2097152,
+      "received_bytes": 2097152,
+      "equal": true
+    },
+    {
+      "name": "three.dat",
+      "expected_bytes": 3145728,
+      "received_bytes": 3145728,
+      "equal": true
+    },
+    {
+      "name": "five.dat",
+      "expected_bytes": 5242880,
+      "received_bytes": 5242880,
+      "equal": true
+    }
+  ],
+  "files_equal": true
+}

@@ -1,0 +1,17 @@
+{
+  "exit_code": 101,
+  "clippy_diagnostics": 51,
+  "new_test_diagnostics": 0,
+  "codes": [
+    "clippy::collapsible_if",
+    "clippy::collapsible_match",
+    "clippy::large_enum_variant",
+    "clippy::needless_option_as_deref",
+    "clippy::needless_return",
+    "clippy::possible_missing_else",
+    "clippy::result_large_err",
+    "clippy::result_unit_err",
+    "clippy::too_many_arguments",
+    "clippy::unnecessary_sort_by"
+  ]
+}

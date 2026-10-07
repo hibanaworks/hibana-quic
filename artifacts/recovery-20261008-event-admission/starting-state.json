@@ -1,0 +1,14 @@
+{
+  "recorded_utc": "2026-10-07T19:22:18.776443+00:00",
+  "requested_core": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+  "repositories": {
+    "/workspace/hibana-quic": {
+      "head": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "status": ""
+    },
+    "/workspace/hibana": {
+      "head": "adea68456116df8339c76a0d7407889755ae7b87",
+      "status": ""
+    }
+  }
+}

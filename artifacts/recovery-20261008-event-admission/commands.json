@@ -1,0 +1,592 @@
+{
+  "scope": "Fresh local checks; pre-fix reproduction and strict consumer Clippy failures retained",
+  "core_revision": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+  "records": [
+    {
+      "label": "8302-event-admission-proofs",
+      "index": 1,
+      "command": [
+        "bash",
+        "proofs/event-admission/check.sh",
+        "/workspace/validation/8302-event-admission-proofs"
+      ],
+      "cwd": "/workspace/hibana-8302",
+      "source_commit": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {},
+      "started_utc": "20261007T192353348006Z",
+      "duration_seconds": 2.2099962530191988,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192353348006Z-8302-event-admission-proofs-1.log",
+      "log_sha256": "f3dfcba03aba828757596b64e07123914a7a19be3e14bfa69529afd98bbc4328",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-event-admission-proofs-1.log"
+    },
+    {
+      "label": "8302-parallel-offer-proofs",
+      "index": 1,
+      "command": [
+        "bash",
+        "proofs/parallel-offer-ingress/check.sh",
+        "/workspace/validation/8302-parallel-offer-proofs"
+      ],
+      "cwd": "/workspace/hibana-8302",
+      "source_commit": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {},
+      "started_utc": "20261007T192355790142Z",
+      "duration_seconds": 1.5533722640248016,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192355790142Z-8302-parallel-offer-proofs-1.log",
+      "log_sha256": "8f977f3fb187bd664175129be4ceb07c4f93d06e06f74536bc08c3b672b39203",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-parallel-offer-proofs-1.log"
+    },
+    {
+      "label": "8302-pending-events-proofs",
+      "index": 1,
+      "command": [
+        "bash",
+        "proofs/pending-events/check.sh",
+        "/workspace/validation/8302-pending-events-proofs"
+      ],
+      "cwd": "/workspace/hibana-8302",
+      "source_commit": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {},
+      "started_utc": "20261007T192357563892Z",
+      "duration_seconds": 1.5879652610165067,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192357563892Z-8302-pending-events-proofs-1.log",
+      "log_sha256": "91401ce0a17ff7e5ecc50221087dc10e32d45adce8122e5b57e09977afe263ce",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-pending-events-proofs-1.log"
+    },
+    {
+      "label": "8302-core-event-admission",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--lib",
+        "event_admission_",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-8302",
+      "source_commit": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "RUSTFLAGS": "--cfg hibana_repo_tests",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192509674504Z",
+      "duration_seconds": 60.78427428303985,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192509674504Z-8302-core-event-admission-1.log",
+      "log_sha256": "efef6fb03c800d2f262c4b259b0be47157361eb92ea0bbe50fd3f8f57996fd7a",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-core-event-admission-1.log"
+    },
+    {
+      "label": "8302-core-parallel-offer",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "parallel_offer_delayed_ingress",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-8302",
+      "source_commit": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "RUSTFLAGS": "--cfg hibana_repo_tests",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192610615219Z",
+      "duration_seconds": 17.33548772399081,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192610615219Z-8302-core-parallel-offer-1.log",
+      "log_sha256": "5c730a3563071b9356d3fff421dc5bc8b8689e4853ed54cdece75985cfc0628d",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-core-parallel-offer-1.log"
+    },
+    {
+      "label": "8302-core-lib",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--lib",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-8302",
+      "source_commit": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "RUSTFLAGS": "--cfg hibana_repo_tests",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192743636377Z",
+      "duration_seconds": 2.30643269198481,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192743636377Z-8302-core-lib-1.log",
+      "log_sha256": "e01059377f05877224478d10b6bdf05ea77ae78e844b6ed717e36c7c1a5a520f",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-core-lib-1.log"
+    },
+    {
+      "label": "final-six",
+      "index": 1,
+      "command": [
+        "python3",
+        "ci/audit_source.py",
+        "--check"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192744965488Z",
+      "duration_seconds": 1.3436264710035175,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192744965488Z-final-six-1.log",
+      "log_sha256": "6ef1e735de4b30897e021df1525d23aa1a86ce5ec2b6b498c73460cbec103b4c",
+      "public_log": "artifacts/recovery-20261008-event-admission/final-six-1.log"
+    },
+    {
+      "label": "final-six",
+      "index": 2,
+      "command": [
+        "python3",
+        "diagnostics/receive-lane-causality/verify_final.py"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192746416175Z",
+      "duration_seconds": 0.22140292497351766,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192746416175Z-final-six-2.log",
+      "log_sha256": "4b715744b645497cd67eae7c5b7c91c454f24cec5b84f3838f59c03197ad3df1",
+      "public_log": "artifacts/recovery-20261008-event-admission/final-six-2.log"
+    },
+    {
+      "label": "final-six",
+      "index": 3,
+      "command": [
+        "python3",
+        "diagnostics/receive-lane-causality/finite_q1_model.py"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192746715685Z",
+      "duration_seconds": 0.20051126199541613,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192746715685Z-final-six-3.log",
+      "log_sha256": "6b4f08cdcfbdee59f470eab2bdab9ca44cf7ac3edc7e15827bf3c54097d85ab0",
+      "public_log": "artifacts/recovery-20261008-event-admission/final-six-3.log"
+    },
+    {
+      "label": "8302-parallel-offer-carrier",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "parallel_offer_carrier",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "3ac0a845a3dec1ce3d48880852842c85dda35bb4383dc9713228f22a8442f518",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192509465298Z",
+      "duration_seconds": 170.26567642297596,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192509465298Z-8302-parallel-offer-carrier-1.log",
+      "log_sha256": "ae82be0f23b2a6c332e632fa84daa9e2a64c54a53b1c242f03a3cec29e334998",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-parallel-offer-carrier-1.log"
+    },
+    {
+      "label": "final-six",
+      "index": 4,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "application_wire",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192747226060Z",
+      "duration_seconds": 14.016218686010689,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192747226060Z-final-six-4.log",
+      "log_sha256": "c333da4728d785d19966b45e9a2e34ffa5590bcc4defb6740bdd2386d9bcd678",
+      "public_log": "artifacts/recovery-20261008-event-admission/final-six-4.log"
+    },
+    {
+      "label": "8302-core-strict-clippy",
+      "index": 1,
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/workspace/hibana-8302",
+      "source_commit": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "RUSTFLAGS": "--cfg hibana_repo_tests",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192746083774Z",
+      "duration_seconds": 30.27137384400703,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192746083774Z-8302-core-strict-clippy-1.log",
+      "log_sha256": "757eff2e8b90df58293ac4643f4c111c0997b3741a881f5d7959bc26204296f4",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-core-strict-clippy-1.log"
+    },
+    {
+      "label": "final-six",
+      "index": 5,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "connected_application",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192801349634Z",
+      "duration_seconds": 25.846694508974906,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192801349634Z-final-six-5.log",
+      "log_sha256": "55af7fd5b05aaf52610f47eada7ee6773138f617a664ce851c3028930b1cae9c",
+      "public_log": "artifacts/recovery-20261008-event-admission/final-six-5.log"
+    },
+    {
+      "label": "8302-q1-debug",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "connection_publication_route",
+        "--test",
+        "nested_visit_carrier",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192929529651Z",
+      "duration_seconds": 8.549696930975188,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192929529651Z-8302-q1-debug-1.log",
+      "log_sha256": "7a87abc955102d9f1bbf5b1279dbc17c4f1ed4f98bc81860fae9ce0c07a02722",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-q1-debug-1.log"
+    },
+    {
+      "label": "8302-option-model-mutations",
+      "index": 1,
+      "command": [
+        "python3",
+        "/workspace/validation/8302-option-mutations.py",
+        "proofs/event-admission/Admission.smt2",
+        "/workspace/validation/8302-option-mutations"
+      ],
+      "cwd": "/workspace/hibana-8302",
+      "source_commit": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {},
+      "started_utc": "20261007T193129187359Z",
+      "duration_seconds": 0.8340192200266756,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T193129187359Z-8302-option-model-mutations-1.log",
+      "log_sha256": "2f766784e49af0cbf6e8771d5bc26bf16cef89377bacf0b5a672427a15edcc91",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-option-model-mutations-1.log"
+    },
+    {
+      "label": "final-six",
+      "index": 6,
+      "command": [
+        "env",
+        "CARGO_TARGET_DIR=/workspace/targets/quic-host",
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "adapters/host/Cargo.toml",
+        "--bin",
+        "hq",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192827329107Z",
+      "duration_seconds": 297.7359524370404,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192827329107Z-final-six-6.log",
+      "log_sha256": "ec88da45cc43184541f1a6dcf39054111f90f5307bc212514b0e1e755cf68cab",
+      "public_log": "artifacts/recovery-20261008-event-admission/final-six-6.log"
+    },
+    {
+      "label": "8302-quic-strict-clippy",
+      "index": 1,
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--message-format",
+        "json",
+        "--test",
+        "parallel_offer_carrier",
+        "--",
+        "-D",
+        "clippy::all"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T193306674729Z",
+      "duration_seconds": 62.38136063498678,
+      "exit_code": 101,
+      "log": "/workspace/validation/20261007T193306674729Z-8302-quic-strict-clippy-1.log",
+      "log_sha256": "a99aa019e12af4c08e054e9f3de578ffe6982aa21a5c2dccf11b7d2ce652fcae",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-quic-strict-clippy-1.log"
+    },
+    {
+      "label": "8302-old-core-delayed-offer",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--test",
+        "parallel_offer_carrier",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic-pre-offer8302",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "?? tests/parallel_offer_carrier.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic-root",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192927914174Z",
+      "duration_seconds": 339.1317825380247,
+      "exit_code": 101,
+      "log": "/workspace/validation/20261007T192927914174Z-8302-old-core-delayed-offer-1.log",
+      "log_sha256": "aa5ce85c42f912a32e6233e27ba097533ad1f95557d9474dfbbe010b73db34e9",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-old-core-delayed-offer-1.log"
+    },
+    {
+      "label": "8302-quic-clippy-warning-mode",
+      "index": 1,
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--message-format",
+        "json",
+        "--test",
+        "parallel_offer_carrier"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T193542620353Z",
+      "duration_seconds": 62.08918026601896,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T193542620353Z-8302-quic-clippy-warning-mode-1.log",
+      "log_sha256": "91cd6f232fea2364a12559d2c542722acc76e2f5aafc5cb32cca4396e6485a4c",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-quic-clippy-warning-mode-1.log"
+    },
+    {
+      "label": "8302-q1-release",
+      "index": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--release",
+        "--test",
+        "connection_publication_route",
+        "--test",
+        "nested_visit_carrier",
+        "--test",
+        "parallel_offer_carrier",
+        "--",
+        "--test-threads=1"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192938444142Z",
+      "duration_seconds": 446.6936867249897,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192938444142Z-8302-q1-release-1.log",
+      "log_sha256": "414caf288e714194021b82729e5867e27c906c214df011ca8dd36105408fa4bd",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-q1-release-1.log"
+    },
+    {
+      "label": "8302-core-resource-gate",
+      "index": 1,
+      "command": [
+        "bash",
+        ".github/scripts/check_final_form_measurements.sh"
+      ],
+      "cwd": "/workspace/hibana-8302",
+      "source_commit": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+      "working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "working_status": "",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/hibana-core",
+        "RUSTFLAGS": "--cfg hibana_repo_tests",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192816466332Z",
+      "duration_seconds": 635.3661291579483,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192816466332Z-8302-core-resource-gate-1.log",
+      "log_sha256": "515934d0c38d8878648326c04e30fe904f202aa0d17d657b2a8cc2b5ffca135a",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-core-resource-gate-1.log"
+    },
+    {
+      "label": "8302-hq-release-build",
+      "index": 1,
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "--manifest-path",
+        "adapters/host/Cargo.toml",
+        "--bin",
+        "hq"
+      ],
+      "cwd": "/workspace/hibana-quic",
+      "source_commit": "0b97fc662c1e1397eeabfee5a45b3092655df278",
+      "working_diff_sha256": "7c5a8a4773f256665ff984943a92f934dbe0e2d838dc2bdcd1c6e7dd366dfa8c",
+      "working_status": " M Cargo.toml\n M ci/pins.env\n M ci/source-manifest.json\n M ci/test-recovery.sh\n M vendor/README.md\n M vendor/hibana-provenance.json\n M vendor/hibana/.github/scripts/check_miri.sh\n M vendor/hibana/.github/workflows/quality-gates.yml\n M vendor/hibana/Cargo.toml\n M vendor/hibana/src/endpoint/kernel/offer.rs\n M vendor/hibana/src/global/event_program.rs\n M vendor/hibana/src/global/event_program_cursor_tests.rs\n M vendor/hibana/src/global/typestate/cursor.rs\n M vendor/hibana/src/global/typestate/cursor/lane_progress/tests.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/event_progress.rs\n M vendor/hibana/src/global/typestate/cursor/scope_route/row_completion.rs\n?? tests/parallel_offer_carrier.rs\n?? vendor/hibana/proofs/event-admission/\n?? vendor/hibana/proofs/parallel-offer-ingress/\n?? vendor/hibana/proofs/pending-events/\n?? vendor/hibana/src/global/typestate/cursor/pending_events.rs\n?? vendor/hibana/tests/parallel_offer_delayed_ingress.rs\n",
+      "build_environment": {
+        "CARGO_TARGET_DIR": "/workspace/targets/quic-host",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started_utc": "20261007T192654142661Z",
+      "duration_seconds": 732.2964198099799,
+      "exit_code": 0,
+      "log": "/workspace/validation/20261007T192654142661Z-8302-hq-release-build-1.log",
+      "log_sha256": "1b328ed0bf62ca6252af2233f4099eb951bbdb65740356ebe5a82da5043d53ed",
+      "public_log": "artifacts/recovery-20261008-event-admission/8302-hq-release-build-1.log"
+    }
+  ]
+}

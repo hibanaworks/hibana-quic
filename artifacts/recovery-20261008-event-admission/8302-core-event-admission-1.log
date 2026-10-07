@@ -1,0 +1,14 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on shared package cache
+   Compiling hibana v0.9.6 (/workspace/hibana-8302)
+    Finished `test` profile [unoptimized] target(s) in 1m 00s
+     Running unittests src/lib.rs (/workspace/targets/hibana-core/debug/deps/hibana-281208acd791f140)
+
+running 2 tests
+test global::event_program_cursor_tests::event_admission_rechecks_dependency_after_an_actual_predecessor_commit ... ok
+test global::event_program_cursor_tests::event_admission_rejects_each_identity_mismatch_without_changing_progress ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 485 filtered out; finished in 0.00s
+

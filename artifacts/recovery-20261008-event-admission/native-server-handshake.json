@@ -1,0 +1,49 @@
+{
+  "core_revision": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+  "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_commit": "064af9affb112f20699497d0b5f4faa6ddd6ebc7",
+  "source_status": "",
+  "purpose": "native loopback diagnosis; NOT official interop qualification",
+  "timeout_seconds": 60,
+  "mode": "server",
+  "case": "handshake",
+  "server_command": [
+    "/workspace/targets/quic-host/release/hq",
+    "server",
+    "--listen",
+    "127.0.0.1:16745",
+    "--cert",
+    "/workspace/interop/native-8302-20261007T192930Z/certs/cert.pem",
+    "--key",
+    "/workspace/interop/native-8302-20261007T192930Z/certs/priv.key",
+    "--www",
+    "/workspace/interop/native-8302-20261007T192930Z/www",
+    "--max-requests",
+    "1",
+    "--timeout-seconds",
+    "60"
+  ],
+  "client_command": [
+    "/workspace/interop/neqo-artifacts/bin/neqo-client",
+    "--cc",
+    "cubic",
+    "--qns-test",
+    "handshake",
+    "--output-dir",
+    "/workspace/interop/native-8302-20261007T192930Z/server-handshake-194020/downloads",
+    "https://127.0.0.1:16745/small.dat"
+  ],
+  "hq_sha256": "02de1e2e8de0d7623c92d2e0eede69cc41c2371e4b966130c3d5d7a01a1fe790",
+  "started_utc": "2026-10-07T19:40:20.222067+00:00",
+  "client_exit_code": 0,
+  "server_exit_code": 0,
+  "files": [
+    {
+      "name": "small.dat",
+      "expected_bytes": 1024,
+      "received_bytes": 1024,
+      "equal": true
+    }
+  ],
+  "files_equal": true
+}

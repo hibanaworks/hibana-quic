@@ -1,0 +1,71 @@
+{
+  "core_revision": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+  "model_sha256": "9803cf05700108a21caf146fec4f49582c2b92900705dd7dd321efafeb10f17e",
+  "z3_version": "Z3 version 4.16.0 - 64 bit",
+  "mutations": [
+    {
+      "mutation": "ignore_presence",
+      "replace": " (= requested_arm_present arm_present)",
+      "with_text": "",
+      "exit": 0,
+      "checks": [
+        "sat",
+        "unsat",
+        "unsat",
+        "sat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "sat",
+        "sat",
+        "sat"
+      ],
+      "expected_unmutated": [
+        "sat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "sat",
+        "sat",
+        "sat"
+      ],
+      "caught_at_check": 4,
+      "mutation_rejected": true
+    },
+    {
+      "mutation": "compare_none_payload",
+      "replace": "(or (not arm_present) (= requested_arm arm))",
+      "with_text": "(= requested_arm arm)",
+      "exit": 0,
+      "checks": [
+        "sat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "sat",
+        "sat",
+        "unsat"
+      ],
+      "expected_unmutated": [
+        "sat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "unsat",
+        "sat",
+        "sat",
+        "sat"
+      ],
+      "caught_at_check": 10,
+      "mutation_rejected": true
+    }
+  ]
+}

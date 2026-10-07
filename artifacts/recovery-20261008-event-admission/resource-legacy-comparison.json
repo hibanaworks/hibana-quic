@@ -1,0 +1,130 @@
+{
+  "scope": "Current actual measurements compared with unchanged adea snapshot ceilings; a comparison, not a second gate run",
+  "core_revision": "8302a07b5f0f2d224229afdba4d0afef62d6aa2b",
+  "current_gate_exit": 0,
+  "legacy_comparison_pass": false,
+  "observations": [
+    {
+      "case": "message_heavy_1",
+      "rss_mib": 131,
+      "current_budget_mib": 215,
+      "legacy_budget_mib": 215,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "message_heavy_64",
+      "rss_mib": 138,
+      "current_budget_mib": 226,
+      "legacy_budget_mib": 226,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "message_heavy_256",
+      "rss_mib": 179,
+      "current_budget_mib": 400,
+      "legacy_budget_mib": 400,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "route_arm_heavy_1",
+      "rss_mib": 132,
+      "current_budget_mib": 250,
+      "legacy_budget_mib": 132,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "route_arm_heavy_64",
+      "rss_mib": 148,
+      "current_budget_mib": 227,
+      "legacy_budget_mib": 227,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "route_arm_heavy_256",
+      "rss_mib": 219,
+      "current_budget_mib": 409,
+      "legacy_budget_mib": 409,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "causal_handoff_4",
+      "rss_mib": 128,
+      "current_budget_mib": 259,
+      "legacy_budget_mib": 129,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "causal_handoff_64",
+      "rss_mib": 131,
+      "current_budget_mib": 211,
+      "legacy_budget_mib": 211,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "causal_handoff_256",
+      "rss_mib": 158,
+      "current_budget_mib": 245,
+      "legacy_budget_mib": 245,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "causal_handoff_route_4",
+      "rss_mib": 131,
+      "current_budget_mib": 257,
+      "legacy_budget_mib": 129,
+      "legacy_rss_pass": false
+    },
+    {
+      "case": "causal_handoff_route_32",
+      "rss_mib": 135,
+      "current_budget_mib": 366,
+      "legacy_budget_mib": 366,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "causal_handoff_route_64",
+      "rss_mib": 144,
+      "current_budget_mib": 684,
+      "legacy_budget_mib": 684,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "causal_handoff_roll_4",
+      "rss_mib": 130,
+      "current_budget_mib": 247,
+      "legacy_budget_mib": 129,
+      "legacy_rss_pass": false
+    },
+    {
+      "case": "causal_handoff_roll_32",
+      "rss_mib": 134,
+      "current_budget_mib": 351,
+      "legacy_budget_mib": 351,
+      "legacy_rss_pass": true
+    },
+    {
+      "case": "causal_handoff_roll_64",
+      "rss_mib": 151,
+      "current_budget_mib": 590,
+      "legacy_budget_mib": 590,
+      "legacy_rss_pass": true
+    }
+  ],
+  "aggregate": {
+    "max_stack": {
+      "actual": 2503,
+      "budget": 3663
+    },
+    "sram": {
+      "actual": 5202,
+      "budget": 8954
+    },
+    "flash": {
+      "actual": 96826,
+      "budget": 169965
+    }
+  },
+  "previous_c3_flash": 97476,
+  "flash_delta_from_c3": -650,
+  "performance_improvement": "NOT_CLAIMED"
+}
