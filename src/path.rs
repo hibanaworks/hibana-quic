@@ -11,7 +11,7 @@ pub struct Address {
 pub mod ids;
 pub(crate) mod responses;
 
-pub mod protocol;
+pub mod global;
 pub(crate) mod validation;
 
 pub mod preferred;

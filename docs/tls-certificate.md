@@ -1,6 +1,6 @@
 # Bounded certificate-validation profile
 
-`src/tls_certificate.rs` validates borrowed server chains using ECDSA P-256/SHA256,
+`src/tls/certificate.rs` validates borrowed server chains using ECDSA P-256/SHA256,
 RSA-PSS-rsae/SHA256 and certificate-only RSA-PKCS1-v1_5/SHA256. RSA permits exact
 2048/3072/4096-bit moduli and odd public exponents from 3 through 2^32−1. This is a
 bounded verification profile; RSA signing, PSS-restricted SPKI, other hashes and

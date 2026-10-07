@@ -1,14 +1,14 @@
 //! Direct projected locals for the early-byte lifetime. No phase discriminator.
 use super::{
     EarlyStatus, Error, HeldBytes, QuarantineSlot, RememberedLimits, ReplayClaim, ServerPolicy,
-    protocol as p,
+    global as p,
 };
 use crate::{
-    bounded_tls::key_source::FinishedAuthenticated,
-    connection::tls::Inbox,
     crypto::directional::ApplicationKeyScope,
     packet::{EncryptionLevel, Frame, FrameIter, ParseLimits},
-    tls_schedule::Side,
+    quic::tls::Inbox,
+    tls::handshake::key_source::FinishedAuthenticated,
+    tls::schedule::Side,
 };
 use hibana::Endpoint;
 use zeroize::Zeroize;
@@ -362,7 +362,7 @@ impl<'scope, const N: usize> AuthenticatedInput<'scope, N> {
         self.packet
     }
     pub fn from_authentication(
-        receipt: crate::bounded_tls::key_source::AuthenticatedEarlyRead<'scope>,
+        receipt: crate::tls::handshake::key_source::AuthenticatedEarlyRead<'scope>,
         generation: u64,
         plaintext: &[u8],
         ecn: Option<crate::ecn::Codepoint>,

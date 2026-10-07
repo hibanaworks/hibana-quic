@@ -1,7 +1,7 @@
 //! Real certificate and CertificateVerify paths shared by allocator/link probes.
 //! Public generated fixtures only; no private key, TLS connection or network I/O.
 use core::time::Duration;
-use hibana_quic::tls_certificate::{
+use hibana_quic::tls::certificate::{
     CertificateDer, ECDSA_SECP256R1_SHA256, Error, Limits, ServerName, ServerVerifier, UnixTime,
     trust_anchor_from_der,
 };

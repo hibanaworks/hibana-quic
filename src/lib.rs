@@ -9,7 +9,6 @@
 extern crate self as hibana_quic;
 
 pub mod accounting;
-pub mod bounded_tls;
 pub mod carrier;
 pub mod crypto;
 pub mod version;
@@ -28,15 +27,9 @@ pub mod retry;
 pub mod storage;
 pub mod streams;
 pub mod tls;
-pub mod tls_certificate;
-pub mod tls_schedule;
-pub mod tls_ticket;
-pub mod tls_wire;
 
 #[cfg(test)]
 extern crate std;
-
-pub mod tls_rsa;
 
 pub mod connection_id;
 pub mod early_data;
@@ -48,8 +41,11 @@ pub mod runtime;
 
 pub mod mailbox;
 
-pub mod connection;
+pub mod quic;
 
 pub mod new_token;
 
 pub mod http3;
+
+/// Physical UDP and monotonic-clock contracts for adapter implementers.
+pub mod io;

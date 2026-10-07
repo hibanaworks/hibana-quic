@@ -16,15 +16,7 @@ use core::{
 };
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
-    bounded_tls::{BoundedTls, ClientConfig, ServerConfig, State, key_source::ReceivePacketKey},
     carrier::CarrierStorage,
-    connection::publication_gate::PublicationGate,
-    connection::{
-        self, Clock, Config, DatagramRx, DatagramTx, IoError, Side,
-        application::{self, BodyReader, ClientRequests, ServerHandler, StreamSink},
-        recovery::Recovery,
-        tls::Transcript,
-    },
     crypto::{
         IntegrityBudget,
         directional::{ApplicationKeyScope, ApplicationReadKeys},
@@ -34,9 +26,17 @@ use hibana_quic::{
         self, EncryptionLevel, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits,
         encode_varint,
     },
+    quic::publication_gate::PublicationGate,
+    quic::{
+        self, Clock, Config, DatagramRx, DatagramTx, IoError, Side,
+        application::{self, BodyReader, ClientRequests, ServerHandler, StreamSink},
+        recovery::Recovery,
+        tls::Transcript,
+    },
     streams::{Limits, PacketReference, SendChunk, StreamSlot},
     tls::Provider,
-    tls_certificate::{CertificateDer, Limits as CertificateLimits, trust_anchor_from_der},
+    tls::certificate::{CertificateDer, Limits as CertificateLimits, trust_anchor_from_der},
+    tls::handshake::{BoundedTls, ClientConfig, ServerConfig, State, key_source::ReceivePacketKey},
 };
 use std::sync::{
     Arc,
@@ -153,8 +153,8 @@ fn inspection_keys<'scope>(
     )
     .unwrap();
     use core::pin::pin;
-    use hibana_quic::bounded_tls::{
-        key_source::KeySource, locals as direct, protocol as tls_graph,
+    use hibana_quic::tls::handshake::{
+        global as tls_graph, key_source::KeySource, local as direct,
     };
     let client = RefCell::new(client);
     let server = RefCell::new(server);
@@ -394,7 +394,7 @@ impl Inspector<'_> {
                     classify_frames(&payload[..len], level)
                 }
                 Header::Short { .. } => {
-                    let opened = connection::application_wire::open::<DATAGRAM>(
+                    let opened = quic::application_wire::open::<DATAGRAM>(
                         &mut self.application,
                         &mut self.integrity,
                         packet.bytes,
@@ -601,7 +601,7 @@ impl DatagramRx for Rx<'_> {
     async fn receive(
         &mut self,
         output: &mut [u8],
-    ) -> Result<hibana_quic::connection::ReceivedDatagram, IoError> {
+    ) -> Result<hibana_quic::quic::ReceivedDatagram, IoError> {
         let ready_at = poll_fn(|cx| {
             if let Some(packet) = self.0.queued.borrow().front() {
                 Poll::Ready(packet.ready_at)
@@ -625,7 +625,7 @@ impl DatagramRx for Rx<'_> {
         if let Some(wake) = self.0.writer.borrow_mut().take() {
             wake.wake();
         }
-        Ok(hibana_quic::connection::ReceivedDatagram {
+        Ok(hibana_quic::quic::ReceivedDatagram {
             path: None,
             len: packet.len,
             ecn: packet.ecn,
@@ -903,7 +903,7 @@ macro_rules! roles {
     ($rv:expr, $sid:expr, $program:expr) => {
         application::Roles {
             ecn_owner: $rv.enter($sid, &$program.ecn_owner).unwrap(),
-            handshake: connection::Roles {
+            handshake: quic::Roles {
                 rx: $rv.enter($sid, &$program.handshake.rx).unwrap(),
                 tls_rx: $rv.enter($sid, &$program.handshake.tls_rx).unwrap(),
                 tx: $rv.enter($sid, &$program.handshake.tx).unwrap(),
@@ -947,7 +947,7 @@ fn actual_get_selects_encrypted_body_and_completes_close() {
 
 #[test]
 fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
-    use hibana_quic::connection::application_stream::{Error, StreamNumbers};
+    use hibana_quic::quic::application_stream::{Error, StreamNumbers};
     let scope = ApplicationKeyScope::new(101);
     let mut slots: Vec<_> = (0..STREAMS)
         .map(|_| StreamSlot::<RECEIVE_WINDOW>::EMPTY)
@@ -984,7 +984,7 @@ fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
 
 #[test]
 fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
-    use hibana_quic::connection::application_stream::StreamNumbers;
+    use hibana_quic::quic::application_stream::StreamNumbers;
     let scope = ApplicationKeyScope::new(102);
     let mut slots: Vec<_> = (0..STREAMS)
         .map(|_| StreamSlot::<RECEIVE_WINDOW>::EMPTY)
@@ -1007,7 +1007,7 @@ fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
     }
     assert!(matches!(
         facets.app.open_local(),
-        Err(hibana_quic::connection::application_stream::Error::Streams(
+        Err(hibana_quic::quic::application_stream::Error::Streams(
             hibana_quic::streams::Error::StreamLimit
         ))
     ));
@@ -1162,15 +1162,15 @@ fn connection_case_with_failure(
     )
     .unwrap();
     struct TicketTime;
-    impl hibana_quic::tls_ticket::TicketClock for TicketTime {
-        fn now_ms(&self) -> Result<u64, hibana_quic::tls_ticket::Error> {
+    impl hibana_quic::tls::ticket::TicketClock for TicketTime {
+        fn now_ms(&self) -> Result<u64, hibana_quic::tls::ticket::Error> {
             Ok(1_000_000)
         }
     }
-    let mut replay = [const { hibana_quic::tls_ticket::ReplaySlot::empty() }; 8];
-    let mut ticket_key = hibana_quic::tls_ticket::TicketKey::generate(
+    let mut replay = [const { hibana_quic::tls::ticket::ReplaySlot::empty() }; 8];
+    let mut ticket_key = hibana_quic::tls::ticket::TicketKey::generate(
         &mut fixture::TestRandom(991),
-        hibana_quic::tls_ticket::ReplayPolicy::ReusableOneRtt,
+        hibana_quic::tls::ticket::ReplayPolicy::ReusableOneRtt,
         &mut replay,
     )
     .unwrap();
@@ -1187,7 +1187,7 @@ fn connection_case_with_failure(
             server_config,
             server_tls_buffers.storage(),
             &mut fixture::TestRandom(701),
-            hibana_quic::bounded_tls::ServerResumption {
+            hibana_quic::tls::handshake::ServerResumption {
                 store: &mut ticket_key,
                 entropy: &mut ticket_entropy,
                 clock: &TicketTime,
@@ -1229,7 +1229,7 @@ fn connection_case_with_failure(
             .unwrap();
     let (mut client_issuer, client_stop) = client_gate.split().unwrap();
     let (mut server_issuer, server_stop) = server_gate.split().unwrap();
-    let programs = application::protocol::programs();
+    let programs = application::global::programs();
     let client_outcomes = application::Outcomes::new();
     let server_outcomes = application::Outcomes::new();
     let client_carrier = CarrierStorage::<1, 16, 128>::new();
@@ -1257,21 +1257,21 @@ fn connection_case_with_failure(
                 &programs.handshake.udp,
                 $outcomes
                     .handshake_adapter
-                    .resolver::<{ connection::protocol::ADAPTER_RESULT }>(),
+                    .resolver::<{ quic::global::ADAPTER_RESULT }>(),
             )
             .unwrap();
             $rv.set_resolver(
                 &programs.adapter,
                 $outcomes
                     .application_adapter
-                    .resolver::<{ application::protocol::SUBMISSION_RESULT }>(),
+                    .resolver::<{ application::global::SUBMISSION_RESULT }>(),
             )
             .unwrap();
             $rv.set_resolver(
                 &programs.adapter,
                 $outcomes
                     .application_reset
-                    .resolver::<{ application::protocol::STOP_RESULT }>(),
+                    .resolver::<{ application::global::STOP_RESULT }>(),
             )
             .unwrap();
         }};

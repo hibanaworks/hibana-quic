@@ -1,7 +1,7 @@
 //! Host admission and routing run beside independent Hibana connection owners.
 //! The scheduler joins futures; it does not implement QUIC protocol phases.
 use super::*;
-use hibana_quic::connection::Clock as _;
+use hibana_quic::quic::Clock as _;
 use hibana_quic::{
     mailbox::Mailbox,
     runtime::{Task, TaskSet},
@@ -35,7 +35,7 @@ impl ticket::ServerTicketStore for TicketAccess<'_, '_> {
     fn seal(
         &mut self,
         token: ticket::IssueToken,
-        psk: hibana_quic::tls_schedule::Secret32,
+        psk: hibana_quic::tls::schedule::Secret32,
         out: &mut [u8],
     ) -> std::result::Result<ticket::IssuedTicket, ticket::Error> {
         self.0
@@ -81,7 +81,7 @@ pub async fn run<const S: usize, const T: usize>(
     listen: SocketAddr,
     credentials: (&std::path::Path, &std::path::Path),
     files: &cli::ServerFiles,
-    cipher: hibana_quic::bounded_tls::CipherPolicy,
+    cipher: hibana_quic::tls::handshake::CipherPolicy,
     version: hibana_quic::version::Version,
     count: usize,
 ) -> Result<Report> {
@@ -141,7 +141,8 @@ pub async fn run<const S: usize, const T: usize>(
                 let tx = reactor
                     .register_udp(raw.try_clone().map_err(|e| format!("UDP clone: {e}"))?)
                     .map_err(|e| format!("TX registration: {e}"))?;
-                let mut server = host_files::FileServer::new(Default::default(),
+                let mut server = host_files::FileServer::new(
+                    Default::default(),
                     &files.www,
                     files.max_requests.unwrap_or(host_files::MAX_REQUESTS),
                 )?;

@@ -1,5 +1,5 @@
 use super::host_files::{MAX_REQUESTS, Request};
-use hibana_quic::bounded_tls::CipherPolicy;
+use hibana_quic::tls::handshake::CipherPolicy;
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
 pub const USAGE: &str = "Direct Hibana QUIC v1/v2 / hq-interop or h3\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi]\n\nOne connection, two ticket-resuming connections with --session resume, or one full connection per request with --session multi (server: --connections 1..64); at most 4096 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
 #[derive(Debug)]

@@ -10,7 +10,7 @@
 //!
 //! One `PacketKey` owns one direction and encryption level. Do not reconstruct a
 //! sending key from the same secret: its local nonce-use guard cannot see another
-//! instance. Keep one `IntegrityBudget` for the entire connection, including old
+//! instance. Keep one `IntegrityBudget` for the entire quic, including old
 //! receive generations. No operation allocates or obtains random numbers.
 
 use crate::version::Version;

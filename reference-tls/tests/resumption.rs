@@ -3,13 +3,13 @@ mod async_fixture;
 // Real two-connection PSK_DHE resumption. Fixture setup is host-only; measured
 // constructors, encrypted TLS flights, issuance, cache and resumption allocate zero.
 use hibana_quic::{
-    bounded_tls::{BoundedTls, ClientConfig, ServerConfig, SigningKey, State, Storage},
+    tls::certificate::{CertificateDer, Limits, TrustAnchor, UnixTime, trust_anchor_from_der},
+    tls::handshake::{BoundedTls, ClientConfig, ServerConfig, SigningKey, State, Storage},
     tls::{self, Level, Provider},
-    tls_certificate::{CertificateDer, Limits, TrustAnchor, UnixTime, trust_anchor_from_der},
 };
 use hibana_quic::{
-    bounded_tls::{ClientResumption, Failure, ServerResumption},
-    tls_ticket::{
+    tls::handshake::{ClientResumption, Failure, ServerResumption},
+    tls::ticket::{
         self as ticket, Binding, ClientCache, ClientOffer, ClientSlot, ReplayPolicy, ReplaySlot,
         TicketKey, VerificationContext,
     },
@@ -165,7 +165,7 @@ fn connect_clocks(
         policy,
         params,
         fragment,
-        hibana_quic::bounded_tls::CipherPolicy::Default,
+        hibana_quic::tls::handshake::CipherPolicy::Default,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -180,7 +180,7 @@ fn connect_clocks_with_cipher(
     policy: &[u8],
     params: &[u8],
     fragment: usize,
-    cipher: hibana_quic::bounded_tls::CipherPolicy,
+    cipher: hibana_quic::tls::handshake::CipherPolicy,
 ) -> Outcome {
     let mut cb = Buffers::new();
     let mut sb = Buffers::new();
@@ -508,7 +508,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     .unwrap();
     let mut hello = [0; 4096];
     let out = client.transmit(&mut hello).unwrap().unwrap();
-    let psk = hibana_quic::tls_wire::parse_client_hello_psk(&hello[..out.len])
+    let psk = hibana_quic::tls::wire::parse_client_hello_psk(&hello[..out.len])
         .unwrap()
         .psk
         .unwrap();
@@ -517,7 +517,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     let error = async_fixture::reject_server_message(&mut server, &hello[..out.len]);
     assert!(matches!(
         error,
-        hibana_quic::bounded_tls::locals::Error::Crypto(Failure::Ticket(ticket::Error::Binder))
+        hibana_quic::tls::handshake::local::Error::Crypto(Failure::Ticket(ticket::Error::Binder))
     ));
     assert_eq!(server.state(), State::Failed);
     assert!(!server.has_keys(Level::OneRtt));
@@ -622,7 +622,7 @@ fn transport_binding_is_canonical_excludes_cids_and_rejects_changed_limits() {
 
 #[test]
 fn strict_chacha_ticket_roundtrip_and_policy_mismatch_before_output() {
-    use hibana_quic::bounded_tls::{CipherPolicy, Failure};
+    use hibana_quic::tls::handshake::{CipherPolicy, Failure};
     let id = identity();
     let anchors = [trust_anchor_from_der(&id.root).unwrap()];
     let mut slots = [ClientSlot::<SIZE>::empty()];

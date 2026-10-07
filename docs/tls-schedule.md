@@ -1,6 +1,6 @@
 # Bounded TLS 1.3 SHA-256 schedule
 
-`src/tls_schedule.rs` is a no_std/no_alloc cryptographic building block. It is
+`src/tls/schedule.rs` is a no_std/no_alloc cryptographic building block. It is
 **not a complete TLS backend**, and a successful derivation is not a claim that
 TLS authenticated a peer or completed its handshake.
 

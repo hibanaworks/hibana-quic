@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`src/roles/protocol.rs` defines the actual key service. `src/roles/packet_protection.rs` runs two readable local async roles with direct Endpoint operations. The crypto role owns one non-Clone `PacketKey`; callers can request work but cannot submit an authenticated outcome. The initial-key constructor returns owned directional keys that can be moved into independent role facets.
+`src/roles/global.rs` defines the actual key service. `src/roles/packet_protection.rs` runs two readable local async roles with direct Endpoint operations. The crypto role owns one non-Clone `PacketKey`; callers can request work but cannot submit an authenticated outcome. The initial-key constructor returns owned directional keys that can be moved into independent role facets.
 
 The service is a production foundation, not yet a claim to express all QUIC/TLS reachable states. Packet-number restoration/replay checks, authenticated reserved bits, TLS peer authentication, key-update policy, path/ACK arithmetic, and whole-connection close/drain remain distinct integration obligations.
 

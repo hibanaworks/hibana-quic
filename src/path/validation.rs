@@ -1,9 +1,9 @@
 //! Actual authenticated path observations and physical probe receipts. Protocol
-//! progression lives in protocol::Flow and owner(), not a stored phase enum.
-use super::protocol as p;
+//! progression lives in global::Flow and owner(), not a stored phase enum.
+use super::global as p;
 use crate::{
-    connection::{Clock, Side, application::Error, tls::Inbox},
     path::Address,
+    quic::{Clock, Side, application::Error, tls::Inbox},
 };
 use core::cell::RefCell;
 use hibana::Endpoint;

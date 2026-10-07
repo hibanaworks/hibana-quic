@@ -91,7 +91,7 @@ impl<'a, 'scope> Ids<'a, 'scope> {
     }
     pub(crate) fn acknowledge(
         &mut self,
-        grant: &crate::connection::recovery::FrameAcknowledgments<'scope>,
+        grant: &crate::quic::recovery::FrameAcknowledgments<'scope>,
     ) -> Result<(), CidError> {
         if !core::ptr::eq(self.scope, grant.scope()) {
             return Err(CidError::UnknownSequence);
@@ -110,7 +110,7 @@ impl<'a, 'scope> Ids<'a, 'scope> {
     }
     pub(crate) fn loss(
         &mut self,
-        grant: &crate::connection::recovery::ApplicationLoss<'scope>,
+        grant: &crate::quic::recovery::ApplicationLoss<'scope>,
     ) -> Result<(), CidError> {
         if !core::ptr::eq(self.scope, grant.scope()) {
             return Err(CidError::UnknownSequence);

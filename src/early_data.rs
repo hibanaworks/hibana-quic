@@ -10,10 +10,10 @@
 use crate::parameters::{Parameters, Peer};
 use zeroize::Zeroize;
 
+pub mod global;
 pub mod owner;
 #[cfg(test)]
 mod owner_tests;
-pub mod protocol;
 
 const MAX: u64 = (1 << 62) - 1;
 const MAX_STREAMS: u64 = 1 << 60;

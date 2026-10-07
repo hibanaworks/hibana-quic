@@ -2,9 +2,9 @@
 //! OpenSSL key generation and the allocating peer are outside the bounded call
 //! counter. No private test key is written to disk or committed to the repository.
 use hibana_quic::{
-    bounded_tls::{BoundedTls, ClientConfig, State, Storage},
+    tls::certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
+    tls::handshake::{BoundedTls, ClientConfig, State, Storage},
     tls::{self, Level, Provider},
-    tls_certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
 };
 use hibana_quic_reference_tls::{RustlsProvider, rustls};
 use rand_core::OsRng;
@@ -149,7 +149,7 @@ fn exchange(
     client: &mut BoundedTls<'_, '_>,
     server: &mut RustlsProvider,
     corrupt_cv: bool,
-) -> Result<bool, hibana_quic::bounded_tls::locals::Error> {
+) -> Result<bool, hibana_quic::tls::handshake::local::Error> {
     use core::{
         cell::RefCell,
         future::poll_fn,
@@ -158,19 +158,19 @@ fn exchange(
     };
     use hibana::runtime::{SessionKitStorage, ids::SessionId};
     use hibana_quic::{
-        bounded_tls::{locals, protocol},
         carrier::CarrierStorage,
         runtime::TaskSet,
+        tls::handshake::{global, local},
     };
     struct Access<'a, 'cfg, 'buf> {
         tls: RefCell<&'a mut BoundedTls<'cfg, 'buf>>,
         reader: RefCell<Option<Waker>>,
     }
-    impl locals::CryptoAccess for Access<'_, '_, '_> {
+    impl local::CryptoAccess for Access<'_, '_, '_> {
         fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
             measured(|| f(&mut self.tls.borrow_mut()))
         }
-        fn applied(&self) -> Result<(), locals::Error> {
+        fn applied(&self) -> Result<(), local::Error> {
             let w = self.reader.borrow_mut().take();
             if let Some(w) = w {
                 w.wake();
@@ -190,19 +190,19 @@ fn exchange(
         corrupt: bool,
         saw: bool,
     }
-    impl locals::MessageInput for Input<'_, '_, '_, '_, '_> {
+    impl local::MessageInput for Input<'_, '_, '_, '_, '_> {
         async fn read_message(
             &mut self,
             level: Level,
             out: &mut [u8],
-        ) -> Result<usize, locals::Error> {
+        ) -> Result<usize, local::Error> {
             if self.used == self.end {
                 let output = poll_fn(|cx| {
                     self.reader.borrow_mut().replace(cx.waker().clone());
                     match self.server.borrow_mut().transmit(&mut self.wire[..8192]) {
                         Ok(Some(o)) => Poll::Ready(Ok(o)),
                         Ok(None) => Poll::Pending,
-                        Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                        Err(e) => Poll::Ready(Err(local::Error::Input(e))),
                     }
                 })
                 .await?;
@@ -233,7 +233,7 @@ fn exchange(
                         .server
                         .borrow_mut()
                         .seal(self.level, pn, b"header", &mut self.wire, self.end)
-                        .map_err(locals::Error::Input)?;
+                        .map_err(local::Error::Input)?;
                     assert_eq!(
                         measured(|| self.client.tls.borrow_mut().open(
                             self.level,
@@ -241,7 +241,7 @@ fn exchange(
                             b"header",
                             &mut self.wire[..n]
                         ))
-                        .map_err(locals::Error::Input)?,
+                        .map_err(local::Error::Input)?,
                         self.end
                     );
                 }
@@ -274,7 +274,7 @@ fn exchange(
         saw: false,
     };
     let mut bytes = [0; 8192];
-    let slot = locals::MessageSlot::new(&mut bytes);
+    let slot = local::MessageSlot::new(&mut bytes);
     let carrier = CarrierStorage::<1, 16, 4>::new();
     let mut slab = vec![0; 65536];
     let mut storage = SessionKitStorage::uninit();
@@ -283,7 +283,7 @@ fn exchange(
     let rv = kit
         .rendezvous(&mut slab, carrier.bind(sid).unwrap())
         .unwrap();
-    let programs = protocol::client_programs();
+    let programs = global::client_programs();
     let mut owner = rv.enter(sid, &programs.verify).unwrap();
     let mut receiver = rv.enter(sid, &programs.input).unwrap();
     let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
@@ -301,7 +301,7 @@ fn exchange(
                             Poll::Ready(Ok(None))
                         }
                         Ok(None) => Poll::Pending,
-                        Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                        Err(e) => Poll::Ready(Err(local::Error::Input(e))),
                     }
                 })
                 .await?;
@@ -317,19 +317,19 @@ fn exchange(
                             .borrow_mut()
                             .seal(o.level, number, b"header", &mut wire, o.len)
                     })
-                    .map_err(locals::Error::Input)?;
+                    .map_err(local::Error::Input)?;
                     assert_eq!(
                         server
                             .borrow_mut()
                             .open(o.level, number, b"header", &mut wire[..n])
-                            .map_err(locals::Error::Input)?,
+                            .map_err(local::Error::Input)?,
                         o.len
                     );
                 }
                 server
                     .borrow_mut()
                     .receive(o.level, &wire[..o.len])
-                    .map_err(locals::Error::Input)?;
+                    .map_err(local::Error::Input)?;
                 let w = reader.borrow_mut().take();
                 if let Some(w) = w {
                     w.wake();
@@ -337,8 +337,8 @@ fn exchange(
                 hibana_quic::runtime::yield_now().await;
             }
         };
-        let mut owner = pin!(locals::client_owner(&mut owner, &client, &slot));
-        let mut receiver = pin!(locals::client_input(&mut receiver, &slot, &mut input));
+        let mut owner = pin!(local::client_owner(&mut owner, &client, &slot));
+        let mut receiver = pin!(local::client_input(&mut receiver, &slot, &mut input));
         let mut feed = pin!(feed);
         reactor
             .block_on(TaskSet::new([
@@ -375,7 +375,7 @@ fn run(bits: u16, corrupt_cv: bool) {
     if corrupt_cv {
         assert!(matches!(
             result,
-            Err(hibana_quic::bounded_tls::locals::Error::Crypto(_))
+            Err(hibana_quic::tls::handshake::local::Error::Crypto(_))
         ));
         assert_eq!(client.state(), State::Failed);
         assert!(!client.has_keys(Level::OneRtt));

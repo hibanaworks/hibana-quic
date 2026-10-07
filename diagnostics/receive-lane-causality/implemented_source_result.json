@@ -2,9 +2,9 @@
   "source_note": "Current source files are identified by source_sha256; this is not a whole-program proof.",
   "caveat": "Executed source-level Python models only. Not Rust compilation, Hibana global validation, runtime, QUIC or interop execution.",
   "source_sha256": {
-    "src/connection/protocol.rs": "a9bbc7ccf1205b3e8d5871db14fe727329121e5433caed3bd5d79839c9a5eac2",
-    "src/connection/application/protocol.rs": "15d2757eafe9e90ca24c2f8479248ee08bd6b3a156829aed5978b9190dbedc46",
-    "src/bounded_tls/protocol.rs": "f6f7d542d07e16eb210a7efb428b81b635ecd8c162a82ae21f985db58bc52e24"
+    "src/quic/global.rs": "a9bbc7ccf1205b3e8d5871db14fe727329121e5433caed3bd5d79839c9a5eac2",
+    "src/quic/application/global.rs": "15d2757eafe9e90ca24c2f8479248ee08bd6b3a156829aed5978b9190dbedc46",
+    "src/tls/handshake/global.rs": "f6f7d542d07e16eb210a7efb428b81b635ecd8c162a82ae21f985db58bc52e24"
   },
   "events": 190,
   "markers": 292,

@@ -1,0 +1,723 @@
+{
+  "runner_revision": "740c05a10b61d65e8abd3ad38d60898004d335d9",
+  "registered_quic_cases": 22,
+  "directions": 2,
+  "pilot_commit": "27065079e0d778bf7d238dec7c92f493817548e3",
+  "current_cleanup_commit_qualification": "34/44 cumulative distinct official case/direction passes:30 baseline29ba476, paired Retry2 on159ed009, and ECN2 on d25b9cb in run37546867484/artifact11450514076. The generated qualification artifact is the authority for the exact-source 34-cell matrix; historical passes are not substituted for this run.",
+  "cases": [
+    {
+      "case": "handshake",
+      "abbreviation": "H",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
+    },
+    {
+      "case": "transfer",
+      "abbreviation": "DC",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
+    },
+    {
+      "case": "longrtt",
+      "abbreviation": "LR",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
+    },
+    {
+      "case": "chacha20",
+      "abbreviation": "C20",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
+    },
+    {
+      "case": "multiplexing",
+      "abbreviation": "M",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37359435433,
+        "commit": "4fdc24a716f5e854f7df603f8c312f789984cf57",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37359435433"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37359435433,
+        "commit": "4fdc24a716f5e854f7df603f8c312f789984cf57",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37359435433"
+      }
+    },
+    {
+      "case": "retry",
+      "abbreviation": "S",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "resumption",
+      "abbreviation": "R",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37257163222,
+        "commit": "622a17a48ce756f80034a8a62b61fbd838c467cb",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37257163222,
+        "commit": "622a17a48ce756f80034a8a62b61fbd838c467cb",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37257163222"
+      }
+    },
+    {
+      "case": "zerortt",
+      "abbreviation": "Z",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "passed-pilot",
+      "server_vs_neqo_run": 37260959576,
+      "server_vs_neqo_control": "failed; independently checked by quiche control and candidate run37261848054",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "quiche",
+        "run": 37272347426,
+        "commit": "6c20cf86b8ba23fc3e832854c2e81ae4c2ee09e7",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37272347426"
+      },
+      "client_vs_quiche": "passed-pilot",
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "quiche",
+        "run": 37272347426,
+        "commit": "6c20cf86b8ba23fc3e832854c2e81ae4c2ee09e7",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37272347426"
+      },
+      "server_vs_quiche": "passed-pilot"
+    },
+    {
+      "case": "http3",
+      "abbreviation": "3",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "blackhole",
+      "abbreviation": "B",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37269130471,
+        "commit": "e33e9df187b864e3526471b0e9d8f349aad7e990",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37269130471"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37269130471,
+        "commit": "e33e9df187b864e3526471b0e9d8f349aad7e990",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37269130471"
+      },
+      "earlier_results": [
+        {
+          "run": 37263917795,
+          "commit": "7db1f72d3f955b629095e713c9025ae7768d824d",
+          "client": "passed-pilot",
+          "server": "failed-pilot"
+        }
+      ]
+    },
+    {
+      "case": "keyupdate",
+      "abbreviation": "U",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37274077941,
+        "commit": "6bfdf43f944c0d5421ecffbb8a9246083171b372",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37274077941"
+      },
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37276321318,
+        "commit": "17b29fc909ea3e6818a1e3caf305662a3d96cc2b",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37276321318"
+      }
+    },
+    {
+      "case": "ecn",
+      "abbreviation": "E",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37546867484,
+        "artifact": 11450514076,
+        "commit": "d25b9cbefb4de2d801578caa11e7fbb466e92106",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37546867484"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37546867484,
+        "artifact": 11450514076,
+        "commit": "d25b9cbefb4de2d801578caa11e7fbb466e92106",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37546867484"
+      }
+    },
+    {
+      "case": "amplificationlimit",
+      "abbreviation": "A",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "quiche",
+        "run": 37280980829,
+        "commit": "60e6f24c4d0719d5b8383a95d4f7f87207b8c269",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37280980829"
+      },
+      "client_vs_quiche": "passed-pilot",
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "quiche",
+        "run": 37280980829,
+        "commit": "60e6f24c4d0719d5b8383a95d4f7f87207b8c269",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37280980829"
+      },
+      "server_vs_quiche": "passed-pilot"
+    },
+    {
+      "case": "handshakeloss",
+      "abbreviation": "L1",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37280394666,
+        "commit": "0e266f2a2e9e3ee44adcddf15e253875998b8aae",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37280394666"
+      },
+      "latest_server_failure": {
+        "run": 37309538333,
+        "reason": "simulator exited before capture; parallel listener omitted reserved-version readiness response",
+        "repair_run": 37312379718,
+        "repair_verdict": "passed"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37312379718,
+        "commit": "7ab97351b4a7f6ea22f8f2113b2ff226db9092ab",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37312379718"
+      }
+    },
+    {
+      "case": "transferloss",
+      "abbreviation": "L2",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
+    },
+    {
+      "case": "handshakecorruption",
+      "abbreviation": "C1",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37280394666,
+        "commit": "0e266f2a2e9e3ee44adcddf15e253875998b8aae",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37280394666"
+      },
+      "latest_server_failure": {
+        "run": 37309538333,
+        "reason": "simulator exited before capture; parallel listener omitted reserved-version readiness response",
+        "repair_run": 37312379718,
+        "repair_verdict": "passed"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37312379718,
+        "commit": "7ab97351b4a7f6ea22f8f2113b2ff226db9092ab",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37312379718"
+      }
+    },
+    {
+      "case": "transfercorruption",
+      "abbreviation": "C2",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
+    },
+    {
+      "case": "ipv6",
+      "abbreviation": "6",
+      "client_vs_neqo": "passed-pilot",
+      "server_vs_neqo": "passed-pilot",
+      "client_qualified": "passed-pilot",
+      "client_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      },
+      "server_qualified": "passed-pilot",
+      "server_qualification_evidence": {
+        "peer": "neqo",
+        "run": 37255425723,
+        "commit": "99943a86c72fdd495701a3779835c6bb127b37a9",
+        "control": "passed",
+        "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37255425723"
+      }
+    },
+    {
+      "case": "v2",
+      "abbreviation": "V2",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "rebind-port",
+      "abbreviation": "BP",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "rebind-addr",
+      "abbreviation": "BA",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    },
+    {
+      "case": "connectionmigration",
+      "abbreviation": "CM",
+      "client_vs_neqo": "not-run",
+      "server_vs_neqo": "not-run"
+    }
+  ],
+  "network_impairment_qualification": "Historical passes include longrtt, transferloss, transfercorruption, IPv6, blackhole, handshakeloss and handshakecorruption both directions. Server impaired-handshake run37312379718 passed both unchanged controls and both candidate cells.",
+  "additional_peer_results": [
+    {
+      "peer": "quiche",
+      "case": "zerortt",
+      "direction": "server",
+      "status": "passed-pilot",
+      "baseline": "passed",
+      "run": 37261848054,
+      "commit": "4ba95dd25212cc80b2706240ed51faaf9320649e",
+      "image": "cloudflare/quiche-qns@sha256:6cbde3c4767c8894917d6c88e62890a4e663188a36bb606907afc48ffd7fd7fc",
+      "counts_toward_neqo_matrix": false
+    }
+  ],
+  "historical_unique_passes": 30,
+  "full_latest_commit_matrix_passed": false,
+  "inventory_updated_through_commit": "4fdc24a716f5e854f7df603f8c312f789984cf57",
+  "current_product_code_qualification": {
+    "product_commit": "29ba476cd1e40a30ecbcfeb9879fb9bde114cf52",
+    "cells_passed": 30,
+    "registered_cells": 44,
+    "scope": "same product source; only CI requests and evidence docs differ across executions; not a failure-free repeated full matrix",
+    "groups": [
+      {
+        "cases": [
+          "handshakecorruption",
+          "handshakeloss",
+          "multiplexing",
+          "zerortt"
+        ],
+        "directions": [
+          "client",
+          "server"
+        ],
+        "peer": "quiche",
+        "run": 37440190467,
+        "passing_artifacts": [
+          11400534954,
+          11402098198
+        ],
+        "failed_repeat_artifact": 11403970827
+      },
+      {
+        "cases": [
+          "handshake",
+          "transfer",
+          "longrtt",
+          "chacha20",
+          "ipv6"
+        ],
+        "directions": [
+          "client",
+          "server"
+        ],
+        "peer": "neqo",
+        "run": 37446541784,
+        "artifact": 11404332356
+      },
+      {
+        "cases": [
+          "transferloss",
+          "transfercorruption",
+          "resumption",
+          "blackhole",
+          "keyupdate"
+        ],
+        "directions": [
+          "client",
+          "server"
+        ],
+        "peer": "neqo",
+        "run": 37447499432,
+        "artifact": 11406595653
+      },
+      {
+        "cases": [
+          "amplificationlimit"
+        ],
+        "directions": [
+          "client",
+          "server"
+        ],
+        "peer": "quiche",
+        "run": 37448935891,
+        "passing_artifact": 11406629356,
+        "failed_capture_incomplete_artifact": 11405632656
+      }
+    ],
+    "all_passing_results_have_passing_controls": true,
+    "prior_failures_retained": true
+  },
+  "retry_pair_candidate": {
+    "official_pair_pass": true,
+    "required_workflow": "both native directions locally before any new CI",
+    "native_binary_sha256": "7c16ab3c29bd65bdd08f3dce33c8fc6ed806b464f3a325e85b77d9eef8256493",
+    "same_binary_both_directions": true,
+    "native_client": {
+      "direction": "forward",
+      "client_exit": 0,
+      "client_elapsed_seconds": 0.202,
+      "post_client_verification_and_retirement_seconds": 0.038,
+      "elapsed_seconds": 0.241,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        },
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5",
+          "received_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5"
+        },
+        {
+          "name": "5242880",
+          "bytes": 5242880,
+          "expected_sha256": "c036cbb7553a909f8b8877d4461924307f27ecb66cff928eeeafd569c3887e29",
+          "received_sha256": "c036cbb7553a909f8b8877d4461924307f27ecb66cff928eeeafd569c3887e29"
+        }
+      ],
+      "proxy": null,
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0
+    },
+    "native_server": {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 5.735,
+      "post_client_verification_and_retirement_seconds": 0.035,
+      "elapsed_seconds": 5.77,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a",
+          "received_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a"
+        },
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7",
+          "received_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7"
+        },
+        {
+          "name": "5242880",
+          "bytes": 5242880,
+          "expected_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0",
+          "received_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0"
+        }
+      ],
+      "proxy": null,
+      "connections": null,
+      "resources_retired": true,
+      "idle_expired_connections": null,
+      "lifecycle_closed": true,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0
+    },
+    "actual_reference_retry_log_checked": true,
+    "native_scope": "unchanged Neqo; localhost without ns-3 impairment or official trace verdict",
+    "earlier_server_only": {
+      "commit": "f7a3ec8c6622b4d9501f6d76240374b2557dccc3",
+      "run": 37458099916,
+      "artifact": 11410573260,
+      "result": "passed",
+      "workflow_boundary": "premature one-sided run; no additional CI until local pair qualified"
+    },
+    "coverage_gap": "early-data plus Retry not qualified",
+    "official": {
+      "commit": "159ed00980efd15e5bd63f3428120b8917bf2a51",
+      "run": 37472936094,
+      "artifact": 11417713931,
+      "baseline": "succeeded",
+      "client": "succeeded",
+      "server": "succeeded",
+      "unexecuted": 0,
+      "runtime_run": 37472936275,
+      "runtime_result": "success"
+    }
+  },
+  "cumulative_distinct_cells": 32,
+  "cumulative_scope": "baseline30 on29ba476 plus Retry2 on159ed009; not a full current-head sweep",
+  "ecn_pair_candidate": {
+    "official_qualified": true,
+    "native_binary_sha256": "448f1aab511e1df775c7d786765418f4e00d579549d9d560b714a412ce1269c2",
+    "native_scope": "unchanged Neqo, localhost,2/3/5MiB; not ns-3 or official capture verdict",
+    "native_client": {
+      "observation": {
+        "ecn_accepted_packets": 26,
+        "ecn_validated_packets": 26,
+        "ecn_received_packets": 7340,
+        "ecn_acknowledgments_sent": 93,
+        "ecn_feedback_error": null,
+        "peer_reported_capable": true
+      },
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+          "received_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee"
+        },
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5",
+          "received_sha256": "bbd05cf6097ac9b1f89ea29d2542c1b7b67ee46848393895f5a9e43fa1f621e5"
+        },
+        {
+          "name": "5242880",
+          "bytes": 5242880,
+          "expected_sha256": "c036cbb7553a909f8b8877d4461924307f27ecb66cff928eeeafd569c3887e29",
+          "received_sha256": "c036cbb7553a909f8b8877d4461924307f27ecb66cff928eeeafd569c3887e29"
+        }
+      ],
+      "elapsed_seconds": 0.307,
+      "client_exit": 0,
+      "retirement_verified": true
+    },
+    "native_server": {
+      "observation": {
+        "ecn_accepted_packets": 10244,
+        "ecn_validated_packets": 10244,
+        "ecn_received_packets": 6839,
+        "ecn_acknowledgments_sent": 210,
+        "ecn_feedback_error": null,
+        "peer_reported_capable": true
+      },
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a",
+          "received_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a"
+        },
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7",
+          "received_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7"
+        },
+        {
+          "name": "5242880",
+          "bytes": 5242880,
+          "expected_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0",
+          "received_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0"
+        }
+      ],
+      "elapsed_seconds": 9.764,
+      "client_exit": 0,
+      "retirement_verified": true
+    },
+    "checks": {
+      "core_integration_docs": 554,
+      "host": 119,
+      "host_selected_strict_clippy": "passed",
+      "thumb_no_std": "passed",
+      "selected_reference_tls": 29,
+      "python": 71
+    },
+    "architecture": "Dedicated existing spare role31 controls projected probing/capable/failed continuations; role17 remains sole physical publisher; actual common Request/Settled, unique concurrent selectors, no local phase flag or relay actor.",
+    "additional_legacy_suite": {
+      "suite": "reference-tls/tests/certificate_depth.rs",
+      "status": "failed",
+      "passed": 3,
+      "failed": 3,
+      "ignored": 1,
+      "scope": "Outside unchanged selected CI suite. One fixed historical public-certificate fixture is missing; two old synchronous Provider-driver tests did not reach the expected terminal. They remain unqualified; no passing claim or test/deadline relaxation."
+    },
+    "official_evidence": {
+      "peer": "neqo",
+      "run": 37546867484,
+      "artifact": 11450514076,
+      "commit": "d25b9cbefb4de2d801578caa11e7fbb466e92106",
+      "control": "passed",
+      "url": "https://github.com/hibanaworks/hibana-quic/actions/runs/37546867484"
+    }
+  },
+  "same_commit_34_matrix": {
+    "status": "verification-required",
+    "candidate_results": 34,
+    "reference_controls": 17,
+    "groups": "ci/interop-request.json",
+    "all_results_required_on_one_source_commit": true,
+    "result_location": "interop-qualification-<run_id>-<run_attempt>/summary.json"
+  }
+}

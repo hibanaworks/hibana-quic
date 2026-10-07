@@ -3,19 +3,19 @@
 #[path = "../../tests/support/async_tls_fixture.rs"]
 mod async_fixture;
 use hibana_quic::{
-    bounded_tls::{BoundedTls, ClientConfig, ServerConfig, SigningKey, State, Storage},
-    tls::{self, Level, Provider},
-    tls_certificate::{CertificateDer, Limits, TrustAnchor, UnixTime, trust_anchor_from_der},
-};
-use hibana_quic::{
-    bounded_tls::{
+    early_data::{EarlyFreshness, EarlyStatus, QuarantineSlot, ReplayStorage, ServerPolicy},
+    tls::handshake::{
         CipherPolicy, ClientEarlyData, ClientResumption, ServerEarlyData, ServerResumption,
     },
-    early_data::{EarlyFreshness, EarlyStatus, QuarantineSlot, ReplayStorage, ServerPolicy},
-    tls_ticket::{
+    tls::ticket::{
         self as ticket, Binding, ClientCache, ClientOffer, ClientSlot, ReplayPolicy, TicketKey,
         VerificationContext,
     },
+};
+use hibana_quic::{
+    tls::certificate::{CertificateDer, Limits, TrustAnchor, UnixTime, trust_anchor_from_der},
+    tls::handshake::{BoundedTls, ClientConfig, ServerConfig, SigningKey, State, Storage},
+    tls::{self, Level, Provider},
 };
 use p256::pkcs8::DecodePrivateKey;
 use rand_core::OsRng;
@@ -292,9 +292,9 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             let mut client_scope = hibana_quic::crypto::directional::ApplicationKeyScope::new(2300);
             let mut server_scope = hibana_quic::crypto::directional::ApplicationKeyScope::new(2301);
             let mut installation = client_scope.claim().unwrap();
-            let mut recovery = hibana_quic::connection::recovery::Recovery::<256>::new(
+            let mut recovery = hibana_quic::quic::recovery::Recovery::<256>::new(
                 installation.take_recovery().unwrap(),
-                hibana_quic::connection::Side::Client,
+                hibana_quic::quic::Side::Client,
                 333_000,
                 1200,
             )
@@ -317,7 +317,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                         return;
                     }
                     observed = true;
-                    let hibana_quic::bounded_tls::key_source::EarlyKeyMaterial::Transmit(mut tx) =
+                    let hibana_quic::tls::handshake::key_source::EarlyKeyMaterial::Transmit(mut tx) =
                         client.take_early_key().unwrap()
                     else {
                         panic!("client early key must transmit")
@@ -332,7 +332,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                         &mut plaintext,
                     )
                     .unwrap();
-                    let size = hibana_quic::connection::early_wire::encoded_len(
+                    let size = hibana_quic::quic::early_wire::encoded_len(
                         b"server01",
                         b"client01",
                         plain_n,
@@ -341,7 +341,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                     let reservation = book
                         .reserve_early(&tx, &plaintext[..plain_n], size as u64, 0)
                         .unwrap();
-                    let sealed = hibana_quic::connection::early_wire::seal::<256>(
+                    let sealed = hibana_quic::quic::early_wire::seal::<256>(
                         &mut tx,
                         reservation,
                         b"server01",
@@ -365,7 +365,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             assert!(server.take_early_replay_claim().is_none());
             let finished = server.take_finished().unwrap();
             let mut budget = server.take_integrity_budget().unwrap();
-            let hibana_quic::bounded_tls::key_source::EarlyKeyMaterial::Receive(mut key) =
+            let hibana_quic::tls::handshake::key_source::EarlyKeyMaterial::Receive(mut key) =
                 server.take_early_key().unwrap()
             else {
                 panic!("server early key must receive")
@@ -373,7 +373,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             let mut bad = late;
             bad[late_n - 1] ^= 1;
             assert!(
-                hibana_quic::connection::early_wire::open::<256>(
+                hibana_quic::quic::early_wire::open::<256>(
                     &key,
                     &mut budget,
                     &bad[..late_n],
@@ -383,7 +383,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                 .is_err()
             );
             assert!(
-                hibana_quic::connection::early_wire::open::<256>(
+                hibana_quic::quic::early_wire::open::<256>(
                     &key,
                     &mut budget,
                     &late[..late_n],
@@ -392,7 +392,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                 )
                 .is_err()
             );
-            let mut opened = hibana_quic::connection::early_wire::open::<256>(
+            let mut opened = hibana_quic::quic::early_wire::open::<256>(
                 &key,
                 &mut budget,
                 &late[..late_n],
@@ -413,7 +413,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             projected_early_release(admission, finished, input, &mut held, request);
             key.discard();
             assert!(
-                hibana_quic::connection::early_wire::open::<256>(
+                hibana_quic::quic::early_wire::open::<256>(
                     &key,
                     &mut budget,
                     &late[..late_n],
@@ -684,7 +684,7 @@ fn broad_one_rtt_tolerance_cannot_silently_authorize_stale_early_data() {
 
 fn projected_early_release<'scope>(
     admission: hibana_quic::early_data::owner::Admission<'scope>,
-    finished: hibana_quic::bounded_tls::key_source::FinishedAuthenticated<'scope>,
+    finished: hibana_quic::tls::handshake::key_source::FinishedAuthenticated<'scope>,
     input: hibana_quic::early_data::owner::AuthenticatedInput<'scope, 64>,
     slots: &mut [QuarantineSlot<1024>],
     expected: &[u8],
@@ -701,7 +701,7 @@ fn projected_early_release<'scope>(
     };
     use hibana_quic::{
         carrier::CarrierStorage,
-        early_data::{owner, protocol as p},
+        early_data::{global as p, owner},
         runtime::TaskSet,
     };
     let global = p::choreography();

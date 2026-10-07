@@ -8,7 +8,7 @@ connection. Independent TLS/crypto and domain-role code remains. See
 [recovery status](../RECOVERY-STATUS.md) and the
 [removed-test inventory and coverage gaps](../artifacts/legacy-migration/coverage.md).
 
-`src/bounded_tls.rs` implements real client and server TLS 1.3 full handshakes
+`src/tls/handshake.rs` implements real client and server TLS 1.3 full handshakes
 through `tls::Provider`, using caller-owned storage and RustCrypto/webpki. It is
 an explicit **X25519/P-256 ECDHE and SHA-256 authentication profile**. Clients
 verify ECDSA-P256 and bounded RSA identities; server credentials still sign with

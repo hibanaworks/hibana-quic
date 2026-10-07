@@ -4,14 +4,14 @@ use super::{application_storage, host_files};
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
     carrier::CarrierStorage,
-    connection::publication_gate::{Issuer, Stop},
-    connection::{
-        self, Config, Outcome, Roles, Side, Storage, application, protocol, recovery::Recovery,
+    handshake::CryptoBuffer,
+    quic::publication_gate::{Issuer, Stop},
+    quic::{
+        self, Config, Outcome, Roles, Side, Storage, application, global, recovery::Recovery,
         tls::Transcript,
     },
-    handshake::CryptoBuffer,
 };
-pub const DATAGRAM: usize = 1536;
+pub const DATAGRAM: usize = hibana_quic_host::io::DATAGRAM;
 pub const PARAMETERS: usize = 2048;
 #[allow(clippy::too_many_arguments)]
 pub async fn handshake<'scope, const S: usize, const T: usize>(
@@ -25,8 +25,8 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
     generation: u64,
 ) -> Result<
     (
-        connection::ReceiveContinuation<'scope, PARAMETERS>,
-        connection::TransmitContinuation<'scope>,
+        quic::ReceiveContinuation<'scope, PARAMETERS>,
+        quic::TransmitContinuation<'scope>,
     ),
     String,
 > {
@@ -40,7 +40,7 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
         CryptoBuffer::new(&mut handshake, &mut handshake_bitmap)
             .map_err(|e| format!("Handshake storage: {e:?}"))?,
     ];
-    let programs = protocol::programs();
+    let programs = global::programs();
     let adapter_result = Outcome::new();
     let queues = Box::new(CarrierStorage::<1, 16, 64>::new());
     let mut slab = vec![0; 64 * 1024];
@@ -59,7 +59,7 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
     rendezvous
         .set_resolver(
             &programs.udp,
-            adapter_result.resolver::<{ protocol::ADAPTER_RESULT }>(),
+            adapter_result.resolver::<{ global::ADAPTER_RESULT }>(),
         )
         .map_err(|e| format!("adapter resolver: {e:?}"))?;
     macro_rules! enter {
@@ -87,7 +87,7 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
         Storage::<DATAGRAM, PARAMETERS>::new(config.peer_connection_id)
             .map_err(|e| format!("wire storage: {e:?}"))?,
     );
-    let result = Box::pin(connection::handshake(
+    let result = Box::pin(quic::handshake(
         &mut roles,
         source,
         config,
@@ -164,7 +164,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
     key_update_target: u64,
     server_token: Option<&[u8]>,
 ) -> Result<application::Report, String> {
-    let programs = application::protocol::programs();
+    let programs = application::global::programs();
     // Resolver states precede the kit so all endpoint borrows expire first.
     let outcomes = application::Outcomes::new();
     let queues = Box::new(CarrierStorage::<1, 32, 128>::new());
@@ -186,7 +186,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
             &programs.handshake.udp,
             outcomes
                 .handshake_adapter
-                .resolver::<{ protocol::ADAPTER_RESULT }>(),
+                .resolver::<{ global::ADAPTER_RESULT }>(),
         )
         .map_err(|e| format!("handshake adapter resolver: {e:?}"))?;
     rendezvous
@@ -194,7 +194,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
             &programs.adapter,
             outcomes
                 .application_adapter
-                .resolver::<{ application::protocol::SUBMISSION_RESULT }>(),
+                .resolver::<{ application::global::SUBMISSION_RESULT }>(),
         )
         .map_err(|e| format!("application adapter resolver: {e:?}"))?;
     rendezvous
@@ -202,7 +202,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
             &programs.adapter,
             outcomes
                 .application_reset
-                .resolver::<{ application::protocol::STOP_RESULT }>(),
+                .resolver::<{ application::global::STOP_RESULT }>(),
         )
         .map_err(|e| format!("application reset resolver: {e:?}"))?;
     macro_rules! enter {
@@ -266,7 +266,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
                         setup.key_update_target = key_update_target;
                         if source.early_status() == hibana_quic::early_data::EarlyStatus::Offered {
                             let mut early_slots = (0..client.count)
-                                .map(|_| hibana_quic::connection::early_client::RequestSlot::EMPTY)
+                                .map(|_| hibana_quic::quic::early_client::RequestSlot::EMPTY)
                                 .collect::<Vec<_>>();
                             Box::pin(application::client_early::<
                                 DATAGRAM,

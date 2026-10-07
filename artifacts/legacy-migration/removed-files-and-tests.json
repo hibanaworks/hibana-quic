@@ -441,7 +441,7 @@
     }
   },
   {
-    "file": "src/protocol.rs",
+    "file": "src/global.rs",
     "lines": 249,
     "source_sha256": "a44b4159426072f9e04db5fb47a578567c60238469fc0d06c82d738991c740cd",
     "test_names": [],
@@ -480,7 +480,7 @@
     "disposition": "removed_in_this_recovery_pass; not executed or passed"
   },
   {
-    "file": "tests/protocol.rs",
+    "file": "tests/global.rs",
     "lines": 394,
     "source_sha256": "fd0809cf072ef8bcca6cd88a221a1d0548a3f44374e6a42e8922ffeaebdb4356",
     "test_names": [

@@ -1,4 +1,4 @@
-use super::{owner::*, protocol as p, *};
+use super::{global as p, owner::*, *};
 use crate::crypto::directional::ApplicationKeyScope;
 use crate::{carrier::CarrierStorage, runtime::TaskSet};
 use core::{
@@ -99,7 +99,7 @@ fn run_discard(cancel: bool, missing_finished: bool, release: bool, controls: bo
                 exchange
                     .finished
                     .put(
-                        crate::bounded_tls::key_source::synthetic_early_finished_for_owner_test(
+                        crate::tls::handshake::key_source::synthetic_early_finished_for_owner_test(
                             &scope, 7,
                         ),
                     )

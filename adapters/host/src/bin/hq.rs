@@ -2,14 +2,12 @@
 //! connected global from Initial through authenticated file IO and clean close.
 #![forbid(unsafe_code)]
 #![allow(long_running_const_eval)]
-#[path = "support/application_storage.rs"]
-mod application_storage;
+use hibana_quic_host::storage as application_storage;
 #[path = "support/cli.rs"]
 mod cli;
 #[path = "support/direct_bootstrap.rs"]
 mod direct_bootstrap;
-#[path = "support/direct_wire.rs"]
-mod direct_wire;
+use hibana_quic_host::io as direct_wire;
 #[path = "support/files.rs"]
 mod files;
 #[path = "support/host_files.rs"]
@@ -27,17 +25,17 @@ use direct_wire::{
     HostClock, HostReactor, HostSocket, Receive, Statistics, Transmit, before_deadline,
 };
 use hibana_quic::{
-    bounded_tls::{
-        BoundedTls, ClientConfig, ClientEarlyData, ClientResumption, ServerConfig,
-        ServerResumption, SigningKey, Storage as TlsStorage,
-    },
-    connection::publication_gate::PublicationGate,
-    connection::{Config, Side, application, recovery::Recovery, tls::Transcript},
     crypto::directional::ApplicationKeyScope,
     packet::{Header, LongType, PacketIter, encode_varint},
     path::Address,
-    tls_certificate::{Limits, UnixTime, trust_anchor_from_der},
-    tls_ticket::{self as ticket, TicketClock},
+    quic::publication_gate::PublicationGate,
+    quic::{Config, Side, application, recovery::Recovery, tls::Transcript},
+    tls::certificate::{Limits, UnixTime, trust_anchor_from_der},
+    tls::handshake::{
+        BoundedTls, ClientConfig, ClientEarlyData, ClientResumption, ServerConfig,
+        ServerResumption, SigningKey, Storage as TlsStorage,
+    },
+    tls::ticket::{self as ticket, TicketClock},
 };
 use p256::pkcs8::DecodePrivateKey;
 use rand_core::{OsRng, RngCore};
@@ -905,8 +903,8 @@ async fn run_async<const S: usize, const T: usize>(
                     let context = ticket::VerificationContext::new(&anchors, Limits::default())
                         .map_err(|e| format!("ticket trust: {e:?}"))?;
                     let suites: &[u16] = match cipher {
-                        hibana_quic::bounded_tls::CipherPolicy::Aes128Only => &[0x1301],
-                        hibana_quic::bounded_tls::CipherPolicy::ChaCha20Only => &[0x1303],
+                        hibana_quic::tls::handshake::CipherPolicy::Aes128Only => &[0x1301],
+                        hibana_quic::tls::handshake::CipherPolicy::ChaCha20Only => &[0x1303],
                         _ => &[0x1301, 0x1303],
                     };
                     for suite in suites {
@@ -1108,7 +1106,7 @@ async fn run_async<const S: usize, const T: usize>(
                 };
                 let early_storage = early.then(application_storage::EarlyStorage::new);
                 let tls = if let Some(storage) = early_storage.as_ref() {
-                    let early_config = hibana_quic::bounded_tls::ServerEarlyData::buffered(
+                    let early_config = hibana_quic::tls::handshake::ServerEarlyData::buffered(
                         u64::try_from(connection_index + 1)
                             .map_err(|_| "connection scope overflow")?,
                         application_storage::EarlyStorage::policy(),

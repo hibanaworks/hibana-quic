@@ -189,7 +189,7 @@ def describe(ev,names):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--app',type=Path);parser.add_argument('--prefix',type=Path);parser.add_argument('--output',type=Path,default=ROOT/'result.json');args=parser.parse_args()
-    paths={'prefix':args.prefix or ROOT.parents[1]/'src/connection/protocol.rs','app':args.app or ROOT.parents[1]/'src/connection/application/protocol.rs'}
+    paths={'prefix':args.prefix or ROOT.parents[1]/'src/quic/global.rs','app':args.app or ROOT.parents[1]/'src/quic/application/global.rs'}
     p=Parser(paths)
     # Exact combined shape in application::programs, not the standalone app Flow.
     root=Node('seq',[p.expand('prefix','Flow'),Node('seq',[p.expand('app','Startup'),p.expand('app','Flow')])])

@@ -2,7 +2,7 @@
 
 Assessment history: 2026-10-02. The first assessment below found no acceptable
 public no-alloc RSA verifier API. The subsequently approved mechanical-extraction
-adapter now exists in `src/tls_rsa.rs`, with six upstream function bodies
+adapter now exists in `src/tls/rsa.rs`, with six upstream function bodies
 preserved and 1,224 complete signature cases passing at zero measured allocations.
 Independent review found no blocking primitive defect; see
 `artifacts/rsa-independent-review/REVIEW.md`. The certificate component now
@@ -213,7 +213,7 @@ beside the probe. A no-alloc API does not imply a small stack.
 
 ## Standalone adapter status (04:56 UTC)
 
-After approval of the provenance-pinned mechanical extraction, `src/tls_rsa.rs`
+After approval of the provenance-pinned mechanical extraction, `src/tls/rsa.rs`
 now exposes `verify_pss_sha256` and `verify_pkcs1_sha256`, taking borrowed PKCS#1
 public DER, message and modulus-width signature. Six unmodified upstream
 verification functions are retained under

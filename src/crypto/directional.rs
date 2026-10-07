@@ -1,7 +1,7 @@
 //! Independently owned 1-RTT receive and transmit keys. AEAD/HKDF use the existing
 //! PacketKey implementation. An affine peer-update round trip gates ACK
 //! eligibility until the matching write epoch is installed. Lost transition
-//! receipts leave RX blocked until the connection is discarded.
+//! receipts leave RX blocked until the quic is discarded.
 
 use super::{Error, HP_SAMPLE_LEN, IntegrityBudget, KeyKind, Opened, PacketKey};
 use zeroize::Zeroize;
@@ -171,7 +171,7 @@ impl<'a> ScopedHandshakeConfirmation<'a> {
     /// Consume the direct connection's actual validated peer-Finished or
     /// authenticated HANDSHAKE_DONE receipt. No caller supplies a replacement scope.
     pub(crate) fn from_connection(
-        confirmation: crate::connection::recovery::HandshakeConfirmed<'a>,
+        confirmation: crate::quic::recovery::HandshakeConfirmed<'a>,
     ) -> Self {
         Self {
             scope: confirmation.scope(),
@@ -193,7 +193,7 @@ impl<'a> ValidatedKeyAck<'a> {
     /// the authenticated receiving epoch. Earlier read keys cannot acknowledge
     /// a later write generation for the key-update barrier.
     pub(crate) fn from_connection_ack(
-        grant: crate::connection::recovery::KeyAcknowledged<'a>,
+        grant: crate::quic::recovery::KeyAcknowledged<'a>,
     ) -> Result<Self, Error> {
         if grant.packet().space != crate::accounting::PacketNumberSpace::ApplicationData
             || grant.received_key_generation() < grant.sent_key_generation()

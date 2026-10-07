@@ -6,7 +6,7 @@ its required Handshake probe, the second existing credit can target in-flight
 OneRtt data. It does not infer handshake confirmation, declare loss, add a
 third datagram, alter timer backoff, or authorize unaccepted/0-RTT data.
 
-Production mapping: `src/connection/recovery.rs`, `reserve_kind` consumes a
+Production mapping: `src/quic/recovery.rs`, `reserve_kind` consumes a
 credit, `settle` records acceptance or refunds an unaccepted reservation in the
 same epoch, and the existing probe-space field selects the second datagram.
 The global/local publication exchange still owns actual effect completion.

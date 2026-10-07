@@ -129,7 +129,7 @@
     "after_sha256": null,
     "change": "deleted"
   },
-  "tests/protocol.rs": {
+  "tests/global.rs": {
     "before_sha256": "fd0809cf072ef8bcca6cd88a221a1d0548a3f44374e6a42e8922ffeaebdb4356",
     "after_sha256": null,
     "change": "deleted"

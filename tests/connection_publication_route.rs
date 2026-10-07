@@ -16,7 +16,7 @@ use hibana::{
 };
 use hibana_quic::{
     carrier::CarrierStorage,
-    connection::{application, protocol as p},
+    quic::{application, global as p},
 };
 use std::{
     sync::Arc,
@@ -98,7 +98,7 @@ fn minimal_programs() -> (RoleProgram<{ p::TX_WIRE }>, RoleProgram<{ p::UDP }>) 
 
 fn run_publications(publications: &[u8], combined: bool) {
     let (sender_program, receiver_program, starter_program) = if combined {
-        let programs = application::protocol::programs();
+        let programs = application::global::programs();
         (
             programs.handshake.tx_wire,
             programs.handshake.udp,
@@ -133,10 +133,10 @@ fn run_publications(publications: &[u8], combined: bool) {
     let start = async {
         if let Some(endpoint) = starter.as_mut() {
             endpoint
-                .send::<hibana_quic::retry::client_protocol::Skip>(&())
+                .send::<hibana_quic::retry::client_global::Skip>(&())
                 .await?;
             endpoint
-                .recv::<hibana_quic::retry::client_protocol::Skipped>()
+                .recv::<hibana_quic::retry::client_global::Skipped>()
                 .await?;
             endpoint.send::<p::EarlySkip>(&()).await?;
         }
@@ -186,10 +186,10 @@ fn run_publications(publications: &[u8], combined: bool) {
             receiver
                 .offer()
                 .await?
-                .recv::<hibana_quic::retry::client_protocol::Skip>()
+                .recv::<hibana_quic::retry::client_global::Skip>()
                 .await?;
             receiver
-                .send::<hibana_quic::retry::client_protocol::Skipped>(&())
+                .send::<hibana_quic::retry::client_global::Skipped>(&())
                 .await?;
             receiver.offer().await?.recv::<p::EarlySkip>().await?;
         }

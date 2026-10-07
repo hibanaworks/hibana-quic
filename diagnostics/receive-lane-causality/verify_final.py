@@ -7,9 +7,9 @@ from model import Parser, Node, analyze, describe
 from marker_port import analyze_markers
 
 root = Path(__file__).resolve().parents[2]
-paths = {'prefix': root / 'src/connection/protocol.rs',
-         'app': root / 'src/connection/application/protocol.rs',
-         'tls': root / 'src/bounded_tls/protocol.rs'}
+paths = {'prefix': root / 'src/quic/global.rs',
+         'app': root / 'src/quic/application/global.rs',
+         'tls': root / 'src/tls/handshake/global.rs'}
 p = Parser(paths)
 graph = Node('seq', [p.expand('prefix', 'Flow'),
                     Node('seq', [p.expand('app', 'Startup'), p.expand('app', 'Flow')])])

@@ -1,7 +1,7 @@
 # TLS backend decision (2026-10-02)
 
 Status: the original candidate assessment below led to the implemented bounded
-backend in `src/bounded_tls.rs`. It performs real client/server TLS authentication,
+backend in `src/tls/handshake.rs`. It performs real client/server TLS authentication,
 HRR, certificate chains, Finished and packet-key derivation without allocation in
 measured paths. See `bounded-tls.md` and current test artifacts. Tickets/resumption,
 0-RTT and full release conformance remain incomplete. The candidate investigation

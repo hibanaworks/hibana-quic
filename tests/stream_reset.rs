@@ -15,9 +15,7 @@ use hibana::{
         resolver::{DecisionArm, ResolverError, ResolverRef},
     },
 };
-use hibana_quic::{
-    carrier::CarrierStorage, connection::application::protocol as p, runtime::join2,
-};
+use hibana_quic::{carrier::CarrierStorage, quic::application::global as p, runtime::join2};
 
 fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
     let global = p::publication_choreography();

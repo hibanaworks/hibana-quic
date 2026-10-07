@@ -1,16 +1,16 @@
 //! Independent cross-peer PSK_DHE tests using pinned rustls QUIC directly.
 //! The rustls peer allocates; bounded zero-allocation evidence is in resumption.rs.
 use hibana_quic::{
-    bounded_tls::{
+    tls::certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
+    tls::handshake::{
         BoundedTls, ClientConfig, ClientResumption, ServerConfig, ServerResumption, SigningKey,
         Storage,
     },
-    tls::{Level, Provider},
-    tls_certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
-    tls_ticket::{
+    tls::ticket::{
         self as ticket, Binding, ClientCache, ClientSlot, ReplayPolicy, TicketKey,
         VerificationContext,
     },
+    tls::{Level, Provider},
 };
 use hibana_quic_reference_tls::rustls;
 use p256::pkcs8::DecodePrivateKey;
@@ -128,7 +128,7 @@ fn handshake(bounded: &mut BoundedTls<'_, '_>, peer: &mut Peer) {
     for _ in 0..32 {
         let mut progress = flush_peer(bounded, peer);
         while let Some(message) = bounded.transmit(&mut out).unwrap() {
-            if hibana_quic::tls_wire::is_hello_retry_request(&out[..message.len]) {
+            if hibana_quic::tls::wire::is_hello_retry_request(&out[..message.len]) {
                 peer.saw_hrr = true;
             }
             for fragment in out[..message.len].chunks(37) {

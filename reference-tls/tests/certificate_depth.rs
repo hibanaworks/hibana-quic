@@ -1,9 +1,9 @@
 //! Depth-eight certificate verification, with runtime-generated private keys.
 use hibana_quic::{
-    bounded_tls::{BoundedTls, ClientConfig, Failure, ServerConfig, SigningKey, Storage},
+    tls::certificate::*,
+    tls::handshake::{BoundedTls, ClientConfig, Failure, ServerConfig, SigningKey, Storage},
+    tls::wire as tls_wire,
     tls::{self, Level, Provider},
-    tls_certificate::*,
-    tls_wire,
 };
 use p256::pkcs8::DecodePrivateKey;
 use rand_core::OsRng;

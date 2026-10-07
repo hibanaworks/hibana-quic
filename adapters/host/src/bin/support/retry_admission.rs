@@ -12,11 +12,11 @@ use hibana::runtime::{
 };
 use hibana_quic::{
     carrier::CarrierStorage,
-    connection::Clock,
     ecn::Codepoint,
     packet::{Header, LongType, PacketIter},
     path::Address,
-    retry::{self, ClientAddress, RetryTokens, TokenContext, ValidatedToken, protocol as p},
+    quic::Clock,
+    retry::{self, ClientAddress, RetryTokens, TokenContext, ValidatedToken, global as p},
     runtime::join2,
 };
 use std::cell::{Cell, RefCell};

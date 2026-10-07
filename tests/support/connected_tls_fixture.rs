@@ -9,8 +9,8 @@
 //! authentication bypass is installed, and no test-time package is required.
 
 use hibana_quic::{
-    bounded_tls::{SigningKey, Storage},
-    tls_certificate::UnixTime,
+    tls::certificate::UnixTime,
+    tls::handshake::{SigningKey, Storage},
 };
 use rand_core::{CryptoRng, RngCore};
 use std::time::Duration;

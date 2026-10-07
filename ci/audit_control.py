@@ -12,12 +12,12 @@ REMOVED = {
     "src/ecn.rs": [r"\bstruct\s+PathEcn\b", r"\benum\s+State\b"],
     "src/retry.rs": [r"\bstruct\s+(ClientRetry|CommittedRetry)\b", r"\binitial_processed\s*:\s*bool"],
     "src/connection_id.rs": [r"\bretirement_acked\s*:\s*bool"],
-    "src/connection/application/keys.rs": [r"\bretired\s*:\s*bool"],
-    "src/connection/application/transmit.rs": [r"\bclosing\s*:\s*Cell<bool>"],
-    "src/connection/recovery.rs": [r"\b(close_only|terminal)\s*:\s*bool"],
-    "src/connection/tls.rs": [r"\bretired\s*:\s*bool"],
-    "src/tls_schedule.rs": [r"\bstage\s*:\s*Stage\s*,"],
-    "src/bounded_tls/key_source.rs": [r"\b(integrity_taken|early_taken|finished_taken)\s*:\s*bool"],
+    "src/quic/application/keys.rs": [r"\bretired\s*:\s*bool"],
+    "src/quic/application/transmit.rs": [r"\bclosing\s*:\s*Cell<bool>"],
+    "src/quic/recovery.rs": [r"\b(close_only|terminal)\s*:\s*bool"],
+    "src/quic/tls.rs": [r"\bretired\s*:\s*bool"],
+    "src/tls/schedule.rs": [r"\bstage\s*:\s*Stage\s*,"],
+    "src/tls/handshake/key_source.rs": [r"\b(integrity_taken|early_taken|finished_taken)\s*:\s*bool"],
 }
 
 def main():

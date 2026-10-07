@@ -13,7 +13,7 @@
 //! cumulative counters, first-ACK facts and peer baselines bound to the actual
 //! path; this arithmetic module cannot authorize migration or marking.
 
-pub mod protocol;
+pub mod global;
 
 use crate::accounting::{MAX_PACKET_NUMBER, PacketNumberSpace};
 use crate::packet::EcnCounts;

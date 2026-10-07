@@ -2,13 +2,13 @@
 use actor_test_allocator::NoAlloc;
 use hibana_quic::{
     accounting::AccountingError,
-    connection::{
-        Side,
-        recovery::{self, Recovery},
-    },
     crypto::{
         CipherSuite, IntegrityBudget, KeyKind, PacketKey,
         directional::{ApplicationKeyScope, AuthenticatedRead},
+    },
+    quic::{
+        Side,
+        recovery::{self, Recovery},
     },
 };
 

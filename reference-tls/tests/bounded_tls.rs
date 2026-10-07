@@ -1,9 +1,9 @@
 //! Real bounded TLS full handshakes; rcgen/rustls and fixture setup are host-only.
 use hibana_quic::{
-    bounded_tls::{BoundedTls, ClientConfig, ServerConfig, SigningKey, State, Storage},
     crypto::CipherSuite,
+    tls::certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
+    tls::handshake::{BoundedTls, ClientConfig, ServerConfig, SigningKey, State, Storage},
     tls::{self, Level, Provider},
-    tls_certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
 };
 use p256::pkcs8::DecodePrivateKey;
 use rand_core::{CryptoRng, OsRng, RngCore};
@@ -134,7 +134,7 @@ fn packets(sender: &mut impl Provider, receiver: &mut impl Provider) {
     }
 }
 
-use hibana_quic::bounded_tls::CipherPolicy;
+use hibana_quic::tls::handshake::CipherPolicy;
 #[derive(Clone, Copy)]
 struct Case {
     fragment: usize,
@@ -312,8 +312,8 @@ fn bounded_case(case: Case) {
         si.corrupt = case.corrupt_client;
         let mut cm = [0; 8192];
         let mut sm = [0; 8192];
-        let cs = locals::MessageSlot::new(&mut cm);
-        let ss = locals::MessageSlot::new(&mut sm);
+        let cs = local::MessageSlot::new(&mut cm);
+        let ss = local::MessageSlot::new(&mut sm);
         let cc = CarrierStorage::<1, 16, 4>::new();
         let sc = CarrierStorage::<1, 16, 4>::new();
         let mut cslab = vec![0; 65536];
@@ -326,18 +326,18 @@ fn bounded_case(case: Case) {
         let sk = sk.init();
         let cr = ck.rendezvous(&mut cslab, cc.bind(cid).unwrap()).unwrap();
         let sr = sk.rendezvous(&mut sslab, sc.bind(sid).unwrap()).unwrap();
-        let cp = protocol::client_programs();
-        let sp = protocol::server_programs();
+        let cp = global::client_programs();
+        let sp = global::server_programs();
         let mut cinput = cr.enter(cid, &cp.input).unwrap();
         let mut cverify = cr.enter(cid, &cp.verify).unwrap();
         let mut sinput = sr.enter(sid, &sp.input).unwrap();
         let mut sverify = sr.enter(sid, &sp.verify).unwrap();
         let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
         let result = measured(|| {
-            let mut co = pin!(locals::client_owner(&mut cverify, &client, &cs));
-            let mut cin = pin!(locals::client_input(&mut cinput, &cs, &mut ci));
-            let mut so = pin!(locals::server_owner(&mut sverify, &server, &ss));
-            let mut sin = pin!(locals::server_input(&mut sinput, &ss, &mut si));
+            let mut co = pin!(local::client_owner(&mut cverify, &client, &cs));
+            let mut cin = pin!(local::client_input(&mut cinput, &cs, &mut ci));
+            let mut so = pin!(local::server_owner(&mut sverify, &server, &ss));
+            let mut sin = pin!(local::server_input(&mut sinput, &ss, &mut si));
             let tasks = TaskSet::new([co.as_mut(), cin.as_mut(), so.as_mut(), sin.as_mut()]);
             if cancel {
                 let mut tasks = pin!(tasks);
@@ -460,19 +460,19 @@ use core::{
 };
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
-    bounded_tls::{locals, protocol},
     carrier::CarrierStorage,
     runtime::TaskSet,
+    tls::handshake::{global, local},
 };
 struct Shared<P> {
     tls: RefCell<P>,
     reader: RefCell<Option<Waker>>,
 }
-impl locals::CryptoAccess for Shared<BoundedTls<'_, '_>> {
+impl local::CryptoAccess for Shared<BoundedTls<'_, '_>> {
     fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
         f(&mut self.tls.borrow_mut())
     }
-    fn applied(&self) -> Result<(), locals::Error> {
+    fn applied(&self) -> Result<(), local::Error> {
         let w = self.reader.borrow_mut().take();
         if let Some(w) = w {
             w.wake();
@@ -490,8 +490,8 @@ struct Input<'a, P> {
     fragment: usize,
     corrupt: u8,
 }
-impl<P: Provider> locals::MessageInput for Input<'_, P> {
-    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, locals::Error> {
+impl<P: Provider> local::MessageInput for Input<'_, P> {
+    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, local::Error> {
         if self.stall {
             out[..4].copy_from_slice(&[1, 0, 0, 0]);
             return core::future::pending().await;
@@ -510,7 +510,7 @@ impl<P: Provider> locals::MessageInput for Input<'_, P> {
                     {
                         Ok(Some(p)) => Poll::Ready(Ok(p)),
                         Ok(None) => Poll::Pending,
-                        Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                        Err(e) => Poll::Ready(Err(local::Error::Input(e))),
                     }
                 })
                 .await?;
@@ -527,7 +527,7 @@ impl<P: Provider> locals::MessageInput for Input<'_, P> {
             if copied == 4 {
                 n = 4 + ((out[1] as usize) << 16) + ((out[2] as usize) << 8) + out[3] as usize;
                 if n > out.len() {
-                    return Err(locals::Error::Capacity);
+                    return Err(local::Error::Capacity);
                 }
             }
         }
@@ -538,14 +538,14 @@ impl<P: Provider> locals::MessageInput for Input<'_, P> {
     }
 }
 
-use hibana_quic::tls_certificate::ServerName;
+use hibana_quic::tls::certificate::ServerName;
 use hibana_quic_reference_tls::{RustlsProvider, rustls};
 // Only the independent rustls peer uses its own Provider interface. The candidate
 // always executes the public projected owner/input roles under the real reactor.
 async fn feed_reference<P: Provider>(
     candidate: &Shared<P>,
     reference: &Shared<RustlsProvider>,
-) -> Result<(), locals::Error> {
+) -> Result<(), local::Error> {
     let mut bytes = [0; 37];
     loop {
         let output = poll_fn(|cx| {
@@ -559,7 +559,7 @@ async fn feed_reference<P: Provider>(
                     Poll::Ready(Ok(None))
                 }
                 Ok(None) => Poll::Pending,
-                Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                Err(e) => Poll::Ready(Err(local::Error::Input(e))),
             }
         })
         .await?;
@@ -570,7 +570,7 @@ async fn feed_reference<P: Provider>(
             .tls
             .borrow_mut()
             .receive(output.level, &bytes[..output.len])
-            .map_err(locals::Error::Input)?;
+            .map_err(local::Error::Input)?;
         let w = reference.reader.borrow_mut().take();
         if let Some(w) = w {
             w.wake();
@@ -648,7 +648,7 @@ fn reference_case(candidate_client: bool, retry: bool) {
         corrupt: 0,
     };
     let mut bytes = [0; 8192];
-    let slot = locals::MessageSlot::new(&mut bytes);
+    let slot = local::MessageSlot::new(&mut bytes);
     let carrier = CarrierStorage::<1, 16, 4>::new();
     let mut slab = vec![0; 65536];
     let mut kit = SessionKitStorage::uninit();
@@ -658,25 +658,25 @@ fn reference_case(candidate_client: bool, retry: bool) {
         .rendezvous(&mut slab, carrier.bind(id).unwrap())
         .unwrap();
     let programs = if candidate_client {
-        protocol::client_programs()
+        global::client_programs()
     } else {
-        protocol::server_programs()
+        global::server_programs()
     };
     let mut verify = rendezvous.enter(id, &programs.verify).unwrap();
     let mut wire = rendezvous.enter(id, &programs.input).unwrap();
     let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
     let owner = async {
         if candidate_client {
-            locals::client_owner(&mut verify, &candidate, &slot).await
+            local::client_owner(&mut verify, &candidate, &slot).await
         } else {
-            locals::server_owner(&mut verify, &candidate, &slot).await
+            local::server_owner(&mut verify, &candidate, &slot).await
         }
     };
     let receiver = async {
         if candidate_client {
-            locals::client_input(&mut wire, &slot, &mut input).await
+            local::client_input(&mut wire, &slot, &mut input).await
         } else {
-            locals::server_input(&mut wire, &slot, &mut input).await
+            local::server_input(&mut wire, &slot, &mut input).await
         }
     };
     let mut owner = pin!(owner);
@@ -697,9 +697,9 @@ fn reference_case(candidate_client: bool, retry: bool) {
     assert_eq!(
         candidate.negotiated_group(),
         Some(if retry {
-            hibana_quic::tls_wire::GROUP_P256
+            hibana_quic::tls::wire::GROUP_P256
         } else {
-            hibana_quic::tls_wire::GROUP_X25519
+            hibana_quic::tls::wire::GROUP_X25519
         })
     );
     packets(&mut *candidate, &mut *reference);
@@ -782,6 +782,6 @@ fn caller_entropy_failure_does_not_construct_a_provider() {
             buffers.storage(),
             &mut NoEntropy
         ),
-        Err(hibana_quic::bounded_tls::Failure::Entropy)
+        Err(hibana_quic::tls::handshake::Failure::Entropy)
     ));
 }

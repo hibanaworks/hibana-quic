@@ -8,13 +8,13 @@ use core::{
 };
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
-    bounded_tls::{BoundedTls, locals, protocol},
     carrier::CarrierStorage,
     runtime::TaskSet,
+    tls::handshake::{BoundedTls, global, local},
     tls::{Level, Provider},
 };
 struct Access<'a, 'cfg, 'buf>(RefCell<&'a mut BoundedTls<'cfg, 'buf>>);
-impl locals::CryptoAccess for Access<'_, '_, '_> {
+impl local::CryptoAccess for Access<'_, '_, '_> {
     fn with_crypto<R>(&self, f: impl FnOnce(&mut BoundedTls<'_, '_>) -> R) -> R {
         f(&mut self.0.borrow_mut())
     }
@@ -31,8 +31,8 @@ struct Input<'a, 'b, 'cfg, 'buf, L> {
     end: usize,
     level: Level,
 }
-impl<L: locals::CryptoAccess> locals::MessageInput for Input<'_, '_, '_, '_, L> {
-    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, locals::Error> {
+impl<L: local::CryptoAccess> local::MessageInput for Input<'_, '_, '_, '_, L> {
+    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, local::Error> {
         let mut copied = 0;
         let mut len = 4;
         while copied < len {
@@ -46,7 +46,7 @@ impl<L: locals::CryptoAccess> locals::MessageInput for Input<'_, '_, '_, '_, L> 
                     {
                         Ok(Some(p)) => Poll::Ready(Ok(p)),
                         Ok(None) => Poll::Pending,
-                        Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                        Err(e) => Poll::Ready(Err(local::Error::Input(e))),
                     }
                 })
                 .await?;
@@ -72,7 +72,7 @@ impl<L: locals::CryptoAccess> locals::MessageInput for Input<'_, '_, '_, '_, L> 
                             &mut self.pending,
                             output.len,
                         )
-                        .map_err(locals::Error::Input)?;
+                        .map_err(local::Error::Input)?;
                     assert_eq!(
                         self.local
                             .with_crypto(|p| p.open(
@@ -81,7 +81,7 @@ impl<L: locals::CryptoAccess> locals::MessageInput for Input<'_, '_, '_, '_, L> 
                                 b"fixture CRYPTO",
                                 &mut self.pending[..n]
                             ))
-                            .map_err(locals::Error::Input)?,
+                            .map_err(local::Error::Input)?,
                         output.len
                     );
                 }
@@ -94,7 +94,7 @@ impl<L: locals::CryptoAccess> locals::MessageInput for Input<'_, '_, '_, '_, L> 
             if copied == 4 {
                 len = 4 + ((out[1] as usize) << 16) + ((out[2] as usize) << 8) + out[3] as usize;
                 if len > out.len() {
-                    return Err(locals::Error::Capacity);
+                    return Err(local::Error::Capacity);
                 }
             }
         }
@@ -150,8 +150,8 @@ pub fn handshake_observe(
     };
     let mut cb = [0; 8192];
     let mut sb = [0; 8192];
-    let cs = locals::MessageSlot::new(&mut cb);
-    let ss = locals::MessageSlot::new(&mut sb);
+    let cs = local::MessageSlot::new(&mut cb);
+    let ss = local::MessageSlot::new(&mut sb);
     let cc = CarrierStorage::<1, 16, 4>::new();
     let sc = CarrierStorage::<1, 16, 4>::new();
     let mut cm = [0; 65536];
@@ -164,17 +164,17 @@ pub fn handshake_observe(
     let sid = SessionId::new(5201);
     let cr = ck.rendezvous(&mut cm, cc.bind(cid).unwrap()).unwrap();
     let sr = sk.rendezvous(&mut sm, sc.bind(sid).unwrap()).unwrap();
-    let cp = protocol::client_programs();
-    let sp = protocol::server_programs();
+    let cp = global::client_programs();
+    let sp = global::server_programs();
     let mut cv = cr.enter(cid, &cp.verify).unwrap();
     let mut cw = cr.enter(cid, &cp.input).unwrap();
     let mut sv = sr.enter(sid, &sp.verify).unwrap();
     let mut sw = sr.enter(sid, &sp.input).unwrap();
     {
-        let mut co = pin!(locals::client_owner(&mut cv, &c, &cs));
-        let mut cin = pin!(locals::client_input(&mut cw, &cs, &mut ci));
-        let mut so = pin!(locals::server_owner(&mut sv, &s, &ss));
-        let mut sin = pin!(locals::server_input(&mut sw, &ss, &mut si));
+        let mut co = pin!(local::client_owner(&mut cv, &c, &cs));
+        let mut cin = pin!(local::client_input(&mut cw, &cs, &mut ci));
+        let mut so = pin!(local::server_owner(&mut sv, &s, &ss));
+        let mut sin = pin!(local::server_input(&mut sw, &ss, &mut si));
         let mut tasks = pin!(TaskSet::new([
             co.as_mut(),
             cin.as_mut(),
@@ -191,8 +191,8 @@ pub fn handshake_observe(
             }
         }
         assert!(
-            c.0.borrow().state() == hibana_quic::bounded_tls::State::Connected
-                && s.0.borrow().state() == hibana_quic::bounded_tls::State::Connected,
+            c.0.borrow().state() == hibana_quic::tls::handshake::State::Connected
+                && s.0.borrow().state() == hibana_quic::tls::handshake::State::Connected,
             "actual async transcript did not finish"
         );
     }
@@ -201,21 +201,21 @@ pub fn handshake_observe(
 
 /// Deliver one adversarial ClientHello through the real server projection.
 /// The test expects rejection before another input message is requested.
-pub fn reject_server_message(server: &mut BoundedTls<'_, '_>, message: &[u8]) -> locals::Error {
+pub fn reject_server_message(server: &mut BoundedTls<'_, '_>, message: &[u8]) -> local::Error {
     probe_server_message(server, message, |_| None::<()>).expect_err("invalid ClientHello accepted")
 }
 pub fn probe_server_message<R>(
     server: &mut BoundedTls<'_, '_>,
     message: &[u8],
     mut observe: impl FnMut(&mut BoundedTls<'_, '_>) -> Option<R>,
-) -> Result<R, locals::Error> {
+) -> Result<R, local::Error> {
     struct One<'a>(&'a [u8], bool);
-    impl locals::MessageInput for One<'_> {
+    impl local::MessageInput for One<'_> {
         async fn read_message(
             &mut self,
             level: Level,
             out: &mut [u8],
-        ) -> Result<usize, locals::Error> {
+        ) -> Result<usize, local::Error> {
             if self.1 {
                 return core::future::pending().await;
             }
@@ -228,7 +228,7 @@ pub fn probe_server_message<R>(
     let source = Access(RefCell::new(server));
     let mut input = One(message, false);
     let mut bytes = [0; 8192];
-    let slot = locals::MessageSlot::new(&mut bytes);
+    let slot = local::MessageSlot::new(&mut bytes);
     let carrier = CarrierStorage::<1, 16, 4>::new();
     let mut slab = [0; 65536];
     let mut storage = SessionKitStorage::uninit();
@@ -237,11 +237,11 @@ pub fn probe_server_message<R>(
     let rv = kit
         .rendezvous(&mut slab, carrier.bind(sid).unwrap())
         .unwrap();
-    let programs = protocol::server_programs();
+    let programs = global::server_programs();
     let mut owner = rv.enter(sid, &programs.verify).unwrap();
     let mut receiver = rv.enter(sid, &programs.input).unwrap();
-    let mut owner = pin!(locals::server_owner(&mut owner, &source, &slot));
-    let mut receiver = pin!(locals::server_input(&mut receiver, &slot, &mut input));
+    let mut owner = pin!(local::server_owner(&mut owner, &source, &slot));
+    let mut receiver = pin!(local::server_input(&mut receiver, &slot, &mut input));
     let mut tasks = pin!(TaskSet::new([owner.as_mut(), receiver.as_mut()]));
     let mut cx = Context::from_waker(Waker::noop());
     for _ in 0..64 {
@@ -305,14 +305,14 @@ pub fn drain_authenticated_tickets(
 /// Actual projected transcript processing through pristine KeySource ownership.
 /// This component fixture transports CRYPTO plaintext, not QUIC packets.
 pub fn handshake_key_sources_observe(
-    client: &mut hibana_quic::bounded_tls::key_source::KeySource<'_, '_, '_>,
-    server: &mut hibana_quic::bounded_tls::key_source::KeySource<'_, '_, '_>,
+    client: &mut hibana_quic::tls::handshake::key_source::KeySource<'_, '_, '_>,
+    server: &mut hibana_quic::tls::handshake::key_source::KeySource<'_, '_, '_>,
     mut observe: impl FnMut(
-        &mut hibana_quic::bounded_tls::key_source::KeySource<'_, '_, '_>,
-        &mut hibana_quic::bounded_tls::key_source::KeySource<'_, '_, '_>,
+        &mut hibana_quic::tls::handshake::key_source::KeySource<'_, '_, '_>,
+        &mut hibana_quic::tls::handshake::key_source::KeySource<'_, '_, '_>,
     ),
 ) {
-    use hibana_quic::bounded_tls::key_source::KeySource;
+    use hibana_quic::tls::handshake::key_source::KeySource;
     struct SourceInput<'a, 'scope, 'cfg, 'buf> {
         remote: &'a RefCell<&'a mut KeySource<'scope, 'cfg, 'buf>>,
         bytes: [u8; 8208],
@@ -320,12 +320,12 @@ pub fn handshake_key_sources_observe(
         end: usize,
         level: Level,
     }
-    impl locals::MessageInput for SourceInput<'_, '_, '_, '_> {
+    impl local::MessageInput for SourceInput<'_, '_, '_, '_> {
         async fn read_message(
             &mut self,
             level: Level,
             out: &mut [u8],
-        ) -> Result<usize, locals::Error> {
+        ) -> Result<usize, local::Error> {
             let mut copied = 0;
             let mut required = 4;
             while copied < required {
@@ -335,7 +335,7 @@ pub fn handshake_key_sources_observe(
                             |_| match self.remote.borrow_mut().transmit(&mut self.bytes) {
                                 Ok(Some(p)) => Poll::Ready(Ok(p)),
                                 Ok(None) => Poll::Pending,
-                                Err(e) => Poll::Ready(Err(locals::Error::Input(e))),
+                                Err(e) => Poll::Ready(Err(local::Error::Input(e))),
                             },
                         )
                         .await?;
@@ -344,7 +344,7 @@ pub fn handshake_key_sources_observe(
                     self.level = output.level;
                 }
                 if self.level != level {
-                    return Err(locals::Error::Binding);
+                    return Err(local::Error::Binding);
                 }
                 let n = (required - copied).min(self.end - self.pos);
                 out[copied..copied + n].copy_from_slice(&self.bytes[self.pos..self.pos + n]);
@@ -354,7 +354,7 @@ pub fn handshake_key_sources_observe(
                     required =
                         4 + ((out[1] as usize) << 16) + ((out[2] as usize) << 8) + out[3] as usize;
                     if required > out.len() {
-                        return Err(locals::Error::Capacity);
+                        return Err(local::Error::Capacity);
                     }
                 }
             }
@@ -379,8 +379,8 @@ pub fn handshake_key_sources_observe(
     };
     let mut cb = [0; 8192];
     let mut sb = [0; 8192];
-    let cs = locals::MessageSlot::new(&mut cb);
-    let ss = locals::MessageSlot::new(&mut sb);
+    let cs = local::MessageSlot::new(&mut cb);
+    let ss = local::MessageSlot::new(&mut sb);
     let cc = CarrierStorage::<1, 16, 4>::new();
     let sc = CarrierStorage::<1, 16, 4>::new();
     let mut cm = [0; 65536];
@@ -397,17 +397,17 @@ pub fn handshake_key_sources_observe(
         .init()
         .rendezvous(&mut sm, sc.bind(sid).unwrap())
         .unwrap();
-    let cp = protocol::client_programs();
-    let sp = protocol::server_programs();
+    let cp = global::client_programs();
+    let sp = global::server_programs();
     let mut cv = cr.enter(cid, &cp.verify).unwrap();
     let mut cw = cr.enter(cid, &cp.input).unwrap();
     let mut sv = sr.enter(sid, &sp.verify).unwrap();
     let mut sw = sr.enter(sid, &sp.input).unwrap();
     {
-        let mut co = pin!(locals::client_source_owner(&mut cv, &c, &cs));
-        let mut so = pin!(locals::server_source_owner(&mut sv, &s, &ss));
-        let mut cin = pin!(locals::client_input(&mut cw, &cs, &mut ci));
-        let mut sin = pin!(locals::server_input(&mut sw, &ss, &mut si));
+        let mut co = pin!(local::client_source_owner(&mut cv, &c, &cs));
+        let mut so = pin!(local::server_source_owner(&mut sv, &s, &ss));
+        let mut cin = pin!(local::client_input(&mut cw, &cs, &mut ci));
+        let mut sin = pin!(local::server_input(&mut sw, &ss, &mut si));
         let mut tasks = pin!(TaskSet::new([
             co.as_mut(),
             so.as_mut(),
@@ -428,10 +428,10 @@ pub fn handshake_key_sources_observe(
     }
     assert_eq!(
         c.borrow().state(),
-        hibana_quic::bounded_tls::State::Connected
+        hibana_quic::tls::handshake::State::Connected
     );
     assert_eq!(
         s.borrow().state(),
-        hibana_quic::bounded_tls::State::Connected
+        hibana_quic::tls::handshake::State::Connected
     );
 }

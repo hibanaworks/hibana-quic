@@ -1,5 +1,5 @@
 //! Reconstructed integration tests; not executed after environment replacement.
-use hibana_quic::connection::{
+use hibana_quic::quic::{
     Error,
     application_wire::{open, seal},
 };
@@ -177,7 +177,7 @@ fn authenticated_peer_epoch_waits_for_actual_tx_install_before_ack_authority() {
 }
 #[test]
 fn seal_retains_reservation_and_rejects_changed_plaintext_scope_epoch_or_length() {
-    use hibana_quic::connection::{Side, recovery::Recovery};
+    use hibana_quic::quic::{Side, recovery::Recovery};
     let guard = actor_test_allocator::NoAlloc::start();
     let suite = CipherSuite::Aes128GcmSha256;
     let mut scope = ApplicationKeyScope::new(94);

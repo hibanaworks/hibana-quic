@@ -397,7 +397,7 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
     }
     /// Install authenticated initial transport parameters. Larger MAX_* credit
     /// already received is preserved. This is idempotent; the connection owner
-    /// must never use unauthenticated or different-connection parameters here.
+    /// must never use unauthenticated or different-quic parameters here.
     pub fn apply_peer_initial_limits(&mut self, limits: Limits) -> Result<(), Error> {
         self.check_open()?;
         if !limits.valid() {

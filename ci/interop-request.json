@@ -1,13 +1,13 @@
 {
-  "request": "Qualify all 44 cells after preserving pre-key Handshake input and using the remaining Handshake PTO credit for actual in-flight OneRtt data after publication",
-  "requested_at": "2026-10-07T14:31:00Z",
+  "request": "Requalify all 44 cells after mechanical QUIC/TLS/global-local module organization and extraction of executor-neutral and host IO boundaries and exact upstream core cf084d22a473b26c8cd0b8be80631eaf3e7184b4",
+  "requested_at": "2026-10-07T18:17:00Z",
   "scope": [
     "same source commit across all qualification groups",
     "22 mandatory unchanged reference self-controls",
     "44 actual candidate client/server verdicts"
   ],
   "approval": "User requested checking and repairing the remaining interop failures, including latest upstream Hibana, with both local directions checked before CI. Existing authorized publication workflow continues.",
-  "local_evidence": "docs/remaining-interop.md",
+  "local_evidence": "docs/QUALIFICATION.md",
   "candidate_directions": [
     "client",
     "server"

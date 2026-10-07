@@ -1,6 +1,6 @@
 //! Public independently generated RSA/mixed-chain fixtures. This test lives in
 //! the clean host package so allocating rustls/webpki error features are absent.
-use hibana_quic::tls_certificate::{self as cert, *};
+use hibana_quic::tls::certificate::{self as cert, *};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

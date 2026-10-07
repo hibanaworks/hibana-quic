@@ -1,5 +1,5 @@
 //! Actual projected endpoint tests; these do not claim network qualification.
-use super::protocol as p;
+use super::global as p;
 use crate::carrier::CarrierStorage;
 use core::{
     future::Future,

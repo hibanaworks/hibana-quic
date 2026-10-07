@@ -2,10 +2,10 @@
 //! roles. Selected response bodies use caller-bounded buffers, never whole-file
 //! allocation. Request and sink handles share only host download associations.
 use super::files::{self, Download, SafeRoot};
-use hibana_quic::connection::application::{
+use hibana_quic::http3::{self, Protocol};
+use hibana_quic::quic::application::{
     BodyReader, ClientRequests, Error as ApplicationError, ServerHandler, StreamSink,
 };
-use hibana_quic::http3::{self, Protocol};
 use std::io::Cursor;
 use std::{
     cell::{Cell, RefCell},
@@ -15,7 +15,7 @@ use std::{
     path::Path,
     rc::Rc,
 };
-pub const MAX_REQUESTS: usize = hibana_quic::connection::application::MAX_REQUESTS;
+pub const MAX_REQUESTS: usize = hibana_quic::quic::application::MAX_REQUESTS;
 #[derive(Clone, Default)]
 pub struct Diagnostics(Rc<RefCell<Option<String>>>);
 impl Diagnostics {
