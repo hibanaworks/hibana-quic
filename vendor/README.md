@@ -1,16 +1,15 @@
 # Selected upstream snapshot
 
 `hibana/` is the exact committed source at
-`1b28efffe3cc5c93080dc21682c25b87ae5b84a3` on
+`cbc42c9d228f58d9ce548d2e41f7b32c595b9a4c` on
 `development/rolled-route-ownership`, without local patches.
-All 1198 files pass `python3 vendor/check_hibana.py`.
+All 1200 files pass `python3 vendor/check_hibana.py`.
 
-The new HTTP/3 integration requires the separate parallel-offer collecting-path
-repair supplied in the core handoff ZIP. Before publishing this QUIC candidate,
-commit that repair in Hibana and import the actual resulting commit as a new
-exact snapshot. Do not silently patch this vendor directory while retaining the
-old upstream revision. The handoff importer updates the manifest, Cargo metadata
-and CI pin together. Consumer tests must then be rerun on that exact commit.
+This snapshot includes the parallel-offer collecting-path repair required by
+the HTTP/3 integration and its delayed-ingress regression. The exact source was
+imported from the committed Hibana tree after publishing that revision upstream.
+The manifest, Cargo metadata and CI pin identify the same commit. Consumer tests
+and interoperability qualification must use this exact snapshot.
 
 # Historical audited dependency snapshots
 

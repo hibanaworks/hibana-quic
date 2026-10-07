@@ -1,7 +1,10 @@
 {
   "upstream": "https://github.com/hibanaworks/hibana",
-  "revision": "1b28efffe3cc5c93080dc21682c25b87ae5b84a3",
+  "revision": "cbc42c9d228f58d9ce548d2e41f7b32c595b9a4c",
+  "base_commit": "cbc42c9d228f58d9ce548d2e41f7b32c595b9a4c",
+  "branch": "development/rolled-route-ownership",
   "local_patches": [],
+  "qualification": "Exact committed snapshot; rerun consumer and official CI qualification for this actual commit.",
   "files": {
     ".gitattributes": "818cbff433decf3d92b969293887cb18679861b8d948cfdb6c0ba89192cb0512",
     ".github/ci-tests/Cargo.toml": "12585998199b920ba8d0a5386d3505f49346c666c26d8d7e2bec1c93e53ea66b",
@@ -40,7 +43,7 @@
     ".github/workflows/quality-gates.yml": "df5e64fa39b46bc22ba9271c91713eb9399b1ea8fa68180570a9f960a31fa910",
     ".gitignore": "c76d70e5be815bd578d2a450788d1f07b938d47c7be22d0c8c884fd38c06f419",
     "Cargo.lock": "d0f21bb426d1e6fb49b2ed299d05ec7159fbfe9d86e8f5922bc2ca82e158d7c8",
-    "Cargo.toml": "7b0bcde78061c47b2d7d3652d47f586265a84da3bbb18d54a1a7aca6cbcd0e3b",
+    "Cargo.toml": "5ba9a2676bb1b0641ba45286d54e87f77c1dfd4cba2ff8f507e32613606077a9",
     "LICENSE-APACHE": "c4a2cd14eb3abe621891b235bbe2cfd65f1f71afcfcd5c9b691bb016387dfe88",
     "LICENSE-MIT": "3190c698f9ecff6beb57fe6188490823f249268bb21a074f759143aaa23a38d2",
     "README.md": "580bcdfe8039d65259fb10bfb07c8e6973d0103ab58c8b7303da96c0df8ac4b7",
@@ -330,6 +333,7 @@
     "proofs/offer-completed-sibling/TraceValidity.lean": "e2c336dbf8ff7b452d05c26010430810301d825785b41661c3af5fbd463a94b9",
     "proofs/offer-completed-sibling/ingress_selection.py": "f91a8e0320eafa11b92458e39871d851f367dcc13c2a4a500d4c2c1204da554e",
     "proofs/offer-completed-sibling/verification.txt": "22b888c693d008708fdfae9572d93f1423f867f4ec43278780ef1946ce20d431",
+    "proofs/parallel-offer-ingress/README.md": "4539934d39a4e7031cd5cb705ff3846853fd41be5298100a57113d96e72d56b4",
     "proofs/passive-child-window/PassiveChildWindow.lean": "6b8d498af78143545f1f9c9968e29bb05bf80be6f98fc58ab2227247f6cf477a",
     "proofs/passive-child-window/RESULTS.md": "2decf136cbe06d9ce97b04f120d40d16ccd34910f26f9a8909970e08f5f0453c",
     "proofs/passive-child-window/SOURCE_BRIDGE.md": "9229c16c98d124500cb9b7a106b1be39b606959e49c81f2898960e5bef5eb2a1",
@@ -720,7 +724,7 @@
     "src/endpoint/kernel/offer/select_observed.rs": "815969efb680df3fc02d59d7a05c8e8f8347805c43648a6dc6aeaac5381bc8b2",
     "src/endpoint/kernel/offer/select_scope_selection.rs": "7a02efd53c745053b54f1cd887040cf326ea2d0f4d95dd89b345c5b891d527b5",
     "src/endpoint/kernel/offer/state.rs": "591b99a0307b45dd45984213b7698fb840111de3d88daf9f53191a66c30fbc48",
-    "src/endpoint/kernel/offer.rs": "8bdb5eef30f6e8f873f881bf324a5517eaf2478b0ca4e73ed1734729880061e2",
+    "src/endpoint/kernel/offer.rs": "a72915a35a091697ef44d931d4ce1179da9e4bb1679fec90b7ad97af344b2691",
     "src/endpoint/kernel/public_ops.rs": "426f37838cd75d337ff864525da82b5b26bb980dfbef3ab7281191da47019476",
     "src/endpoint/kernel/public_poll.rs": "94edeebc3ca9e6f903682a43033113c7e8543a2fb377f210d00fba0d1667eb03",
     "src/endpoint/kernel/recv/contract.rs": "deffc05ada94ad337e9675868974d6bc6f73f2b4f8d1f62bdcdf268f4842f8d9",
@@ -1000,6 +1004,7 @@
     "tests/nested_resolver_self_continuations.rs": "326409c2c28724c3cd85cfe1571b52e4a6ea89333a9f0f454fe831fedef7de75",
     "tests/nested_route_runtime.rs": "da4b45ac716b969dbe1b60265745f34f6ec1249013f23dd3e764afcb5b4ef699",
     "tests/offer_branch_recv_evidence.rs": "87dfb03c8fae40c92a6e4bc56388a2c42a6e9c006aa69b99c016802126c4a15b",
+    "tests/parallel_offer_delayed_ingress.rs": "6349d85cd746bcbc65940995026db54e2f87724ab415e439915fd16174a1325c",
     "tests/parallel_route_alternating.rs": "d5913ea4d7482affeb4c9611cc050794caefcbb914b0a88fd95cc332cabcd409",
     "tests/parallel_route_nesting.rs": "4b254479d4d728bfd17a02316022a55e5b893a27ef9087c2a25fe2b10eb3f0df",
     "tests/program_capacity_regression.rs": "845584639446a995cbb21b126da972db56109bcbd75dc3fd35f38b73bf1089fa",
@@ -1201,8 +1206,5 @@
     "tests/ui.rs": "a9fb83a2f608f68dbd0175123e0624a80cc013aea6143a45e4fc909b1c673796",
     "tests/verification_oracles/participant_validation.rs": "b722662e56fa2bfeac4e690967bc8aa42c9de12be17e24f399a69ec72cab4905",
     "tests/visible_route_reentry.rs": "c884f045b9c75c693863509c823af6f01b78f092049217dcaf00816dcd5ddbfb"
-  },
-  "qualification": "Exact upstream development/rolled-route-ownership snapshot. Consumer regression and interop qualification are in progress; no success is inferred from upstream compilation or CI status.",
-  "base_commit": "1b28efffe3cc5c93080dc21682c25b87ae5b84a3",
-  "branch": "development/rolled-route-ownership"
+  }
 }
