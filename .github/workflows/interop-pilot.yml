@@ -11,6 +11,17 @@ on:
         required: true
         default: ci/parallel-client-retirement
         type: string
+      diagnostic_cases:
+        description: Comma-separated registered cases to inspect; empty runs all 44 cells
+        required: false
+        default: ''
+        type: string
+      diagnostic_directions:
+        description: Candidate directions for a diagnostic subset only
+        required: false
+        default: client,server
+        type: choice
+        options: [client, server, 'client,server']
 
 permissions:
   contents: read
@@ -37,8 +48,12 @@ jobs:
           fetch-depth: 1
       - name: Validate all 44 cells and freeze the source commit
         id: plan
+        env:
+          INTEROP_DIAGNOSTIC_CASES: ${{ inputs.diagnostic_cases }}
+          INTEROP_DIAGNOSTIC_DIRECTIONS: ${{ inputs.diagnostic_directions }}
         run: |
           python3 ci/audit_source.py --check
+          python3 -m unittest discover -s tests -p 'test_ci*.py'
           groups=$(ROOT="$PWD" python3 ci/run_in_tools.py --matrix)
           echo "groups=$groups" >> "$GITHUB_OUTPUT"
           echo "source_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -55,6 +70,8 @@ jobs:
       CARGO_BUILD_JOBS: '2'
       PUBLIC_REPOSITORY: ${{ !github.event.repository.private }}
       INTEROP_GROUP: ${{ matrix.group }}
+      INTEROP_DIAGNOSTIC_CASES: ${{ inputs.diagnostic_cases }}
+      INTEROP_DIAGNOSTIC_DIRECTIONS: ${{ inputs.diagnostic_directions }}
     steps:
       - name: Check out the exact qualification commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -78,7 +95,7 @@ jobs:
 
   qualification:
     needs: [plan, pilot]
-    if: always() && needs.plan.result == 'success'
+    if: always() && needs.plan.result == 'success' && inputs.diagnostic_cases == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:

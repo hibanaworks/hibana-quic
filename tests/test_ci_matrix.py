@@ -97,6 +97,43 @@ class Matrix(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
                 self.module.qualification_groups(request)
 
+    def test_diagnostic_subset_runs_only_requested_cases_and_direction(self):
+        original = copy.deepcopy(self.request)
+        with patch.dict(os.environ, {'INTEROP_DIAGNOSTIC_CASES': 'handshakeloss,connectionmigration',
+                                     'INTEROP_DIAGNOSTIC_DIRECTIONS': 'client'}):
+            matrix = self.module.pilot_matrix(self.request)
+            self.assertEqual(matrix, {'include': [{'group': 'quiche-loss-early'}, {'group': 'neqo-migration'}]})
+            for name, case, peer in [('quiche-loss-early', 'handshakeloss', 'quiche'),
+                                     ('neqo-migration', 'connectionmigration', 'neqo')]:
+                selected = self.module.selected_request(self.request, name)
+                self.assertEqual(selected['cases'], [case])
+                self.assertEqual(selected['candidate_directions'], ['client'])
+                self.assertEqual(selected['reference_implementation'], peer)
+            with self.assertRaises(RuntimeError):
+                self.module.selected_request(self.request, 'neqo-basic')
+        self.assertEqual(self.request, original)
+
+    def test_diagnostic_selection_rejects_unknown_duplicate_and_invalid_direction(self):
+        for cases, directions in [('unknown', 'client'), ('handshakeloss,handshakeloss', 'client'),
+                                   ('../secret', 'client'), ('handshakeloss', ''),
+                                   ('handshakeloss', 'unknown'), ('handshakeloss', 'client,client')]:
+            with self.subTest(cases=cases, directions=directions), \
+                 patch.dict(os.environ, {'INTEROP_DIAGNOSTIC_CASES': cases,
+                                         'INTEROP_DIAGNOSTIC_DIRECTIONS': directions}), \
+                 self.assertRaises(RuntimeError):
+                self.module.pilot_matrix(self.request)
+
+    def test_diagnostic_selection_cannot_qualify_partial_artifacts(self):
+        group = next(group for group in self.request['groups'] if group['name'] == 'quiche-loss-early')
+        summary = self.get(group, 'summary.json')
+        summary.update(selected_cases=['handshakeloss'], candidate_directions=['client'])
+        self.put(group, 'summary.json', summary)
+        with patch.dict(os.environ, {'INTEROP_DIAGNOSTIC_CASES': 'handshakeloss',
+                                     'INTEROP_DIAGNOSTIC_DIRECTIONS': 'client'}), \
+             self.assertRaises(RuntimeError):
+            self.verify()
+        self.assertEqual(self.report()['status'], 'NOT_PASSED')
+
     def test_failed_unsupported_or_null_candidate_never_qualifies(self):
         group = next(group for group in self.request['groups'] if group['name'] == 'neqo-ecn')
         original = self.get(group, 'bounded-client-verdict.json')

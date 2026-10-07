@@ -847,7 +847,27 @@ def selected_request(request, group_name):
     groups = qualification_groups(request)
     selected = [group for group in groups if group['name'] == group_name]
     require(len(selected) == 1, 'unknown qualification group')
-    return dict(request, **selected[0])
+    result = dict(request, **selected[0])
+    cases = diagnostic_cases()
+    if cases is not None:
+        subset = cases & requested_cases(result['cases'])
+        require(subset, 'diagnostic group contains no requested case')
+        result['cases'] = sorted(subset)
+        result['candidate_directions'] = sorted(requested_directions(
+            os.environ.get('INTEROP_DIAGNOSTIC_DIRECTIONS', '').split(',')))
+    return result
+
+def diagnostic_cases():
+    value = os.environ.get('INTEROP_DIAGNOSTIC_CASES', '')
+    return requested_cases(value.split(',')) if value else None
+
+def pilot_matrix(request):
+    groups = qualification_groups(request)
+    cases = diagnostic_cases()
+    if cases is not None:
+        requested_directions(os.environ.get('INTEROP_DIAGNOSTIC_DIRECTIONS', '').split(','))
+        groups = [group for group in groups if cases & set(group['cases'])]
+    return {'include': [{'group': group['name']} for group in groups]}
 
 def verify_matrix(directory, source_commit, run_id, run_attempt):
     request = json.loads((ROOT / 'ci/interop-request.json').read_text())
@@ -1007,7 +1027,7 @@ if __name__ == '__main__':
     try:
         if sys.argv[1:] == ['--matrix']:
             request = json.loads((ROOT / 'ci/interop-request.json').read_text())
-            print(json.dumps({'include': [{'group': group['name']} for group in qualification_groups(request)]}, separators=(',', ':')))
+            print(json.dumps(pilot_matrix(request), separators=(',', ':')))
             raise SystemExit(0)
         if len(sys.argv) == 3 and sys.argv[1] == '--verify-matrix':
             raise SystemExit(verify_matrix(Path(sys.argv[2]), os.environ.get('SOURCE_COMMIT'), os.environ.get('GITHUB_RUN_ID'), os.environ.get('GITHUB_RUN_ATTEMPT')))
