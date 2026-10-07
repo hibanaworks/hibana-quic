@@ -123,6 +123,7 @@ pub async fn before_deadline<T, const S: usize, const N: usize>(
     .await
 }
 pub struct Receive<'a, 'r, const S: usize = 4, const T: usize = 8> {
+    pub alternate: Option<(&'a HostSocket<'r, S, T>, Vec<u8>)>,
     pub socket: &'a HostSocket<'r, S, T>,
     pub address: Address,
     pub first: Option<(&'a [u8], Option<Codepoint>)>,
@@ -167,7 +168,28 @@ impl<const S: usize, const T: usize> DatagramRx for Receive<'_, '_, S, T> {
             });
         }
         loop {
-            let received = match self.socket.recv_from(bytes).await {
+            let physical = if let Some((alternate, storage)) = self.alternate.as_mut() {
+                match hibana_quic::runtime::select(
+                    alternate.recv_from(storage),
+                    self.socket.recv_from(bytes),
+                )
+                .await
+                {
+                    core::ops::ControlFlow::Continue(result) => result,
+                    core::ops::ControlFlow::Break(result) => {
+                        if let Ok(ref packet) = result {
+                            if packet.len > bytes.len() {
+                                return Err(IoError::Rejected);
+                            }
+                            bytes[..packet.len].copy_from_slice(&storage[..packet.len]);
+                        }
+                        result
+                    }
+                }
+            } else {
+                self.socket.recv_from(bytes).await
+            };
+            let received = match physical {
                 Ok(received) => received,
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => {
                     // Truncation does not credit this path's amplification ledger.
@@ -199,6 +221,7 @@ impl<const S: usize, const T: usize> DatagramRx for Receive<'_, '_, S, T> {
     }
 }
 pub struct Transmit<'a, 'r, const S: usize = 4, const T: usize = 8> {
+    pub alternate: Option<&'a HostSocket<'r, S, T>>,
     pub socket: &'a HostSocket<'r, S, T>,
     pub address: Address,
     pub clock: &'a HostClock<'a, S, T>,
@@ -217,11 +240,17 @@ impl<const S: usize, const T: usize> DatagramTx for Transmit<'_, '_, S, T> {
         if ecn == Codepoint::Ce {
             return Err(IoError::Rejected);
         }
-        match self
-            .socket
-            .send_from(bytes, path.unwrap_or(self.address), ecn)
-            .await
-        {
+        let path = path.unwrap_or(self.address);
+        let socket = if let Some(alternate) = self.alternate {
+            if alternate.local_addr().map_err(|_| IoError::Closed)?.port() == path.local.port() {
+                alternate
+            } else {
+                self.socket
+            }
+        } else {
+            self.socket
+        };
+        match socket.send_from(bytes, path, ecn).await {
             Ok(len) if len == bytes.len() => {
                 let at = self.clock.now();
                 self.statistics.sent.set(self.statistics.sent.get() + 1);
@@ -281,6 +310,7 @@ mod tests {
             remote: peer.local_addr().unwrap(),
         };
         let mut tx = Transmit {
+            alternate: None,
             socket: &socket,
             address,
             clock: &clock,
@@ -315,6 +345,7 @@ mod tests {
                 remote,
             };
             let mut tx = Transmit {
+                alternate: None,
                 socket: &socket,
                 address,
                 clock: &clock,
@@ -366,6 +397,7 @@ mod tests {
                 remote,
             };
             let mut rx = Receive {
+                alternate: None,
                 socket: &socket,
                 address,
                 first: None,
@@ -415,6 +447,7 @@ mod tests {
         foreign.send_to(b"foreign", address.local).unwrap();
         peer.send_to(b"admitted", address.local).unwrap();
         let mut rx = Receive {
+            alternate: None,
             socket: &socket,
             address,
             first: None,
@@ -484,6 +517,7 @@ mod tests {
             remote: peer.local_addr().unwrap(),
         };
         let mut rx = Receive {
+            alternate: None,
             socket: &socket,
             address,
             first: None,
@@ -530,6 +564,7 @@ mod tests {
             remote: "[::1]:4433".parse().unwrap(),
         };
         let mut tx = Transmit {
+            alternate: None,
             socket: &socket,
             address,
             clock: &clock,

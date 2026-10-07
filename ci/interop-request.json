@@ -1,10 +1,10 @@
 {
-  "request": "Qualify the existing 34 cells plus locally validated v2 and NAT-rebinding client/server directions on one commit",
+  "request": "Qualify prior 34 cells plus locally validated v2, NAT rebinding and preferred-address migration directions",
   "requested_at": "2026-10-07T01:56:00Z",
   "scope": [
     "same source commit across all qualification groups",
-    "20 mandatory unchanged reference self-controls",
-    "40 actual candidate client/server verdicts"
+    "21 mandatory unchanged reference self-controls",
+    "42 actual candidate client/server verdicts"
   ],
   "approval": "User requested implementation of remaining cases, both local directions before push and CI, and authorized publication.",
   "local_evidence": "docs/direct-locals.md",
@@ -12,9 +12,9 @@
     "client",
     "server"
   ],
-  "qualification": "Forty distinct candidate results and twenty reference controls are required. The unchanged pinned runner, original phase deadlines and capacities apply. Local tests do not count as official CI passes. HTTP3 and connectionmigration remain outside this intermediate matrix. Existing certificate_depth failures remain unqualified.",
+  "qualification": "All 42 distinct candidate results and 21 controls must come from the same source/run. The unchanged pinned runner, original phase deadlines and capacities apply. Local tests do not count as official passes. HTTP3 is outside this intermediate matrix. Existing certificate_depth failures remain unqualified.",
   "formal_models": false,
-  "candidate_case_direction_results": 40,
+  "candidate_case_direction_results": 42,
   "groups": [
     {
       "name": "neqo-basic",
@@ -76,6 +76,13 @@
         "v2",
         "rebind-port",
         "rebind-addr"
+      ]
+    },
+    {
+      "name": "neqo-migration",
+      "reference_implementation": "neqo",
+      "cases": [
+        "connectionmigration"
       ]
     }
   ]

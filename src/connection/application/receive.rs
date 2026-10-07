@@ -54,6 +54,7 @@ pub(crate) async fn run<
     key_update_target: u64,
     responses: &crate::path::responses::Responses,
     local_ids: &RefCell<Option<crate::path::ids::Ids<'_, 'scope>>>,
+    peer_ids: &RefCell<Option<crate::path::peer_ids::Peers<'_, 'scope>>>,
     paths: &crate::path::validation::Paths<'_>,
     mut pending_application: Option<([u8; N], connection::ReceivedDatagram)>,
 ) -> Result<(), Error> {
@@ -474,10 +475,26 @@ pub(crate) async fn run<
                                 if outcome.duplicate {
                                     return Ok(None);
                                 }
+                                let mut non_probing = false;
+                                for frame in received_frames(
+                                    opened.plaintext(),
+                                    packet::EncryptionLevel::OneRtt,
+                                )? {
+                                    if !matches!(
+                                        frame?,
+                                        Frame::Padding { .. }
+                                            | Frame::PathChallenge { .. }
+                                            | Frame::PathResponse { .. }
+                                            | Frame::NewConnectionId { .. }
+                                    ) {
+                                        non_probing = true;
+                                    }
+                                }
                                 paths.observe(
                                     received.path,
                                     opened.packet_number(),
                                     packet.len(),
+                                    non_probing,
                                 )?;
                                 for frame in received_frames(
                                     opened.plaintext(),
@@ -538,10 +555,24 @@ pub(crate) async fn run<
                                             // address-validation tokens for a future connection.
                                         }
                                         Frame::NewConnectionId {
-                                            retire_prior_to: 0, ..
+                                            sequence,
+                                            retire_prior_to,
+                                            id,
+                                            reset_token,
                                         } => {
-                                            // Additional peer CIDs are optional on this fixed path. The
-                                            // current handshake-selected CID remains valid at sequence 0.
+                                            if let Some(peers) = peer_ids.borrow_mut().as_mut() {
+                                                peers
+                                                    .receive(
+                                                        sequence,
+                                                        retire_prior_to,
+                                                        id,
+                                                        *reset_token,
+                                                    )
+                                                    .map_err(|_| Error::Binding)?;
+                                            } else if retire_prior_to != 0 {
+                                                return Err(Error::Binding);
+                                            }
+                                            control.changed()?;
                                         }
                                         Frame::RetireConnectionId { sequence } => {
                                             local_ids
@@ -570,7 +601,7 @@ pub(crate) async fn run<
                                         | Frame::Ping
                                         | Frame::Ack { .. }
                                         | Frame::HandshakeDone => {}
-                                        Frame::NewToken { .. } | Frame::NewConnectionId { .. } => {
+                                        Frame::NewToken { .. } => {
                                             return Err(connection::Error::UnsupportedFrame.into());
                                         }
                                     }

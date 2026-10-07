@@ -179,9 +179,11 @@ pub async fn run<const S: usize, const T: usize>(
                 .map_err(|e| format!("server TLS: {e:?}"))?;
                 connected(
                     &tx,
+                    None,
                     clock,
                     admission.address,
                     Config {
+                        local_preferred: None,
                         initial_path: Some(admission.address),
                         version,
                         side: Side::Server,

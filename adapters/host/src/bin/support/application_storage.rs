@@ -37,6 +37,7 @@ pub fn local_limits<const RX: usize>(side: Side, stream_capacity: usize) -> Limi
 }
 pub struct Storage<const RX: usize> {
     cid_slots: Vec<hibana_quic::connection_id::LocalCidSlot>,
+    peer_cid_slots: Vec<hibana_quic::connection_id::PeerCidSlot<4>>,
     cid_seed: zeroize::Zeroizing<[u8; 32]>,
     initial: Vec<u8>,
     handshake: Vec<u8>,
@@ -60,6 +61,9 @@ impl<const RX: usize> Storage<RX> {
             .map_err(|_| "CID entropy unavailable")?;
         Ok(Self {
             cid_slots: vec![hibana_quic::connection_id::LocalCidSlot::EMPTY; 16],
+            peer_cid_slots: (0..16)
+                .map(|_| hibana_quic::connection_id::PeerCidSlot::EMPTY)
+                .collect(),
             cid_seed,
             initial: vec![0; 8192],
             handshake: vec![0; 16384],
@@ -77,6 +81,10 @@ impl<const RX: usize> Storage<RX> {
         config: Config<'a>,
     ) -> Result<application::Setup<'a, RX, CHUNK_BYTES>, String> {
         Ok(application::Setup {
+            peer_ids: Some(hibana_quic::path::peer_ids::Storage {
+                slots: &mut self.peer_cid_slots,
+                active_limit: 2,
+            }),
             local_ids: Some(hibana_quic::path::ids::Storage {
                 slots: &mut self.cid_slots,
                 seed: &self.cid_seed,

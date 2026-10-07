@@ -17,6 +17,9 @@ and the peer self-control completed for:
 - rebind-port: 10 MiB file matched across two actual UDP port changes; matching
   challenge responses were observed and candidate roles retired.
 - rebind-addr: the same checks with actual loopback IP and port changes.
+- connectionmigration: 2 MiB file matched in both directions after use of the
+  authenticated preferred address, peer path validation and candidate role retirement.
+  The preceding three scenarios also passed again with this release executable.
 
 Machine-readable local reports are under artifacts/remaining-interop/20261007-local.
 These loopback tests are not the runner's ns-3 scenario or an official pass.
@@ -35,14 +38,16 @@ rebinding retains those estimates. Existing ECN capability is not inherited by a
 new path. Pending CID advertisements and response frames are consumed only by
 actual physical acceptance or their authenticated acknowledgment/retirement.
 
-The intermediate CI request has 40 candidate cells and 20 mandatory controls.
+The intermediate CI request has 42 candidate cells and 21 mandatory controls.
 Every cell must come from the same source/run. Failed, unsupported, missing and
 null observations remain failures. Original runner/deadline/capacity constraints
 remain unchanged.
 
 ## Still open
 
-HTTP/3 and preferred-address connectionmigration (four directions) are unfinished.
+HTTP/3 (two directions) is unfinished. The initial bounded static-QPACK/frame
+codec has three passing unit tests, but no HTTP/3 native interchange has passed.
+The other eight remaining case/direction cells have local evidence only.
 The existing handshakecorruption failure still needs root-cause evidence.
 Multi-connection routing of newly issued CIDs and non-current-path challenge
 responses need further review before broad migration support is claimed.

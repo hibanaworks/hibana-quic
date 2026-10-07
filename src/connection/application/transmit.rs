@@ -76,6 +76,8 @@ struct Pending<'book, 'streams, const N: usize> {
     cid: Option<crate::connection_id::LocalCid>,
     path: Option<crate::path::Address>,
     probe: Option<[u8; 8]>,
+    peer_cid: Option<crate::connection_id::PeerCid>,
+    retirement: Option<u64>,
 }
 
 /// The slot transfers the actual packet on the declared Datagram edge. It
@@ -91,6 +93,7 @@ pub(crate) struct State<
     const CHUNK: usize,
 > {
     pub(crate) responses: crate::path::responses::Responses,
+    pub(crate) peers: RefCell<Option<crate::path::peer_ids::Peers<'storage, 'scope>>>,
     pub(crate) paths: crate::path::validation::Paths<'storage>,
     pub(crate) ids: RefCell<Option<crate::path::ids::Ids<'storage, 'scope>>>,
     pending: RefCell<Option<Pending<'book, 'streams, N>>>,
@@ -118,8 +121,10 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         streams: application_stream::Publication<'streams, 'storage, 'scope, RX, CHUNK>,
         ids: Option<crate::path::ids::Ids<'storage, 'scope>>,
         paths: crate::path::validation::Paths<'storage>,
+        peers: Option<crate::path::peer_ids::Peers<'storage, 'scope>>,
     ) -> Self {
         Self {
+            peers: RefCell::new(peers),
             paths,
             responses: crate::path::responses::Responses::new(),
             ids: RefCell::new(ids),
@@ -145,6 +150,19 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         if packet.path.is_none() {
             packet.path = self.paths.current().path;
         }
+        if packet.peer_cid.is_none() && matches!(packet.sealed, Sealed::Application(_)) {
+            if let (Some(peers), Some(path)) = (self.peers.borrow().as_ref(), packet.path) {
+                let selected = match peers.choose(path, self.paths.preferred_cid(Some(path))) {
+                    Ok(cid) => cid,
+                    Err(_) => return Err((Error::Binding, packet)),
+                };
+                let cid = selected.cid.as_bytes();
+                if packet.sealed.bytes().get(1..1 + cid.len()) != Some(cid) {
+                    return Err((Error::Binding, packet));
+                }
+                packet.peer_cid = Some(selected);
+            }
+        }
         *slot = Some(packet);
         Ok(())
     }
@@ -161,6 +179,20 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         accepted_at: Option<u64>,
         ecn: crate::ecn::Codepoint,
     ) -> Result<(), Error> {
+        if accepted_at.is_some() {
+            if let Some(cid) = packet.peer_cid {
+                let mut peers = self.peers.borrow_mut();
+                let peers = peers.as_mut().ok_or(Error::Binding)?;
+                peers
+                    .accepted(cid, packet.path.ok_or(Error::Binding)?)
+                    .map_err(|_| Error::Binding)?;
+                if let Some(sequence) = packet.retirement {
+                    peers
+                        .retirement_accepted(sequence, packet.sealed.reservation().packet().value)
+                        .map_err(|_| Error::Binding)?;
+                }
+            }
+        }
         if let Some(at) = accepted_at {
             self.paths
                 .accepted(packet.path, packet.probe, packet.sealed.bytes().len(), at)?;
@@ -277,6 +309,8 @@ fn settle<'book, const N: usize, const RX: usize, const CHUNK: usize>(
         cid: _,
         path: _,
         probe: _,
+        peer_cid: _,
+        retirement: _,
     } = packet;
     let (reservation, long_ack) = sealed.into_parts();
     // Complete both numeric owners in this synchronous turn even if one owner
@@ -411,12 +445,26 @@ pub(crate) async fn run<
                 .request
                 .put(Some(crate::path::validation::Requested {
                     pto: book.pto_duration_us()?,
+                    confirmed: book.snapshot().handshake_confirmed,
+                    response_path: state
+                        .responses
+                        .pending()
+                        .map_err(|_| Error::Binding)?
+                        .and_then(|r| r.path),
                 }))
                 .map_err(|_| Error::Binding)?;
             endpoint.send::<pp::Request>(&()).await?;
             loop {
                 let offered = endpoint.offer().await?;
                 match offered.label() {
+                    label if label == pp::Reply::LOGICAL_LABEL => {
+                        offered.recv::<pp::Reply>().await?;
+                        break;
+                    }
+                    label if label == pp::ProbeReply::LOGICAL_LABEL => {
+                        offered.recv::<pp::ProbeReply>().await?;
+                        break;
+                    }
                     label if label == pp::Current::LOGICAL_LABEL => {
                         offered.recv::<pp::Current>().await?;
                         break;
@@ -444,6 +492,11 @@ pub(crate) async fn run<
                         offered.recv::<pp::Resolved>().await?;
                         let (old, new) =
                             state.paths.migration.take().map_err(|_| Error::Binding)?;
+                        if let Some(peers) = state.peers.borrow_mut().as_mut() {
+                            peers
+                                .retire_previous(old, new, state.paths.preferred_cid(Some(new)))
+                                .map_err(|_| Error::Binding)?;
+                        }
                         book.validated_path(old, new, clock.now())?;
                     }
                     label if label == pp::Abandoned::LOGICAL_LABEL => {
@@ -457,6 +510,12 @@ pub(crate) async fn run<
                     .request
                     .put(Some(crate::path::validation::Requested {
                         pto: book.pto_duration_us()?,
+                        confirmed: book.snapshot().handshake_confirmed,
+                        response_path: state
+                            .responses
+                            .pending()
+                            .map_err(|_| Error::Binding)?
+                            .and_then(|r| r.path),
                     }))
                     .map_err(|_| Error::Binding)?;
                 endpoint.send::<pp::Request>(&()).await?;
@@ -471,6 +530,7 @@ pub(crate) async fn run<
                 clock.now(),
                 &state.responses,
                 &state.ids,
+                &state.peers,
                 grant,
             )?;
             let Some(pending) = pending else {
@@ -585,16 +645,121 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     now: u64,
     responses: &crate::path::responses::Responses,
     ids: &RefCell<Option<crate::path::ids::Ids<'_, '_>>>,
+    peers: &RefCell<Option<crate::path::peer_ids::Peers<'_, '_>>>,
     grant: crate::path::validation::Grant,
 ) -> Result<Option<Pending<'book, 'streams, N>>, Error> {
+    let selected = match (peers.borrow().as_ref(), grant.path) {
+        (Some(peers), Some(path)) => Some(
+            peers
+                .choose(path, grant.preferred_cid)
+                .map_err(|_| Error::Binding)?,
+        ),
+        _ => None,
+    };
+    let selected_id = selected
+        .map(|cid| ConnectionId::new(cid.cid.as_bytes()))
+        .transpose()?;
+    let peer = selected_id.as_ref().unwrap_or(peer);
+    let retirement = match (peers.borrow_mut().as_mut(), selected) {
+        (Some(peers), Some(cid)) => peers
+            .prepare_retirement(cid.cid)
+            .map_err(|_| Error::Binding)?,
+        _ => None,
+    };
+    if grant.response_size != 0 {
+        let response = responses
+            .pending()
+            .map_err(|_| Error::Binding)?
+            .filter(|r| r.path == grant.path)
+            .ok_or(Error::Binding)?;
+        let overhead = short_overhead(peer)?;
+        let len = grant
+            .response_size
+            .checked_sub(overhead)
+            .filter(|len| *len >= 9 && *len <= N)
+            .ok_or(Error::Capacity)?;
+        let mut plaintext = Zeroizing::new([0u8; N]);
+        let used = packet::encode_frame(
+            &Frame::PathResponse {
+                data: &response.data,
+            },
+            &mut plaintext[..],
+        )?;
+        packet::encode_frame(
+            &Frame::Padding { length: len - used },
+            &mut plaintext[used..],
+        )?;
+        let reservation = match book.reserve_application(
+            &plaintext[..len],
+            keys.generation()?,
+            grant.response_size as u64,
+            false,
+            now,
+        ) {
+            Ok(r) => r,
+            Err(e) if limited(&e) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let scope = reservation.scope();
+        return match keys.seal(reservation, peer.bytes(), &plaintext[..len]) {
+            Ok(sealed) => Ok(Some(Pending {
+                scope,
+                sealed: Sealed::Application(sealed),
+                stream: None,
+                acknowledgment: None,
+                close_deadline: None,
+                response: Some(response),
+                cid: None,
+                path: grant.path,
+                probe: None,
+                peer_cid: selected,
+                retirement: None,
+            })),
+            Err((e, r)) => {
+                book.cancel(r)?;
+                Err(e.into())
+            }
+        };
+    }
     if let Some(data) = grant.challenge {
         let overhead = short_overhead(peer)?;
         if N < 1200 || overhead + 9 > 1200 {
             return Err(Error::Capacity);
         }
         let mut plaintext = Zeroizing::new([0u8; N]);
-        let mut used =
-            packet::encode_frame(&Frame::PathChallenge { data: &data }, &mut plaintext[..])?;
+        let mut used = 0;
+        let offered_cid = ids
+            .borrow_mut()
+            .as_mut()
+            .map(crate::path::ids::Ids::prepare)
+            .transpose()
+            .map_err(|_| Error::Binding)?
+            .flatten();
+        let mut cid = None;
+        if let Some(advertisement) = offered_cid {
+            let len = packet::encode_frame(
+                &Frame::NewConnectionId {
+                    sequence: advertisement.sequence,
+                    retire_prior_to: advertisement.retire_prior_to,
+                    id: advertisement.cid.as_bytes(),
+                    reset_token: advertisement
+                        .token
+                        .as_ref()
+                        .ok_or(Error::Binding)?
+                        .as_bytes(),
+                },
+                &mut plaintext[..],
+            )?;
+            if overhead + len + 9 <= grant.probe_size {
+                used = len;
+                cid = Some(advertisement);
+            }
+        }
+        // Supply a fresh return CID before the peer has to answer this probe.
+        used += packet::encode_frame(
+            &Frame::PathChallenge { data: &data },
+            &mut plaintext[used..],
+        )?;
         let response = responses
             .pending()
             .map_err(|_| Error::Binding)?
@@ -633,9 +798,11 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
                 acknowledgment: None,
                 close_deadline: None,
                 response,
-                cid: None,
+                cid,
                 path: grant.path,
                 probe: Some(data),
+                peer_cid: selected,
+                retirement: None,
             })),
             Err((e, r)) => {
                 book.cancel(r)?;
@@ -688,6 +855,8 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
                 cid: None,
                 path: None,
                 probe: None,
+                peer_cid: None,
+                retirement: None,
             }));
         }
     }
@@ -830,6 +999,12 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
             &mut plaintext[len..],
         )?;
     }
+    if let Some(sequence) = retirement {
+        len += packet::encode_frame(
+            &Frame::RetireConnectionId { sequence },
+            &mut plaintext[len..],
+        )?;
+    }
     let prepared = streams.prepare::<N>(probe)?;
     let overhead = short_overhead(peer)?;
     let had_prepared = prepared.is_some();
@@ -906,6 +1081,8 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
             cid,
             path: grant.path,
             probe: grant.challenge,
+            peer_cid: selected,
+            retirement,
         })),
         Err((error, reservation)) => {
             let recovery_result = book.cancel(reservation);
@@ -959,6 +1136,8 @@ fn long_packet<'book, 'scope, const N: usize>(
             cid: None,
             path: None,
             probe: None,
+            peer_cid: None,
+            retirement: None,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -1004,6 +1183,8 @@ fn application_control_packet<'book, 'streams, 'scope, const N: usize>(
             cid: None,
             path: None,
             probe: None,
+            peer_cid: None,
+            retirement: None,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -1194,6 +1375,9 @@ pub(crate) async fn publish<
                 let packet = offered.recv::<p::ApplyLoss>().await?;
                 let grant = acknowledgments.loss.take().map_err(|_| Error::Binding)?;
                 check(grant.packet().value, packet)?;
+                if let Some(peers) = state.peers.borrow_mut().as_mut() {
+                    peers.loss(&grant).map_err(|_| Error::Binding)?;
+                }
                 if let Some(ids) = state.ids.borrow_mut().as_mut() {
                     ids.loss(&grant).map_err(|_| Error::Binding)?;
                 }
@@ -1205,6 +1389,9 @@ pub(crate) async fn publish<
             178 => {
                 offered.recv::<p::ApplyAcknowledgments>().await?;
                 let grant = acknowledgments.pending.take().map_err(|_| Error::Binding)?;
+                if let Some(peers) = state.peers.borrow_mut().as_mut() {
+                    peers.acknowledge(&grant).map_err(|_| Error::Binding)?;
+                }
                 if let Some(ids) = state.ids.borrow_mut().as_mut() {
                     ids.acknowledge(&grant).map_err(|_| Error::Binding)?;
                 }
@@ -1330,6 +1517,19 @@ pub(crate) async fn close<
     {
         return Err(Error::Binding);
     }
+    let path = state.paths.current().path;
+    let selected = match (state.peers.borrow().as_ref(), path) {
+        (Some(peers), Some(path)) => Some(
+            peers
+                .choose(path, state.paths.preferred_cid(Some(path)))
+                .map_err(|_| Error::Binding)?,
+        ),
+        _ => None,
+    };
+    let selected_id = selected
+        .map(|cid| ConnectionId::new(cid.cid.as_bytes()))
+        .transpose()?;
+    let peer = selected_id.as_ref().unwrap_or(peer);
     let kind = permission.kind();
     let pto = book.pto_duration_us()?.max(1);
     let started_at = clock.now();
@@ -1496,6 +1696,8 @@ fn close_packet<'book, 'streams, const N: usize>(
             cid: None,
             path: None,
             probe: None,
+            peer_cid: None,
+            retirement: None,
         })),
         Err((error, reservation)) => {
             book.cancel(reservation)?;
@@ -1701,6 +1903,8 @@ mod tests {
             cid: None,
             path: None,
             probe: None,
+            peer_cid: None,
+            retirement: None,
         }
     }
 
@@ -1736,7 +1940,8 @@ mod tests {
             book_publication,
             publication,
             None,
-            crate::path::validation::Paths::new(None, connection::Side::Client, None),
+            crate::path::validation::Paths::new(None, connection::Side::Client, None, None),
+            None,
         );
         let packet = stream_packet(&mut book_tx, &mut tx, &mut write);
         assert!(state.put(packet).is_ok());
@@ -1809,7 +2014,8 @@ mod tests {
             book_publication,
             publication,
             None,
-            crate::path::validation::Paths::new(None, connection::Side::Client, None),
+            crate::path::validation::Paths::new(None, connection::Side::Client, None, None),
+            None,
         );
         let packet = stream_packet(&mut book_tx, &mut tx, &mut write);
         assert!(state.put(packet).is_ok());
@@ -1881,7 +2087,8 @@ mod tests {
             book_publication,
             publication,
             None,
-            crate::path::validation::Paths::new(None, connection::Side::Client, None),
+            crate::path::validation::Paths::new(None, connection::Side::Client, None, None),
+            None,
         );
         // Burn numbers before filling the ordinary admission quota. PTO headroom
         // remains reserved, while close still requires actual ordinary retirement.
@@ -1913,6 +2120,8 @@ mod tests {
                 cid: None,
                 path: None,
                 probe: None,
+                peer_cid: None,
+                retirement: None,
             };
             let mut pending = InFlight {
                 packet: Some(packet),

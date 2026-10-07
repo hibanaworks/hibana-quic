@@ -52,6 +52,7 @@ pub enum Side {
 #[derive(Clone, Copy)]
 pub struct Config<'a> {
     pub initial_path: Option<crate::path::Address>,
+    pub local_preferred: Option<crate::path::preferred::Preferred>,
     pub version: crate::version::Version,
     pub side: Side,
     pub local_connection_id: &'a [u8],

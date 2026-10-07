@@ -70,6 +70,7 @@ pub struct EarlyServer<'a, const RX: usize> {
 }
 pub struct Setup<'a, const RX: usize, const CHUNK: usize> {
     pub local_ids: Option<crate::path::ids::Storage<'a>>,
+    pub peer_ids: Option<crate::path::peer_ids::Storage<'a>>,
     /// Opaque server-issued address token, published only after authenticated Finished.
     pub server_token: Option<&'a [u8]>,
     /// Must match the local max_idle_timeout actually advertised in TLS.
@@ -123,6 +124,8 @@ pub struct Report {
     pub close_completed: bool,
     /// Actual admitted-path datagram bytes before closing starts.
     pub received_bytes: u64,
+    pub validated_paths: u64,
+    pub preferred_address_used: bool,
     /// Actual UDP-accepted datagram bytes before closing starts.
     pub sent_bytes: u64,
     /// Actual UDP-accepted ECT packets and authenticated successful feedback.

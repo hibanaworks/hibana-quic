@@ -25,10 +25,15 @@ impl<'a, 'scope> Ids<'a, 'scope> {
         scope: &'scope ApplicationKeyScope,
         initial: &[u8],
         limit: u64,
+        preferred: Option<super::preferred::Preferred>,
     ) -> Result<Self, CidError> {
         let mut table = LocalCidTable::new(1, 1, storage.slots, limit)?;
         let first = table.issue_initial(Cid::new(initial)?, None)?;
         table.mark_advertised(first.handle)?;
+        if let Some(p) = preferred {
+            let preferred = table.issue_preferred(p.cid, p.token)?;
+            table.mark_advertised(preferred.handle)?;
+        }
         Ok(Self {
             scope,
             table,
@@ -137,6 +142,7 @@ mod tests {
             &scope,
             b"initial-",
             2,
+            None,
         )
         .unwrap();
         let first = ids.prepare().unwrap().unwrap();

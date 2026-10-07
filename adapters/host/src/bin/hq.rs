@@ -239,6 +239,11 @@ impl Report {
                 .ecn_acknowledgments_sent
                 .checked_add(old.ecn_acknowledgments_sent)
                 .ok_or("report counter overflow")?;
+            current.validated_paths = current
+                .validated_paths
+                .checked_add(old.validated_paths)
+                .ok_or("report counter overflow")?;
+            current.preferred_address_used |= old.preferred_address_used;
             current.ecn_feedback_error = current.ecn_feedback_error.or(old.ecn_feedback_error);
         }
         Ok(self)
@@ -247,7 +252,7 @@ impl Report {
         let stats = reactor.statistics();
         let transfer = if let Some(report) = self.application {
             format!(
-                "\"scope\":\"{}\",\"key_generation\":{},\"early_accepted_packets\":{},\"early_stream_bytes\":{},\"early_finished_streams\":{},\"quic_handshake_confirmed\":{},\"http_transfer_complete\":{},\"resources_retired\":true,\"idle_expired_connections\":{},\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{},\"ecn_accepted_packets\":{},\"ecn_validated_packets\":{},\"ecn_received_packets\":{},\"ecn_acknowledgments_sent\":{},\"ecn_feedback_error\":{}",
+                "\"scope\":\"{}\",\"key_generation\":{},\"early_accepted_packets\":{},\"early_stream_bytes\":{},\"early_finished_streams\":{},\"quic_handshake_confirmed\":{},\"http_transfer_complete\":{},\"resources_retired\":true,\"idle_expired_connections\":{},\"lifecycle_closed\":{},\"all_streams_acked\":{},\"files_submitted\":{},\"files_completed\":{},\"body_bytes\":{},\"udp_received_bytes_before_close\":{},\"udp_accepted_bytes_before_close\":{},\"validated_paths\":{},\"preferred_address_used\":{},\"ecn_accepted_packets\":{},\"ecn_validated_packets\":{},\"ecn_received_packets\":{},\"ecn_acknowledgments_sent\":{},\"ecn_feedback_error\":{}",
                 if self.idle_expired_connections == 0 {
                     "authenticated-file-transfer"
                 } else {
@@ -267,6 +272,8 @@ impl Report {
                 self.body_bytes,
                 report.received_bytes,
                 report.sent_bytes,
+                report.validated_paths,
+                report.preferred_address_used,
                 report.ecn_accepted_packets,
                 report.ecn_validated_packets,
                 report.ecn_received_packets,
@@ -279,7 +286,7 @@ impl Report {
             "\"scope\":\"authenticated-handshake-prefix\",\"owned_application_continuations\":true,\"quic_handshake_confirmed\":false,\"http_transfer_complete\":false,\"lifecycle_closed\":false".to_owned()
         };
         format!(
-            "{{\"connections\":{},\"resumed\":{},\"resumed_connections\":{},\"backend\":\"direct-hibana-roles\",\"status\":\"{}\",{transfer},\"role\":\"{}\",\"peer\":\"{}\",\"tls_finished_authenticated\":true,\"datagrams_sent\":{},\"datagrams_received\":{},\"foreign_datagrams_ignored\":{},\"last_os_acceptance_us\":{},\"duration_ms\":{},\"reactor_polls\":{},\"reactor_waits\":{},\"reactor_socket_events\":{},\"reactor_timer_events\":{}}}",
+            "{{\"connections\":{},\"resumed\":{},\"resumed_connections\":{},\"backend\":\"direct-hibana-roles\",\"status\":\"{}\",{transfer},\"role\":\"{}\",\"peer\":\"{}\",\"tls_finished_authenticated\":true,\"datagrams_sent\":{},\"datagrams_received\":{},\"different_path_datagrams_observed\":{},\"last_os_acceptance_us\":{},\"duration_ms\":{},\"reactor_polls\":{},\"reactor_waits\":{},\"reactor_socket_events\":{},\"reactor_timer_events\":{}}}",
             self.connections,
             self.resumed,
             self.resumed_connections,
@@ -309,6 +316,7 @@ impl Report {
 #[allow(clippy::too_many_arguments)]
 async fn connected<const S: usize, const T: usize>(
     socket: &HostSocket<'_, S, T>,
+    alternate: Option<&HostSocket<'_, S, T>>,
     clock: &HostClock<'_, S, T>,
     address: Address,
     config: Config<'_>,
@@ -347,6 +355,7 @@ async fn connected<const S: usize, const T: usize>(
     .map_err(|e| format!("recovery: {e:?}"))?;
     let statistics = Statistics::default();
     let mut receive = Receive {
+        alternate: alternate.map(|socket| (socket, vec![0; direct_bootstrap::DATAGRAM])),
         routed,
         socket,
         address,
@@ -355,6 +364,7 @@ async fn connected<const S: usize, const T: usize>(
         statistics: &statistics,
     };
     let mut transmit = Transmit {
+        alternate,
         socket,
         address,
         clock,
@@ -854,9 +864,11 @@ async fn run_async<const S: usize, const T: usize>(
                 .map_err(|e| format!("client TLS: {e:?}"))?;
                 let report = Box::pin(connected(
                     &socket,
+                    None,
                     clock,
                     address,
                     Config {
+                        local_preferred: None,
                         initial_path: Some(address),
                         version,
                         side: Side::Client,
@@ -915,6 +927,7 @@ async fn run_async<const S: usize, const T: usize>(
             previous.ok_or_else(|| "no client connection executed".into())
         }
         Options::Server {
+            preferred_port,
             version,
             require_retry,
             listen,
@@ -946,6 +959,21 @@ async fn run_async<const S: usize, const T: usize>(
             let socket = reactor
                 .register_udp(UdpSocket::bind(listen).map_err(|e| format!("UDP bind: {e}"))?)
                 .map_err(|e| format!("UDP registration: {e}"))?;
+            let alternate = preferred_port
+                .map(|port| {
+                    let mut target = listen;
+                    target.set_port(port);
+                    if target == listen {
+                        return Err("preferred port must differ from listen port".to_owned());
+                    }
+                    reactor
+                        .register_udp(
+                            UdpSocket::bind(target)
+                                .map_err(|e| format!("preferred UDP bind: {e}"))?,
+                        )
+                        .map_err(|e| format!("preferred UDP registration: {e}"))
+                })
+                .transpose()?;
             eprintln!(
                 "direct Hibana server listening on {}",
                 socket
@@ -1029,7 +1057,26 @@ async fn run_async<const S: usize, const T: usize>(
                     .as_ref()
                     .map(|admitted| admitted.token.retry_source_id());
                 let local = random::<8>()?;
-                let parameters = parameters(
+                let local_preferred = preferred_port
+                    .map(|port| -> Result<_> {
+                        let mut target = address.local;
+                        target.set_port(port);
+                        Ok(hibana_quic::path::preferred::Preferred {
+                            ipv4: match target {
+                                SocketAddr::V4(a) => Some(a),
+                                _ => None,
+                            },
+                            ipv6: match target {
+                                SocketAddr::V6(a) => Some(a),
+                                _ => None,
+                            },
+                            cid: hibana_quic::connection_id::Cid::new(&random::<8>()?)
+                                .map_err(|e| format!("preferred CID: {e:?}"))?,
+                            token: hibana_quic::connection_id::ResetToken::new(random::<16>()?),
+                        })
+                    })
+                    .transpose()?;
+                let mut parameters = parameters(
                     version,
                     &local,
                     Some(&original),
@@ -1037,6 +1084,14 @@ async fn run_async<const S: usize, const T: usize>(
                     retry_source,
                 )?;
                 let mut buffers = TlsBuffers::new();
+                if let Some(preferred) = local_preferred {
+                    let mut encoded = [0; 61];
+                    let len = preferred
+                        .encode(&mut encoded)
+                        .map_err(|e| format!("preferred parameter: {e:?}"))?;
+                    parameters.extend_from_slice(&[13, len as u8]);
+                    parameters.extend_from_slice(&encoded[..len]);
+                }
                 let config = ServerConfig {
                     version,
                     certificate_chain: &chain,
@@ -1091,9 +1146,11 @@ async fn run_async<const S: usize, const T: usize>(
                 .map_err(|e| format!("server TLS: {e:?}"))?;
                 let report = Box::pin(connected(
                     &socket,
+                    alternate.as_ref(),
                     clock,
                     address,
                     Config {
+                        local_preferred,
                         initial_path: Some(address),
                         version,
                         side: Side::Server,

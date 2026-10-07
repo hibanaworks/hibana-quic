@@ -216,6 +216,7 @@ async fn connected<
     }
     let Setup {
         local_ids,
+        peer_ids,
         server_token,
         local_idle_timeout_ms,
         key_update_target,
@@ -288,6 +289,45 @@ async fn connected<
     } else {
         0
     };
+    let peer_parameters = crate::parameters::Parameters::parse(
+        peer.parameters(),
+        if config.side == Side::Client {
+            crate::parameters::Peer::Server
+        } else {
+            crate::parameters::Peer::Client
+        },
+        &mut [0; 64],
+    )
+    .map_err(|_| Error::Binding)?;
+    let preferred = peer_parameters
+        .get(13)
+        .map(crate::path::preferred::Preferred::parse)
+        .transpose()
+        .map_err(|_| Error::Binding)?;
+    let initial_token = peer_parameters
+        .get(2)
+        .map(|bytes| bytes.try_into().map(crate::connection_id::ResetToken::new))
+        .transpose()
+        .map_err(|_| Error::Binding)?;
+    if peer_id.bytes().is_empty() && initial_token.is_some() {
+        return Err(Error::Binding);
+    }
+    // Zero-length peer CIDs use the authenticated physical address tuple. They
+    // cannot be inserted into the nonzero CID/token ledger or invented later.
+    let peers = peer_ids
+        .filter(|_| !peer_id.bytes().is_empty())
+        .map(|storage| {
+            crate::path::peer_ids::Peers::new(
+                storage,
+                scope,
+                peer_id.bytes(),
+                config.initial_path,
+                preferred,
+                initial_token,
+            )
+        })
+        .transpose()
+        .map_err(|_| Error::Binding)?;
     let confirmation = book.bind_validated_peer(&peer)?;
     let mut stream_numbers = StreamNumbers::new(
         scope,
@@ -348,14 +388,21 @@ async fn connected<
         config.initial_path,
         config.side,
         local_ids.as_ref().map(|storage| storage.seed),
+        preferred,
     );
     let ids = local_ids
         .map(|storage| {
-            crate::path::ids::Ids::new(storage, scope, config.local_connection_id, peer_cid_limit)
+            crate::path::ids::Ids::new(
+                storage,
+                scope,
+                config.local_connection_id,
+                peer_cid_limit,
+                config.local_preferred,
+            )
         })
         .transpose()
         .map_err(|_| Error::Binding)?;
-    let publication_state = transmit::State::new(book_publication, publication, ids, paths);
+    let publication_state = transmit::State::new(book_publication, publication, ids, paths, peers);
     let ecn_exchange = transmit::ecn::Exchange::new();
 
     let acknowledgments = super::acknowledgments::Exchange::new();
@@ -458,6 +505,7 @@ async fn connected<
                 key_update_target,
                 &publication_state.responses,
                 &publication_state.ids,
+                &publication_state.peers,
                 &publication_state.paths,
                 pending_application,
             )
@@ -499,8 +547,11 @@ async fn connected<
         );
         let marking =
             transmit::ecn::owner(&mut roles.ecn_owner, &ecn_exchange, &completion_book, clock);
-        let path_validation =
-            crate::path::validation::owner(&mut roles.handshake.initial_event, &publication_state.paths, clock);
+        let path_validation = crate::path::validation::owner(
+            &mut roles.handshake.initial_event,
+            &publication_state.paths,
+            clock,
+        );
         let completion = termination::completion(
             &mut roles.files_event,
             &mut roles.source_join,
@@ -624,7 +675,10 @@ async fn connected<
     {
         return Err(Error::Incomplete);
     }
+    let (validated_paths, preferred_address_used) = publication_state.paths.observation();
     Ok(Report {
+        validated_paths,
+        preferred_address_used,
         termination: if matches!(close_kind, super::CloseKind::IdleExpired) {
             super::Termination::IdleExpired
         } else {

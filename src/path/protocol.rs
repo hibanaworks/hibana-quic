@@ -20,6 +20,10 @@ pub type Paused = g::Msg<232, ()>;
 pub type ProbePause = g::Msg<233, ()>;
 pub type ProbePaused = g::Msg<234, ()>;
 pub type Expand = g::Msg<235, ()>;
+pub type Reply = g::Msg<236, ()>;
+pub type ProbeReply = g::Msg<237, ()>;
+type ReplyRound = g::Seq<g::Send<OWNER, TRANSMIT, Reply>, Next>;
+type ProbeReplyRound = g::Seq<g::Send<OWNER, TRANSMIT, ProbeReply>, Next>;
 type ExpandRound = g::Seq<g::Send<OWNER, TRANSMIT, Expand>, Next>;
 type Next = g::Seq<g::Send<TRANSMIT, OWNER, Settled>, g::Send<TRANSMIT, OWNER, Request>>;
 type CurrentRound = g::Seq<g::Send<OWNER, TRANSMIT, Current>, Next>;
@@ -46,12 +50,17 @@ type Cycle = g::Seq<
     g::Send<OWNER, TRANSMIT, Begin>,
     g::Seq<
         Next,
-        g::Roll<g::Route<g::Route<g::Route<ProbeRound, HoldRound>, ExpandRound>, ProbeBoundary>>,
+        g::Roll<
+            g::Route<
+                g::Route<g::Route<g::Route<ProbeRound, HoldRound>, ExpandRound>, ProbeReplyRound>,
+                ProbeBoundary,
+            >,
+        >,
     >,
 >;
 pub type Flow = g::Seq<
     g::Send<TRANSMIT, OWNER, Request>,
-    g::Roll<g::Route<g::Route<CurrentRound, Cycle>, Boundary>>,
+    g::Roll<g::Route<g::Route<g::Route<CurrentRound, Cycle>, ReplyRound>, Boundary>>,
 >;
 pub fn choreography() -> g::Program<Flow> {
     let current = g::seq(
@@ -64,15 +73,24 @@ pub fn choreography() -> g::Program<Flow> {
     let pending = g::route(
         g::route(
             g::route(
-                g::seq(
-                    g::send::<OWNER, TRANSMIT, Probe>(),
+                g::route(
                     g::seq(
-                        g::send::<TRANSMIT, OWNER, Settled>(),
-                        g::send::<TRANSMIT, OWNER, Request>(),
+                        g::send::<OWNER, TRANSMIT, Probe>(),
+                        g::seq(
+                            g::send::<TRANSMIT, OWNER, Settled>(),
+                            g::send::<TRANSMIT, OWNER, Request>(),
+                        ),
+                    ),
+                    g::seq(
+                        g::send::<OWNER, TRANSMIT, Hold>(),
+                        g::seq(
+                            g::send::<TRANSMIT, OWNER, Settled>(),
+                            g::send::<TRANSMIT, OWNER, Request>(),
+                        ),
                     ),
                 ),
                 g::seq(
-                    g::send::<OWNER, TRANSMIT, Hold>(),
+                    g::send::<OWNER, TRANSMIT, Expand>(),
                     g::seq(
                         g::send::<TRANSMIT, OWNER, Settled>(),
                         g::send::<TRANSMIT, OWNER, Request>(),
@@ -80,7 +98,7 @@ pub fn choreography() -> g::Program<Flow> {
                 ),
             ),
             g::seq(
-                g::send::<OWNER, TRANSMIT, Expand>(),
+                g::send::<OWNER, TRANSMIT, ProbeReply>(),
                 g::seq(
                     g::send::<TRANSMIT, OWNER, Settled>(),
                     g::send::<TRANSMIT, OWNER, Request>(),
@@ -127,6 +145,19 @@ pub fn choreography() -> g::Program<Flow> {
     );
     g::seq(
         g::send::<TRANSMIT, OWNER, Request>(),
-        g::route(g::route(current, cycle), end).roll(),
+        g::route(
+            g::route(
+                g::route(current, cycle),
+                g::seq(
+                    g::send::<OWNER, TRANSMIT, Reply>(),
+                    g::seq(
+                        g::send::<TRANSMIT, OWNER, Settled>(),
+                        g::send::<TRANSMIT, OWNER, Request>(),
+                    ),
+                ),
+            ),
+            end,
+        )
+        .roll(),
     )
 }

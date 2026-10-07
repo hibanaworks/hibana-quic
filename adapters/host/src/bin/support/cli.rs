@@ -28,6 +28,7 @@ pub enum Options {
         files: Option<ClientFiles>,
     },
     Server {
+        preferred_port: Option<u16>,
         version: hibana_quic::version::Version,
         listen: SocketAddr,
         cert: PathBuf,
@@ -199,6 +200,13 @@ pub fn options(args: &[String]) -> Result<Options> {
             let listen = required(&mut flags, "--listen")?
                 .parse()
                 .map_err(|_| "--listen must be IP:PORT")?;
+            let preferred_port = flags
+                .remove("--preferred-port")
+                .map(|v| v.parse::<u16>().map_err(|_| "invalid preferred port"))
+                .transpose()?;
+            if preferred_port.is_some_and(|p| p == 0) {
+                return Err("preferred port must be nonzero".into());
+            }
             let cert = required(&mut flags, "--cert")?.into();
             let key = required(&mut flags, "--key")?.into();
             let www = flags.remove("--www");
@@ -244,7 +252,11 @@ pub fn options(args: &[String]) -> Result<Options> {
                 "required" if connections == 1 && !early => true,
                 _ => return Err("--retry required supports one non-early connection".into()),
             };
+            if preferred_port.is_some() && (connections != 1 || files.is_none() || early) {
+                return Err("preferred address requires one non-early file connection".into());
+            }
             Options::Server {
+                preferred_port,
                 version,
                 require_retry,
                 early,

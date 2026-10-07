@@ -88,7 +88,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('hq', 'neqo-client', 'neqo-server', 'nss', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect', 'multiplexing', 'v2', 'rebind-port', 'rebind-addr'), default='clean')
+    parser.add_argument('--scenario', choices=('clean', 'longrtt', 'loss', 'corruption', 'ipv6', 'chacha20', 'resumption', 'zerortt', 'blackhole', 'keyupdate', 'multiconnect', 'multiplexing', 'v2', 'rebind-port', 'rebind-addr', 'connectionmigration'), default='clean')
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--require-ecn', action='store_true', help='require actual ECN send, authenticated feedback, received marks and accepted ACK_ECN in clean native transfers')
     parser.add_argument('--client-retry', action='store_true', help='native Retry reception, forward clean direction only')
@@ -122,7 +122,7 @@ def main():
     hq, nc, ns, nss = (p.resolve() for p in (args.hq, args.neqo_client, args.neqo_server, args.nss))
     env = os.environ.copy()
     env['RUST_LOG'] = 'debug'
-    if args.scenario in ('blackhole', 'keyupdate', 'multiconnect'):
+    if args.scenario in ('blackhole', 'keyupdate', 'multiconnect', 'connectionmigration'):
         env['HIBANA_QUIC_DIAGNOSTICS'] = '1'
     env['LD_LIBRARY_PATH'] = str(nss / 'lib')
     env.pop('SSLKEYLOGFILE', None)
@@ -130,6 +130,8 @@ def main():
     sizes = [5 << 10, 10 << 10] if args.scenario == 'resumption' else [32, 33] if args.scenario == 'zerortt' else [3 << 20] if args.scenario in ('chacha20', 'keyupdate') else [1024] if args.scenario == 'longrtt' else ([2 << 20] if args.scenario in ('loss', 'corruption') else [2 << 20, 3 << 20, 5 << 20])
     if args.scenario == 'v2':
         sizes = [1024]
+    if args.scenario == 'connectionmigration':
+        sizes = [2 << 20]
     if args.scenario in ('rebind-port','rebind-addr'):
         sizes = [10 << 20]
     if args.scenario == 'multiconnect':
@@ -216,11 +218,15 @@ def main():
             for size, name in zip(case_sizes, names):
                 (www / name).write_bytes(bytes([37 if direction == 'reverse' else 0]) * size)
             server_port = unused_port(ipv6)
+            preferred_port = unused_port(ipv6)
             server_address = f'[::1]:{server_port}' if ipv6 else f'127.0.0.1:{server_port}'
             if direction == 'reverse':
                 server_command = [str(hq), 'server', '--listen', server_address, '--cert', str(root / 'server.pem'), '--key', str(root / 'server.key'), '--www', str(www), '--max-requests', str(64 if args.scenario in ('resumption', 'zerortt') else len(names)), '--timeout-seconds', str(args.timeout_seconds)]
             else:
                 server_command = [str(ns), '-a', 'hq-interop', '-Q', '1', '-d', str(db), '-k', 'native-peer', '--idle', str(args.timeout_seconds), server_address]
+            if args.scenario == 'connectionmigration':
+                if direction == 'reverse': server_command += ['--preferred-port', str(preferred_port)]
+                else: server_command += ['--preferred-address-v4', f'127.0.0.1:{preferred_port}']
             if args.scenario == 'v2':
                 if direction == 'reverse': server_command += ['--version','2']
                 else:
@@ -286,6 +292,11 @@ def main():
                             result = error
                             returncode = 'timeout'
                         client_elapsed = time.monotonic() - started
+                        if direction == 'reverse' and returncode != 0:
+                            # Diagnostic tail only: a failed client remains failed.
+                            try: server.wait(timeout=2)
+                            except subprocess.TimeoutExpired: pass
+
                         # Retain verified transfer observations even when the
                         # later clean-retirement assertion fails. Never turn
                         # this diagnostic into an official/closed verdict.
@@ -427,11 +438,19 @@ def main():
                                 responses=set(re.findall(r'TX -> PathResponse \{ data: (\[[0-9, ]+\])',text))
                                 assert len(challenges&responses)>=2,(len(challenges),len(responses))
                                 row['peer_matched_path_responses']=len(challenges&responses)
-                        if args.scenario in ('v2','rebind-port','rebind-addr') and returncode==0 and direction!='baseline':
+                        if args.scenario in ('v2','rebind-port','rebind-addr','connectionmigration') and returncode==0 and direction!='baseline':
                             if direction=='reverse': server.wait(timeout=5)
                             text=result.stdout if direction=='forward' else log_path.read_text()
                             terminal=next(json.loads(line) for line in reversed(text.splitlines()) if line.startswith('{'))
                             assert terminal['tls_finished_authenticated'] and terminal['http_transfer_complete'] and terminal['resources_retired'] and terminal['lifecycle_closed'],terminal
+                            if args.scenario == 'connectionmigration':
+                                assert terminal['validated_paths'] >= 1,terminal
+                                if direction=='forward': assert terminal['preferred_address_used'],terminal
+                                peer_text=log_path.read_text() if direction=='forward' else result.stdout+result.stderr
+                                assert 'Path validated' in peer_text, 'reference has no actual path validation'
+                                assert str(preferred_port) in peer_text, 'preferred transport endpoint not observed'
+                                row['validated_paths']=terminal['validated_paths']
+                                row['preferred_address_used']=terminal['preferred_address_used']
                             row.update(resources_retired=True,lifecycle_closed=True)
                             report['transfer_observations'][-1]['retirement_verified']=True
                         if args.client_retry and returncode == 0:

@@ -1203,11 +1203,13 @@ fn connection_case_with_failure(
     let mut server_refs = [PacketReference::EMPTY; 64];
     let client_setup = application::Setup {
         local_ids: None,
+        peer_ids: None,
         server_token: None,
         local_idle_timeout_ms: 0,
         key_update_target: 0,
         early: None,
         config: Config {
+            local_preferred: None,
             initial_path: None,
             version: hibana_quic::version::Version::V1,
             side: Side::Client,
@@ -1231,11 +1233,13 @@ fn connection_case_with_failure(
     };
     let server_setup = application::Setup {
         local_ids: None,
+        peer_ids: None,
         server_token: None,
         local_idle_timeout_ms: 0,
         key_update_target: 0,
         early: None,
         config: Config {
+            local_preferred: None,
             initial_path: None,
             version: hibana_quic::version::Version::V1,
             side: Side::Server,

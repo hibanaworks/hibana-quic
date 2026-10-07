@@ -12,18 +12,23 @@ use sha2::Sha256;
 #[derive(Clone, Copy)]
 pub(crate) struct Requested {
     pub pto: u64,
+    pub confirmed: bool,
+    pub response_path: Option<Address>,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Grant {
     pub path: Option<Address>,
     pub challenge: Option<[u8; 8]>,
     pub probe_size: usize,
+    pub preferred_cid: Option<crate::connection_id::Cid>,
+    pub response_size: usize,
 }
 #[derive(Clone, Copy)]
 struct Observed {
     path: Address,
     packet: u64,
     bytes: u64,
+    non_probing: Option<u64>,
 }
 struct ProbeRecord {
     path: Address,
@@ -34,6 +39,7 @@ struct ProbeRecord {
     response: Option<u64>,
     expires: u64,
     pto: u64,
+    non_probing: Option<u64>,
 }
 struct Facts {
     active: Option<Address>,
@@ -44,6 +50,7 @@ struct Facts {
     ignored_through: Option<u64>,
     validated: u64,
     address_proof: Option<Address>,
+    preferred_nonce: Option<[u8; 8]>,
 }
 pub(crate) struct Paths<'a> {
     pub request: Inbox<Option<Requested>>,
@@ -52,12 +59,15 @@ pub(crate) struct Paths<'a> {
     facts: RefCell<Facts>,
     seed: Option<&'a [u8; 32]>,
     side: Side,
+    preferred: Option<super::preferred::Preferred>,
+    initial: Option<Address>,
 }
 impl<'a> Paths<'a> {
     pub(crate) const fn new(
         initial: Option<Address>,
         side: Side,
         seed: Option<&'a [u8; 32]>,
+        preferred: Option<super::preferred::Preferred>,
     ) -> Self {
         Self {
             request: Inbox::new(),
@@ -72,9 +82,12 @@ impl<'a> Paths<'a> {
                 ignored_through: None,
                 validated: 0,
                 address_proof: None,
+                preferred_nonce: None,
             }),
             seed,
             side,
+            preferred,
+            initial,
         }
     }
     pub(crate) fn observe(
@@ -82,6 +95,7 @@ impl<'a> Paths<'a> {
         path: Option<Address>,
         pn: u64,
         bytes: usize,
+        non_probing: bool,
     ) -> Result<(), Error> {
         let Some(path) = path else {
             return Ok(());
@@ -90,6 +104,9 @@ impl<'a> Paths<'a> {
         if let Some(p) = n.probe.as_mut()
             && p.path == path
         {
+            if non_probing {
+                p.non_probing = Some(p.non_probing.map_or(pn, |old| old.max(pn)));
+            }
             p.received = p
                 .received
                 .checked_add(bytes as u64)
@@ -99,14 +116,18 @@ impl<'a> Paths<'a> {
             let o = n.latest.as_mut().ok_or(Error::Binding)?;
             o.bytes = o.bytes.checked_add(bytes as u64).ok_or(Error::Capacity)?;
             o.packet = o.packet.max(pn);
+            if non_probing {
+                o.non_probing = Some(o.non_probing.map_or(pn, |old| old.max(pn)));
+            }
         }
         if n.largest.is_none_or(|v| pn > v) {
             n.largest = Some(pn);
-            if n.latest.is_none_or(|o| o.path != path) {
+            if Some(path) != n.active && n.latest.is_none_or(|o| o.path != path) {
                 n.latest = Some(Observed {
                     path,
                     packet: pn,
                     bytes: bytes as u64,
+                    non_probing: non_probing.then_some(pn),
                 });
             }
         }
@@ -164,16 +185,73 @@ impl<'a> Paths<'a> {
             if next <= now { p.expires } else { next }
         })
     }
+    pub(crate) fn observation(&self) -> (u64, bool) {
+        let n = self.facts.borrow();
+        (
+            n.validated,
+            n.validated != 0 && self.preferred_cid(n.active).is_some(),
+        )
+    }
     pub(crate) fn current(&self) -> Grant {
         Grant {
             path: self.facts.borrow().active,
             challenge: None,
             probe_size: 0,
+            response_size: 0,
+            preferred_cid: self.preferred_cid(self.facts.borrow().active),
         }
     }
-    fn candidate(&self) -> Option<Observed> {
+    pub(crate) fn preferred_cid(&self, path: Option<Address>) -> Option<crate::connection_id::Cid> {
+        let path = path?;
+        let preferred = self.preferred?;
+        (preferred.same_family(path.local) == Some(path.remote)).then_some(preferred.cid)
+    }
+    fn reply(&self, path: Address) -> Option<Grant> {
         let n = self.facts.borrow();
-        n.active?;
+        let credit = if Some(path) == n.active || Some(path) == self.initial {
+            u64::MAX
+        } else {
+            let p = n.probe.as_ref().filter(|p| p.path == path)?;
+            if n.address_proof == Some(path) {
+                u64::MAX
+            } else {
+                p.received.saturating_mul(3).saturating_sub(p.sent)
+            }
+        };
+        let size = if credit >= 1200 {
+            1200
+        } else if credit >= 64 {
+            64
+        } else {
+            return None;
+        };
+        Some(Grant {
+            path: Some(path),
+            challenge: None,
+            probe_size: 0,
+            preferred_cid: self.preferred_cid(Some(path)),
+            response_size: size,
+        })
+    }
+    fn candidate(&self, confirmed: bool) -> Option<Observed> {
+        let n = self.facts.borrow();
+        let active = n.active?;
+        if self.side == Side::Client
+            && confirmed
+            && n.preferred_nonce.is_none()
+            && self.seed.is_some()
+        {
+            if let Some(remote) = self.preferred.and_then(|p| p.same_family(active.local)) {
+                if remote != active.remote {
+                    return Some(Observed {
+                        path: Address { remote, ..active },
+                        packet: 0,
+                        bytes: 0,
+                        non_probing: None,
+                    });
+                }
+            }
+        }
         n.latest.filter(|o| {
             Some(o.path) != n.active
                 && n.ignored_through.is_none_or(|pn| o.packet > pn)
@@ -195,6 +273,11 @@ impl<'a> Paths<'a> {
             .expand(&info, &mut data)
             .map_err(|_| Error::Binding)?;
         n.serial = n.serial.checked_add(1).ok_or(Error::Capacity)?;
+        if self.preferred_cid(Some(o.path)).is_some() {
+            n.preferred_nonce = Some(data);
+        }
+        // A fresh path has no inherited low RTT estimate (RFC9000 8.2.4).
+        let pto = pto.max(1_000_000);
         n.probe = Some(ProbeRecord {
             path: o.path,
             data,
@@ -202,8 +285,9 @@ impl<'a> Paths<'a> {
             sent: 0,
             accepted: [None; 3],
             response: None,
-            expires: now.saturating_add(pto.saturating_mul(4)),
+            expires: now.saturating_add(pto.saturating_mul(3)),
             pto,
+            non_probing: o.non_probing,
         });
         Ok(())
     }
@@ -216,7 +300,7 @@ impl<'a> Paths<'a> {
             .flatten()
             .max()
             .is_none_or(|(at, _)| now.saturating_sub(*at) >= p.pto);
-        let credit = if n.address_proof == Some(p.path) {
+        let credit = if self.side == Side::Client || n.address_proof == Some(p.path) {
             u64::MAX
         } else {
             p.received.saturating_mul(3).saturating_sub(p.sent)
@@ -233,6 +317,8 @@ impl<'a> Paths<'a> {
                     path: Some(p.path),
                     challenge: Some(p.data),
                     probe_size: size,
+                    response_size: 0,
+                    preferred_cid: self.preferred_cid(Some(p.path)),
                 },
             ),
         )
@@ -254,6 +340,7 @@ impl<'a> Paths<'a> {
                 path: p.path,
                 packet: response,
                 bytes: p.received,
+                non_probing: p.non_probing,
             };
             let pto = p.pto;
             n.address_proof = Some(p.path);
@@ -266,13 +353,15 @@ impl<'a> Paths<'a> {
     fn finished(&self, now: u64) -> Result<Option<bool>, Error> {
         let n = self.facts.borrow();
         let p = n.probe.as_ref().ok_or(Error::Binding)?;
-        Ok(if p.response.is_some() {
-            Some(true)
-        } else if now >= p.expires {
-            Some(false)
-        } else {
-            None
-        })
+        Ok(
+            if p.response.is_some() && (self.side == Side::Client || p.non_probing.is_some()) {
+                Some(true)
+            } else if now >= p.expires {
+                Some(false)
+            } else {
+                None
+            },
+        )
     }
     fn resolve(&self, accepted: bool) -> Result<(), Error> {
         let mut n = self.facts.borrow_mut();
@@ -301,7 +390,15 @@ pub(crate) async fn owner(
     endpoint.recv::<p::Request>().await?;
     let mut request = paths.request.take().map_err(|_| Error::Binding)?;
     while let Some(wanted) = request {
-        if let Some(candidate) = paths.candidate() {
+        if let Some(grant) = wanted.response_path.and_then(|path| paths.reply(path)) {
+            paths.grant.put(grant).map_err(|_| Error::Binding)?;
+            endpoint.send::<p::Reply>(&()).await?;
+            endpoint.recv::<p::Settled>().await?;
+            endpoint.recv::<p::Request>().await?;
+            request = paths.request.take().map_err(|_| Error::Binding)?;
+            continue;
+        }
+        if let Some(candidate) = paths.candidate(wanted.confirmed) {
             paths.begin(candidate, clock.now(), wanted.pto)?;
             endpoint.send::<p::Begin>(&()).await?;
             endpoint.recv::<p::Settled>().await?;
@@ -322,6 +419,13 @@ pub(crate) async fn owner(
                 if let Some(grant) = paths.probe(clock.now())? {
                     paths.grant.put(grant).map_err(|_| Error::Binding)?;
                     endpoint.send::<p::Probe>(&()).await?;
+                } else if let Some(grant) = request
+                    .as_ref()
+                    .and_then(|wanted| wanted.response_path)
+                    .and_then(|path| paths.reply(path))
+                {
+                    paths.grant.put(grant).map_err(|_| Error::Binding)?;
+                    endpoint.send::<p::ProbeReply>(&()).await?;
                 } else {
                     paths
                         .grant
@@ -377,14 +481,16 @@ mod tests {
         let seed = [31; 32];
         let a = address(1000);
         let b = address(2000);
-        let paths = Paths::new(Some(a), Side::Server, Some(&seed));
-        paths.observe(Some(b), 1, 20).unwrap();
-        paths.begin(paths.candidate().unwrap(), 10, 100).unwrap();
+        let paths = Paths::new(Some(a), Side::Server, Some(&seed), None);
+        paths.observe(Some(b), 1, 20, true).unwrap();
+        paths
+            .begin(paths.candidate(true).unwrap(), 10, 100)
+            .unwrap();
         assert!(paths.probe(10).unwrap().is_none());
         let nonce = paths.facts.borrow().probe.as_ref().unwrap().data;
         paths.response(Some(b), 2, nonce).unwrap();
         assert_eq!(paths.finished(11).unwrap(), None);
-        paths.observe(Some(b), 3, 2).unwrap();
+        paths.observe(Some(b), 3, 2, true).unwrap();
         let grant = paths.probe(11).unwrap().unwrap();
         assert_eq!(grant.probe_size, 64);
         paths.accepted(Some(b), grant.challenge, 64, 12).unwrap();
@@ -414,12 +520,12 @@ mod tests {
         let seed = [13; 32];
         let a = address(1000);
         let b = address(2000);
-        let p = Paths::new(Some(a), Side::Server, Some(&seed));
-        p.observe(Some(b), 1, 1200).unwrap();
-        p.begin(p.candidate().unwrap(), 0, 100).unwrap();
-        assert_eq!(p.finished(400).unwrap(), Some(false));
+        let p = Paths::new(Some(a), Side::Server, Some(&seed), None);
+        p.observe(Some(b), 1, 1200, true).unwrap();
+        p.begin(p.candidate(true).unwrap(), 0, 100).unwrap();
+        assert_eq!(p.finished(3_000_000).unwrap(), Some(false));
         p.resolve(false).unwrap();
         assert_eq!(p.current().path, Some(a));
-        assert!(p.candidate().is_none());
+        assert!(p.candidate(true).is_none());
     }
 }
