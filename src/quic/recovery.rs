@@ -2010,24 +2010,35 @@ fn settle<const B: usize>(
         }
     }
     n.pending[index] -= 1;
-    // RFC 9002 section 6.2.4: a Handshake PTO should also probe in-flight
-    // Application Data. Allocate the remaining existing credit only after
-    // the required Handshake probe has actually been accepted. No new timer,
-    // confirmation flag, loss declaration, or additional credit is created.
+    // RFC 9002 section 6.2.4: spend the second existing PTO credit in
+    // another live packet-number space. The expired space's first probe must
+    // have reached actual adapter acceptance; cancellation cannot advance it.
+    // No extra allowance, timer, handshake confirmation or loss is invented.
     if accepted_at.is_some()
         && reservation.probe_epoch == Some(n.probe_epoch)
-        && n.probe_space == Some(PacketNumberSpace::Handshake)
-        && packet.space == PacketNumberSpace::Handshake
+        && n.probe_space == Some(packet.space)
         && n.probe_credits == 1
         && n.pending.iter().all(|pending| *pending == 0)
-        && n.side == Side::Client
-        && !n.retired_space[2]
-        && n.ledger.outstanding_sent().any(|sent| {
-            sent.ack_eliciting && n.ledger.sent_kind(sent.packet) == Some(PacketKind::OneRtt)
-        })
     {
-        n.probe_space = Some(PacketNumberSpace::ApplicationData);
-        n.probe_minimum = 0;
+        let other = match (n.side, packet.space) {
+            (Side::Server, PacketNumberSpace::Initial) => Some(PacketNumberSpace::Handshake),
+            (Side::Client, PacketNumberSpace::Handshake) => {
+                Some(PacketNumberSpace::ApplicationData)
+            }
+            _ => None,
+        };
+        if let Some(other) = other
+            && !n.retired_space[other as usize]
+            && n.ledger.outstanding_sent().any(|sent| {
+                sent.ack_eliciting
+                    && sent.packet.space == other
+                    && (other != PacketNumberSpace::ApplicationData
+                        || n.ledger.sent_kind(sent.packet) == Some(PacketKind::OneRtt))
+            })
+        {
+            n.probe_space = Some(other);
+            n.probe_minimum = 0;
+        }
     }
     if accepted_at.is_some() {
         // A later-PN ACK may have arrived while this record was still Reserved.
@@ -3377,6 +3388,69 @@ mod tests {
         tx.retry_initial(100).unwrap();
         assert_eq!(tx.flight_data(flight).unwrap().bytes(), b"retained");
         assert_eq!(tx.snapshot().next_packet_number[0], Some(1));
+        retirement.disarm();
+    }
+
+    #[test]
+    fn server_initial_probe_hands_remaining_credit_to_handshake_only_after_acceptance() {
+        book!(book, scope, installation, arena, Side::Server, 723);
+        let (mut tx, mut rx, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        rx.received_datagram(5000).unwrap();
+        for level in [Level::Initial, Level::Handshake] {
+            let packet = tx
+                .reserve(level, 1200, None, true, false, false, 0)
+                .unwrap();
+            publication
+                .settle(Completion::from_adapter(
+                    packet,
+                    Some(0),
+                    crate::ecn::Codepoint::NotEct,
+                ))
+                .unwrap();
+        }
+        let deadline = clock.update(0, [true, true]).unwrap().unwrap();
+        let at = deadline.at();
+        clock.expire(deadline, at).unwrap();
+        assert_eq!(tx.pending_probe(), Some(Level::Initial));
+        let cancelled = tx
+            .reserve(Level::Initial, 1200, None, true, false, true, at)
+            .unwrap();
+        publication.cancel(cancelled).unwrap();
+        assert_eq!(tx.pending_probe(), Some(Level::Initial));
+        assert_eq!(tx.snapshot().probe_credits, 2);
+        let first = tx
+            .reserve(Level::Initial, 1200, None, true, false, true, at)
+            .unwrap();
+        publication
+            .settle(Completion::from_adapter(
+                first,
+                Some(at),
+                crate::ecn::Codepoint::NotEct,
+            ))
+            .unwrap();
+        assert_eq!(tx.pending_probe(), Some(Level::Handshake));
+        assert_eq!(tx.snapshot().probe_credits, 1);
+        let cancelled = tx
+            .reserve(Level::Handshake, 1200, None, true, false, true, at)
+            .unwrap();
+        publication.cancel(cancelled).unwrap();
+        assert_eq!(tx.pending_probe(), Some(Level::Handshake));
+        assert_eq!(tx.snapshot().probe_credits, 1);
+        let second = tx
+            .reserve(Level::Handshake, 1200, None, true, false, true, at)
+            .unwrap();
+        publication
+            .settle(Completion::from_adapter(
+                second,
+                Some(at),
+                crate::ecn::Codepoint::NotEct,
+            ))
+            .unwrap();
+        assert_eq!(tx.snapshot().probe_credits, 0);
+        assert!(
+            tx.reserve(Level::Handshake, 1200, None, true, false, true, at)
+                .is_err()
+        );
         retirement.disarm();
     }
 

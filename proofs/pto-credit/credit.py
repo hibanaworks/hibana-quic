@@ -22,7 +22,7 @@ check('accepted_conserves_allowance', [inv, r > 0], z3.Not(conserved(c, r-1, a+1
 check('cancel_conserves_allowance', [inv, r > 0], z3.Not(conserved(c+1, r-1, a)))
 check('no_third_accepted_probe', [inv], a > 2)
 # The production selector changes only existing probe_space/probe_minimum,
-# after real Handshake acceptance, when no publication remains pending.
+# after real first-space acceptance, when no publication remains pending.
 check('second_space_keeps_exactly_one_credit', [inv, c == 1, r == 0], a != 1)
 old_epoch, current_epoch = z3.Ints('old_epoch current_epoch')
 refund = z3.If(old_epoch == current_epoch, 1, 0)

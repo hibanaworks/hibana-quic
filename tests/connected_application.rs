@@ -642,6 +642,7 @@ enum Loss {
     FirstServerOneRtt,
     ServerPacketBurst { first: usize, count: usize },
     ClientPacketBurst { first: usize, count: usize },
+    ClientHandshakePackets { count: usize },
     DuplexPacketMask { client: u64, server: u64 },
     ServerHandshakeAck,
     HandshakeDone,
@@ -684,6 +685,20 @@ impl DatagramTx for Tx<'_, '_> {
             // The two frame-specific cases below require authenticated parsing.
             let selected = match self.loss {
                 Loss::None | Loss::MissingEcnMetadata | Loss::BleachedEcn => false,
+                Loss::ClientHandshakePackets { count } => {
+                    self.path.dropped.get() < count
+                        && PacketIter::new(bytes, SERVER_ID.len(), 8)
+                            .unwrap()
+                            .any(|packet| {
+                                matches!(
+                                    packet.unwrap().header,
+                                    Header::Long {
+                                        kind: LongType::Handshake,
+                                        ..
+                                    }
+                                )
+                            })
+                }
                 Loss::DuplexPacketMask { client, server } => {
                     let mask = if self.inspector.is_some() {
                         server
@@ -748,6 +763,7 @@ impl DatagramTx for Tx<'_, '_> {
                         | Loss::LostConfirmationAndFirstApplicationFlight
                         | Loss::ServerApplicationAcksPersistentServer
                         | Loss::ServerPacketBurst { .. }
+                        | Loss::ClientHandshakePackets { .. }
                         | Loss::ClientPacketBurst { .. }
                         | Loss::DuplexPacketMask { .. }
                 ) || self.path.dropped.get() == 0)
@@ -1058,6 +1074,20 @@ fn handshake_ciphertext_before_any_authenticated_initial_survives_retry_prefix()
 #[test]
 fn handshake_pto_also_recovers_lost_application_before_confirmation() {
     run_connection(1, Loss::LostConfirmationAndFirstApplicationFlight);
+}
+
+#[test]
+fn losing_three_client_handshake_datagrams_recovers_real_finished() {
+    run_connection(1, Loss::ClientHandshakePackets { count: 3 });
+}
+
+#[test]
+#[should_panic(expected = "connection exceeded its explicit simulated-time budget")]
+fn withholding_every_client_handshake_cannot_complete_tls() {
+    // Negative liveness boundary: a network that never delivers Finished must
+    // not yield a successful application/close report. This is not a passing
+    // transfer, and does not reproduce quiche's exact retransmission schedule.
+    run_connection(1, Loss::ClientHandshakePackets { count: usize::MAX });
 }
 
 fn run_connection(count: usize, loss: Loss) {
@@ -1377,6 +1407,7 @@ fn connection_case_with_failure(
         loss: if matches!(
             loss,
             Loss::ClientPacketBurst { .. }
+                | Loss::ClientHandshakePackets { .. }
                 | Loss::DuplexPacketMask { .. }
                 | Loss::MissingEcnMetadata
                 | Loss::LostConfirmationAndFirstApplicationFlight
@@ -1391,7 +1422,10 @@ fn connection_case_with_failure(
     let mut server_tx = Tx {
         path: &to_client,
         clock: &clock,
-        loss: if matches!(loss, Loss::ClientPacketBurst { .. }) {
+        loss: if matches!(
+            loss,
+            Loss::ClientPacketBurst { .. } | Loss::ClientHandshakePackets { .. }
+        ) {
             Loss::None
         } else {
             loss
@@ -1611,7 +1645,9 @@ fn connection_case_with_failure(
     assert!(to_server.accepted.get() >= to_server.delivered.get());
     if matches!(loss, Loss::LostConfirmationAndFirstApplicationFlight) {
         assert_eq!(to_server.dropped.get(), 3);
-    } else if let Loss::ClientPacketBurst { count, .. } = loss {
+    } else if let Loss::ClientPacketBurst { count, .. } | Loss::ClientHandshakePackets { count } =
+        loss
+    {
         assert!(to_server.dropped.get() > 0 && to_server.dropped.get() <= count);
     } else if let Loss::DuplexPacketMask { client, .. } = loss {
         assert!(to_server.dropped.get() <= client.count_ones() as usize);
@@ -1639,6 +1675,7 @@ fn connection_case_with_failure(
                 loss,
                 Loss::None
                     | Loss::ClientPacketBurst { .. }
+                    | Loss::ClientHandshakePackets { .. }
                     | Loss::MissingEcnMetadata
                     | Loss::BleachedEcn
             ) {
