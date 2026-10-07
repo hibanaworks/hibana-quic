@@ -451,56 +451,35 @@ class Diagnostics(unittest.TestCase):
         result = self.module.collect_case_diagnostics(self.logs, '../SECRET', 'neqo')
         self.assertEqual(result, {'state': 'invalid-matrix-identifiers'})
 
-    def test_main_runs_only_selected_candidate_directions_and_requires_baseline(self):
+    def test_main_runs_candidates_without_reference_self_tests(self):
         def checked_output(command, **kwargs):
-            if command[0] == 'tshark':
-                return 'TShark 4.6.0\n'
-            if 'rev-parse' in command:
-                return 'pinned\n'
+            if command[0] == 'tshark': return 'TShark 4.6.0\n'
+            if 'rev-parse' in command: return 'pinned\n'
             return ''
         self.module.RAW.parent.mkdir(parents=True, exist_ok=True)
         request = self.root / 'ci/interop-request.json'
         request.parent.mkdir(parents=True, exist_ok=True)
-        cases = [(['server'], True, {}, True), (['client', 'server'], True, {}, True),
-                 (['server'], False, {}, True),
-                 (['server'], False, {'status':'TIMEOUT'}, False),
-                 (['server'], False, {'cleanup_exit_code':1}, False),
-                 (['server'], False, {'non_null_case_results':0}, False),
-                 (['server'], False, {'unexecuted_case_results':1}, False),
-                 (['server'], False, {'runner_progress':{}}, False),
-                 (['client', 'server'], True, {'runner_progress':{}}, True)]
-        for selected_case, reference, directions, baseline_ok, overrides, run_candidate in [
-                (selected_case, reference, *case) for selected_case in ('zerortt', 'ecn')
-                for reference in ('neqo', 'quiche') for case in cases]:
-            request.write_text(json.dumps({'cases':[selected_case], 'candidate_directions':directions, 'reference_implementation':reference}))
-            calls = []
-            def phase(name, client, server, candidate):
-                calls.append(name)
-                self.assertEqual((client, server),
-                    ('hibana-quic', reference) if name == 'bounded-client' else
-                    (reference, 'hibana-quic') if name == 'bounded-server' else (reference, reference))
-                status = 'PASSED' if baseline_ok or candidate else 'FAILED'
-                record = {'phase':name, 'status':status, 'results':[{}],
-                        'cleanup_exit_code':0, 'non_null_case_results':1, 'unexecuted_case_results':0,
-                        'runner_progress':{'client_compliance_passed':True, 'server_compliance_passed':True}}
-                if not candidate:
-                    record.update(overrides)
-                return record
-            with patch.dict(os.environ, {'RUNNER_REVISION':'pinned'}), \
-                 patch.object(self.module.subprocess, 'check_output', side_effect=checked_output), \
-                 patch.object(self.module, 'docker_metadata'), \
-                 patch.object(self.module, 'phase', side_effect=phase):
-                self.assertEqual(self.module.main(), 0 if baseline_ok else 1)
-            expected = [reference + '-baseline'] + (['bounded-' + direction for direction in directions] if run_candidate else [])
-            self.assertEqual(calls, expected)
-            summary = json.loads((self.module.SAFE / 'summary.json').read_text())
-            self.assertEqual(summary['candidate_directions'], sorted(directions))
-            self.assertEqual(summary['reference_implementation'], reference)
-            self.assertEqual(summary['selected_cases'], [selected_case])
-            self.assertFalse(summary['full_runner_gate_passed'])
-            self.assertEqual(summary['baseline_passed'], baseline_ok)
-            self.assertEqual(summary['candidate_diagnostic_after_failed_control'], run_candidate and not baseline_ok)
-            self.assertEqual(summary['status'], 'PASSED' if baseline_ok else 'NOT_PASSED')
+        for reference in ('neqo', 'quiche'):
+            for directions in (['server'], ['client'], ['client', 'server']):
+                for ok in (True, False):
+                    request.write_text(json.dumps({'cases':['ecn'], 'candidate_directions':directions, 'reference_implementation':reference}))
+                    calls = []
+                    def phase(name, client, server, candidate):
+                        self.assertTrue(candidate)
+                        self.assertNotEqual(client, server)
+                        calls.append(name)
+                        return {'phase': name, 'status': 'PASSED' if ok else 'FAILED',
+                                'results': [{}], 'non_null_case_results': 1, 'unexecuted_case_results': 0}
+                    with patch.dict(os.environ, {'RUNNER_REVISION':'pinned'}), \
+                         patch.object(self.module.subprocess, 'check_output', side_effect=checked_output), \
+                         patch.object(self.module, 'docker_metadata'), \
+                         patch.object(self.module, 'phase', side_effect=phase):
+                        self.assertEqual(self.module.main(), 0 if ok else 1)
+                    self.assertEqual(calls, ['bounded-' + d for d in sorted(directions)])
+                    summary = json.loads((self.module.SAFE / 'summary.json').read_text())
+                    self.assertEqual(summary['reference_self_tests'], 'omitted')
+                    self.assertEqual(summary['case_results'], len(directions))
+                    self.assertEqual(summary['status'], 'PASSED' if ok else 'NOT_PASSED')
 
     def test_reference_selection_is_explicit_and_fail_closed(self):
         for name in ('neqo', 'quiche'):

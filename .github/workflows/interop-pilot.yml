@@ -79,7 +79,7 @@ jobs:
           ref: ${{ needs.plan.outputs.source_commit }}
           persist-credentials: false
           fetch-depth: 1
-      - name: Run the pinned baseline and explicit subset
+      - name: Run the pinned candidate interoperability subset
         timeout-minutes: 55
         run: timeout --signal=TERM --kill-after=30s 54m bash ci/run-interop.sh
       - name: Upload sanitized reports and sealed failure evidence
@@ -113,7 +113,7 @@ jobs:
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --pattern "interop-pilot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-*" \
             --dir .ci-work/matrix-artifacts
-      - name: Require 44 actual candidate passes and 22 passing controls on one commit
+      - name: Require 44 actual candidate passes on one commit
         run: ROOT="$PWD" python3 ci/run_in_tools.py --verify-matrix .ci-work/matrix-artifacts
       - name: Upload the verified qualification matrix
         if: always()

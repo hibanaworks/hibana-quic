@@ -1,4 +1,4 @@
-"""One source commit, exact 44-cell coverage, and mandatory reference controls."""
+"""One source commit, exact 44-cell coverage, without reference self-tests."""
 import copy
 from contextlib import redirect_stdout
 import importlib.util
@@ -41,15 +41,14 @@ class Matrix(unittest.TestCase):
                         SIM_IMAGE='martenseemann/quic-network-simulator@sha256:' + 'b' * 64,
                         REFERENCE_IMAGE=('cloudflare/quiche-qns@sha256:' if reference == 'quiche' else 'sha256:') + 'c' * 64)
             self.put(group, 'pins.json', pins)
-            phases = [reference + '-baseline', 'bounded-client', 'bounded-server']
-            for phase, client, server in [(phases[0], reference, reference), (phases[1], 'hibana-quic', reference), (phases[2], reference, 'hibana-quic')]:
+            phases = ['bounded-client', 'bounded-server']
+            for phase, client, server in [(phases[0], 'hibana-quic', reference), (phases[1], reference, 'hibana-quic')]:
                 rows = [dict(name=case, abbr=self.module.CASE_ABBREVIATIONS[case], result='succeeded') for case in group['cases']]
                 self.put(group, phase + '-verdict.json', dict(phase=phase, client=client, server=server,
                     status='PASSED', exit_code=0, cleanup_exit_code=0, passed=True, results=rows,
                     non_null_case_results=len(rows), unexecuted_case_results=0, original_json_sha256='d' * 64))
-            count = len(group['cases']) * 3
-            self.put(group, 'summary.json', dict(status='PASSED', baseline_passed=True,
-                candidate_diagnostic_after_failed_control=False, interop_group=group['name'],
+            count = len(group['cases']) * 2
+            self.put(group, 'summary.json', dict(status='PASSED', reference_self_tests='omitted', interop_group=group['name'],
                 reference_implementation=reference, runner_source_unchanged=True, phases=phases,
                 selected_cases=sorted(group['cases']), candidate_directions=['client', 'server'],
                 case_results=count, non_null_case_results=count, unexecuted_case_results=0))
@@ -70,10 +69,10 @@ class Matrix(unittest.TestCase):
     def report(self):
         return json.loads((self.root / 'ci-safe-results/summary.json').read_text())
 
-    def test_exact_44_same_commit_and_22_controls(self):
+    def test_exact_44_same_commit_without_self_controls(self):
         self.assertEqual(self.verify(), 0)
         result = self.report()
-        self.assertEqual((result['candidate_results'], result['candidate_passed'], result['control_results'], result['control_passed']), (44, 44, 22, 22))
+        self.assertEqual((result['candidate_results'], result['candidate_passed'], result['control_results'], result['control_passed']), (44, 44, 0, 0))
         self.assertEqual(result['source_commit'], COMMIT)
         self.assertTrue(result['same_commit_all_44_executed'])
         self.assertTrue(result['full_44_case_direction_matrix'])
@@ -143,26 +142,20 @@ class Matrix(unittest.TestCase):
                 verdict = copy.deepcopy(original)
                 verdict['results'][0]['result'] = outcome
                 verdict.update(status='FAILED', passed=False, non_null_case_results=int(outcome is not None), unexecuted_case_results=int(outcome is None))
-                summary = dict(original_summary, status='NOT_PASSED', non_null_case_results=2 + int(outcome is not None), unexecuted_case_results=int(outcome is None))
+                summary = dict(original_summary, status='NOT_PASSED', non_null_case_results=1 + int(outcome is not None), unexecuted_case_results=int(outcome is None))
                 self.put(group, 'bounded-client-verdict.json', verdict)
                 self.put(group, 'summary.json', summary)
                 self.assertEqual(self.verify(), 1)
                 self.assertEqual(self.report()['candidate_passed'], 43)
                 self.assertEqual(self.report()['candidate_unexecuted'], int(outcome is None))
 
-    def test_failed_control_cannot_promote_44_candidate_passes(self):
-        group = next(group for group in self.request['groups'] if group['name'] == 'neqo-ecn')
-        verdict = self.get(group, 'neqo-baseline-verdict.json')
-        verdict['results'][0]['result'] = 'failed'
-        verdict.update(status='FAILED', passed=False)
+    def test_legacy_baseline_phase_cannot_masquerade_as_candidate_only(self):
+        group = self.request['groups'][0]
         summary = self.get(group, 'summary.json')
-        summary.update(status='NOT_PASSED', baseline_passed=False, candidate_diagnostic_after_failed_control=True)
-        self.put(group, 'neqo-baseline-verdict.json', verdict)
+        summary['phases'].insert(0, 'neqo-baseline')
         self.put(group, 'summary.json', summary)
-        self.assertEqual(self.verify(), 1)
-        self.assertEqual(self.report()['candidate_passed'], 44)
-        self.assertEqual(self.report()['control_passed'], 21)
-        self.assertEqual(self.report()['status'], 'NOT_PASSED')
+        with self.assertRaises(RuntimeError):
+            self.verify()
 
     def test_source_run_group_reference_and_pins_must_match(self):
         group = self.request['groups'][0]

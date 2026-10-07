@@ -41,3 +41,12 @@ These checks do not replace the selected official interop matrix on a new commit
 Native Neqo loss, HTTP/3, and connection migration also passed in both directions
 with this release binary, including byte comparison and verified retirement.
 They remain local native checks, not official simulator verdicts.
+
+## Current CI scope
+
+At the user's request, reference-versus-itself runs (quiche/quiche and neqo/neqo)
+are omitted. Qualification still requires all 44 Hibana/reference candidate cells
+on the same commit, run and attempt, both directions, unchanged pinned runner,
+original deadlines and capacities, and successful execution/cleanup. Reports mark
+reference self-tests as omitted with zero control results; this does not claim
+that controls passed. Historical baseline reports above retain their original scope.

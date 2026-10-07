@@ -897,7 +897,7 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
                           'expected_candidate_results': 44, 'same_commit_all_44_executed': False})
     expected_pins = dict(line.split('=', 1) for line in (ROOT / 'ci/pins.env').read_text().splitlines()
                          if line and not line.startswith('#'))
-    cells, controls, verified_groups = [], [], []
+    cells, verified_groups = [], []
     simulator, quiche_image = None, None
     all_passed = True
     for group in groups:
@@ -934,10 +934,10 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
         require(summary.get('selected_cases') == sorted(expected), 'matrix case scope mismatch')
         require(summary.get('candidate_directions') == ['client', 'server'], 'matrix direction scope mismatch')
         require(summary.get('reference_implementation') == reference and summary.get('runner_source_unchanged') is True, 'matrix runner or reference mismatch')
-        phases = [reference + '-baseline', 'bounded-client', 'bounded-server']
+        phases = ['bounded-client', 'bounded-server']
         require(summary.get('phases') == phases, 'matrix missing execution phase')
-        phase_passed, baseline_passed, non_null = [], False, 0
-        for phase, client, server in [(phases[0], reference, reference), ('bounded-client', 'hibana-quic', reference), ('bounded-server', reference, 'hibana-quic')]:
+        phase_passed, non_null = [], 0
+        for phase, client, server in [('bounded-client', 'hibana-quic', reference), ('bounded-server', reference, 'hibana-quic')]:
             result = read(phase + '-verdict.json')
             require(result.get('phase') == phase and result.get('client') == client and result.get('server') == server, 'matrix phase direction mismatch')
             rows = result.get('results')
@@ -952,7 +952,7 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
                 seen.add(case)
                 non_null += outcome is not None
                 cell = {'case': case, 'direction': phase.removeprefix('bounded-'), 'reference': reference, 'result': outcome, 'group': group['name']}
-                (cells if phase.startswith('bounded-') else controls).append(cell)
+                cells.append(cell)
             require(seen == expected, 'missing matrix case result')
             passed = all(row['result'] == 'succeeded' for row in rows)
             require(result.get('passed') is passed, 'matrix phase pass flag mismatch')
@@ -962,12 +962,10 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
             completed = all(type(result.get(key)) is int and result[key] == 0 for key in ('exit_code', 'cleanup_exit_code'))
             passed = passed and completed and result.get('status') == 'PASSED'
             phase_passed.append(passed)
-            if phase == phases[0]:
-                baseline_passed = passed
-        require(summary.get('case_results') == len(expected) * 3 and summary.get('non_null_case_results') == non_null
-                and summary.get('unexecuted_case_results') == len(expected) * 3 - non_null, 'matrix summary result counts mismatch')
-        require(summary.get('baseline_passed') is baseline_passed, 'matrix baseline pass flag mismatch')
-        passed = all(phase_passed) and summary.get('status') == 'PASSED' and summary.get('candidate_diagnostic_after_failed_control') is False
+        require(summary.get('case_results') == len(expected) * 2 and summary.get('non_null_case_results') == non_null
+                and summary.get('unexecuted_case_results') == len(expected) * 2 - non_null, 'matrix summary result counts mismatch')
+        require(summary.get('reference_self_tests') == 'omitted', 'matrix self-test policy mismatch')
+        passed = all(phase_passed) and summary.get('status') == 'PASSED'
         all_passed = all_passed and passed
         verified_groups.append({'name': group['name'], 'reference': reference, 'cases': sorted(expected), 'status': 'PASSED' if passed else 'NOT_PASSED'})
     require(len(cells) == 44 and len({(cell['case'], cell['direction']) for cell in cells}) == 44, 'matrix candidate coverage mismatch')
@@ -976,9 +974,9 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
               'expected_candidate_results': 44, 'candidate_results': len(cells),
               'candidate_passed': sum(cell['result'] == 'succeeded' for cell in cells),
               'candidate_unexecuted': sum(cell['result'] is None for cell in cells),
-              'control_results': len(controls), 'control_passed': sum(cell['result'] == 'succeeded' for cell in controls),
+              'reference_self_tests': 'omitted', 'control_results': 0, 'control_passed': 0,
               'runner_source_unchanged': True, 'simulator_image': simulator, 'groups': verified_groups,
-              'candidate_cells': cells, 'control_cells': controls, 'full_44_case_direction_matrix': True}
+              'candidate_cells': cells, 'control_cells': [], 'full_44_case_direction_matrix': True}
     output = SAFE
     output.mkdir(exist_ok=True)
     (output / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
@@ -1004,32 +1002,18 @@ def main():
     require(not subprocess.check_output(['git', '-C', str(RUNNER), 'status', '--porcelain'], text=True).strip(), 'runner checkout changed')
     docker_metadata()
     records = []
-    baseline = phase(REFERENCE + '-baseline', REFERENCE, REFERENCE, False)
-    records.append(baseline)
-    # A completed negative control is diagnostic evidence, not an infrastructure
-    # failure. Inspect the candidate too, but retain the control in the mandatory
-    # all-passed gate below. Never continue after broken setup or failed cleanup.
-    control_completed = (baseline['status'] in {'PASSED', 'FAILED'}
-        and baseline.get('cleanup_exit_code') == 0
-        and baseline.get('non_null_case_results') == len(EXPECTED)
-        and baseline.get('unexecuted_case_results') == 0
-        and (baseline['status'] == 'PASSED' or
-             all(baseline.get('runner_progress', {}).get(key) is True for key in
-                 ('client_compliance_passed', 'server_compliance_passed'))))
-    if control_completed:
-        if 'client' in directions:
-            records.append(phase('bounded-client', 'hibana-quic', REFERENCE, True))
-        if 'server' in directions:
-            records.append(phase('bounded-server', REFERENCE, 'hibana-quic', True))
+    if 'client' in directions:
+        records.append(phase('bounded-client', 'hibana-quic', REFERENCE, True))
+    if 'server' in directions:
+        records.append(phase('bounded-server', REFERENCE, 'hibana-quic', True))
     clean = not subprocess.check_output(['git', '-C', str(RUNNER), 'status', '--porcelain'], text=True).strip()
-    passed = len(records) == 1 + len(directions) and all(r['status'] == 'PASSED' for r in records) and clean
+    passed = len(records) == len(directions) and all(r['status'] == 'PASSED' for r in records) and clean
     write('summary.json', {'status': 'PASSED' if passed else 'NOT_PASSED',
-        'scope': 'one unmodified runner pilot: selected reference baseline plus explicitly selected cases and candidate directions',
+        'scope': 'one unmodified runner pilot: explicitly selected candidate cases and directions; reference self-tests omitted',
         'reference_implementation': REFERENCE,
         'interop_group': os.environ.get('INTEROP_GROUP'),
         'candidate_directions': sorted(directions),
-        'baseline_passed': baseline['status'] == 'PASSED',
-        'candidate_diagnostic_after_failed_control': control_completed and baseline['status'] != 'PASSED',
+        'reference_self_tests': 'omitted',
         'selected_cases': sorted(EXPECTED),
         'runner_source_unchanged': clean, 'phases': [r['phase'] for r in records],
         'case_results': sum(len(r.get('results', [])) for r in records),

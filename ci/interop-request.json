@@ -1,9 +1,9 @@
 {
-  "request": "Requalify all 44 cells after mechanical QUIC/TLS/global-local module organization and extraction of executor-neutral and host IO boundaries and exact upstream core cf084d22a473b26c8cd0b8be80631eaf3e7184b4",
-  "requested_at": "2026-10-07T18:17:00Z",
+  "request": "Run all 44 Hibana candidate case/direction cells without reference self-tests",
+  "requested_at": "2026-10-07T21:53:00Z",
   "scope": [
     "same source commit across all qualification groups",
-    "22 mandatory unchanged reference self-controls",
+    "reference self-tests omitted by user request",
     "44 actual candidate client/server verdicts"
   ],
   "approval": "User requested checking and repairing the remaining interop failures, including latest upstream Hibana, with both local directions checked before CI. Existing authorized publication workflow continues.",
@@ -12,7 +12,7 @@
     "client",
     "server"
   ],
-  "qualification": "All 44 distinct candidate results and 22 controls must come from the same source/run. Preserve the unchanged pinned runner, original deadlines and capacities. Local tests are not official passes. Import the core parallel-offer repair as an exact committed snapshot before running this matrix.",
+  "qualification": "All 44 distinct candidate results must pass on the same source/run/attempt. Reference-versus-itself tests are omitted. Preserve the unchanged pinned runner, original deadlines, capacities and both candidate directions. Local tests are not official passes.",
   "formal_models": false,
   "candidate_case_direction_results": 44,
   "groups": [
