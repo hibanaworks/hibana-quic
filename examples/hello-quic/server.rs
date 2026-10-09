@@ -2,7 +2,8 @@ mod global;
 #[path = "local/server.rs"]
 mod local;
 use hibana::runtime::program::project;
-use hibana_quic_host::session;
+use hibana_quic_pal::launch;
+use hibana_quic::session::Protocol;
 use std::time::Duration;
 fn main() {
     if let Err(error) = run() {
@@ -15,14 +16,14 @@ fn run() -> Result<(), String> {
     if args.len() != 3 {
         return Err("usage: server LISTEN CERT.pem KEY.pem".into());
     }
-    let config = session::Server {
+    let config = launch::Server {
         listen: args[0].parse().map_err(|e| format!("{e}"))?,
         certificate: args[1].clone().into(),
         key: args[2].clone().into(),
-        protocol: session::Protocol::Quic,
+        protocol: Protocol::Quic,
         timeout: Duration::from_secs(30),
     };
-    session::server(
+    launch::server(
         config,
         global::CLIENT,
         &project::<{ global::SERVER }, _>(&global::choreography()),

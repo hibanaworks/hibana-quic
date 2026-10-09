@@ -1,6 +1,6 @@
 //! Independent cross-peer PSK_DHE tests using pinned rustls QUIC directly.
 //! The rustls peer allocates; bounded zero-allocation evidence is in resumption.rs.
-use hibana_quic_host::entropy::KernelEntropy;
+use hibana_quic_pal::entropy::KernelEntropy;
 use hibana_quic_reference_tls::rustls;
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;

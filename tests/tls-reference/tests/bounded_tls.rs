@@ -1,7 +1,7 @@
 //! Real bounded TLS full handshakes; rcgen/rustls and fixture setup are host-only.
 use hibana_quic::crypto::CipherSuite;
 use hibana_quic::entropy::{Entropy, Unavailable};
-use hibana_quic_host::entropy::KernelEntropy;
+use hibana_quic_pal::entropy::KernelEntropy;
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::UnixTime;
@@ -341,7 +341,7 @@ fn bounded_case(case: Case) {
         let mut cverify = cr.enter(cid, &cp.verify).unwrap();
         let mut sinput = sr.enter(sid, &sp.input).unwrap();
         let mut sverify = sr.enter(sid, &sp.verify).unwrap();
-        let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
+        let reactor = hibana_quic_pal::async_io::Reactor::<0, 0>::new().unwrap();
         let result = measured(|| {
             let mut co = pin!(local::client_owner(&mut cverify, &client.tls, &cs));
             let mut co = pin!(poll_fn(|cx| {
@@ -672,7 +672,7 @@ fn reference_case(candidate_client: bool, retry: bool) {
     };
     let mut verify = rendezvous.enter(id, &programs.verify).unwrap();
     let mut wire = rendezvous.enter(id, &programs.input).unwrap();
-    let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
+    let reactor = hibana_quic_pal::async_io::Reactor::<0, 0>::new().unwrap();
     let owner = async {
         if candidate_client {
             local::client_owner(&mut verify, &candidate.tls, &slot).await

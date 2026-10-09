@@ -65,7 +65,7 @@ def exercise(binary, root, requests, timeout, name="localhost", directory="downl
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[3] / "host/target/release/hq")
+    parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[3] / "pal/target/release/hq")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--timeout-seconds", type=int, default=180)
     parser.add_argument("--negative-auth", action="store_true")

@@ -8,6 +8,9 @@
 //! Start with each protocol's global and direct locals; numerical mechanisms
 //! live with their owning domain. Storage is bounded and caller-owned.
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 #[cfg(test)]
 extern crate self as hibana_quic;
 #[cfg(test)]

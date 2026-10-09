@@ -9,11 +9,12 @@ description = "Experimental bounded QUIC v1 transport driven by Hibana choreogra
 
 [dependencies]
 # The owned TLS repository is pinned to the same source checked out by CI.
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "e26fe2837859327b4b66db98797b304855a3cda6", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "80f7ebdad3cd80718df10af1cd3555f0cf9f90aa", default-features = false }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "af69def928f498ad474a4d2add238615e175a49b", default-features = false }
 
 [features]
 default = []
+alloc = ["hibana-tls/alloc"]
 target-link-smoke = []
 
 [[example]]

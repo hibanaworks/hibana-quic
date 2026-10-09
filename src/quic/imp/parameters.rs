@@ -114,3 +114,6 @@ pub fn validate<'scope, const P: usize>(
         active_connection_id_limit,
     })
 }
+
+/// Local transport parameter advertisement.
+pub mod advertisement;

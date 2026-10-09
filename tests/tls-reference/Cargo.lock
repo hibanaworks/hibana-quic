@@ -61,7 +61,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hibana-quic-host"
+name = "hibana-quic-pal"
 version = "0.1.0"
 dependencies = [
  "hibana",
@@ -76,7 +76,7 @@ dependencies = [
  "der",
  "hibana",
  "hibana-quic",
- "hibana-quic-host",
+ "hibana-quic-pal",
  "hibana-tls",
  "rcgen",
  "rustls",
@@ -86,7 +86,7 @@ dependencies = [
 [[package]]
 name = "hibana-tls"
 version = "0.1.0"
-source = "git+https://github.com/hibanaworks/hibana-tls?rev=e26fe2837859327b4b66db98797b304855a3cda6#e26fe2837859327b4b66db98797b304855a3cda6"
+source = "git+https://github.com/hibanaworks/hibana-tls?rev=80f7ebdad3cd80718df10af1cd3555f0cf9f90aa#80f7ebdad3cd80718df10af1cd3555f0cf9f90aa"
 dependencies = [
  "hibana",
 ]

@@ -1,7 +1,7 @@
 //! Bounded client authenticated by an independently signing rustls RSA server.
 //! OpenSSL key generation and the allocating peer are outside the bounded call
 //! counter. No private test key is written to disk or committed to the repository.
-use hibana_quic_host::entropy::KernelEntropy;
+use hibana_quic_pal::entropy::KernelEntropy;
 use hibana_quic_reference_tls::{RustlsProvider, rustls};
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
@@ -277,7 +277,7 @@ fn exchange(
     let programs = global::client_programs();
     let mut owner = rv.enter(sid, &programs.verify).unwrap();
     let mut receiver = rv.enter(sid, &programs.input).unwrap();
-    let reactor = hibana_quic_host::async_io::Reactor::<0, 0>::new().unwrap();
+    let reactor = hibana_quic_pal::async_io::Reactor::<0, 0>::new().unwrap();
     let result = {
         let feed = async {
             let mut wire = [0; 8208];

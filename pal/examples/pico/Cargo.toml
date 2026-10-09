@@ -1,0 +1,9 @@
+[package]
+name = "hibana-quic-pico-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+hibana-quic = { path = "../../..", default-features = false }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "af69def928f498ad474a4d2add238615e175a49b", default-features = false }

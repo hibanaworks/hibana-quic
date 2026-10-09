@@ -1,7 +1,7 @@
 //! Depth-eight certificate verification, with runtime-generated private keys.
 #[path = "../../support/async_tls_fixture.rs"]
 mod async_fixture;
-use hibana_quic_host::entropy::KernelEntropy;
+use hibana_quic_pal::entropy::KernelEntropy;
 use hibana_tls::certificate::*;
 use hibana_tls::endpoint::Level;
 use hibana_tls::endpoint::Provider;

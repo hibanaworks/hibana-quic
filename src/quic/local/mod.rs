@@ -313,3 +313,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
 pub(crate) mod initial;
 
 pub mod early_client;
+
+/// Allocator-backed handshake resource owner.
+#[cfg(feature = "alloc")]
+pub mod owned;

@@ -850,3 +850,10 @@ async fn connected<
         ecn_feedback_error: ecn_before_close.first_failure.map(|failure| failure.reason),
     })
 }
+
+/// Own and attach bounded resources using any executor-neutral I/O capability.
+#[cfg(feature = "alloc")]
+pub mod owned;
+
+/// Allocation-free connection attachment with caller-owned memory.
+pub mod borrowed;

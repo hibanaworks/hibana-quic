@@ -4,3 +4,6 @@ pub mod global;
 mod tables;
 pub mod wire;
 pub use wire::*;
+
+/// Bounded request validation and projected response consumption.
+pub mod message;

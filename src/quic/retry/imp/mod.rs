@@ -971,3 +971,5 @@ mod tests {
         assert_eq!(ConnectionId::decode(&invalid), Err(Error::InvalidToken));
     }
 }
+
+pub mod admission;

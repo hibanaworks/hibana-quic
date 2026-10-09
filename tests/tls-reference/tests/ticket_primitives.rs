@@ -1,6 +1,6 @@
 //! Host-only allocation instrumentation for the bounded ticket/cache primitives.
 //! This is not a claim that PSK wire negotiation is integrated into BoundedTls.
-use hibana_quic_host::entropy::KernelEntropy;
+use hibana_quic_pal::entropy::KernelEntropy;
 use hibana_tls::schedule::KeySchedule;
 use hibana_tls::schedule::Transcript;
 use hibana_tls::ticket::Acceptance;

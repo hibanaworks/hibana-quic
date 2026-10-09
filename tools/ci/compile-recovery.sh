@@ -18,7 +18,7 @@ set +e
 docker run --rm --mount "type=bind,src=$PWD,dst=/source,readonly" \
  --mount "type=bind,src=$PWD/.ci-work/compile-target,dst=/target" \
  --workdir /source --env CARGO_TARGET_DIR=/target "$RUST_IMAGE" \
- bash -c 'set -euo pipefail; rustc --version; cargo check --locked --lib --tests; cargo check --locked --manifest-path host/Cargo.toml --bin hq --tests'
+ bash -c 'set -euo pipefail; rustc --version; cargo check --locked --lib --tests; cargo check --locked --manifest-path pal/Cargo.toml --bin hq --tests'
 compile_exit=$?
 set -e
 export compile_exit

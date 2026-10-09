@@ -6,7 +6,7 @@ WORKDIR /source/hibana-quic
 ENV CARGO_TARGET_DIR=/build
 COPY hibana-quic /source/hibana-quic
 COPY hibana-tls /source/hibana-tls
-RUN cargo build --locked --release --manifest-path host/Cargo.toml --bin hq
+RUN cargo build --locked --release --manifest-path pal/Cargo.toml --bin hq
 FROM ${ENDPOINT_IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*

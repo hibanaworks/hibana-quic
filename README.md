@@ -4,8 +4,10 @@ QUIC v1/v2 and HTTP/3 for Rust, using [Hibana](https://github.com/hibanaworks/hi
 to express protocol order and transfer ownership between roles.
 TLS is provided by [hibana-tls](https://github.com/hibanaworks/hibana-tls).
 
-The core is `no_std`, allocation-free, and forbids unsafe Rust. The separate
-Host crate supplies Linux UDP, a reactor, entropy and allocated buffers.
+The core is `no_std`, forbids unsafe Rust, and needs no allocator by default.
+Its optional `alloc` feature provides owned connection buffers using the same
+globals and localsides. [hibana-quic-pal](pal/) supplies Linux/macOS UDP,
+readiness, clocks, entropy and file access; it contains no protocol choreography.
 This is experimental software; passing interoperability tests does not establish
 complete cryptographic security.
 
@@ -91,7 +93,7 @@ The two examples calculate a square across a real network connection:
 
 Each has one `global.rs`, `local/client.rs`, `local/server.rs`, and small native
 `client.rs` / `server.rs` launchers. The HTTP/3 and raw examples have identical
-application conversations; the launcher's `session::Protocol` selects the carrier.
+application conversations; the launcher's `Protocol` selects the carrier.
 
 ### Shared global
 
@@ -205,14 +207,14 @@ fn run() -> Result<(), String> {
     if args.len() != 2 {
         return Err("usage: client REMOTE CA.pem (DNS:localhost)".into());
     }
-    let config = session::Client {
+    let config = launch::Client {
         remote: args[0].parse().map_err(|e| format!("{e}"))?,
         server_name: "localhost".into(),
         ca: args[1].clone().into(),
-        protocol: session::Protocol::Quic,
+        protocol: Protocol::Quic,
         timeout: Duration::from_secs(30),
     };
-    session::client(
+    launch::client(
         config,
         global::SERVER,
         &project::<{ global::CLIENT }, _>(&global::choreography()),
@@ -233,14 +235,14 @@ fn run() -> Result<(), String> {
     if args.len() != 3 {
         return Err("usage: server LISTEN CERT.pem KEY.pem".into());
     }
-    let config = session::Server {
+    let config = launch::Server {
         listen: args[0].parse().map_err(|e| format!("{e}"))?,
         certificate: args[1].clone().into(),
         key: args[2].clone().into(),
-        protocol: session::Protocol::Quic,
+        protocol: Protocol::Quic,
         timeout: Duration::from_secs(30),
     };
-    session::server(
+    launch::server(
         config,
         global::CLIENT,
         &project::<{ global::SERVER }, _>(&global::choreography()),
@@ -259,14 +261,14 @@ fn run() -> Result<(), String> {
     if args.len() != 2 {
         return Err("usage: client REMOTE CA.pem (DNS:localhost)".into());
     }
-    let config = session::Client {
+    let config = launch::Client {
         remote: args[0].parse().map_err(|e| format!("{e}"))?,
         server_name: "localhost".into(),
         ca: args[1].clone().into(),
-        protocol: session::Protocol::Http3,
+        protocol: Protocol::Http3,
         timeout: Duration::from_secs(30),
     };
-    session::client(
+    launch::client(
         config,
         global::SERVER,
         &project::<{ global::CLIENT }, _>(&global::choreography()),
@@ -287,14 +289,14 @@ fn run() -> Result<(), String> {
     if args.len() != 3 {
         return Err("usage: server LISTEN CERT.pem KEY.pem".into());
     }
-    let config = session::Server {
+    let config = launch::Server {
         listen: args[0].parse().map_err(|e| format!("{e}"))?,
         certificate: args[1].clone().into(),
         key: args[2].clone().into(),
-        protocol: session::Protocol::Http3,
+        protocol: Protocol::Http3,
         timeout: Duration::from_secs(30),
     };
-    session::server(
+    launch::server(
         config,
         global::CLIENT,
         &project::<{ global::SERVER }, _>(&global::choreography()),
@@ -305,32 +307,32 @@ fn run() -> Result<(), String> {
 
 ### Run both sides
 
-The Host implementation requires Linux and Rust 1.95. Supply a development
+The native launchers target Linux/macOS with Rust 1.95. Supply a development
 certificate chain/key for `DNS:localhost` and its CA. Verification stays enabled;
 do not use production keys for a demonstration.
 
 ```sh
-cargo build --locked --release --manifest-path host/Cargo.toml --examples
+cargo build --locked --release --manifest-path pal/Cargo.toml --examples
 ```
 
 Raw QUIC, in separate terminals:
 
 ```sh
-host/target/release/examples/quic-server 127.0.0.1:4433 chain.pem key.pem
-host/target/release/examples/quic-client 127.0.0.1:4433 ca.pem
+pal/target/release/examples/quic-server 127.0.0.1:4433 chain.pem key.pem
+pal/target/release/examples/quic-client 127.0.0.1:4433 ca.pem
 ```
 
 HTTP/3, in separate terminals:
 
 ```sh
-host/target/release/examples/http3-server 127.0.0.1:4433 chain.pem key.pem
-host/target/release/examples/http3-client 127.0.0.1:4433 ca.pem
+pal/target/release/examples/http3-server 127.0.0.1:4433 chain.pem key.pem
+pal/target/release/examples/http3-client 127.0.0.1:4433 ca.pem
 ```
 
 Or verify both exchanges automatically:
 
 ```sh
-python3 examples/check-transfers.py host/target/release/examples chain.pem key.pem ca.pem
+python3 examples/check-transfers.py pal/target/release/examples chain.pem key.pem ca.pem
 ```
 
 With `CARGO_TARGET_DIR`, use that directory's `release/examples/` instead.
@@ -354,7 +356,7 @@ multiparty connection manager.
 
 The shared attachment and stream effects live in the `no_std` core, using
 caller-owned storage and ordinary Rust futures. Native UDP sockets, file-based
-certificate loading and the reactor live in Host. Bare-metal integrations supply
+certificate loading and the reactor live in PAL. Bare-metal integrations supply
 packet I/O, clock, entropy, connection storage and their executor through the
 core contracts. They can reuse the application global and localsides; the core
 does not supply a board-specific network driver.
@@ -370,15 +372,15 @@ are still untrusted inputs, and matching message labels do not establish that a
 peer runs the same source code. TLS, strict frame parsing and the receiver's
 projected endpoint enforce their respective boundaries.
 
-- [Network session entry points](host/src/session/mod.rs) own native resources.
-- [Network session execution](host/src/session/local/mod.rs) joins a caller's
+- [Network session entry points](pal/src/launch.rs) own native resources.
+- [Network session execution](pal/src/session/local/mod.rs) joins a caller's
   localside with the QUIC/HTTP/3 driver.
 - [OS-independent role attachment](src/session/local/mod.rs) joins the localside
   and its stream driver.
 - [Stream effects](src/session/local/stream.rs) and [framing](src/session/imp/wire.rs)
   remain below the application interface.
 - [Core I/O contracts](src/io/mod.rs) support OS and bare-metal adapters.
-- [CLI file transfer](host/README.md) and its
+- [CLI file transfer](pal/README.md) and its
   [single-command script](examples/http3-transfer.sh) are additional examples.
 
 ## Find the protocol and its implementation
@@ -396,7 +398,7 @@ below `imp/`:
 | Retry client | [global/client.rs](src/quic/retry/global/client.rs) | [local/](src/quic/retry/local/mod.rs) | [imp/](src/quic/retry/imp/mod.rs) |
 
 Server Retry admission uses the same core [global](src/quic/retry/global.rs)
-with the [Host input/owner/output locals](host/src/retry/local/mod.rs).
+with the [PAL input/owner/output locals](src/quic/retry/local/server.rs).
 
 `local/mod.rs` contains the composition or direct role entry. The role files
 contain the actual endpoint operations; `imp/` contains buffers, codecs and
@@ -414,3 +416,35 @@ For development tests that use the sibling TLS sources, place `hibana-tls/`
 next to `hibana-quic/` at the revision pinned in Cargo.toml.
 
 Licensed under MIT OR Apache-2.0; see LICENSE-MIT and LICENSE-APACHE.
+
+## Environment boundary
+
+The protocol implementation has one home in `src/`:
+
+- [QUIC global](src/quic/global.rs) and [localsides](src/quic/local/mod.rs) own the handshake and its affine continuations.
+- [Connected global](src/quic/application/global.rs) and [localsides](src/quic/application/local/mod.rs) own streams, keys, close and retirement.
+- [Retry global](src/quic/retry/global.rs), [server localsides](src/quic/retry/local/server.rs) and [packet arithmetic](src/quic/retry/imp/admission.rs) perform admission with injected I/O.
+- [HTTP/3 message global](src/http3/message/global.rs), [localsides](src/http3/message/local/mod.rs) and [bounded codec](src/http3/message/imp/wire.rs) consume message storage without filesystem assumptions.
+- [Application session](src/session/local/mod.rs) connects user-projected localsides to the common stream implementation.
+
+[Borrowed connection attachment](src/quic/application/local/borrowed.rs) consumes
+caller-owned slabs, buffers, keys and physical capabilities without allocating.
+[Owned attachment](src/quic/application/local/owned/mod.rs), enabled with `alloc`,
+allocates the buffers and calls that same attachment. It does not select phases
+or implement another protocol. `alloc` is a compile-time memory choice, not an
+operating-system or async-runtime requirement.
+
+The environment supplies [DatagramRx, DatagramTx, DatagramSocket and Clock](src/io/mod.rs),
+[cryptographic Entropy](https://github.com/hibanaworks/hibana-tls/blob/80f7ebdad3cd80718df10af1cd3555f0cf9f90aa/src/entropy.rs),
+and an executor that polls ordinary Rust futures. Native implementations and
+minimal environment examples are under [pal/](pal/README.md).
+
+For a board or custom OS, [the Pico integration example](pal/examples/pico/src/lib.rs)
+reuses the exact native example's application global and client/server localsides.
+It accepts real board I/O and initialized TLS/QUIC resource owners. It builds
+without `std` or `alloc`; it is not a boot image, network driver, or evidence that
+a particular board has enough RAM for a chosen connection profile.
+
+```sh
+cargo check --locked --manifest-path pal/examples/pico/Cargo.toml --target thumbv6m-none-eabi
+```

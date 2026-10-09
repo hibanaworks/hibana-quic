@@ -49,3 +49,31 @@ pub trait Clock {
     fn now(&self) -> u64;
     fn wait_until(&self, deadline: u64) -> impl Future<Output = ()>;
 }
+
+/// Caller-owned random-access storage. Reads and writes complete in this call;
+/// each operation must either transfer its entire slice or return an error.
+/// The implementation provides interior access to one underlying byte store.
+pub trait RandomAccess {
+    fn len(&self) -> Result<u64, IoError>;
+    fn is_empty(&self) -> Result<bool, IoError> {
+        self.len().map(|n| n == 0)
+    }
+    fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> Result<(), IoError>;
+    fn write_all_at(&self, bytes: &[u8], offset: u64) -> Result<(), IoError>;
+    fn set_len(&self, length: u64) -> Result<(), IoError>;
+}
+
+/// Unconnected UDP access for server admission, before peer binding.
+/// Receive returns the actual source and destination path with the datagram.
+pub trait DatagramSocket {
+    fn receive_from(
+        &self,
+        bytes: &mut [u8],
+    ) -> impl Future<Output = Result<ReceivedDatagram, IoError>>;
+    fn send_to_path(
+        &self,
+        bytes: &[u8],
+        path: crate::quic::path::Address,
+        ecn: crate::quic::ecn::imp::Codepoint,
+    ) -> impl Future<Output = Result<usize, IoError>>;
+}

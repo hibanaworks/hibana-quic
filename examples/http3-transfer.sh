@@ -7,8 +7,8 @@ if [ "$#" -ne 3 ]; then
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 chain=$(realpath "$1"); key=$(realpath "$2"); ca=$(realpath "$3")
-cargo build --locked --release --manifest-path "$root/host/Cargo.toml" --bin hq
-hq="${CARGO_TARGET_DIR:-$root/host/target}/release/hq"
+cargo build --locked --release --manifest-path "$root/pal/Cargo.toml" --bin hq
+hq="${CARGO_TARGET_DIR:-$root/pal/target}/release/hq"
 work=$(mktemp -d)
 server_pid=
 cleanup() { if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi; }

@@ -8,7 +8,7 @@ import argparse,hashlib,json,os,signal,subprocess,sys,time
 from pathlib import Path
 p=argparse.ArgumentParser()
 for name in ['hq','neqo-client','neqo-server','nss','quiche-client','quiche-server','runner','output']:p.add_argument('--'+name,type=Path,required=True)
-a=p.parse_args();root=Path(__file__).resolve().parents[2];tests=root/'host/tests';out=a.output.resolve()
+a=p.parse_args();root=Path(__file__).resolve().parents[2];tests=root/'pal/tests';out=a.output.resolve()
 if out.exists() and any(out.iterdir()):p.error('--output must be a new or empty attempt directory')
 out.mkdir(parents=True,exist_ok=True)
 files={k:getattr(a,k.replace('-','_')).resolve(strict=True) for k in ['hq','neqo-client','neqo-server','nss','quiche-client','quiche-server','runner']}

@@ -37,3 +37,11 @@ pub async fn run<const ROLE: u8, E>(
     })
     .await
 }
+
+/// Common connection startup using injected datagram, clock and entropy capabilities.
+#[cfg(feature = "alloc")]
+pub mod network;
+
+/// Allocator-backed application and connection resource owner.
+#[cfg(feature = "alloc")]
+pub mod owned;

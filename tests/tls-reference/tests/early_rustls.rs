@@ -5,7 +5,7 @@ use hibana_quic::quic::early_data::imp::EarlyStatus;
 use hibana_quic::quic::early_data::imp::QuarantineSlot;
 use hibana_quic::quic::early_data::imp::ReplayStorage;
 use hibana_quic::quic::early_data::imp::ServerPolicy;
-use hibana_quic_host::entropy::KernelEntropy;
+use hibana_quic_pal::entropy::KernelEntropy;
 use hibana_quic_reference_tls::rustls;
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;

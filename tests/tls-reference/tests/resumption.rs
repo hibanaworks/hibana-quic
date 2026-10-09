@@ -2,7 +2,7 @@
 mod async_fixture;
 // Real two-connection PSK_DHE resumption. Fixture setup is host-only; measured
 // constructors, encrypted TLS flights, issuance, cache and resumption allocate zero.
-use hibana_quic_host::entropy::KernelEntropy;
+use hibana_quic_pal::entropy::KernelEntropy;
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::TrustAnchor;

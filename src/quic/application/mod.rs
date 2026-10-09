@@ -186,6 +186,9 @@ pub struct Roles<'a> {
 
 #[derive(Debug)]
 pub enum Error {
+    Transport(hibana::runtime::transport::TransportError),
+    Attach(hibana::runtime::AttachError),
+    Attachment(super::AttachmentError),
     Connection(super::Error),
     Endpoint(EndpointError),
     Recovery(recovery::Error),
