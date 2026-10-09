@@ -9,6 +9,9 @@ pub mod kernel;
 pub mod path;
 pub mod retry;
 
+mod attach;
+pub use attach::Error as AttachmentError;
+
 pub mod application;
 pub mod application_stream;
 pub mod application_wire;
@@ -284,8 +287,20 @@ impl Schedule {
     }
 }
 
+/// Bounded exchange memory, exclusively borrowed for one handshake operation.
+/// Protocol authority belongs to the actual TLS/key owners and Hibana roles;
+/// these slots do not mirror their progression with a claimed flag.
+///
+/// ```compile_fail
+/// use hibana_quic::quic::Storage;
+/// fn use_slots(_: &mut Storage<'_, '_, 1200, 1>) {}
+/// let mut slots = Storage::new(b"peer").unwrap();
+/// let first = &mut slots;
+/// let second = &mut slots;
+/// use_slots(first);
+/// use_slots(second); // concurrent exchange ownership is forbidden
+/// ```
 pub struct Storage<'scope, 'book, const N: usize, const P: usize> {
-    claimed: Cell<bool>,
     peer: RefCell<ConnectionId>,
     schedule: Schedule,
     input: Inbox<CryptoInput<'scope, N>>,
@@ -303,7 +318,6 @@ pub struct Storage<'scope, 'book, const N: usize, const P: usize> {
 impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P> {
     pub fn new(peer: &[u8]) -> Result<Self, Error> {
         Ok(Self {
-            claimed: Cell::new(false),
             peer: RefCell::new(ConnectionId::new(peer)?),
             schedule: Schedule::new(),
             input: Inbox::new(),
@@ -355,13 +369,6 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
         }
         Ok(())
     }
-    fn claim(&self) -> Result<(), Error> {
-        if self.claimed.replace(true) {
-            Err(Error::Binding)
-        } else {
-            Ok(())
-        }
-    }
     fn clear(&self) {
         drop(self.input.take());
         drop(self.flight.take());
@@ -372,6 +379,7 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
         drop(self.finished.take());
         drop(self.datagram.take());
         self.failure.set(None);
+        let _ = self.pending_application.borrow_mut().take();
     }
 }
 struct Clear<'a, 'scope, 'book, const N: usize, const P: usize>(&'a Storage<'scope, 'book, N, P>);
@@ -391,7 +399,7 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
     send_io: &mut impl DatagramTx,
     clock: &impl Clock,
     issuer: &mut publication_gate::Issuer<'_, 'scope>,
-    storage: &Storage<'scope, 'book, N, P>,
+    storage: &mut Storage<'scope, 'book, N, P>,
     book: &'book mut recovery::Recovery<'scope, N>,
     adapter_outcome: &Outcome,
 ) -> Result<(ReceiveContinuation<'scope, P>, TransmitContinuation<'scope>), Error> {
@@ -410,6 +418,7 @@ pub async fn handshake<'scope, 'book, const N: usize, const P: usize>(
         None,
     )
     .await
+    .map(|(read, write, _pending)| (read, write))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -422,11 +431,19 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     send_io: &mut impl DatagramTx,
     clock: &impl Clock,
     issuer: &mut publication_gate::Issuer<'_, 'scope>,
-    storage: &Storage<'scope, 'book, N, P>,
+    storage: &mut Storage<'scope, 'book, N, P>,
     book: &'book mut recovery::Recovery<'scope, N>,
     adapter_outcome: &Outcome,
     early: Option<&mut early_client::Requests<'_, 'scope>>,
-) -> Result<(ReceiveContinuation<'scope, P>, TransmitContinuation<'scope>), Error> {
+) -> Result<
+    (
+        ReceiveContinuation<'scope, P>,
+        TransmitContinuation<'scope>,
+        Option<([u8; N], ReceivedDatagram, u64)>,
+    ),
+    Error,
+> {
+    let storage = &*storage;
     config.validate()?;
     if N < 1200
         || book.max_datagram_size() > N as u64
@@ -443,7 +460,6 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     if source.side() != expected_side || source.version() != config.version {
         return Err(Error::Binding);
     }
-    storage.claim()?;
     let _clear = Clear(storage);
     let scope = source.scope();
     let mut integrity = source.take_integrity_budget()?;
@@ -646,9 +662,11 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     numbers.restore_buffer(message_slot.into_buffer().map_err(Error::Transcript)?)?;
     numbers.record_verified_consumed(received.as_ref().ok_or(Error::Binding)?.verified_consumed)?;
     retirement.disarm();
+    let pending = storage.pending_application.borrow_mut().take();
     Ok((
         received.ok_or(Error::Binding)?,
         transmitted.ok_or(Error::Binding)?,
+        pending,
     ))
 }
 
@@ -671,15 +689,21 @@ mod retained_application_tests {
         assert!(storage.pending_application.borrow_mut().take().is_none());
     }
     #[test]
-    fn cleanup_preserves_ciphertext_for_successful_single_use_transfer() {
+    fn cleanup_preserves_ciphertext_for_owned_transfer() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
-        storage.claim().unwrap();
         storage.retain_application(&[7], None, None, 10).unwrap();
-        storage.clear();
-        assert!(storage.claim().is_err());
         let (bytes, len, received_at) = storage.pending_application.borrow_mut().take().unwrap();
+        storage.clear();
+        assert!(storage.pending_application.borrow().is_none());
         assert_eq!(received_at, 10);
         assert_eq!(&bytes[..len.len], &[7]);
+    }
+    #[test]
+    fn failed_or_cancelled_exchange_cannot_leave_retained_input() {
+        let storage = Storage::<8, 1>::new(b"peer").unwrap();
+        storage.retain_application(&[7], None, None, 10).unwrap();
+        drop(Clear(&storage));
+        assert!(storage.pending_application.borrow().is_none());
     }
     #[test]
     fn invalid_packet_lengths_do_not_publish_a_buffer() {

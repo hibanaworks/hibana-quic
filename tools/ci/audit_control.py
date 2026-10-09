@@ -6,6 +6,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 REMOVED = {
+    "src/quic/mod.rs": [r"\bclaimed\s*:\s*Cell<bool>"],
     "src/crypto/mod.rs": [r"\bstruct\s+ApplicationKeys\b", r"\bfn\s+take_for_role\b"],
     "src/crypto/directional.rs": [r"\bactive\s*:\s*bool", r"\benum\s+Pending\b", r"\bcurrent_acked\s*:\s*bool", r"\bhandshake_confirmed\s*:\s*bool"],
     "src/quic/early_data.rs": [r"\benum\s+Phase\b", r"\bstruct\s+Quarantine\b", r"\b(fin_pending|marker_pending|opened_in_table|fin_released)\s*:\s*bool"],

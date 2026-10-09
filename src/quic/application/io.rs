@@ -12,12 +12,12 @@ use super::{
     StreamSink, global as p,
 };
 use crate::{
-    runtime::mailbox::{Receiver, Sender},
+    quic::kernel::streams::{self, StreamHandle},
     quic::{
         application_stream::{self, App, MAX_LIVE_STREAMS, Production},
         tls::Inbox,
     },
-    quic::kernel::streams::{self, StreamHandle},
+    runtime::mailbox::{Receiver, Sender},
 };
 
 pub(crate) const REQUEST_BYTES: usize = MAX_REQUEST_BYTES;
@@ -988,17 +988,6 @@ async fn receive_request<'book, const RX: usize, const CHUNK: usize, B>(
     stream_id: u64,
 ) -> Result<Delivery, Error> {
     let stream = ready_handle(app, stream_id)?;
-    // Receive delivery uses its actual receive window, not the unrelated
-    // outbound chunk size. One datagram must not require several sink rounds.
-    let mut bytes = [0; RX];
-    let read = app
-        .try_borrow_mut()
-        .map_err(|_| Error::Binding)?
-        .read(stream, &mut bytes)?;
-    control.changed()?;
-    if read.reset.is_some() {
-        return Err(Error::Application);
-    }
     let slot = pending.get_mut(stream.slot()).ok_or(Error::Capacity)?;
     let request = slot.get_or_insert_with(|| PendingRequest {
         stream,
@@ -1008,13 +997,31 @@ async fn receive_request<'book, const RX: usize, const CHUNK: usize, B>(
     if request.stream != stream {
         return Err(Error::Binding);
     }
-    let end = request
-        .len
-        .checked_add(read.len)
-        .filter(|len| *len <= REQUEST_BYTES)
-        .ok_or(Error::Capacity)?;
-    request.bytes[request.len..end].copy_from_slice(&bytes[..read.len]);
-    request.len = end;
+    // Copy once from the receive ring into the retained request. This owner
+    // crosses an await, so a borrowed view of reusable receive storage cannot.
+    let read = app
+        .try_borrow_mut()
+        .map_err(|_| Error::Binding)?
+        .consume(stream, |view| {
+            if view.reset.is_some() {
+                return Ok(0);
+            }
+            let len = view.first.len() + view.second.len();
+            let end = request
+                .len
+                .checked_add(len)
+                .filter(|end| *end <= REQUEST_BYTES)
+                .ok_or(application_stream::Error::Capacity)?;
+            let middle = request.len + view.first.len();
+            request.bytes[request.len..middle].copy_from_slice(view.first);
+            request.bytes[middle..end].copy_from_slice(view.second);
+            request.len = end;
+            Ok(len)
+        })?;
+    control.changed()?;
+    if read.reset.is_some() {
+        return Err(Error::Application);
+    }
     if read.fin {
         let pending = slot.take().ok_or(Error::Binding)?;
         let production = app
@@ -1057,6 +1064,130 @@ mod tests {
         pin::pin,
         task::{Context, Poll, Waker},
     };
+
+    #[test]
+    fn retained_request_accepts_exact_capacity_and_rejects_overflow_without_consuming() {
+        use crate::crypto::directional::ApplicationKeyScope;
+        use crate::quic::application_stream::{Facets, StreamNumbers};
+        use crate::quic::kernel::{
+            packet::Frame,
+            streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
+        };
+        use crate::quic::publication_gate::PublicationGate;
+        let mut scope = ApplicationKeyScope::new(917);
+        let mut installation = scope.claim().unwrap();
+        let mut gate = PublicationGate::new(installation.take_publication_gate().unwrap());
+        let (_, stop) = gate.split().unwrap();
+        let control = Control::new(stop);
+        let limits = Limits {
+            max_data: 16,
+            max_streams_bidi: 2,
+            max_streams_uni: 0,
+            stream_data_bidi_local: 8,
+            stream_data_bidi_remote: 8,
+            stream_data_uni: 0,
+        };
+        let mut slots = [StreamSlot::<8>::EMPTY; 2];
+        let mut chunks = [SendChunk::<8>::EMPTY; 2];
+        let mut references = [PacketReference::EMPTY; 4];
+        let mut numbers = StreamNumbers::new(
+            installation.scope(),
+            Role::Server,
+            limits,
+            limits,
+            &mut slots,
+            &mut chunks,
+            &mut references,
+        )
+        .unwrap();
+        let Facets { app, mut rx, .. } = numbers.split();
+        let app = RefCell::new(app);
+        let state = State::<8, EmptyBody>::new();
+        let mut pending = [const { None }; MAX_LIVE_STREAMS];
+        let mut queue = [const { None }; REQUEST_CAPACITY];
+        let mailbox = crate::runtime::mailbox::Mailbox::new(&mut queue).unwrap();
+        let (mut sender, mut receiver) = mailbox.split().unwrap();
+        for id in [0, 4] {
+            for offset in (0..REQUEST_BYTES).step_by(8) {
+                rx.apply(&Frame::Stream {
+                    id,
+                    offset: offset as u64,
+                    fin: false,
+                    data: b"abcdefgh",
+                })
+                .unwrap();
+                assert_eq!(
+                    ready(receive_request(
+                        &control,
+                        &state,
+                        &app,
+                        &mut sender,
+                        &mut pending,
+                        id
+                    ))
+                    .unwrap(),
+                    Delivery::More
+                );
+            }
+            if id == 0 {
+                rx.apply(&Frame::Stream {
+                    id,
+                    offset: REQUEST_BYTES as u64,
+                    fin: true,
+                    data: b"",
+                })
+                .unwrap();
+                assert_eq!(
+                    ready(receive_request(
+                        &control,
+                        &state,
+                        &app,
+                        &mut sender,
+                        &mut pending,
+                        id
+                    ))
+                    .unwrap(),
+                    Delivery::Fin
+                );
+                let request = ready(receiver.recv()).unwrap();
+                assert_eq!(request.len, REQUEST_BYTES);
+                assert!(
+                    request
+                        .bytes
+                        .chunks_exact(8)
+                        .all(|bytes| bytes == b"abcdefgh")
+                );
+            } else {
+                rx.apply(&Frame::Stream {
+                    id,
+                    offset: REQUEST_BYTES as u64,
+                    fin: true,
+                    data: b"x",
+                })
+                .unwrap();
+                assert!(
+                    ready(receive_request(
+                        &control,
+                        &state,
+                        &app,
+                        &mut sender,
+                        &mut pending,
+                        id
+                    ))
+                    .is_err()
+                );
+                let stream = ready_handle(&app, id).unwrap();
+                app.borrow_mut()
+                    .consume(stream, |view| {
+                        assert_eq!(view.first, b"x");
+                        assert!(view.fin);
+                        Ok(0)
+                    })
+                    .unwrap();
+                assert!(!state.is_complete(id));
+            }
+        }
+    }
 
     #[test]
     fn all_admitted_requests_enqueue_while_response_source_is_paused() {
@@ -1168,13 +1299,13 @@ mod tests {
 mod stop_tests {
     use super::*;
     use crate::{
-        runtime::carrier::CarrierStorage,
         crypto::directional::ApplicationKeyScope,
+        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
         quic::{
             application_stream::{Facets, StreamNumbers},
             publication_gate::PublicationGate,
         },
-        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
+        runtime::carrier::CarrierStorage,
     };
     use core::{
         future::Future,
@@ -1554,13 +1685,13 @@ mod stop_tests {
 mod interrupted_delivery_tests {
     use super::*;
     use crate::{
-        runtime::carrier::CarrierStorage,
         crypto::directional::ApplicationKeyScope,
+        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
         quic::{
             application_stream::{Facets, StreamNumbers},
             publication_gate::PublicationGate,
         },
-        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
+        runtime::carrier::CarrierStorage,
     };
     use core::{
         future::Future,

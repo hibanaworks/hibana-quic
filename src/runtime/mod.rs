@@ -54,7 +54,6 @@ pub type Task<'a, E> = Pin<&'a mut dyn Future<Output = Result<(), E>>>;
 pub struct TaskSet<'a, E, const N: usize> {
     tasks: [Option<Task<'a, E>>; N],
     next: usize,
-    remaining: usize,
     finished: bool,
 }
 
@@ -63,7 +62,6 @@ impl<'a, E, const N: usize> TaskSet<'a, E, N> {
         Self {
             tasks: tasks.map(Some),
             next: 0,
-            remaining: N,
             finished: false,
         }
     }
@@ -81,7 +79,6 @@ impl<E, const N: usize> Future for TaskSet<'_, E, N> {
                 match task.as_mut().poll(cx) {
                     Poll::Ready(Ok(())) => {
                         this.tasks[index] = None;
-                        this.remaining -= 1;
                     }
                     Poll::Ready(Err(error)) => {
                         this.tasks = [const { None }; N];
@@ -93,11 +90,11 @@ impl<E, const N: usize> Future for TaskSet<'_, E, N> {
             }
             index = (index + 1) % N;
         }
-        if this.remaining == 0 {
+        if this.tasks.iter().all(Option::is_none) {
             this.finished = true;
             Poll::Ready(Ok(()))
         } else {
-            // `remaining != 0` implies N > 0.
+            // A remaining task implies N > 0.
             this.next = (this.next + 1) % N;
             Poll::Pending
         }

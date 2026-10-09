@@ -24,3 +24,7 @@ pub mod entropy;
 #[cfg(any(target_os="linux",target_os="macos"))]
 #[allow(unsafe_code)]
 mod os;
+
+/// FIN-complete HTTP/3 file-service framing and response decoding.
+#[cfg(target_os = "linux")]
+pub mod http3;

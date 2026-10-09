@@ -12,8 +12,7 @@ use hibana_quic_host::io as direct_wire;
 mod files;
 #[path = "support/host_files.rs"]
 mod host_files;
-#[path = "support/http3_files.rs"]
-mod http3_files;
+use hibana_quic_host::http3 as http3_files;
 #[path = "support/parallel_server.rs"]
 mod parallel_server;
 #[path = "../pem.rs"]

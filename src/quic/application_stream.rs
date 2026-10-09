@@ -338,7 +338,7 @@ impl<'book, const RX: usize, const CHUNK: usize> FrameEffects<'book, '_, '_, RX,
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Read {
     pub len: usize,
-    /// All bytes through FIN have been copied into the application's sink.
+    /// All bytes through FIN have been consumed by the application.
     pub fin: bool,
     pub reset: Option<u64>,
 }
@@ -469,6 +469,25 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
     /// Copy and consume a contiguous prefix without exposing a borrowed view.
     /// Freed storage schedules reliable MAX_DATA/MAX_STREAM_DATA updates.
     pub fn read(&mut self, stream: StreamHandle, output: &mut [u8]) -> Result<Read, Error> {
+        self.consume(stream, |view| {
+            let len = (view.first.len() + view.second.len()).min(output.len());
+            let first = len.min(view.first.len());
+            output[..first].copy_from_slice(&view.first[..first]);
+            output[first..len].copy_from_slice(&view.second[..len - first]);
+            Ok(len)
+        })
+    }
+
+    /// Inspect the actual receive storage without copying it, then consume the
+    /// prefix returned by `consume`. The two slices cover ring-buffer wrapping.
+    /// The synchronous callback cannot retain the view across an await. Returning
+    /// an error or a count beyond the view leaves bytes and receive credit intact.
+    /// Successful consumption schedules reliable receive-credit updates.
+    pub fn consume(
+        &mut self,
+        stream: StreamHandle,
+        consume: impl FnOnce(streams::ReadView<'_>) -> Result<usize, Error>,
+    ) -> Result<Read, Error> {
         let mut n = self
             .core
             .numbers
@@ -478,11 +497,13 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         let (len, fin, reset) = {
             let view = n.table.receive(stream)?;
             let ready = view.first.len() + view.second.len();
-            let len = ready.min(output.len());
-            let first = len.min(view.first.len());
-            output[..first].copy_from_slice(&view.first[..first]);
-            output[first..len].copy_from_slice(&view.second[..len - first]);
-            (len, view.fin && len == ready, view.reset)
+            let fin = view.fin;
+            let reset = view.reset;
+            let len = consume(view)?;
+            if len > ready {
+                return Err(Error::Capacity);
+            }
+            (len, fin && len == ready, reset)
         };
         n.table.consume(stream, len)?;
         if len != 0 || reset.is_some() {
@@ -1598,6 +1619,86 @@ mod tests {
         assert!(app.send_complete(stream).unwrap());
         assert_eq!(app.queued_chunks().unwrap(), 0);
         assert!(tx.prepare::<64>(true).unwrap().is_none());
+    }
+
+    #[test]
+    fn borrowed_receive_uses_ring_storage_and_rejects_invalid_consumption() {
+        let scope = ApplicationKeyScope::new(10);
+        let mut slots = [StreamSlot::<8>::EMPTY];
+        let mut chunks = [SendChunk::<8>::EMPTY];
+        let mut references = [PacketReference::EMPTY; 4];
+        let mut core = StreamNumbers::new(
+            &scope,
+            Role::Server,
+            local(Role::Client),
+            local(Role::Server),
+            &mut slots,
+            &mut chunks,
+            &mut references,
+        )
+        .unwrap();
+        let Facets {
+            mut app, mut rx, ..
+        } = core.split();
+        rx.apply(&Frame::Stream {
+            id: 0,
+            offset: 0,
+            fin: false,
+            data: b"abcdefgh",
+        })
+        .unwrap();
+        let stream = app.readable_stream().unwrap().unwrap();
+        let pointer = app
+            .core
+            .numbers
+            .borrow()
+            .table
+            .receive(stream)
+            .unwrap()
+            .first
+            .as_ptr();
+        assert_eq!(
+            app.consume(stream, |view| {
+                assert_eq!(view.first.as_ptr(), pointer);
+                assert_eq!(view.first, b"abcdefgh");
+                Err(Error::Capacity)
+            }),
+            Err(Error::Capacity)
+        );
+        assert_eq!(app.consume(stream, |_| Ok(9)), Err(Error::Capacity));
+        assert_eq!(
+            app.consume(stream, |view| {
+                assert_eq!(view.first, b"abcdefgh");
+                Ok(6)
+            })
+            .unwrap()
+            .len,
+            6
+        );
+        rx.apply(&Frame::Stream {
+            id: 0,
+            offset: 8,
+            fin: true,
+            data: b"ijklmn",
+        })
+        .unwrap();
+        let read = app
+            .consume(stream, |view| {
+                assert_eq!(view.first, b"gh");
+                assert_eq!(view.second, b"ijklmn");
+                assert!(view.fin);
+                Ok(2)
+            })
+            .unwrap();
+        assert!(!read.fin);
+        let read = app
+            .consume(stream, |view| {
+                assert_eq!(view.first, b"ijklmn");
+                assert!(view.second.is_empty());
+                Ok(6)
+            })
+            .unwrap();
+        assert!(read.fin);
     }
 
     #[test]

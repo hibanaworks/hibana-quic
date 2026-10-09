@@ -56,36 +56,9 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
                 .map_err(|e| format!("carrier: {e:?}"))?,
         )
         .map_err(|e| format!("rendezvous: {e:?}"))?;
-    rendezvous
-        .set_resolver(
-            &programs.udp,
-            adapter_result.resolver::<{ global::ADAPTER_RESULT }>(),
-        )
-        .map_err(|e| format!("adapter resolver: {e:?}"))?;
-    macro_rules! enter {
-        ($name:ident) => {
-            rendezvous
-                .enter(session, &programs.$name)
-                .map_err(|e| format!("{} role: {e:?}", stringify!($name)))?
-        };
-    }
-    let mut roles = Roles {
-        rx: enter!(rx),
-        tls_rx: enter!(tls_rx),
-        tx: enter!(tx),
-        tx_wire: enter!(tx_wire),
-        tls_tx: enter!(tls_tx),
-        tls_complete: enter!(tls_complete),
-        tls_handoff: enter!(tls_handoff),
-        udp: enter!(udp),
-        timer: enter!(timer),
-        timer_tx: enter!(timer_tx),
-        initial_event: enter!(initial_event),
-        initial_owner: enter!(initial_owner),
-        timer_stop: enter!(timer_stop),
-        receive_stop: enter!(receive_stop),
-    };
-    let storage = Box::new(
+    let mut roles = Roles::attach(&rendezvous, session, &programs, &adapter_result)
+        .map_err(|e| format!("handshake attachment: {e:?}"))?;
+    let mut storage = Box::new(
         Storage::<DATAGRAM, PARAMETERS>::new(config.peer_connection_id)
             .map_err(|e| format!("wire storage: {e:?}"))?,
     );
@@ -98,13 +71,12 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
         transmit,
         clock,
         issuer,
-        &storage,
+        &mut storage,
         book,
         &adapter_result,
     ))
     .await
     .map_err(|e| format!("direct connection: {e:?}"));
-    drop(storage);
     if result.is_ok() && queues.queued() != 0 {
         return Err("wire roles left queued carrier frames".into());
     }
@@ -184,75 +156,8 @@ pub async fn files<'scope, const S: usize, const T: usize>(
         )
         .map_err(|e| format!("rendezvous: {e:?}"))?;
 
-    rendezvous
-        .set_resolver(
-            &programs.handshake.udp,
-            outcomes
-                .handshake_adapter
-                .resolver::<{ global::ADAPTER_RESULT }>(),
-        )
-        .map_err(|e| format!("handshake adapter resolver: {e:?}"))?;
-    rendezvous
-        .set_resolver(
-            &programs.adapter,
-            outcomes
-                .application_adapter
-                .resolver::<{ application::global::SUBMISSION_RESULT }>(),
-        )
-        .map_err(|e| format!("application adapter resolver: {e:?}"))?;
-    rendezvous
-        .set_resolver(
-            &programs.adapter,
-            outcomes
-                .application_reset
-                .resolver::<{ application::global::STOP_RESULT }>(),
-        )
-        .map_err(|e| format!("application reset resolver: {e:?}"))?;
-    macro_rules! enter {
-        ($program:expr) => {
-            rendezvous
-                .enter(session, &$program)
-                .map_err(|e| format!("{} role: {e:?}", stringify!($program)))?
-        };
-    }
-    let mut roles = application::Roles {
-        ecn_owner: enter!(programs.ecn_owner),
-        handshake: Roles {
-            rx: enter!(programs.handshake.rx),
-            tls_rx: enter!(programs.handshake.tls_rx),
-            tx: enter!(programs.handshake.tx),
-            tx_wire: enter!(programs.handshake.tx_wire),
-            tls_tx: enter!(programs.handshake.tls_tx),
-            tls_complete: enter!(programs.handshake.tls_complete),
-            tls_handoff: enter!(programs.handshake.tls_handoff),
-            udp: enter!(programs.handshake.udp),
-            timer: enter!(programs.handshake.timer),
-            timer_tx: enter!(programs.handshake.timer_tx),
-            initial_event: enter!(programs.handshake.initial_event),
-            initial_owner: enter!(programs.handshake.initial_owner),
-            timer_stop: enter!(programs.handshake.timer_stop),
-            receive_stop: enter!(programs.handshake.receive_stop),
-        },
-        source: enter!(programs.source),
-        source_join: enter!(programs.source_join),
-        ingress: enter!(programs.ingress),
-        receive: enter!(programs.receive),
-        sink: enter!(programs.sink),
-        rx_keys: enter!(programs.rx_keys),
-        tx_keys: enter!(programs.tx_keys),
-        clock: enter!(programs.clock),
-        tx_clock: enter!(programs.tx_clock),
-        transmit: enter!(programs.transmit),
-        adapter: enter!(programs.adapter),
-        peer_event: enter!(programs.peer_event),
-        peer_close: enter!(programs.peer_close),
-        files_event: enter!(programs.files_event),
-        files_close: enter!(programs.files_close),
-        close_join: enter!(programs.close_join),
-        source_collector: enter!(programs.source_collector),
-        input_collector: enter!(programs.input_collector),
-        delivery_collector: enter!(programs.delivery_collector),
-    };
+    let mut roles = application::Roles::attach(&rendezvous, session, &programs, &outcomes)
+        .map_err(|e| format!("application attachment: {e:?}"))?;
     let statistics = receive.statistics;
     let observed_clock = super::direct_wire::ObservedClock {
         physical: clock,

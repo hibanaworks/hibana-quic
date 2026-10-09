@@ -243,13 +243,13 @@ async fn connected<
     let (read, write, pending_application) = {
         // Storage is bounded and owned by this finite prefix; dropping it ends
         // every reservation borrow before application facets are issued.
-        let storage = if let Some(early) = early.as_mut() {
+        let mut storage = if let Some(early) = early.as_mut() {
             Storage::<N, P>::with_early_packets(config.peer_connection_id, &mut early.packets)?
         } else {
             Storage::<N, P>::new(config.peer_connection_id)?
         };
 
-        let (read, write) = quic::handshake_with_early(
+        quic::handshake_with_early(
             &mut roles.handshake,
             source,
             config,
@@ -258,14 +258,12 @@ async fn connected<
             send_io,
             clock,
             issuer,
-            &storage,
+            &mut storage,
             book,
             &outcomes.handshake_adapter,
             client_early.as_deref_mut(),
         )
-        .await?;
-        let pending = storage.pending_application.borrow_mut().take();
-        (read, write, pending)
+        .await?
     };
     // The verified Finished owner carries its authenticated ALPN across locals;
     // no historical TLS state or configured-protocol observation is authority.

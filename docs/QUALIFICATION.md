@@ -1,50 +1,36 @@
-# Qualification and limits
+# Verification and limits
 
-The unchanged selected interop matrix passed on
-`b8c0d3059f616981bedf5f241ed8a70f707be2c4`:
+## Latest verified baseline, 2026-10-09
 
-- **44/44** candidate case/direction results, **0** unexecuted.
-- **22/22** unchanged reference controls.
-- All cells are from the same commit, run and attempt; no cumulative substitution.
-- [Interop run 37639879838](https://github.com/hibanaworks/hibana-quic/actions/runs/37639879838), attempt 1.
-- [Runtime run 37639879744](https://github.com/hibanaworks/hibana-quic/actions/runs/37639879744) passed.
-- [Generated qualification report](../tests/interop/qualification.json), retained from artifact 11492259003.
+- QUIC: `5c58cec60cf4ebf5231b844ffe6fcccfaadc103e`.
+- TLS: `b5cd10fcabb26ed0b121ae9a192b4c254f000426`.
+- Hibana: `6fccdbf81038b00d99ec1bb2b9c43a487521628e`.
+- [Official interoperability run 37899220610](https://github.com/hibanaworks/hibana-quic/actions/runs/37899220610):
+  attempts 1 and 2 each executed and passed all 44 candidate results, including
+  all nine groups and qualification. No cross-attempt combination.
+- [Runtime run 37899220604](https://github.com/hibanaworks/hibana-quic/actions/runs/37899220604):
+  Rust/TLS/Host, compile-fail, embedded, strict Clippy, Miri, runner certificate
+  chain, finite-loss and additional stress gates passed.
 
-This is qualification of that selected matrix on that exact commit, not a
-production-readiness, arbitrary-network, complete TLS/HTTP3, or repeatability proof.
-The module/API cleanup after that commit requires its own regression checks and
-same-commit matrix. A passing baseline does not automatically qualify later edits.
+The pinned runner source and impairment scenarios are unchanged. Simulator
+termination explicitly waits for signalled capture children; that entrypoint
+adaptation and its hashes are reported by qualification. Do not describe the
+simulator entrypoint as unchanged.
 
-The qualified baseline used exact Hibana `b92a1fe4153e6b2404a183c9231245efd58e3237`.
-The current local cleanup imports unpatched Hibana Git revision
-`8302a07b5f0f2d224229afdba4d0afef62d6aa2b`; its own remote qualification
-is still pending. Runner and reference revisions are in `tools/ci/pins.env`.
-Original simulator rules, capacities and deadlines remain unchanged.
+## Residual observations
 
-Locally, the baseline passed 586 Rust tests, the thumbv6m core check, 87 Python
-tests, and native Neqo loss/migration in both directions. Native loopback is not
-an official ns-3 result. Strict library Clippy still has 25 baseline diagnostics;
-cleanup must address them rather than claim that ordinary CI implies lint-clean.
-Full embedded connection RAM/task-size qualification remains unavailable.
+Additional stress delivered all 500 matching files with successful endpoints and
+retired owners. Strict normal close passed 8/10 conditions. Corruption seeds
+20261009 and 20261011 each ended one server connection by idle expiry. Actual
+idle is distinct from normal close; delivery qualification does not erase it.
 
-Scoped Lean/Z3 models document their own assumptions; none proves all Rust code,
-cryptographic security, or liveness under arbitrary loss. Private packet captures
-and key logs are never part of the public qualification report.
+The preceding f1c9779 Neqo rebinding runner stopped before producing result JSON.
+Its oversized console prevented exception diagnosis. Added safe tail diagnostics
+did not reproduce the stop in either succeeding full run; root cause is not
+established. Earlier failures are retained in [the repair log](LOCAL-KEY-WAIT-20261009.md)
+and [historical qualification](history/QUALIFICATION.md).
 
-## Latest published revision
-
-`593e78d1202d821328702effd5f81e4d757f6a99` passed
-[normal CI](https://github.com/hibanaworks/hibana-quic/actions/runs/37698852840).
-Its [official interop run](https://github.com/hibanaworks/hibana-quic/actions/runs/37698852775)
-executed all 44 candidate cells: 43 passed, client handshakeloss failed.
-Server handshakeloss passed. This does not establish a root fix or qualify
-subsequent module cleanup. See [working status](WORKING-STATUS.md).
-
-## Current CI scope
-
-At the user's request, reference-versus-itself runs (quiche/quiche and neqo/neqo)
-are omitted. Qualification still requires all 44 Hibana/reference candidate cells
-on the same commit, run and attempt, both directions, unchanged pinned runner,
-original deadlines and capacities, and successful execution/cleanup. Reports mark
-reference self-tests as omitted with zero control results; this does not claim
-that controls passed. Historical baseline reports above retain their original scope.
+Finite passes do not guarantee delivery for arbitrary loss patterns or complete
+cryptographic safety. Miri, selected formal models and algorithm vectors have
+bounded scopes. New organization/API edits require fresh checks against their
+own source identity; baseline results must not be attributed to them.

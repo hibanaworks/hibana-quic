@@ -34,3 +34,15 @@ Core IO contracts are in `hibana_quic::io`; concrete Linux effects and bounded
 buffer construction are in `hibana_quic_host::{io,storage}`. A complete ergonomic
 application-choreography API is still being built; don't copy private CLI support
 modules into a public dependency and call that finished SDK support.
+
+
+## Library entry points
+
+Do not import `host/src/bin/support` files. Public effects and bounded storage
+are in `hibana_quic_host::{io, storage}`. FIN-complete file-service HTTP/3
+validation is in `hibana_quic_host::http3`; its response decoder mutates only the
+unpublished staging file. Live streaming and a minimal application connection
+constructor remain work in progress: [application API](APPLICATION-API.md).
+
+The TLS modules under `hibana_quic::tls` directly re-export canonical
+`hibana_tls` modules. Their source is in that crate, not a copied QUIC TLS tree.
