@@ -1,13 +1,13 @@
 {
-  "request": "Qualify all 44 cells with capture children reaped on simulator shutdown; transport unchanged from 296dd52",
-  "requested_at": "2026-10-09T06:57:00Z",
+  "request": "Qualify all 44 cells after canonical role attachment, exclusive handshake exchange borrowing, and scoped receive-ring consumption",
+  "requested_at": "2026-10-09T09:29:00Z",
   "scope": [
     "same source commit across all qualification groups",
     "reference self-tests omitted by user request",
     "44 actual candidate client/server verdicts"
   ],
   "approval": "User requested investigating the completed CI failures, fixing them, pushing to the tested branch, and checking CI again.",
-  "local_evidence": "docs/LOCAL-KEY-WAIT-20261009.md",
+  "local_evidence": "docs/LOCAL-STRUCTURE-20261009.md",
   "candidate_directions": [
     "client",
     "server"
