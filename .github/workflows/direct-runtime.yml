@@ -2,7 +2,7 @@ name: Direct choreography runtime checks
 on:
   push:
     branches: [development/rolled-route-runtime, ci/parallel-client-retirement]
-    paths: ['src/**', 'tests/**', 'examples/**', 'host/**', 'tools/ci/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/direct-runtime.yml']
+    paths: ['src/**', 'tests/**', 'examples/**', 'host/**', 'tools/ci/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/direct-runtime.yml', '.github/workflows/interop-pilot.yml']
   workflow_dispatch:
 permissions:
   contents: read

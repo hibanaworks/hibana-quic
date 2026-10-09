@@ -3,7 +3,7 @@ name: QUIC interoperability pilot
 on:
   push:
     branches: [development/rolled-route-runtime, ci/parallel-client-retirement]
-    paths: [tools/ci/interop-request.json, tools/ci/run-interop.sh, tools/ci/run_in_tools.py, .github/workflows/interop-pilot.yml]
+    paths: ['src/**', 'host/src/**', 'Cargo.toml', 'Cargo.lock', 'host/Cargo.toml', 'host/Cargo.lock', tools/ci/pins.env, tools/ci/interop-request.json, tools/ci/run-interop.sh, tools/ci/run_in_tools.py, .github/workflows/interop-pilot.yml]
   workflow_dispatch:
     inputs:
       source_ref:
