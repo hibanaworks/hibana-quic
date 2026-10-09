@@ -1,8 +1,0 @@
-sources/hibana-quic/proofs/tls-input-cancellation/Cancellation.lean:11:16: warning: unused variable `b`
-
-Note: This linter can be disabled with `set_option linter.unusedVariables false`
-'TlsInputCancellation.partial_old_retained' does not depend on any axioms
-'TlsInputCancellation.cancelled_partial_erased' does not depend on any axioms
-'TlsInputCancellation.cancelled_input_unpublished' does not depend on any axioms
-'TlsInputCancellation.returned_to_slot' does not depend on any axioms
-'TlsInputCancellation.return_idempotent' does not depend on any axioms

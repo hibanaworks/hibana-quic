@@ -9,6 +9,73 @@ Host crate supplies Linux UDP, a reactor, entropy and allocated buffers.
 This is experimental software; passing interoperability tests does not establish
 complete cryptographic security.
 
+## Why Hibana
+
+The protocol order is executable: the same global choreography that explains
+who may act next is projected into the programs enforced by the running roles.
+QUIC receive, TLS, transmit, UDP publication, timers and retirement are separate
+participants in that choreography.
+
+1. **Declare the order.** [QUIC `choreography()`](src/quic/global.rs) composes
+   Retry, early data, receive/transmit, timers and Initial-key retirement with
+   `seq`, `par`, `route` and `roll`.
+2. **Project and attach.** The same file's `programs()` derives each
+   `RoleProgram` with `project`. [Role attachment](src/quic/local/attach.rs)
+   binds those programs to one session and installs the physical-send resolver.
+3. **Execute the localsides.** [The local composition](src/quic/local/mod.rs)
+   runs the actual [receive](src/quic/local/receive.rs),
+   [transmit](src/quic/local/transmit.rs),
+   [publication](src/quic/local/publication.rs) and
+   [timer](src/quic/local/timer.rs) continuations. Their `send`, `recv` and
+   `offer` operations must follow the projected programs.
+4. **Move resources with the protocol.**
+   [Application admission](src/quic/application/local/ownership.rs) moves the
+   transmit continuation, authenticated Finished receipt and transcript through
+   owned slots. It checks their connection scope before admitting application
+   traffic. A message label alone is not a substitute for those resources.
+
+### What is enforced
+
+At each attached endpoint, Hibana checks the permitted operation, peer,
+direction, lane, label and schema before committing progress. A successful
+operation advances once; rejected or uncommitted operations do not grant a
+second transition. Affine endpoint ownership prevents cloning an endpoint to
+publish the same progress twice. These are runtime protocol checks combined
+with Rust ownership, not a claim that every invalid program fails to compile.
+
+Rust moves and scoped borrows separately enforce resource ownership. For example,
+[stream reclamation](src/quic/application/local/reclaim.rs) joins source, input
+and delivery receipts for the same identity before releasing storage;
+[key ownership](src/quic/application/local/keys.rs) separates receive-side
+control from transmit-side sealing authority.
+
+Hibana does not prove the QUIC algorithms, certificate validation, cryptographic
+arithmetic, constant-time execution or network reliability. Progress also depends
+on a live carrier and fair scheduling. Cancellation must settle or quarantine
+accepted native I/O. A submitted datagram is not evidence of peer delivery.
+
+### How the remaining obligations are checked
+
+- **Lean:** abstract invariants for [body ownership and EOF](proofs/owned-body-input/Body.lean),
+  [stream-slot binding](proofs/stream-slot-binding/Binding.lean),
+  [cancellation](proofs/tls-input-cancellation/Cancellation.lean) and
+  [reclamation](proofs/stream-reclaim/Reclaim.lean).
+- **Z3:** counterexample searches over the corresponding constraints, including
+  [body completion](proofs/owned-body-input/check_body.py) and
+  [resource identity and drain conditions](proofs/stream-reclaim/reclaim.py).
+  Unsatisfiability establishes the encoded property under its model assumptions.
+- **Miri:** the TLS secret-memory boundary tests execute under Rust's interpreter
+  to check the exercised unsafe memory operations and aliasing obligations. The
+  source and tests live in `hibana-tls/src/secret.rs` and `src/secret/memory.rs`.
+- **Rust and interoperability tests:** actual endpoint execution, cancellation,
+  loss/corruption and transfer tests connect those models to concrete behavior;
+  Neqo/quiche peers check wire interoperability.
+
+The Lean/Z3 models are not an extraction or end-to-end proof of the Rust code.
+Miri checks the executions it runs; it does not prove cryptographic strength or
+constant-time machine code. See [Hibana's guarantee boundary](https://github.com/hibanaworks/hibana/blob/6fccdbf81038b00d99ec1bb2b9c43a487521628e/README.md#guarantees)
+for the underlying runtime and carrier assumptions.
+
 ## Try a real transfer
 
 You need Linux, Rust 1.95, and a server certificate/key with `DNS:localhost` and
@@ -68,7 +135,7 @@ with the [Host input/owner/output locals](host/src/retry/local/mod.rs).
 
 `local/mod.rs` contains the composition or direct role entry. The role files
 contain the actual endpoint operations; `imp/` contains buffers, codecs and
-arithmetic. Use these canonical module paths directly. Legacy module aliases are removed.
+arithmetic.
 
 ## Build
 

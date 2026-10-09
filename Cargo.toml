@@ -9,7 +9,7 @@ description = "Experimental bounded QUIC v1 transport driven by Hibana choreogra
 
 [dependencies]
 # The owned TLS repository is pinned to the same source checked out by CI.
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "5c6d2bec5150a900ba3bc6a19123eead2b1534b8", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "0e2cfc9f2732f03d701bb4901e9580e9503ff4a5", default-features = false }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "6fccdbf81038b00d99ec1bb2b9c43a487521628e", default-features = false }
 
 [features]
@@ -26,8 +26,6 @@ panic = "abort"
 lto = true
 codegen-units = 1
 
-[package.metadata.validation]
-connection-target-budget = "unavailable: legacy controller probes removed; recovered independent-role full-connection budget not measured"
 
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"

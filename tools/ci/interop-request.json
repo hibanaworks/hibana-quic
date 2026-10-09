@@ -3,7 +3,7 @@
     "client",
     "server"
   ],
-  "formal_models": false,
+  "formal_models": true,
   "candidate_case_direction_results": 44,
   "groups": [
     {

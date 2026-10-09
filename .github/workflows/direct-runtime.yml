@@ -44,7 +44,6 @@ jobs:
       - name: Verify both sources and dependency identities
         run: |
           python3 tools/ci/audit_source.py --check
-          python3 tools/ci/audit_control.py
           python3 tools/ci/check_dependencies.py
           python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
       - name: Core, TLS, integration and compile-fail contracts

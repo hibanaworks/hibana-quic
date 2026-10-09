@@ -1,3 +1,0 @@
-lost_verified_watermark: sat [verified_consumed = 1, end_offset = 1]
-duplicate: unsat; preconditions sat
-new_input: unsat; preconditions sat

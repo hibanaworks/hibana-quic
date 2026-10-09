@@ -1,6 +1,0 @@
-monotone cutoff: UNSAT; preconditions SAT
-discarded never readmitted: UNSAT; preconditions SAT
-largest retained: UNSAT; preconditions SAT
-merge never fabricates receipt: UNSAT; preconditions SAT
-range count bounded: UNSAT; preconditions SAT
-prune without raising cutoff permits replay: SAT [pn = 62, dropped = 62, floor = 0]

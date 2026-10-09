@@ -1,6 +1,5 @@
 //! Bounded ECN observations and pure counter validation (RFC 9000 §13.4/A.4).
-//! The unconnected PathEcn phase controller has been deleted; marking policy
-//! and probe lifetimes must be implemented as Hibana contracts.
+//! Marking policy and probe lifetimes are implemented by the ECN globals and locals.
 //!
 //! This module does not authenticate packets or own sent history. The caller
 //! supplies only processed, authenticated, nonduplicate receives and exact

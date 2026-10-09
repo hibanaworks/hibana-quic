@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Explicitly requested abstract-model checks, not a claim of Rust verification.
+# Run the selected Lean and Z3 abstract models.
 set -euo pipefail
 [[ ${GITHUB_ACTIONS:-false} == true && ${PUBLIC_REPOSITORY:-false} == true ]] || {
-  echo 'Run model tooling only in the authorized disposable public CI job'; exit 2;
+  echo 'Model tooling requires a disposable public CI job'; exit 2;
 }
 mkdir -p .ci-work/model-tools ci-safe-results
 curl --fail --location --silent --show-error --retry 2 --connect-timeout 30 --max-time 600 \

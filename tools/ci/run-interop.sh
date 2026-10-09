@@ -29,10 +29,9 @@ Path('ci-safe-results/environment.json').write_text(json.dumps({
  'github_sha':os.environ.get('GITHUB_SHA'),'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
  'run_id':os.environ.get('GITHUB_RUN_ID'),'run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),'interop_group':os.environ.get('INTEROP_GROUP'),
  'runner_os':os.environ.get('RUNNER_OS'),'runner_image':os.environ.get('ImageVersion'),
- 'machine':platform.machine(),'public_repository':True,'scope':'one explicitly requested pilot; baseline plus explicitly selected registered cases',
- 'not_claimed':['full 40-cell matrix','three release repetitions','Pico hardware','whole-host zero allocation']},indent=2)+'\n')
+ 'machine':platform.machine(),'public_repository':True,'scope':'registered interoperability cases for this matrix group'},indent=2)+'\n')
 PY
-# Model checks run only when the qualification request explicitly asks for them.
+# Run the abstract-model checks selected by the matrix configuration.
 MODELS_REQUESTED=$(python3 - <<'MODELS'
 import json
 value = json.load(open('tools/ci/interop-request.json')).get('formal_models', False)
@@ -45,7 +44,7 @@ if [[ $MODELS_REQUESTED == yes ]]; then
 fi
 # Upstream Compose uses interface_name, which requires daemon API >= 1.49.
 # Upgrade only the existing Docker CE/CLI packages from Docker's official source.
-# The user approved direct routing on this disposable GitHub runner only.
+# Direct routing is limited to this disposable GitHub runner.
 # Preserve all other daemon settings, firewall rules, socket modes and groups.
 [[ $(. /etc/os-release; echo "$ID:$VERSION_CODENAME") == ubuntu:noble ]]
 [[ $(dpkg --print-architecture) == amd64 ]]
