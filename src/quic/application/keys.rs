@@ -398,7 +398,7 @@ pub(super) fn check_result<T>(result: &Result<T, Error>, accepted: bool) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{carrier::CarrierStorage, runtime::TaskSet};
+    use crate::{runtime::carrier::CarrierStorage, runtime::TaskSet};
     use core::{
         future::Future,
         pin::pin,
@@ -414,8 +414,7 @@ mod tests {
         // Raw cryptographic fixture only: deliberately no handshake/ACK grant.
         // The actual projected owner must reject update and return the parked key.
         let mut scope = ApplicationKeyScope::new(1200);
-        let (mut read, mut write) = scope
-            .install(
+        let (mut read, mut write) = crate::crypto::directional::ApplicationReadKeys::install(scope.claim().unwrap(),
                 PacketKey::from_secret(
                     crypto::CipherSuite::Aes128GcmSha256,
                     crypto::KeyKind::OneRtt,

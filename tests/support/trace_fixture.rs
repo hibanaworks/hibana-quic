@@ -1,6 +1,6 @@
 //! Serializer fixtures only: this program never runs a network connection.
 #![allow(dead_code)]
-#[path = "../../src/trace.rs"]
+#[path = "../../src/runtime/trace.rs"]
 mod trace;
 mod trace_cases;
 use std::io::Write;

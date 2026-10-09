@@ -117,7 +117,7 @@ pub(crate) async fn transfer<'source, 'scope, 'cfg, 'buf, const P: usize>(
             roles.receive.send::<p::ReadAdmission>(&()).await?;
             Ok::<_, Error>((material, transcript))
         };
-        futures_util::try_join!(from_tx, write, from_rx, from_tls, receive)?
+        crate::runtime::join::values5(from_tx, write, from_rx, from_tls, receive).await?
     };
     Ok((Received { material, peer }, transmitted, transcript))
 }
@@ -168,7 +168,7 @@ pub(crate) async fn admit<'lane, 'owner, 'scope, const P: usize>(
             roles.source.recv::<p::StreamAdmission>().await?;
             peer_slot.take().map_err(|_| Error::Binding)
         };
-        futures_util::try_join!(send_owner, admit_control, admit_transmit, admit_source)?
+        crate::runtime::join::values4(send_owner, admit_control, admit_transmit, admit_source).await?
     };
     Ok((peer, writer, control))
 }
@@ -270,7 +270,7 @@ pub(crate) async fn retire<'scope>(
             roles.close_join.send::<p::CloseAuthority>(&()).await?;
             Ok::<(), Error>(())
         };
-        futures_util::try_join!(publication, key_owner, peer_owner, files_owner, join)?
+        crate::runtime::join::values5(publication, key_owner, peer_owner, files_owner, join).await?
     };
     Ok(closing)
 }

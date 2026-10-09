@@ -8,7 +8,7 @@ use hibana_quic::{
         CipherSuite, IntegrityBudget, KeyKind, PacketKey,
         directional::{ApplicationKeyScope, AuthenticatedRead},
     },
-    packet::{self, ShortHeader},
+    quic::kernel::packet::{self, ShortHeader},
 };
 fn key(suite: CipherSuite, byte: u8) -> PacketKey {
     PacketKey::from_secret(suite, KeyKind::OneRtt, &[byte; 32]).unwrap()
@@ -56,7 +56,12 @@ fn short_packet_retains_actual_affine_authentication_for_both_suites_and_zero_ci
     ] {
         for cid in [b"".as_slice(), b"peerid".as_slice()] {
             let mut scope = ApplicationKeyScope::new(91);
-            let (mut rx, _tx) = scope.install(key(suite, 2), key(suite, 1)).unwrap();
+            let (mut rx, _tx) = hibana_quic::crypto::directional::ApplicationReadKeys::install(
+                scope.claim().unwrap(),
+                key(suite, 2),
+                key(suite, 1),
+            )
+            .unwrap();
             let (bytes, len) = protected(suite, cid, 0x1_0000_0001, &[1], false, false);
             let mut opened = open::<128>(
                 &mut rx,
@@ -86,7 +91,12 @@ fn short_packet_retains_actual_affine_authentication_for_both_suites_and_zero_ci
 fn bad_tag_wrong_cid_capacity_and_authenticated_empty_or_reserved_are_rejected() {
     let suite = CipherSuite::Aes128GcmSha256;
     let mut scope = ApplicationKeyScope::new(92);
-    let (mut rx, _tx) = scope.install(key(suite, 2), key(suite, 1)).unwrap();
+    let (mut rx, _tx) = hibana_quic::crypto::directional::ApplicationReadKeys::install(
+        scope.claim().unwrap(),
+        key(suite, 2),
+        key(suite, 1),
+    )
+    .unwrap();
     let (mut bytes, len) = protected(suite, b"cid", 1, &[1], false, false);
     assert!(matches!(
         open::<128>(
@@ -141,7 +151,12 @@ fn bad_tag_wrong_cid_capacity_and_authenticated_empty_or_reserved_are_rejected()
 fn authenticated_peer_epoch_waits_for_actual_tx_install_before_ack_authority() {
     let suite = CipherSuite::Aes128GcmSha256;
     let mut scope = ApplicationKeyScope::new(93);
-    let (mut rx, mut tx) = scope.install(key(suite, 2), key(suite, 1)).unwrap();
+    let (mut rx, mut tx) = hibana_quic::crypto::directional::ApplicationReadKeys::install(
+        scope.claim().unwrap(),
+        key(suite, 2),
+        key(suite, 1),
+    )
+    .unwrap();
     rx.maintain(0, 1000).unwrap();
     let (bytes, len) = protected(suite, b"cid", 1, &[1], false, true);
     let mut opened = open::<128>(
@@ -183,8 +198,13 @@ fn seal_retains_reservation_and_rejects_changed_plaintext_scope_epoch_or_length(
     let mut scope = ApplicationKeyScope::new(94);
     let mut install = scope.claim().unwrap();
     let recovery = install.take_recovery().unwrap();
-    let (_rx, mut tx) = install.install(key(suite, 1), key(suite, 2)).unwrap();
-    let mut book = Recovery::<128>::new(recovery, Side::Client, 333_000, 1200).unwrap();
+    let (_rx, mut tx) = hibana_quic::crypto::directional::ApplicationReadKeys::install(
+        install,
+        key(suite, 1),
+        key(suite, 2),
+    )
+    .unwrap();
+    let mut book = Recovery::<128>::new(recovery, Side::Client, 333_000, 1200, 3).unwrap();
     let (mut tx_book, _rx_book, _clock, _publication, _retirement) = book.split().unwrap();
     let cid = b"cid";
     let wire_len = 1 + cid.len() + 4 + 1 + 16;
@@ -204,7 +224,12 @@ fn seal_retains_reservation_and_rejects_changed_plaintext_scope_epoch_or_length(
         assert_eq!(tx.last_sealed_packet_number(), None);
     }
     let mut other = ApplicationKeyScope::new(94);
-    let (_r, mut other_tx) = other.install(key(suite, 1), key(suite, 2)).unwrap();
+    let (_r, mut other_tx) = hibana_quic::crypto::directional::ApplicationReadKeys::install(
+        other.claim().unwrap(),
+        key(suite, 1),
+        key(suite, 2),
+    )
+    .unwrap();
     let r = tx_book
         .reserve_application(&[1], 0, wire_len as u64, false, 0)
         .unwrap();
@@ -222,7 +247,12 @@ fn seal_retains_reservation_and_rejects_changed_plaintext_scope_epoch_or_length(
         Err(_) => panic!("valid packet rejected"),
     };
     let mut peer = ApplicationKeyScope::new(95);
-    let (mut rx, _t) = peer.install(key(suite, 2), key(suite, 1)).unwrap();
+    let (mut rx, _t) = hibana_quic::crypto::directional::ApplicationReadKeys::install(
+        peer.claim().unwrap(),
+        key(suite, 2),
+        key(suite, 1),
+    )
+    .unwrap();
     let opened = open::<128>(
         &mut rx,
         &mut IntegrityBudget::new(),

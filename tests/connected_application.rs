@@ -7,6 +7,8 @@
 mod fixture;
 #[path = "support/loss_certificate.rs"]
 mod loss_certificate;
+#[path = "support/async_tls_fixture.rs"]
+mod owned_inspector_fixture;
 
 use core::{
     cell::{Cell, RefCell},
@@ -16,16 +18,15 @@ use core::{
 };
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
-    carrier::CarrierStorage,
     crypto::{
         IntegrityBudget,
         directional::{ApplicationKeyScope, ApplicationReadKeys},
     },
-    handshake::CryptoBuffer,
-    packet::{
+    quic::kernel::packet::{
         self, EncryptionLevel, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits,
         encode_varint,
     },
+    quic::kernel::streams::{Limits, PacketReference, SendChunk, StreamSlot},
     quic::publication_gate::PublicationGate,
     quic::{
         self, Clock, Config, DatagramRx, DatagramTx, IoError, Side,
@@ -33,10 +34,10 @@ use hibana_quic::{
         recovery::Recovery,
         tls::Transcript,
     },
-    streams::{Limits, PacketReference, SendChunk, StreamSlot},
-    tls::Provider,
+    runtime::carrier::CarrierStorage,
+    tls::buffer::CryptoBuffer,
     tls::certificate::{CertificateDer, Limits as CertificateLimits, trust_anchor_from_der},
-    tls::handshake::{BoundedTls, ClientConfig, ServerConfig, State, key_source::ReceivePacketKey},
+    tls::handshake::{BoundedTls, ClientConfig, ServerConfig, key_source::ReceivePacketKey},
 };
 use std::sync::{
     Arc,
@@ -130,6 +131,7 @@ struct Inspector<'scope> {
     handshake_acks: usize,
     handshake_done: usize,
     handshake_crypto: usize,
+    stream_fins: usize,
 }
 fn inspection_keys<'scope>(
     scope: &'scope mut ApplicationKeyScope,
@@ -138,7 +140,7 @@ fn inspection_keys<'scope>(
 ) -> Inspector<'scope> {
     let mut client_buffers = fixture::Buffers::new();
     let mut server_buffers = fixture::Buffers::new();
-    let client = BoundedTls::client(
+    let mut client = BoundedTls::client(
         client_config,
         client_buffers.storage(),
         &mut fixture::TestRandom(349),
@@ -146,157 +148,25 @@ fn inspection_keys<'scope>(
     .unwrap()
     .into_key_source(scope.claim().unwrap())
     .unwrap();
-    let server = BoundedTls::server(
+    let mut server_scope = ApplicationKeyScope::new(4892);
+    let mut server = BoundedTls::server(
         server_config,
         server_buffers.storage(),
         &mut fixture::TestRandom(701),
     )
+    .unwrap()
+    .into_key_source(server_scope.claim().unwrap())
     .unwrap();
-    use core::pin::pin;
-    use hibana_quic::tls::handshake::{
-        global as tls_graph, key_source::KeySource, local as direct,
-    };
-    let client = RefCell::new(client);
-    let server = RefCell::new(server);
-    struct ServerInput<'a, 'scope, 'cfg, 'buf> {
-        client: &'a RefCell<KeySource<'scope, 'cfg, 'buf>>,
-        finished: usize,
-    }
-    impl direct::MessageInput for ServerInput<'_, '_, '_, '_> {
-        async fn read_message(
-            &mut self,
-            level: hibana_quic::tls::Level,
-            out: &mut [u8],
-        ) -> Result<usize, direct::Error> {
-            let output = poll_fn(|_| match self.client.borrow_mut().transmit(out) {
-                Ok(Some(output)) => Poll::Ready(Ok(output)),
-                Ok(None) => Poll::Pending,
-                Err(e) => Poll::Ready(Err(direct::Error::Input(e))),
-            })
-            .await?;
-            assert_eq!(output.level, level);
-            if level == hibana_quic::tls::Level::Handshake {
-                assert_eq!(&out[..4], &[20, 0, 0, 32]);
-                assert_eq!(output.len, 36);
-                self.finished += 1;
-            }
-            Ok(output.len)
-        }
-    }
-    struct ClientInput<'a, 'cfg, 'buf> {
-        server: &'a RefCell<BoundedTls<'cfg, 'buf>>,
-        bytes: [u8; 8192],
-        offset: usize,
-        end: usize,
-        level: hibana_quic::tls::Level,
-    }
-    impl direct::MessageInput for ClientInput<'_, '_, '_> {
-        async fn read_message(
-            &mut self,
-            level: hibana_quic::tls::Level,
-            out: &mut [u8],
-        ) -> Result<usize, direct::Error> {
-            if self.offset == self.end {
-                let output =
-                    poll_fn(
-                        |_| match self.server.borrow_mut().transmit(&mut self.bytes) {
-                            Ok(Some(output)) => Poll::Ready(Ok(output)),
-                            Ok(None) => Poll::Pending,
-                            Err(e) => Poll::Ready(Err(direct::Error::Input(e))),
-                        },
-                    )
-                    .await?;
-                self.offset = 0;
-                self.end = output.len;
-                self.level = output.level;
-            }
-            assert_eq!(self.level, level);
-            let bytes = &self.bytes[self.offset..self.end];
-            assert!(bytes.len() >= 4);
-            let n =
-                4 + ((bytes[1] as usize) << 16) + ((bytes[2] as usize) << 8) + bytes[3] as usize;
-            assert!(n <= bytes.len() && n <= out.len());
-            out[..n].copy_from_slice(&bytes[..n]);
-            self.offset += n;
-            Ok(n)
-        }
-    }
-    let mut ci = ClientInput {
-        server: &server,
-        bytes: [0; 8192],
-        offset: 0,
-        end: 0,
-        level: hibana_quic::tls::Level::Initial,
-    };
-    let mut si = ServerInput {
-        client: &client,
-        finished: 0,
-    };
-    let mut cb = [0; 8192];
-    let mut sb = [0; 8192];
-    let cm = direct::MessageSlot::new(&mut cb);
-    let sm = direct::MessageSlot::new(&mut sb);
-    let cc = CarrierStorage::<1, 16, 4>::new();
-    let sc = CarrierStorage::<1, 16, 4>::new();
-    let mut cslab = vec![0; 65536];
-    let mut sslab = vec![0; 65536];
-    let mut ck = SessionKitStorage::uninit();
-    let mut sk = SessionKitStorage::uninit();
-    let ck = ck.init();
-    let sk = sk.init();
-    let cid = SessionId::new(4891);
-    let sid = SessionId::new(4892);
-    let cr = ck.rendezvous(&mut cslab, cc.bind(cid).unwrap()).unwrap();
-    let sr = sk.rendezvous(&mut sslab, sc.bind(sid).unwrap()).unwrap();
-    let cp = tls_graph::client_programs();
-    let sp = tls_graph::server_programs();
-    let mut cin = cr.enter(cid, &cp.input).unwrap();
-    let mut cv = cr.enter(cid, &cp.verify).unwrap();
-    let mut sin = sr.enter(sid, &sp.input).unwrap();
-    let mut sv = sr.enter(sid, &sp.verify).unwrap();
-    {
-        let mut co = pin!(KeySource::client_transcript_role(&mut cv, &client, &cm));
-        let mut ci = pin!(direct::client_input(&mut cin, &cm, &mut ci));
-        let mut so = pin!(direct::server_owner(&mut sv, &server, &sm));
-        let mut si = pin!(direct::server_input(&mut sin, &sm, &mut si));
-        let tasks = hibana_quic::runtime::TaskSet::new([
-            co.as_mut(),
-            ci.as_mut(),
-            so.as_mut(),
-            si.as_mut(),
-        ]);
-        let mut tasks = pin!(tasks);
-        let mut context = Context::from_waker(Waker::noop());
-        let mut complete = false;
-        for _ in 0..4096 {
-            if let Poll::Ready(result) = tasks.as_mut().poll(&mut context) {
-                result.unwrap();
-                complete = true;
-                break;
-            }
-        }
-        assert!(
-            complete,
-            "direct projected observation-only TLS handshake stalled"
-        );
-    }
-    assert_eq!(si.finished, 1);
-    assert_eq!(client.borrow().state(), State::Connected);
-    assert_eq!(server.borrow().state(), State::Connected);
-    let handshake = client
-        .borrow_mut()
-        .take_handshake_keys()
-        .unwrap()
-        .install()
-        .0;
-    let application = client
-        .borrow_mut()
-        .take_application_keys()
-        .unwrap()
-        .install()
+    let (mut material, server_material) =
+        owned_inspector_fixture::handshake_key_sources_observe(&mut client, &mut server, |_, _| {});
+    assert!(material.finished.is_some());
+    assert!(server_material.finished.is_some());
+    let handshake = material.handshake.take().unwrap().install().0;
+    let (installation, local, remote) = material.application.take().unwrap().into_parts();
+    let application = ApplicationReadKeys::install(installation, local, remote)
         .unwrap()
         .0;
-    let integrity = client.borrow_mut().take_integrity_budget().unwrap();
+    let integrity = client.take_integrity_budget().unwrap();
     Inspector {
         initial: hibana_quic::crypto::initial_keys(ORIGINAL).unwrap().server,
         largest_initial: None,
@@ -308,6 +178,7 @@ fn inspection_keys<'scope>(
         handshake_acks: 0,
         handshake_done: 0,
         handshake_crypto: 0,
+        stream_fins: 0,
     }
 }
 
@@ -316,8 +187,10 @@ struct Classification {
     initial_crypto: bool,
     handshake_ack: bool,
     application_ack: bool,
+    any_application_ack: bool,
     handshake_done: bool,
     handshake_crypto: bool,
+    stream_fin: bool,
 }
 fn classify_frames(bytes: &[u8], level: EncryptionLevel) -> Classification {
     let mut result = Classification::default();
@@ -327,6 +200,10 @@ fn classify_frames(bytes: &[u8], level: EncryptionLevel) -> Classification {
             Frame::Ack { .. } => {
                 result.handshake_ack = level == EncryptionLevel::Handshake;
                 result.application_ack = level == EncryptionLevel::OneRtt;
+            }
+            Frame::Stream { fin: true, .. } => {
+                result.stream_fin = true;
+                only_ack_or_padding = false;
             }
             Frame::Padding { .. } => {}
             Frame::HandshakeDone => {
@@ -345,6 +222,7 @@ fn classify_frames(bytes: &[u8], level: EncryptionLevel) -> Classification {
         }
     }
     result.handshake_ack &= only_ack_or_padding;
+    result.any_application_ack = result.application_ack;
     result.application_ack &= only_ack_or_padding;
     result
 }
@@ -414,12 +292,15 @@ impl Inspector<'_> {
             result.initial_crypto |= current.initial_crypto;
             result.handshake_ack |= current.handshake_ack;
             result.application_ack |= current.application_ack;
+            result.any_application_ack |= current.any_application_ack;
             result.handshake_done |= current.handshake_done;
             result.handshake_crypto |= current.handshake_crypto;
+            result.stream_fin |= current.stream_fin;
         }
         self.handshake_acks += usize::from(result.handshake_ack);
         self.handshake_done += usize::from(result.handshake_done);
         self.handshake_crypto += usize::from(result.handshake_crypto);
+        self.stream_fins += usize::from(result.stream_fin);
         result
     }
 }
@@ -570,7 +451,7 @@ struct Datagram {
     bytes: [u8; DATAGRAM],
     len: usize,
     ready_at: u64,
-    ecn: Option<hibana_quic::ecn::Codepoint>,
+    ecn: Option<hibana_quic::quic::ecn::Codepoint>,
 }
 struct Path {
     queued: RefCell<std::collections::VecDeque<Datagram>>,
@@ -581,6 +462,8 @@ struct Path {
     short_packets: Cell<usize>,
     delivered: Cell<usize>,
     dropped: Cell<usize>,
+    ack_drop_waiter: RefCell<Option<Waker>>,
+    application_acks_delivered: Cell<usize>,
 }
 impl Path {
     fn new(capacity: usize) -> Self {
@@ -593,6 +476,8 @@ impl Path {
             short_packets: Cell::new(0),
             delivered: Cell::new(0),
             dropped: Cell::new(0),
+            ack_drop_waiter: RefCell::new(None),
+            application_acks_delivered: Cell::new(0),
         }
     }
 }
@@ -647,6 +532,7 @@ enum Loss {
     ServerHandshakeAck,
     HandshakeDone,
     AllHandshakeDone,
+    AllHandshakeDoneAndFirstFin,
     HandshakeBeforeServerHello,
     HandshakeBeforeAnyInitial,
     LostConfirmationAndFirstApplicationFlight,
@@ -661,7 +547,7 @@ impl DatagramTx for Tx<'_, '_> {
     async fn send(
         &mut self,
         bytes: &[u8],
-        ecn: hibana_quic::ecn::Codepoint,
+        ecn: hibana_quic::quic::ecn::Codepoint,
     ) -> Result<u64, IoError> {
         poll_fn(|cx| {
             if self.path.queued.borrow().len() == self.path.capacity {
@@ -723,6 +609,13 @@ impl DatagramTx for Tx<'_, '_> {
                 Loss::HandshakeDone | Loss::AllHandshakeDone => classification
                     .as_ref()
                     .is_some_and(|packet| packet.handshake_done),
+                Loss::AllHandshakeDoneAndFirstFin => {
+                    classification.as_ref().is_some_and(|packet| {
+                        packet.handshake_done
+                            || (packet.stream_fin
+                                && self.inspector.as_ref().unwrap().stream_fins == 1)
+                    })
+                }
                 Loss::LostConfirmationAndFirstApplicationFlight => {
                     if let Some(packet) = classification.as_ref() {
                         packet.handshake_ack || packet.handshake_done
@@ -732,13 +625,17 @@ impl DatagramTx for Tx<'_, '_> {
                 }
                 Loss::HandshakeBeforeAnyInitial => {
                     let initial = matches!(
-                        hibana_quic::packet::PacketIter::new(bytes, CLIENT_ID.len(), 1)
-                            .ok()
-                            .and_then(|mut p| p.next())
-                            .and_then(Result::ok)
-                            .map(|p| p.header),
-                        Some(hibana_quic::packet::Header::Long {
-                            kind: hibana_quic::packet::LongType::Initial,
+                        hibana_quic::quic::kernel::packet::PacketIter::new(
+                            bytes,
+                            CLIENT_ID.len(),
+                            1
+                        )
+                        .ok()
+                        .and_then(|mut p| p.next())
+                        .and_then(Result::ok)
+                        .map(|p| p.header),
+                        Some(hibana_quic::quic::kernel::packet::Header::Long {
+                            kind: hibana_quic::quic::kernel::packet::LongType::Initial,
                             ..
                         })
                     );
@@ -758,6 +655,7 @@ impl DatagramTx for Tx<'_, '_> {
                     self.loss,
                     Loss::ServerApplicationAcks
                         | Loss::AllHandshakeDone
+                        | Loss::AllHandshakeDoneAndFirstFin
                         | Loss::HandshakeBeforeServerHello
                         | Loss::HandshakeBeforeAnyInitial
                         | Loss::LostConfirmationAndFirstApplicationFlight
@@ -769,14 +667,25 @@ impl DatagramTx for Tx<'_, '_> {
                 ) || self.path.dropped.get() == 0)
             {
                 self.path.dropped.set(self.path.dropped.get() + 1);
+                if let Some(waker) = self.path.ack_drop_waiter.borrow_mut().take() {
+                    waker.wake();
+                }
                 return Poll::Ready(Ok(self.clock.now()));
+            }
+            if classification
+                .as_ref()
+                .is_some_and(|packet| packet.any_application_ack)
+            {
+                self.path
+                    .application_acks_delivered
+                    .set(self.path.application_acks_delivered.get() + 1);
             }
             let mut datagram = Datagram {
                 bytes: [0; DATAGRAM],
                 len: bytes.len(),
                 ecn: match self.loss {
                     Loss::MissingEcnMetadata => None,
-                    Loss::BleachedEcn => Some(hibana_quic::ecn::Codepoint::NotEct),
+                    Loss::BleachedEcn => Some(hibana_quic::quic::ecn::Codepoint::NotEct),
                     _ => Some(ecn),
                 },
                 ready_at: self.clock.now()
@@ -854,12 +763,13 @@ impl BodyReader for Body {
         Ok(len)
     }
 }
-struct Handler {
+struct Handler<'a> {
+    wait_for_ack_drop: Option<&'a Path>,
     limit: Option<core::num::NonZeroUsize>,
     failure: FileFailure,
     opened: Vec<(u64, usize)>,
 }
-impl ServerHandler for Handler {
+impl ServerHandler for Handler<'_> {
     type Body = Body;
     fn request_limit(&self) -> Option<core::num::NonZeroUsize> {
         self.limit
@@ -867,6 +777,23 @@ impl ServerHandler for Handler {
     async fn open(&mut self, stream_id: u64, request: &[u8]) -> Result<Body, ()> {
         if self.failure == FileFailure::Open {
             return Err(());
+        }
+        // For this explicit ACK-loss scenario, hold the application effect
+        // pending until a real ACK-only datagram is dropped after the request
+        // reached the handler. This avoids assuming a particular scheduler's
+        // packet coalescing. Loss masks, deadlines and final assertions are
+        // unchanged; the delivered-ACK counter also checks the premise.
+        if let Some(path) = self.wait_for_ack_drop {
+            let previous = path.dropped.get();
+            poll_fn(|cx| {
+                if path.dropped.get() > previous {
+                    Poll::Ready(())
+                } else {
+                    *path.ack_drop_waiter.borrow_mut() = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            })
+            .await;
         }
         let request = REQUESTS
             .iter()
@@ -924,6 +851,8 @@ macro_rules! roles {
                 tls_rx: $rv.enter($sid, &$program.handshake.tls_rx).unwrap(),
                 tx: $rv.enter($sid, &$program.handshake.tx).unwrap(),
                 tls_tx: $rv.enter($sid, &$program.handshake.tls_tx).unwrap(),
+                tls_complete: $rv.enter($sid, &$program.handshake.tls_complete).unwrap(),
+                tls_handoff: $rv.enter($sid, &$program.handshake.tls_handoff).unwrap(),
                 udp: $rv.enter($sid, &$program.handshake.udp).unwrap(),
                 timer: $rv.enter($sid, &$program.handshake.timer).unwrap(),
                 timer_tx: $rv.enter($sid, &$program.handshake.timer_tx).unwrap(),
@@ -975,7 +904,7 @@ fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
     assert!(matches!(
         StreamNumbers::new(
             &scope,
-            hibana_quic::streams::Role::Client,
+            hibana_quic::quic::kernel::streams::Role::Client,
             limits(Side::Server),
             unbacked,
             &mut slots,
@@ -983,12 +912,12 @@ fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
             &mut references
         ),
         Err(Error::Streams(
-            hibana_quic::streams::Error::InvalidConfiguration
+            hibana_quic::quic::kernel::streams::Error::InvalidConfiguration
         ))
     ));
     StreamNumbers::new(
         &scope,
-        hibana_quic::streams::Role::Client,
+        hibana_quic::quic::kernel::streams::Role::Client,
         limits(Side::Server),
         limits(Side::Client),
         &mut slots,
@@ -1009,7 +938,7 @@ fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
     let mut references = [PacketReference::EMPTY; 64];
     let mut numbers = StreamNumbers::new(
         &scope,
-        hibana_quic::streams::Role::Client,
+        hibana_quic::quic::kernel::streams::Role::Client,
         limits(Side::Server),
         limits(Side::Client),
         &mut slots,
@@ -1024,7 +953,7 @@ fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
     assert!(matches!(
         facets.app.open_local(),
         Err(hibana_quic::quic::application_stream::Error::Streams(
-            hibana_quic::streams::Error::StreamLimit
+            hibana_quic::quic::kernel::streams::Error::StreamLimit
         ))
     ));
 }
@@ -1059,6 +988,11 @@ fn lost_authenticated_handshake_done_is_retransmitted_before_client_completion()
 #[test]
 fn authenticated_one_rtt_ack_confirms_when_every_handshake_done_is_lost() {
     run_connection(3, Loss::AllHandshakeDone);
+}
+
+#[test]
+fn outstanding_confirmation_cannot_starve_lost_final_stream_probe() {
+    run_connection(1, Loss::AllHandshakeDoneAndFirstFin);
 }
 
 #[test]
@@ -1160,7 +1094,7 @@ fn connection_case_with_failure(
         &mut observation_scope,
         ClientConfig {
             protocol: Default::default(),
-            version: hibana_quic::version::Version::V1,
+            version: hibana_quic::quic::kernel::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: fixture::now(),
@@ -1169,7 +1103,7 @@ fn connection_case_with_failure(
         },
         ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::version::Version::V1,
+            version: hibana_quic::quic::kernel::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &signing,
             transport_parameters: &server_params,
@@ -1180,7 +1114,7 @@ fn connection_case_with_failure(
     let client_tls = BoundedTls::client(
         ClientConfig {
             protocol: Default::default(),
-            version: hibana_quic::version::Version::V1,
+            version: hibana_quic::quic::kernel::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: fixture::now(),
@@ -1207,7 +1141,7 @@ fn connection_case_with_failure(
     let mut ticket_entropy = fixture::TestRandom(992);
     let server_config = ServerConfig {
         protocol: Default::default(),
-        version: hibana_quic::version::Version::V1,
+        version: hibana_quic::quic::kernel::version::Version::V1,
         certificate_chain: &chain,
         signing_key: &signing,
         transport_parameters: &server_params,
@@ -1251,12 +1185,22 @@ fn connection_case_with_failure(
     } else {
         10_000
     };
-    let mut client_book =
-        Recovery::<DATAGRAM>::new(client_recovery, Side::Client, initial_rtt, DATAGRAM as u64)
-            .unwrap();
-    let mut server_book =
-        Recovery::<DATAGRAM>::new(server_recovery, Side::Server, initial_rtt, DATAGRAM as u64)
-            .unwrap();
+    let mut client_book = Recovery::<DATAGRAM>::new(
+        client_recovery,
+        Side::Client,
+        initial_rtt,
+        DATAGRAM as u64,
+        3,
+    )
+    .unwrap();
+    let mut server_book = Recovery::<DATAGRAM>::new(
+        server_recovery,
+        Side::Server,
+        initial_rtt,
+        DATAGRAM as u64,
+        3,
+    )
+    .unwrap();
     let (mut client_issuer, client_stop) = client_gate.split().unwrap();
     let (mut server_issuer, server_stop) = server_gate.split().unwrap();
     let programs = application::global::programs();
@@ -1311,9 +1255,9 @@ fn connection_case_with_failure(
     let mut client_roles = roles!(client_rv, client_sid, programs);
     let mut server_roles = roles!(server_rv, server_sid, programs);
     let mut client_data = [[0; 8192]; 3];
-    let mut client_maps = [[0; hibana_quic::handshake::bitmap_bytes(8192)]; 3];
+    let mut client_maps = [[0; hibana_quic::tls::buffer::bitmap_bytes(8192)]; 3];
     let mut server_data = [[0; 8192]; 3];
-    let mut server_maps = [[0; hibana_quic::handshake::bitmap_bytes(8192)]; 3];
+    let mut server_maps = [[0; hibana_quic::tls::buffer::bitmap_bytes(8192)]; 3];
     let [c0, c1, ca] = &mut client_data;
     let [cm0, cm1, cma] = &mut client_maps;
     let [s0, s1, sa] = &mut server_data;
@@ -1334,7 +1278,7 @@ fn connection_case_with_failure(
         config: Config {
             local_preferred: None,
             initial_path: None,
-            version: hibana_quic::version::Version::V1,
+            version: hibana_quic::quic::kernel::version::Version::V1,
             side: Side::Client,
             local_connection_id: CLIENT_ID,
             original_destination_id: ORIGINAL,
@@ -1364,7 +1308,7 @@ fn connection_case_with_failure(
         config: Config {
             local_preferred: None,
             initial_path: None,
-            version: hibana_quic::version::Version::V1,
+            version: hibana_quic::quic::kernel::version::Version::V1,
             side: Side::Server,
             local_connection_id: SERVER_ID,
             original_destination_id: ORIGINAL,
@@ -1439,6 +1383,11 @@ fn connection_case_with_failure(
         started: Vec::new(),
     };
     let mut handler = Handler {
+        wait_for_ack_drop: matches!(
+            loss,
+            Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer
+        )
+        .then_some(&to_client),
         limit: if matches!(loss, Loss::ServerApplicationAcks) {
             core::num::NonZeroUsize::new(count)
         } else {
@@ -1542,8 +1491,8 @@ fn connection_case_with_failure(
     }
     let client = client.unwrap();
     let server = server.unwrap();
-    assert_eq!(client_transcript.state(), State::Connected);
-    assert_eq!(server_transcript.state(), State::Connected);
+    // Successful application continuations consumed the actual Finished
+    // receipts; no duplicate source-state query authorizes this boundary.
     for transcript in [&client_transcript, &server_transcript] {
         assert!(
             transcript.received_offset(hibana_quic::tls::Level::Initial) > 0,
@@ -1584,9 +1533,9 @@ fn connection_case_with_failure(
     }
     if matches!(loss, Loss::MissingEcnMetadata | Loss::BleachedEcn) {
         let expected = if matches!(loss, Loss::MissingEcnMetadata) {
-            hibana_quic::ecn::Failure::MissingCounts
+            hibana_quic::quic::ecn::Failure::MissingCounts
         } else {
-            hibana_quic::ecn::Failure::Bleached
+            hibana_quic::quic::ecn::Failure::Bleached
         };
         for report in [&client, &server] {
             assert!(
@@ -1598,7 +1547,7 @@ fn connection_case_with_failure(
             assert_eq!(report.ecn_acknowledgments_sent, 0);
             assert_eq!(
                 report.ecn_feedback_error,
-                Some(hibana_quic::ecn::Error::Validation(expected))
+                Some(hibana_quic::quic::ecn::Error::Validation(expected))
             );
         }
     }
@@ -1613,6 +1562,11 @@ fn connection_case_with_failure(
             !client.all_streams_acked,
             "lost request ACK must not be invented"
         );
+        assert_eq!(
+            to_client.application_acks_delivered.get(),
+            0,
+            "ACK-loss fixture must not deliver a piggybacked ACK"
+        );
         assert!(server.all_streams_acked);
     } else if !matches!(
         loss,
@@ -1626,11 +1580,9 @@ fn connection_case_with_failure(
     assert!(client.sent_bytes >= 1200 && server.sent_bytes >= 1200);
     assert_eq!(requests.started.len(), count);
     assert_eq!(handler.opened.len(), count);
-    for stream in 0..count {
+    for (stream, size) in BODY_SIZES.iter().enumerate().take(count) {
         assert!(handler.opened.contains(&((stream * 4) as u64, stream)));
-        let expected: Vec<_> = (0..BODY_SIZES[stream])
-            .map(|offset| body_byte(stream, offset))
-            .collect();
+        let expected: Vec<_> = (0..*size).map(|offset| body_byte(stream, offset)).collect();
         assert_eq!(
             sink.bytes[stream], expected,
             "wrong response selected or bytes lost"
@@ -1659,6 +1611,7 @@ fn connection_case_with_failure(
         Loss::ServerApplicationAcks
             | Loss::ServerApplicationAcksPersistentServer
             | Loss::AllHandshakeDone
+            | Loss::AllHandshakeDoneAndFirstFin
             | Loss::HandshakeBeforeServerHello
             | Loss::HandshakeBeforeAnyInitial
             | Loss::LostConfirmationAndFirstApplicationFlight
@@ -1708,10 +1661,17 @@ fn complete_responses_can_close_when_request_ack_is_lost_and_server_stays_open()
 
 #[test]
 fn finite_handshake_survives_each_early_server_packet_loss_burst() {
-    for first in 1..=16 {
-        for count in 1..=3 {
-            eprintln!("server loss burst: first={first} count={count}");
-            connection_case(1, Loss::ServerPacketBurst { first, count });
+    // A one-request exchange can now finish after 15 server datagrams.
+    // Keep the loss-injection assertion: a nonexistent 16th datagram is not
+    // evidence of recovery. Preserve its first 15 targets and additionally
+    // exercise all 16 targets with three requests (93 injected-loss cases).
+    // Queue capacities, loss lengths and simulated-time budgets are unchanged.
+    for (requests, last) in [(1, 15), (3, 16)] {
+        for first in 1..=last {
+            for count in 1..=3 {
+                eprintln!("server loss burst: requests={requests} first={first} count={count}");
+                connection_case(requests, Loss::ServerPacketBurst { first, count });
+            }
         }
     }
 }

@@ -128,5 +128,5 @@ pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: u
             count as u64,
         )
     };
-    futures_util::try_join!(source, ingress, collector).map(|_| ())
+    crate::runtime::join::values3(source, ingress, collector).await.map(|_| ())
 }

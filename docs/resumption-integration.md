@@ -46,10 +46,10 @@ HRR preserves the existing strict one-requested-share rule, group/suite continui
 
 - Ticket AEAD/binder, nonce, replay, capacity, age/expiry, zeroization and trust-digest unit tests
 - Existing RFC8448 schedule/binder vectors, including one-shot resumption-master extraction
-- `reference-tls/tests/resumption.rs`: full first connection then resumed connection, actual encrypted Handshake/OneRtt TLS/NST flights, fresh application keys and Finished, one-byte/127-byte/4096-byte fragmentation, and zero allocations for both constructors, real entropy, ticket/cache ownership and two complete provider handshakes
+- `tests/tls-reference/tests/resumption.rs`: full first connection then resumed connection, actual encrypted Handshake/OneRtt TLS/NST flights, fresh application keys and Finished, one-byte/127-byte/4096-byte fragmentation, and zero allocations for both constructors, real entropy, ticket/cache ownership and two complete provider handshakes
 - The same six resumption tests also pass in the clean host release package, which has no rustls TLS dependency. Source/binary hashes and commands are recorded in `artifacts/resumption/manifest.json`
 - Negative/transition tests cover changed trust anchors/limits even through an unfiltered lookup, known-ticket bad binder, expired/unknown issuer fallback, server policy/limit changes, cache pressure, and equivalent parameter encodings/CID changes
-- `reference-tls/tests/resumption_rustls.rs`: real resumed handshakes in both directions against pinned rustls 0.23.45 QUIC with shared configurations, plus a resumed rustls client through an actual P-256 HRR; both sides' 1-RTT packet keys interoperate
+- `tests/tls-reference/tests/resumption_rustls.rs`: real resumed handshakes in both directions against pinned rustls 0.23.45 QUIC with shared configurations, plus a resumed rustls client through an actual P-256 HRR; both sides' 1-RTT packet keys interoperate
 
 These provider tests alone do not qualify the complete UDP endpoint or official
 runner gate. The allocating rustls peer is outside the bounded allocation

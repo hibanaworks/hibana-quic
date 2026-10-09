@@ -12,7 +12,7 @@ use hibana_quic::{
     tls::certificate::UnixTime,
     tls::handshake::{SigningKey, Storage},
 };
-use rand_core::{CryptoRng, RngCore};
+use hibana_tls::entropy::{Entropy, Unavailable};
 use std::time::Duration;
 
 pub const CLIENT_PARAMS: &[u8] = &[4, 1, 42];
@@ -50,10 +50,7 @@ impl Buffers {
 /// Reproducible entropy for tests only; packet protection and certificate
 /// authentication still use the production cryptographic implementation.
 pub struct TestRandom(pub u64);
-impl RngCore for TestRandom {
-    fn next_u32(&mut self) -> u32 {
-        self.next_u64() as u32
-    }
+impl TestRandom {
     fn next_u64(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -65,12 +62,13 @@ impl RngCore for TestRandom {
             part.copy_from_slice(&self.next_u64().to_le_bytes()[..part.len()]);
         }
     }
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+}
+impl Entropy for TestRandom {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Unavailable> {
         self.fill_bytes(dest);
         Ok(())
     }
 }
-impl CryptoRng for TestRandom {}
 
 pub const ROOT_DER: &[u8] = &[
     0x30, 0x82, 0x01, 0x5d, 0x30, 0x82, 0x01, 0x04, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x01, 0x01,

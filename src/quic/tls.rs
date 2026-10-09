@@ -1,17 +1,14 @@
-//! Reconstructed transcript ownership adapter. Requires fresh validation.
+//! Owned transcript input, output and authenticated handoff material.
 //! Packet authentication and CRYPTO reassembly precede creation of CryptoInput.
 use crate::{
     crypto::{
         IntegrityBudget,
         directional::{ApplicationKeyScope, ApplicationReadKeys, ApplicationWriteKeys},
     },
-    early_data::{EarlyStatus, RememberedLimits, ReplayClaim},
-    packet::MAX_VARINT,
-    tls::handshake::{
-        State,
-        key_source::{
-            EarlyKeyMaterial, FinishedAuthenticated, KeySource, ReceivePacketKey, TransmitPacketKey,
-        },
+    quic::early_data::{EarlyStatus, RememberedLimits, ReplayClaim},
+    quic::kernel::packet::MAX_VARINT,
+    tls::handshake::key_source::{
+        EarlyKeyMaterial, FinishedAuthenticated, KeySource, ReceivePacketKey, TransmitPacketKey,
     },
     tls::{Error, Level, Observations},
 };
@@ -63,15 +60,15 @@ impl<'scope, const N: usize> CryptoInput<'scope, N> {
 }
 impl<const N: usize> Drop for CryptoInput<'_, N> {
     fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.bytes.zeroize();
+        use hibana_tls::secret::Erase;
+        self.bytes.erase();
     }
 }
 pub struct CryptoFlight<const N: usize> {
-    level: Level,
-    offset: u64,
-    bytes: [u8; N],
-    len: usize,
+    pub(super) level: Level,
+    pub(super) offset: u64,
+    pub(super) bytes: [u8; N],
+    pub(super) len: usize,
 }
 impl<const N: usize> CryptoFlight<N> {
     pub const fn level(&self) -> Level {
@@ -86,43 +83,16 @@ impl<const N: usize> CryptoFlight<N> {
 }
 impl<const N: usize> Drop for CryptoFlight<N> {
     fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.bytes.zeroize();
+        use hibana_tls::secret::Erase;
+        self.bytes.erase();
     }
 }
-pub struct PeerParameters<const P: usize> {
-    bytes: [u8; P],
-    len: usize,
-}
-impl<const P: usize> PeerParameters<P> {
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
-}
-#[must_use = "Finished authority must cross the validated application boundary"]
-pub struct Finished<'scope, const P: usize> {
-    receipt: FinishedAuthenticated<'scope>,
-    parameters: PeerParameters<P>,
-}
-impl<'scope, const P: usize> Finished<'scope, P> {
-    pub fn receipt(&self) -> &FinishedAuthenticated<'scope> {
-        &self.receipt
-    }
-    pub fn parameters(&self) -> &[u8] {
-        self.parameters.bytes()
-    }
-    pub fn into_parts(self) -> (FinishedAuthenticated<'scope>, PeerParameters<P>) {
-        (self.receipt, self.parameters)
-    }
-    pub fn into_receipt(self) -> FinishedAuthenticated<'scope> {
-        self.receipt
-    }
-}
+pub use hibana_tls::handshake::key_source::{Finished, PeerParameters};
 
 pub struct Transcript<'scope, 'cfg, 'buf> {
-    source: KeySource<'scope, 'cfg, 'buf>,
-    received: [u64; 3],
-    sent: [u64; 3],
+    pub(super) source: KeySource<'scope, 'cfg, 'buf>,
+    pub(super) received: [u64; 3],
+    pub(super) sent: [u64; 3],
 }
 impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
     pub fn new(source: KeySource<'scope, 'cfg, 'buf>) -> Self {
@@ -133,7 +103,7 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
         }
     }
     fn ensure_live(&self) -> Result<(), Error> {
-        if self.source.state() == State::Failed {
+        if self.source.last_failure().is_some() {
             Err(Error::Handshake)
         } else {
             Ok(())
@@ -142,35 +112,17 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
     pub fn scope(&self) -> &'scope ApplicationKeyScope {
         self.source.scope()
     }
-    pub fn version(&self) -> crate::version::Version {
+    pub fn version(&self) -> crate::quic::kernel::version::Version {
         self.source.version()
     }
     pub fn side(&self) -> crate::tls::schedule::Side {
         self.source.side()
-    }
-    pub fn state(&self) -> State {
-        self.source.state()
-    }
-    pub(crate) fn material(&mut self) -> &mut crate::tls::handshake::BoundedTls<'cfg, 'buf> {
-        self.source.material()
-    }
-    pub(crate) fn record_verified_consumed(&mut self, consumed: [u64; 2]) -> Result<(), Error> {
-        for (index, end) in consumed.into_iter().enumerate() {
-            if end < self.received[index] || end > MAX_VARINT {
-                return Err(Error::InvalidInput);
-            }
-            self.received[index] = end;
-        }
-        Ok(())
     }
     pub fn received_offset(&self, level: Level) -> u64 {
         self.received[level_index(level)]
     }
     pub fn observations(&self) -> Observations {
         self.source.observations()
-    }
-    pub fn is_resumed(&self) -> bool {
-        self.source.is_resumed()
     }
     pub fn negotiated_suite(&self) -> Option<crate::crypto::CipherSuite> {
         self.source.negotiated_suite()
@@ -181,7 +133,11 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
     pub fn write_failure_diagnostic(&self, output: &mut dyn core::fmt::Write) -> core::fmt::Result {
         self.source.write_failure_diagnostic(output)
     }
-    pub fn receive<const N: usize>(&mut self, input: CryptoInput<'scope, N>) -> Result<(), Error> {
+    pub fn receive<const N: usize>(
+        &mut self,
+        finished: &FinishedAuthenticated<'scope>,
+        input: CryptoInput<'scope, N>,
+    ) -> Result<(), Error> {
         self.ensure_live()?;
         if !core::ptr::eq(input.scope(), self.scope()) {
             return Err(Error::InvalidInput);
@@ -191,7 +147,8 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
             return Err(Error::InvalidInput);
         }
         let end = range_end(input.offset(), input.bytes().len())?;
-        self.source.receive(input.level(), input.bytes())?;
+        self.source
+            .receive(finished, input.level(), input.bytes())?;
         self.received[index] = end;
         Ok(())
     }
@@ -225,31 +182,16 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
         &mut self,
     ) -> Result<(ApplicationReadKeys<'scope>, ApplicationWriteKeys<'scope>), Error> {
         self.ensure_live()?;
-        self.source.take_application_keys()?.install()
+        let (installation, local, remote) = self.source.take_application_keys()?.into_parts();
+        ApplicationReadKeys::install(installation, local, remote).map_err(|error| match error {
+            crate::crypto::Error::KeyUpdateNotAllowed => Error::KeyUpdateNotAllowed,
+            crate::crypto::Error::KeyDiscarded => Error::KeysUnavailable,
+            _ => Error::InvalidInput,
+        })
     }
     pub fn take_finished<const P: usize>(&mut self) -> Result<Finished<'scope, P>, Error> {
         self.ensure_live()?;
-        if self.source.state() != State::Connected {
-            return Err(Error::KeysUnavailable);
-        }
-        let raw = self
-            .source
-            .peer_transport_parameters()
-            .ok_or(Error::KeysUnavailable)?;
-        if raw.len() > P {
-            return Err(Error::Capacity);
-        }
-        let mut bytes = [0; P];
-        bytes[..raw.len()].copy_from_slice(raw);
-        let parameters = PeerParameters {
-            bytes,
-            len: raw.len(),
-        };
-        let receipt = self.source.take_finished()?;
-        Ok(Finished {
-            receipt,
-            parameters,
-        })
+        self.source.take_finished_with_parameters()
     }
     pub fn take_integrity_budget(&mut self) -> Result<IntegrityBudget, Error> {
         self.ensure_live()?;
@@ -257,16 +199,13 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
     }
     pub fn take_early_admission(
         &mut self,
-    ) -> Result<crate::early_data::owner::Admission<'scope>, Error> {
+    ) -> Result<crate::quic::early_data::owner::Admission<'scope>, Error> {
         self.ensure_live()?;
         self.source.take_early_admission()
     }
     pub fn take_early_key(&mut self) -> Result<EarlyKeyMaterial<'scope>, Error> {
         self.ensure_live()?;
         self.source.take_early_key()
-    }
-    pub fn resumed(&self) -> bool {
-        self.source.resumed()
     }
     pub fn early_status(&self) -> EarlyStatus {
         self.source.early_status()
@@ -293,14 +232,14 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
         self.source.discard_pending_early_key();
     }
 }
-fn level_index(level: Level) -> usize {
+pub(super) fn level_index(level: Level) -> usize {
     match level {
         Level::Initial => 0,
         Level::Handshake => 1,
         Level::OneRtt => 2,
     }
 }
-fn range_end(offset: u64, len: usize) -> Result<u64, Error> {
+pub(super) fn range_end(offset: u64, len: usize) -> Result<u64, Error> {
     let end = offset
         .checked_add(u64::try_from(len).map_err(|_| Error::Capacity)?)
         .ok_or(Error::Capacity)?;

@@ -8,6 +8,9 @@ pub const RX: u8 = 0;
 pub const TLS_RX: u8 = 1;
 pub const TX: u8 = 2;
 pub const TLS_TX: u8 = 3;
+pub const TLS_COMPLETE: u8 = 32;
+pub const TLS_HANDOFF: u8 = hibana_tls::owned_global::HANDOFF;
+pub type TranscriptComplete = g::Msg<227, ()>;
 pub const UDP: u8 = 4;
 pub const TIMER: u8 = 5;
 pub const TIMER_TX: u8 = 6;
@@ -294,8 +297,8 @@ pub type InitialRetirementFlow = g::Seq<
     g::Send<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>,
 >;
 pub type ReceiveFlow = g::Seq<
-    crate::tls::handshake::global::Flow,
-    g::Seq<g::Send<RX, TLS_RX, ReceiveComplete>, g::Send<TLS_RX, RX, ReceiveContinuation>>,
+    hibana_tls::owned_global::Flow,
+    g::Seq<g::Send<TLS_RX, TLS_COMPLETE, TranscriptComplete>, g::Seq<g::Send<RX, TLS_RX, ReceiveComplete>, g::Send<TLS_RX, RX, ReceiveContinuation>>>,
 >;
 pub type DrainFlow = g::Roll<
     g::Route<
@@ -409,16 +412,17 @@ pub fn early_prefix() -> g::Program<EarlyFlow> {
 pub type MainFlow =
     g::Par<ReceiveFlow, g::Par<TransmitFlow, g::Par<TimerFlow, InitialRetirementFlow>>>;
 pub type Flow = g::Seq<
-    crate::retry::client_global::Prefix,
+    crate::quic::retry::client_global::Prefix,
     g::Seq<EarlyFlow, g::Seq<g::Send<TLS_TX, TX, EarlyContinue>, MainFlow>>,
 >;
 
 pub fn choreography() -> g::Program<Flow> {
     let receive = g::seq(
-        crate::tls::handshake::global::choreography(),
+        hibana_tls::owned_global::choreography(),
         g::seq(
-            g::send::<RX, TLS_RX, ReceiveComplete>(),
-            g::send::<TLS_RX, RX, ReceiveContinuation>(),
+            g::send::<TLS_RX, TLS_COMPLETE, TranscriptComplete>(),
+            g::seq(g::send::<RX, TLS_RX, ReceiveComplete>(),
+                g::send::<TLS_RX, RX, ReceiveContinuation>()),
         ),
     );
     let drain = g::route(
@@ -483,7 +487,7 @@ pub fn choreography() -> g::Program<Flow> {
         g::send::<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>(),
     );
     g::seq(
-        crate::retry::client_global::prefix(),
+        crate::quic::retry::client_global::prefix(),
         g::seq(
             early_prefix(),
             g::seq(
@@ -498,6 +502,8 @@ pub struct Programs {
     pub tls_rx: RoleProgram<TLS_RX>,
     pub tx: RoleProgram<TX>,
     pub tls_tx: RoleProgram<TLS_TX>,
+    pub tls_complete: RoleProgram<TLS_COMPLETE>,
+    pub tls_handoff: RoleProgram<TLS_HANDOFF>,
     pub udp: RoleProgram<UDP>,
     pub timer: RoleProgram<TIMER>,
     pub timer_tx: RoleProgram<TIMER_TX>,
@@ -514,6 +520,8 @@ pub fn programs() -> Programs {
         tls_rx: project(&global),
         tx: project(&global),
         tls_tx: project(&global),
+        tls_complete: project(&global),
+        tls_handoff: project(&global),
         udp: project(&global),
         timer: project(&global),
         timer_tx: project(&global),

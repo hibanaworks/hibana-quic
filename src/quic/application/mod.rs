@@ -17,7 +17,10 @@ mod transmit;
 pub use assembly::{client, client_early, server};
 
 use super::{Config, Outcome, application_stream, parameters, recovery};
-use crate::{crypto, handshake::CryptoBuffer, packet, quic::publication_gate, streams};
+use crate::{
+    crypto, quic::kernel::packet, quic::kernel::streams, quic::publication_gate,
+    tls::buffer::CryptoBuffer,
+};
 use core::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},
@@ -55,6 +58,8 @@ pub trait ServerHandler {
     ) -> impl Future<Output = Result<Self::Body, ()>>;
 }
 /// A pending request stays pending until exactly one successful `started`.
+// Application rejection has no transport error payload or transport authority.
+#[allow(clippy::result_unit_err)]
 pub trait ClientRequests {
     /// Actual authenticated HTTP/3 SETTINGS, delivered after the projected
     /// control receipt. Adapters that do not implement HTTP/3 reject this mode.
@@ -78,12 +83,12 @@ pub struct Buffers<'a, const RX: usize, const CHUNK: usize> {
 }
 pub struct EarlyServer<'a, const RX: usize> {
     pub packets: super::early_wire::PendingPackets<'a>,
-    pub slots: &'a mut [crate::early_data::QuarantineSlot<RX>],
-    pub policy: crate::early_data::ServerPolicy,
+    pub slots: &'a mut [crate::quic::early_data::QuarantineSlot<RX>],
+    pub policy: crate::quic::early_data::ServerPolicy,
 }
 pub struct Setup<'a, const RX: usize, const CHUNK: usize> {
-    pub local_ids: Option<crate::path::ids::Storage<'a>>,
-    pub peer_ids: Option<crate::path::peer_ids::Storage<'a>>,
+    pub local_ids: Option<crate::quic::path::ids::Storage<'a>>,
+    pub peer_ids: Option<crate::quic::path::peer_ids::Storage<'a>>,
     /// Opaque server-issued address token, published only after authenticated Finished.
     pub server_token: Option<&'a [u8]>,
     /// Must match the local max_idle_timeout actually advertised in TLS.
@@ -123,6 +128,8 @@ pub enum Termination {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Report {
+    /// Authenticated resumption observation from the actual Finished owner.
+    pub resumed: bool,
     /// Issued only after all ordinary I/O and key retirement has joined.
     pub termination: Termination,
     /// Actual installed write generation observed before final key retirement.
@@ -148,11 +155,11 @@ pub struct Report {
     /// carried nonzero counts, observed before ordinary retirement.
     pub ecn_received_packets: u64,
     pub ecn_acknowledgments_sent: u64,
-    pub ecn_feedback_error: Option<crate::ecn::Error>,
+    pub ecn_feedback_error: Option<crate::quic::ecn::Error>,
 }
 
 pub struct Roles<'a> {
-    pub ecn_owner: Endpoint<'a, { crate::ecn::global::OWNER }>,
+    pub ecn_owner: Endpoint<'a, { crate::quic::ecn::global::OWNER }>,
     pub handshake: super::Roles<'a>,
     pub source: Endpoint<'a, { global::SOURCE }>,
     pub source_join: Endpoint<'a, { global::SOURCE_JOIN }>,
@@ -190,7 +197,7 @@ pub enum Error {
     Incomplete,
     KeyControlBinding,
     KeyControlRetired,
-    Early(crate::early_data::owner::Failure),
+    Early(crate::quic::early_data::owner::Failure),
     UnexpectedLabel(u8),
 }
 impl From<super::Error> for Error {
@@ -342,8 +349,8 @@ impl<'scope> OrdinaryRetired<'scope> {
     }
 }
 
-impl From<crate::early_data::owner::Failure> for Error {
-    fn from(value: crate::early_data::owner::Failure) -> Self {
+impl From<crate::quic::early_data::owner::Failure> for Error {
+    fn from(value: crate::quic::early_data::owner::Failure) -> Self {
         Self::Early(value)
     }
 }

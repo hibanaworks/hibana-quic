@@ -16,7 +16,7 @@ use hibana::{
     },
 };
 use hibana_quic::{
-    carrier::CarrierStorage,
+    runtime::carrier::CarrierStorage,
     runtime::{TaskSet, join2, join6, yield_now},
 };
 use std::{
@@ -555,7 +555,7 @@ fn standard_join_macro_drives_actual_capacity_one_hibana_locals() {
             }
             Ok::<(), EndpointError>(())
         };
-        let mut joined = pin!(async { futures_util::try_join!(first, second) });
+        let mut joined = pin!(hibana_quic::runtime::join2(first, second));
         for _ in 0..32 {
             if let Poll::Ready(result) = joined
                 .as_mut()

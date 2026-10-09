@@ -27,7 +27,7 @@
       "text_bytes": 510862,
       "data_bytes": 0,
       "bss_bytes": 0,
-      "command": "size target/thumbv6m-none-eabi/release/examples/thumb_link",
+      "command": "size target/thumbv6m-none-eabi/release/tests/embedded/thumb_link",
       "includes": "crypto + actual Hibana carrier/projection/service execution + selected codec/flow/CRYPTO kernels",
       "excludes": "complete TLS, UDP driver, boot startup, network stack, application, completed endpoint"
     },

@@ -1,11 +1,11 @@
 //! Real authenticated sparse packet numbers must not exhaust ACK storage.
 use actor_test_allocator::NoAlloc;
 use hibana_quic::{
-    accounting::AccountingError,
     crypto::{
         CipherSuite, IntegrityBudget, KeyKind, PacketKey,
         directional::{ApplicationKeyScope, AuthenticatedRead},
     },
+    quic::kernel::accounting::AccountingError,
     quic::{
         Side,
         recovery::{self, Recovery},
@@ -19,10 +19,12 @@ fn authenticated_loss_gaps_prune_without_fabricating_acks_or_readmitting_replays
     let recovery = installation.take_recovery().unwrap();
     let key =
         || PacketKey::from_secret(CipherSuite::Aes128GcmSha256, KeyKind::OneRtt, &[9; 32]).unwrap();
-    let (mut read, _write) = installation.install(key(), key()).unwrap();
+    let (mut read, _write) =
+        hibana_quic::crypto::directional::ApplicationReadKeys::install(installation, key(), key())
+            .unwrap();
     let mut peer = key();
     let mut integrity = IntegrityBudget::new();
-    let mut book = Recovery::<128>::new(recovery, Side::Client, 333_000, 1200).unwrap();
+    let mut book = Recovery::<128>::new(recovery, Side::Client, 333_000, 1200, 3).unwrap();
     let (tx, mut rx, _clock, _publication, mut retirement) = book.split().unwrap();
     let mut original = [0; 17];
     let guard = NoAlloc::start();
@@ -41,7 +43,7 @@ fn authenticated_loss_gaps_prune_without_fabricating_acks_or_readmitting_replays
             panic!("unexpected key update")
         };
         let outcome = rx
-            .apply_application_packet(receipt, &bytes[..1], pn, None)
+            .apply_application_packet(receipt, &bytes[..1], pn, pn, None)
             .unwrap();
         assert!(!outcome.duplicate);
         let ack = tx.pending_ack().unwrap();
@@ -63,7 +65,7 @@ fn authenticated_loss_gaps_prune_without_fabricating_acks_or_readmitting_replays
         panic!("unexpected key update")
     };
     assert!(matches!(
-        rx.apply_application_packet(replay, &original[..1], 5000, None),
+        rx.apply_application_packet(replay, &original[..1], 5000, 5000, None),
         Err(recovery::Error::Accounting(
             AccountingError::HistoryUnavailable
         ))

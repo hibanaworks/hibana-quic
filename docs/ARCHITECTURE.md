@@ -21,15 +21,16 @@ to affine handles or introducing another coordinator.
 
 ## Mechanisms and execution
 
-- `src/io.rs`: executor-neutral datagram metadata, UDP acceptance and monotonic clock contracts.
-- `src/runtime.rs`: fixed, caller-pinned future execution and cancellation, independent of an OS reactor.
-- `adapters/host/src/{async_io,io,udp,path_socket}.rs`: actual Linux readiness and physical effects.
-- `adapters/host/src/storage.rs`: host allocation of bounded buffers and matching limits.
+- `src/io/mod.rs`: executor-neutral datagram metadata, UDP acceptance and monotonic clock contracts.
+- `src/runtime/mod.rs`: fixed, caller-pinned future execution and cancellation, independent of an OS reactor.
+- `host/src/{async_io,io,udp,path_socket}.rs`: actual Linux readiness and physical effects.
+- `host/src/storage.rs`: host allocation of bounded buffers and matching limits.
 - `src/tls/{wire,certificate,schedule,ticket,rsa}.rs`: TLS encodings, validation and numerical/cryptographic mechanisms.
 - `src/http3/wire.rs`: bounded frame and static-QPACK/Huffman interpretation.
 - `src/quic/local/sealing.rs`: packet preparation and numerical admission; no hidden endpoint exchanges.
-- `src/{packet,accounting,recovery,streams,path,crypto}.rs`: wire/kernel mechanisms. Their further grouping is a separate mechanical step, not a new FSM.
-- `src/carrier.rs`: internal descriptor carrier. It is **not** a QUIC network transport for user applications.
+- `src/quic/kernel/`: packet, accounting, recovery, flow and stream numerical mechanisms.
+- `src/quic/path/` and `src/crypto/`: path choreography and cryptographic mechanisms, respectively.
+- `src/runtime/carrier.rs`: internal descriptor carrier. It is **not** a QUIC network transport for user applications.
 
 ## Application-facing target
 
@@ -43,3 +44,25 @@ adapter are usable lower-level boundaries, not a finished easy application SDK.
 A real Hibana-over-QUIC transport must retain framing, lane/session binding,
 partial-send cancellation, requeue, peer closure and bounded backpressure.
 Ordinary HTTP/3 peers must remain interoperable without proprietary framing.
+
+## Direct-local review rule
+
+Read a global together with its local implementations. Endpoint exchanges and
+joins must remain visible in the locals. Byte parsing, cryptography, recovery
+arithmetic and OS effects may have helpers; they may not manufacture progress
+or hide another protocol dispatcher. Do not replace a removed progress flag
+with a renamed phase enum or a wrapper that owns the same duplicate state.
+
+Actual scoped receipts distinguish physical acceptance, peer authentication,
+ACK authorization and retirement. A key owner destroys or transfers its owned
+material before acknowledging retirement. Cancellation terminates the affected
+owned scope rather than creating a replacement receipt or replaying a command.
+
+## QUIC-specific TLS boundary
+
+The implementation target is one shared Hibana global, composed by QUIC, with
+actual affine keys and Finished evidence handed directly between its locals.
+See [the integration plan](TLS-INTEGRATION.md) for mandatory invariants, ordered
+implementation steps, negative tests and publication requirements. A second
+phase controller or compatibility communication wrapper is not an acceptable
+integration boundary.

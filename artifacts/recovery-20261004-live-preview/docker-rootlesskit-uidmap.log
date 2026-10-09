@@ -1,2 +1,0 @@
-[rootlesskit:parent] error: failed to setup UID/GID map: newuidmap 102048 [0 1000 1 1 100000 65536] failed: newuidmap: write to uid_map failed: Operation not permitted
-: exit status 1

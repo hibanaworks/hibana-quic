@@ -2,41 +2,7 @@
 //! these routines only interpret bytes, lengths and immutable field values.
 use super::tables;
 pub const FIELD_LIMIT: usize = 4096;
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum Protocol {
-    #[default]
-    Http09,
-    Http3,
-}
-impl Protocol {
-    pub const fn success_code(self) -> u64 {
-        match self {
-            Self::Http09 => 0,
-            Self::Http3 => 0x100,
-        }
-    }
-    pub const fn failure_code(self) -> u64 {
-        match self {
-            Self::Http09 => 0x100,
-            Self::Http3 => 0x102,
-        }
-    }
-    /// RFC 9114 section 8 requires unknown application close codes to be
-    /// treated as H3_NO_ERROR. Preserve the actual peer code in the outcome;
-    /// this classification never supplies missing response FINs or ACKs.
-    pub(crate) const fn peer_application_close_is_clean(self, code: u64) -> bool {
-        match self {
-            Self::Http09 => code == 0,
-            Self::Http3 => !matches!(code, 0x101..=0x110 | 0x200..=0x202),
-        }
-    }
-    pub const fn alpn(self) -> &'static [u8] {
-        match self {
-            Self::Http09 => b"hq-interop",
-            Self::Http3 => b"h3",
-        }
-    }
-}
+pub use hibana_tls::Protocol;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Truncated,
@@ -171,13 +137,16 @@ impl Fields {
             || self.path_len != 0
             || self.authority_len != 0
     }
+    // A recognized pseudo-field must consume its arm even on first insertion.
+    // A side-effecting match guard would fall through and reject valid fields.
+    #[allow(clippy::collapsible_match)]
     fn field(&mut self, name: &[u8], value: &[u8], regular: &mut usize) -> Result<(), Error> {
         if name.is_empty()
             || name.iter().enumerate().any(|(i, b)| {
-                !b.is_ascii_lowercase()
-                    && !b.is_ascii_digit()
-                    && !b"!#$%&'*+-.^_`|~".contains(b)
-                    && !(i == 0 && *b == b':')
+                !(b.is_ascii_lowercase()
+                    || b.is_ascii_digit()
+                    || b"!#$%&'*+-.^_`|~".contains(b)
+                    || (i == 0 && *b == b':'))
             })
             || value.iter().any(|b| matches!(*b, 0 | b'\r' | b'\n'))
         {
@@ -350,8 +319,9 @@ pub fn response_fields(out: &mut [u8]) -> Result<usize, Error> {
     Ok(3)
 }
 pub fn frame_header(kind: u64, length: u64, out: &mut [u8]) -> Result<usize, Error> {
-    let n = crate::packet::encode_varint(kind, out).map_err(|_| Error::Integer)?;
-    let m = crate::packet::encode_varint(length, &mut out[n..]).map_err(|_| Error::Integer)?;
+    let n = crate::quic::kernel::packet::encode_varint(kind, out).map_err(|_| Error::Integer)?;
+    let m = crate::quic::kernel::packet::encode_varint(length, &mut out[n..])
+        .map_err(|_| Error::Integer)?;
     Ok(n + m)
 }
 
@@ -365,8 +335,10 @@ pub struct FrameHeader {
     pub encoded_len: usize,
 }
 pub fn decode_frame_header(input: &[u8]) -> Result<FrameHeader, Error> {
-    let (kind, a) = crate::packet::decode_varint(input).map_err(|_| Error::Truncated)?;
-    let (length, b) = crate::packet::decode_varint(&input[a..]).map_err(|_| Error::Truncated)?;
+    let (kind, a) =
+        crate::quic::kernel::packet::decode_varint(input).map_err(|_| Error::Truncated)?;
+    let (length, b) =
+        crate::quic::kernel::packet::decode_varint(&input[a..]).map_err(|_| Error::Truncated)?;
     if matches!(kind, 2 | 6 | 8 | 9) {
         return Err(Error::Frame);
     }
@@ -397,18 +369,19 @@ pub fn decode_settings(input: &[u8]) -> Result<Settings, Error> {
     // fields for duplicates, avoiding an unrelated capacity for unknown settings.
     while pos < input.len() {
         let start = pos;
-        let (id, n) = crate::packet::decode_varint(&input[pos..]).map_err(|_| Error::Truncated)?;
+        let (id, n) = crate::quic::kernel::packet::decode_varint(&input[pos..])
+            .map_err(|_| Error::Truncated)?;
         pos += n;
-        let (value, n) =
-            crate::packet::decode_varint(&input[pos..]).map_err(|_| Error::Truncated)?;
+        let (value, n) = crate::quic::kernel::packet::decode_varint(&input[pos..])
+            .map_err(|_| Error::Truncated)?;
         pos += n;
         let mut prior = 0;
         while prior < start {
-            let (old, n) =
-                crate::packet::decode_varint(&input[prior..]).map_err(|_| Error::Truncated)?;
+            let (old, n) = crate::quic::kernel::packet::decode_varint(&input[prior..])
+                .map_err(|_| Error::Truncated)?;
             prior += n;
-            let (_, n) =
-                crate::packet::decode_varint(&input[prior..]).map_err(|_| Error::Truncated)?;
+            let (_, n) = crate::quic::kernel::packet::decode_varint(&input[prior..])
+                .map_err(|_| Error::Truncated)?;
             prior += n;
             if old == id {
                 return Err(Error::Duplicate);

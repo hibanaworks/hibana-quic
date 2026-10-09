@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     crypto::PacketKey,
-    packet::{self, Frame, LongHeader, LongType},
+    quic::kernel::packet::{self, Frame, LongHeader, LongType},
 };
 
 /// A successful prefix has already consumed actual Initial retirement evidence.
@@ -107,8 +107,8 @@ impl<'book, const N: usize> Datagram<'book, N> {
 }
 impl<const N: usize> Drop for Bytes<N> {
     fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.data.zeroize();
+        use hibana_tls::secret::Erase;
+        self.data.erase();
     }
 }
 pub(super) struct WriteKeys<'initial, 'scope> {
@@ -255,8 +255,8 @@ impl<const N: usize> PlainPacket<N> {
     ) -> Result<Datagram<'book, N>, (Error, recovery::Reservation<'book>)> {
         let mut seal = || -> Result<(), Error> {
             let expected = match self.level {
-                Level::Initial => crate::accounting::PacketNumberSpace::Initial,
-                Level::Handshake => crate::accounting::PacketNumberSpace::Handshake,
+                Level::Initial => crate::quic::kernel::accounting::PacketNumberSpace::Initial,
+                Level::Handshake => crate::quic::kernel::accounting::PacketNumberSpace::Handshake,
                 _ => return Err(Error::UnsupportedLevel),
             };
             if reservation.bytes() != self.bytes.len as u64
@@ -284,14 +284,14 @@ impl<const N: usize> PlainPacket<N> {
             };
             let ty = match self.level {
                 Level::Initial => {
-                    if version == crate::version::Version::V1 {
+                    if version == crate::quic::kernel::version::Version::V1 {
                         0
                     } else {
                         0x10
                     }
                 }
                 Level::Handshake => {
-                    if version == crate::version::Version::V1 {
+                    if version == crate::quic::kernel::version::Version::V1 {
                         0x20
                     } else {
                         0x30
@@ -350,7 +350,7 @@ mod initial_ack_tests {
         let config = Config {
             local_preferred: None,
             initial_path: None,
-            version: crate::version::Version::V1,
+            version: crate::quic::kernel::version::Version::V1,
             side: Side::Server,
             local_connection_id: b"serverid",
             original_destination_id: b"original",

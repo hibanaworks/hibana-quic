@@ -7,7 +7,7 @@ use crate::{
         application_stream::{App, Production},
         tls::Inbox,
     },
-    streams::StreamHandle,
+    quic::kernel::streams::StreamHandle,
 };
 use core::cell::RefCell;
 use hibana::Endpoint;
@@ -68,13 +68,13 @@ impl Ingress {
             .copy_from_slice(bytes);
         stream.len = end;
         if stream.kind.is_none() {
-            match crate::packet::decode_varint(&stream.bytes[..stream.len]) {
+            match crate::quic::kernel::packet::decode_varint(&stream.bytes[..stream.len]) {
                 Ok((kind, used)) => {
                     stream.kind = Some(kind);
                     stream.bytes.copy_within(used..stream.len, 0);
                     stream.len -= used;
                 }
-                Err(crate::packet::Error::Truncated) if !fin => return Ok(()),
+                Err(crate::quic::kernel::packet::Error::Truncated) if !fin => return Ok(()),
                 Err(_) => return Err(Error::Application),
             }
         }
@@ -226,7 +226,7 @@ pub(super) async fn owner<'book, const RX: usize, const CHUNK: usize>(
         match frame.kind {
             0..=6 | 8 | 9 => return Err(Error::Application),
             7 | 13 => {
-                let (value, used) = crate::packet::decode_varint(&frame.bytes[..frame.len])
+                let (value, used) = crate::quic::kernel::packet::decode_varint(&frame.bytes[..frame.len])
                     .map_err(|_| Error::Application)?;
                 if used != frame.len {
                     return Err(Error::Application);

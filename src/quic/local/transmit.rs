@@ -21,7 +21,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
             } {
                 match packet {
                     RecoveryPacket::Acknowledgment(space) => {
-                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        let is_initial = space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         output.send::<p::InitialAckDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
@@ -46,7 +46,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                         }
                     }
                     RecoveryPacket::Probe(space) => {
-                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        let is_initial = space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         output.send::<p::InitialProbeDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
@@ -145,7 +145,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                             if let Some(space) = prepared_space {
                                 {
                                     let is_initial =
-                                        space == crate::accounting::PacketNumberSpace::Initial;
+                                        space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                                     output.send::<p::InitialDataDatagram>(&()).await?;
                                     let result = output.offer().await.map_err(|error| {
                                         Error::EndpointAt {
@@ -182,7 +182,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                                 match packet {
                                     RecoveryPacket::Acknowledgment(space) => {
                                         let is_initial =
-                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                            space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                                         output.send::<p::InitialAckDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
@@ -217,7 +217,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                                     }
                                     RecoveryPacket::Probe(space) => {
                                         let is_initial =
-                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                            space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                                         output.send::<p::InitialProbeDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
@@ -293,7 +293,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
             } {
                 match packet {
                     RecoveryPacket::Acknowledgment(space) => {
-                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        let is_initial = space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         output.send::<p::HandshakeAckDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
@@ -318,7 +318,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                         }
                     }
                     RecoveryPacket::Probe(space) => {
-                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        let is_initial = space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         output.send::<p::HandshakeProbeDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
@@ -408,7 +408,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                             if let Some(space) = prepared_space {
                                 {
                                     let is_initial =
-                                        space == crate::accounting::PacketNumberSpace::Initial;
+                                        space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                                     output.send::<p::HandshakeDataDatagram>(&()).await?;
                                     let result = output.offer().await.map_err(|error| {
                                         Error::EndpointAt {
@@ -449,7 +449,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                                 match packet {
                                     RecoveryPacket::Acknowledgment(space) => {
                                         let is_initial =
-                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                            space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                                         output.send::<p::HandshakeAckDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
@@ -484,7 +484,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                                     }
                                     RecoveryPacket::Probe(space) => {
                                         let is_initial =
-                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                            space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                                         output.send::<p::HandshakeProbeDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
@@ -552,7 +552,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
             } {
                 match packet {
                     RecoveryPacket::Acknowledgment(space) => {
-                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        let is_initial = space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         output.send::<p::ApplicationAckDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
@@ -577,7 +577,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                         }
                     }
                     RecoveryPacket::Probe(space) => {
-                        let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                        let is_initial = space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         output.send::<p::ApplicationProbeDatagram>(&()).await?;
                         let result = output.offer().await.map_err(|error| Error::EndpointAt {
                             role: p::TX_WIRE,
@@ -667,7 +667,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                             if let Some(space) = prepared_space {
                                 {
                                     let is_initial =
-                                        space == crate::accounting::PacketNumberSpace::Initial;
+                                        space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                                     output.send::<p::ApplicationDataDatagram>(&()).await?;
                                     let result = output.offer().await.map_err(|error| {
                                         Error::EndpointAt {
@@ -711,7 +711,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                                 match packet {
                                     RecoveryPacket::Acknowledgment(space) => {
                                         let is_initial =
-                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                            space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                                         output.send::<p::ApplicationAckDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
@@ -746,7 +746,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                                     }
                                     RecoveryPacket::Probe(space) => {
                                         let is_initial =
-                                            space == crate::accounting::PacketNumberSpace::Initial;
+                                            space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                                         output.send::<p::ApplicationProbeDatagram>(&()).await?;
                                         let result = output.offer().await.map_err(|error| {
                                             Error::EndpointAt {
@@ -800,7 +800,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
         } {
             match packet {
                 RecoveryPacket::Acknowledgment(space) => {
-                    let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                    let is_initial = space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                     output.send::<p::DrainAckDatagram>(&()).await?;
                     let result = output.offer().await.map_err(|error| Error::EndpointAt {
                         role: p::TX_WIRE,
@@ -825,7 +825,7 @@ pub(in crate::quic) async fn transmit<'scope, 'book, const N: usize, const P: us
                     }
                 }
                 RecoveryPacket::Probe(space) => {
-                    let is_initial = space == crate::accounting::PacketNumberSpace::Initial;
+                    let is_initial = space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                     output.send::<p::DrainProbeDatagram>(&()).await?;
                     let result = output.offer().await.map_err(|error| Error::EndpointAt {
                         role: p::TX_WIRE,

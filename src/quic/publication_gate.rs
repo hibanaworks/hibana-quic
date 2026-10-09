@@ -140,7 +140,6 @@ mod tests {
         let mut future = core::pin::pin!(future);
         let mut cx = Context::from_waker(Waker::noop());
         assert_eq!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(73)));
-        drop(future);
     }
     #[test]
     fn revocation_does_not_repoll_pending_adapter() {

@@ -14,4 +14,4 @@ proof that Rust zeroization executes. The actual async regression validates role
 level, malformed ticket fields, provider health and key availability.
 
 Commands: `lean Boundary.lean`, `python boundary.py`, and
-`cargo test --manifest-path reference-tls/Cargo.toml --test bounded_tls`.
+`cargo test --manifest-path tests/tls-reference/Cargo.toml --test bounded_tls`.

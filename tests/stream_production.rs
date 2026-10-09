@@ -13,7 +13,7 @@ use hibana::{
         program::{RoleProgram, project},
     },
 };
-use hibana_quic::{carrier::CarrierStorage, quic::application::global as p, runtime::join2};
+use hibana_quic::{runtime::carrier::CarrierStorage, quic::application::global as p, runtime::join2};
 
 fn run(chunks: usize, abandon: bool, rejected: bool, illegal: u8) {
     let global = p::source_choreography();

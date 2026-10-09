@@ -105,7 +105,7 @@ mod tests {
         let source_program: RoleProgram<SOURCE> = project(&global);
         let sink_program: RoleProgram<SINK> = project(&global);
         let owner_program: RoleProgram<OWNER> = project(&global);
-        let carrier = crate::carrier::CarrierStorage::<1, 16, 32>::new();
+        let carrier = crate::runtime::carrier::CarrierStorage::<1, 16, 32>::new();
         let mut slab = std::vec![0; 65536];
         let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(511);
@@ -148,7 +148,11 @@ mod tests {
             owner.send::<Closed>(&()).await.unwrap();
         };
         let mut tasks = pin!(async {
-            futures_util::join!(source, sink, owner);
+            crate::runtime::join::values3(
+                async { source.await; Ok::<(), core::convert::Infallible>(()) },
+                async { sink.await; Ok::<(), core::convert::Infallible>(()) },
+                async { owner.await; Ok::<(), core::convert::Infallible>(()) },
+            ).await.unwrap();
         });
         let mut cx = Context::from_waker(Waker::noop());
         for _ in 0..128 {

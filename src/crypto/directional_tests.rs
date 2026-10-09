@@ -13,9 +13,12 @@ fn install(
     reverse: bool,
 ) -> (ApplicationReadKeys<'_>, ApplicationWriteKeys<'_>) {
     let (send, receive) = if reverse { (2, 1) } else { (1, 2) };
-    scope
-        .install(key(suite, send), key(suite, receive))
-        .unwrap()
+    crate::crypto::directional::ApplicationReadKeys::install(
+        scope.claim().unwrap(),
+        key(suite, send),
+        key(suite, receive),
+    )
+    .unwrap()
 }
 fn packet(tx: &mut ApplicationWriteKeys<'_>, pn: u64) -> Packet {
     let header = [0x40 | if tx.phase() { 4 } else { 0 }];
@@ -55,7 +58,7 @@ fn authorize(tx: &mut ApplicationWriteKeys<'_>, now: u64) {
     tx.confirm_handshake(ScopedHandshakeConfirmation { scope: tx.scope() })
         .unwrap();
     tx.acknowledge_validated(
-        tx.current.last_sealed.unwrap(),
+        tx.current.last_sealed_packet_number().unwrap(),
         tx.receive_generation,
         now,
         10,
@@ -220,7 +223,7 @@ fn forged_phase_and_missing_prepared_key_debit_one_attempt_and_never_promote() {
         let mut scope = ApplicationKeyScope::new(1);
         let (mut rx, tx) = install(&mut scope, CipherSuite::ChaCha20Poly1305Sha256, true);
         if missing {
-            rx.next = None;
+            rx.material.as_mut().unwrap().next = None;
         }
         let mut peer = key(CipherSuite::ChaCha20Poly1305Sha256, 1);
         let mut body = [0; 20];
@@ -236,8 +239,8 @@ fn forged_phase_and_missing_prepared_key_debit_one_attempt_and_never_promote() {
         assert_eq!(budget.failed_packets(), 1);
         assert_eq!(rx.generation(), 0);
         assert_eq!(tx.generation(), 0);
-        assert_eq!(rx.next.is_none(), missing);
-        assert!(rx.current.is_some());
+        assert_eq!(rx.material.as_ref().unwrap().next.is_none(), missing);
+        assert!(rx.material.as_ref().unwrap().current.is_some());
     }
 }
 
@@ -281,7 +284,7 @@ fn retained_old_key_expires_only_three_pto_after_authenticated_peer_response() {
         Err(Error::AuthenticationFailed)
     ));
     assert_eq!(ab.failed_packets(), 1);
-    assert!(arx.previous.is_none());
+    assert!(arx.material.as_ref().unwrap().previous.is_none());
 }
 
 #[test]
@@ -409,8 +412,8 @@ fn installed_receipt_cannot_complete_another_receivers_pending_transition() {
         .accept_write_epoch(btx.install_peer_update(b).unwrap())
         .unwrap();
     assert_eq!(receipt.opened().generation, 1);
-    assert!(brx.current.is_some());
-    assert!(arx.current.is_none());
+    assert!(brx.material.as_ref().unwrap().current.is_some());
+    assert!(arx.material.as_ref().unwrap().current.is_none());
 }
 
 #[test]
@@ -442,10 +445,10 @@ fn installed_transition_carries_monotonic_clock_forward_between_directions() {
 fn shared_integrity_exhaustion_survives_both_directional_maintenance_and_updates() {
     let mut scope = ApplicationKeyScope::new(7);
     let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
-    let mut budget = IntegrityBudget {
-        failed: 0,
-        limit: 2,
-    };
+    let mut budget = IntegrityBudget::new();
+    // Tighten the numerical policy through the existing monotone admission API.
+    // This synthetic successful attempt is not packet-authentication evidence.
+    budget.authenticate(2, || Ok::<(), ()>(())).unwrap();
     let mut body = [0; 20];
     assert!(matches!(
         rx.open(0, false, &[0x40], &mut body, &mut budget, 0, 10),
@@ -532,12 +535,12 @@ fn installation_is_claimed_once_before_keys_arrive_and_identity_stays_stable() {
     let install = scope.claim().unwrap();
     let producer_domain = install.scope();
     assert_eq!(producer_domain.connection_generation(), 12);
-    let (rx, tx) = install
-        .install(
-            key(CipherSuite::Aes128GcmSha256, 1),
-            key(CipherSuite::Aes128GcmSha256, 2),
-        )
-        .unwrap();
+    let (rx, tx) = crate::crypto::directional::ApplicationReadKeys::install(
+        install,
+        key(CipherSuite::Aes128GcmSha256, 1),
+        key(CipherSuite::Aes128GcmSha256, 2),
+    )
+    .unwrap();
     assert!(core::ptr::eq(producer_domain, rx.scope()));
     assert!(core::ptr::eq(producer_domain, tx.scope()));
     drop(rx);
@@ -609,13 +612,15 @@ fn old_epoch_ack_before_current_send_preserves_progress_without_current_update_p
             let (mut rx, mut tx) = install(&mut scope, suite, true);
             packet(&mut tx, 7);
             install_peer_epoch_one(&mut rx, &mut tx, suite);
-            assert_eq!(tx.current.last_sealed, Some(7));
+            assert_eq!(tx.current.last_sealed_packet_number(), Some(7));
             tx.confirm_handshake(ScopedHandshakeConfirmation { scope: tx.scope() })
                 .unwrap();
             if !current_key_has_high_water {
                 // Private numeric fixture for the reported empty-current-key
                 // accounting case. Normal promote() retains the old PN bound.
-                tx.current.last_sealed = None;
+                let mut fresh = key(suite, 2);
+                fresh.update_key().unwrap();
+                tx.current = fresh;
                 assert_eq!(
                     tx.acknowledge(epoch_ack(tx.scope(), 7, 1, 1), 10, 10),
                     Err(Error::InvalidAcknowledgment)
@@ -675,7 +680,7 @@ fn current_epoch_ack_requires_a_current_seal_and_matching_epoch_packet_bounds() 
         );
         assert!(tx.update_evidence.is_none());
         assert_eq!(tx.update_evidence.as_ref().map(|e| e.not_before), None);
-        assert!(tx.active);
+        assert!(tx.ensure_active().is_ok());
     }
     tx.acknowledge(epoch_ack(own_scope, 8, 1, 1), 10, 10)
         .unwrap();
@@ -713,7 +718,9 @@ fn old_epoch_exception_retains_scope_packet_number_and_authenticated_receive_bou
         tx.acknowledge(epoch_ack(own_scope, 8, 0, 1), 10, 10),
         Err(Error::InvalidAcknowledgment)
     );
-    tx.current.last_sealed = None;
+    let mut fresh = key(CipherSuite::Aes128GcmSha256, 2);
+    fresh.update_key().unwrap();
+    tx.current = fresh;
     assert_eq!(
         tx.acknowledge(
             epoch_ack(own_scope, super::super::MAX_PACKET_NUMBER + 1, 0, 1),
@@ -751,4 +758,136 @@ fn epoch_bound_ack_carried_under_older_read_keys_remains_terminal() {
         Err(Error::KeyUpdateError)
     );
     assert_eq!(tx.header_mask(&[0; 16]), Err(Error::KeyDiscarded));
+}
+
+#[test]
+fn retired_read_collection_rejects_a_late_local_key_return() {
+    let mut scope = ApplicationKeyScope::new(901);
+    let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, false);
+    let ready = rx.prepare_local_update().unwrap();
+    assert!(rx.material.as_ref().unwrap().current.is_none());
+    rx.discard();
+    assert_eq!(rx.cancel_local_update(ready), Err(Error::KeyDiscarded));
+    assert!(rx.material.is_none());
+    assert_eq!(rx.header_mask(&[0; 16]), Err(Error::KeyDiscarded));
+    tx.discard();
+    assert!(tx.confirmation.is_none());
+    assert!(tx.update_evidence.is_none());
+}
+
+#[test]
+fn retired_read_collection_rejects_a_late_peer_epoch_receipt() {
+    let mut scope = ApplicationKeyScope::new(902);
+    let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
+    let mut peer = key(CipherSuite::Aes128GcmSha256, 1);
+    peer.update_key().unwrap();
+    let mut body = [0; 20];
+    body[..4].copy_from_slice(b"test");
+    peer.seal(20, &[0x44], &mut body, 4).unwrap();
+    let AuthenticatedRead::PeerUpdate(update) =
+        open(&mut rx, 20, ([0x44], body), &mut IntegrityBudget::new(), 0).unwrap()
+    else {
+        panic!()
+    };
+    let installed = tx.install_peer_update(update).unwrap();
+    rx.discard();
+    assert!(matches!(
+        rx.accept_write_epoch(installed),
+        Err(Error::KeyDiscarded)
+    ));
+    assert!(rx.material.is_none());
+}
+
+use crate::{scoped_tls_fixture as owned_tls_fixture, tls_fixture};
+
+#[test]
+fn actual_tls_finished_and_packet_ownership_do_not_fabricate_quic_update_permission() {
+    use crate::tls::{
+        certificate::{CertificateDer, Limits, trust_anchor_from_der},
+        handshake::{BoundedTls, CipherPolicy, ClientConfig, ServerConfig},
+    };
+    for policy in [CipherPolicy::Aes128Only, CipherPolicy::ChaCha20Only] {
+        for p256 in [false, true] {
+            let root = CertificateDer::from(tls_fixture::ROOT_DER);
+            let anchors = [trust_anchor_from_der(&root).unwrap()];
+            let chain = [tls_fixture::LEAF_DER];
+            let signer = tls_fixture::signing_key();
+            let mut cb = tls_fixture::Buffers::new();
+            let mut sb = tls_fixture::Buffers::new();
+            let mut cs = ApplicationKeyScope::new(910);
+            let mut ss = ApplicationKeyScope::new(911);
+            let guard = NoAlloc::start();
+            let mut client = BoundedTls::client_with_policy(
+                ClientConfig {
+                    protocol: Default::default(),
+                    version: crate::quic::kernel::version::Version::V1,
+                    server_name: "localhost",
+                    trust_anchors: &anchors,
+                    now: tls_fixture::now(),
+                    certificate_limits: Limits::default(),
+                    transport_parameters: tls_fixture::CLIENT_PARAMS,
+                },
+                cb.storage(),
+                &mut tls_fixture::TestRandom(81),
+                policy,
+            )
+            .unwrap()
+            .into_key_source(cs.claim().unwrap())
+            .unwrap();
+            let config = ServerConfig {
+                protocol: Default::default(),
+                version: crate::quic::kernel::version::Version::V1,
+                certificate_chain: &chain,
+                signing_key: &signer,
+                transport_parameters: tls_fixture::SERVER_PARAMS,
+            };
+            let server = if p256 {
+                BoundedTls::server_p256(config, sb.storage(), &mut tls_fixture::TestRandom(91))
+            } else {
+                BoundedTls::server_with_policy(
+                    config,
+                    sb.storage(),
+                    &mut tls_fixture::TestRandom(91),
+                    policy,
+                )
+            }
+            .unwrap();
+            let mut server = server.into_key_source(ss.claim().unwrap()).unwrap();
+            let (mut cm, mut sm) = owned_tls_fixture::handshake_key_sources_observe(
+                &mut client,
+                &mut server,
+                |_, _| {},
+            );
+            let (ci, cl, cr) = cm.application.take().unwrap().into_parts();
+            let (si, sl, sr) = sm.application.take().unwrap().into_parts();
+            let (mut crx, mut ctx) = ApplicationReadKeys::install(ci, cl, cr).unwrap();
+            let (mut srx, mut stx) = ApplicationReadKeys::install(si, sl, sr).unwrap();
+            let _client_finished = cm.finished.take().unwrap();
+            let _server_finished = sm.finished.take().unwrap();
+            let mut cbudget = client.take_integrity_budget().unwrap();
+            let mut sbudget = server.take_integrity_budget().unwrap();
+            for (tx, rx, budget) in [
+                (&mut ctx, &mut srx, &mut sbudget),
+                (&mut stx, &mut crx, &mut cbudget),
+            ] {
+                let ready = rx.prepare_local_update().unwrap();
+                let refused = tx.initiate(ready, 0, 10).unwrap_err();
+                assert_eq!(refused.error, Error::KeyUpdateNotAllowed);
+                rx.cancel_local_update(refused.ready).unwrap();
+                let mut bytes = [0; 20];
+                bytes[..4].copy_from_slice(b"apps");
+                tx.seal(0, b"header", &mut bytes, 4).unwrap();
+                assert!(matches!(
+                    rx.open(0, false, b"header", &mut bytes, budget, 0, 10),
+                    Ok(AuthenticatedRead::Ready(_))
+                ));
+                assert_eq!(&bytes[..4], b"apps");
+                let ready = rx.prepare_local_update().unwrap();
+                let refused = tx.initiate(ready, 0, 10).unwrap_err();
+                assert_eq!(refused.error, Error::KeyUpdateNotAllowed);
+                rx.cancel_local_update(refused.ready).unwrap();
+            }
+            guard.finish();
+        }
+    }
 }

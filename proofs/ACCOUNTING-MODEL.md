@@ -2,7 +2,7 @@
 
 ## Status
 
-These are models of the new `src/accounting.rs` implementation. They are **not
+These are models of the new `src/quic/kernel/accounting.rs` implementation. They are **not
 source-level Rust refinement proofs**, complete QUIC proofs, or changes to Hibana
 core. The model files are `lean/Accounting.lean` and `z3/accounting.py`.
 
@@ -159,7 +159,7 @@ accepted non-in-flight case described above.
 7. Packet loss does not release stream retransmission buffers. Stream ownership,
    congestion control, RTT/PTO/loss detection, ECN, wire parsing, liveness,
    network reliability, and full QUIC correctness are outside this evidence.
-8. `src/storage.rs` is covered by its runtime tests and target compilation only;
+8. `src/quic/kernel/storage.rs` is covered by its runtime tests and target compilation only;
    no formal claim about that concrete pool follows from the accounting models.
 
 ## Reproduction
@@ -170,9 +170,9 @@ environment with z3-solver 5.1.0:
 ```sh
 lean -DwarningAsError=true proofs/lean/Accounting.lean
 python proofs/z3/accounting.py
-rustc --edition 2024 --test -D warnings src/accounting.rs -o /tmp/accounting-tests
+rustc --edition 2024 --test -D warnings src/quic/kernel/accounting.rs -o /tmp/accounting-tests
 /tmp/accounting-tests
-rustc --edition 2024 --test -D warnings src/storage.rs -o /tmp/storage-tests
+rustc --edition 2024 --test -D warnings src/quic/kernel/storage.rs -o /tmp/storage-tests
 /tmp/storage-tests
 ```
 

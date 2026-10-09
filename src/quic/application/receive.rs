@@ -3,24 +3,24 @@
 //! declared key, delivery and termination edges cross async role boundaries.
 use super::{CloseKind, Control, Error, global as p, io, keys, reset, termination};
 use crate::{
-    accounting::AccountingError,
     crypto::{
         self,
         directional::{AuthenticatedRead, ScopedHandshakeConfirmation, ValidatedKeyAck},
     },
-    handshake::CryptoBuffer,
-    packet::{self, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits},
+    quic::kernel::accounting::AccountingError,
+    quic::kernel::packet::{self, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits},
+    quic::kernel::streams,
     quic::{
         self, Clock, Config, DatagramRx, ReceiveMaterial, Side, application_stream,
         application_wire, recovery,
         tls::{CryptoInput, Transcript},
     },
-    streams,
     tls::Level,
+    tls::buffer::CryptoBuffer,
 };
 use core::cell::RefCell;
 use hibana::Endpoint;
-use zeroize::Zeroizing;
+use hibana_tls::secret::Secret;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run<
@@ -38,6 +38,7 @@ pub(crate) async fn run<
     mut material: ReceiveMaterial<'scope>,
     config: Config<'_>,
     transcript: &mut Transcript<'scope, '_, '_>,
+    finished: &crate::tls::handshake::key_source::FinishedAuthenticated<'scope>,
     mut crypto: CryptoBuffer<'_>,
     book: &mut recovery::Rx<'_, 'scope, N>,
     streams: &mut application_stream::Rx<'streams, '_, 'scope, RX, CHUNK>,
@@ -52,11 +53,11 @@ pub(crate) async fn run<
     termination: &termination::Exchange<'_, '_, 'scope>,
     initial_confirmation: Option<recovery::HandshakeConfirmed<'scope>>,
     key_update_target: u64,
-    responses: &crate::path::responses::Responses,
-    local_ids: &RefCell<Option<crate::path::ids::Ids<'_, 'scope>>>,
-    peer_ids: &RefCell<Option<crate::path::peer_ids::Peers<'_, 'scope>>>,
-    paths: &crate::path::validation::Paths<'_>,
-    mut pending_application: Option<([u8; N], quic::ReceivedDatagram)>,
+    responses: &crate::quic::path::responses::Responses,
+    local_ids: &RefCell<Option<crate::quic::path::ids::Ids<'_, 'scope>>>,
+    peer_ids: &RefCell<Option<crate::quic::path::peer_ids::Peers<'_, 'scope>>>,
+    paths: &crate::quic::path::validation::Paths<'_>,
+    mut pending_application: Option<([u8; N], quic::ReceivedDatagram, u64)>,
 ) -> Result<(), Error> {
     let scope = material.application.scope();
     if !core::ptr::eq(scope, transcript.scope())
@@ -181,7 +182,8 @@ pub(crate) async fn run<
             while !control.stopping() {
                 let retained = pending_application.take();
                 let already_accounted = retained.is_some();
-                let result = if let Some((bytes, len)) = retained {
+                let retained_at = retained.as_ref().map(|(_, _, at)| *at);
+                let result = if let Some((bytes, len, _)) = retained {
                     datagram = bytes;
                     Some(Ok(len))
                 } else {
@@ -230,6 +232,7 @@ pub(crate) async fn run<
                     )
                     .await?
                 };
+                let received_at = retained_at.unwrap_or_else(|| clock.now());
                 let Some(result) = result else {
                     break;
                 };
@@ -357,6 +360,7 @@ pub(crate) async fn run<
                                 let outcome = match book.apply_application_packet(
                                     receipt,
                                     opened.plaintext(),
+                                    received_at,
                                     clock.now(),
                                     received.ecn,
                                 ) {
@@ -540,7 +544,7 @@ pub(crate) async fn run<
                                                 )
                                                 .map_err(quic::Error::from)?;
                                                 transcript
-                                                    .receive(input)
+                                                    .receive(finished, input)
                                                     .map_err(quic::Error::from)?;
                                                 reassembly
                                                     .consume(count)
@@ -920,7 +924,7 @@ fn old<'book, 'scope, const N: usize>(
     transcript: &Transcript<'scope, '_, '_>,
     book: &mut recovery::Rx<'book, 'scope, N>,
     now: u64,
-    ecn: Option<crate::ecn::Codepoint>,
+    ecn: Option<crate::quic::ecn::Codepoint>,
 ) -> Result<Option<(bool, u64)>, Error> {
     let Header::Long {
         version,
@@ -966,7 +970,7 @@ fn old<'book, 'scope, const N: usize>(
     } else {
         &material.handshake
     };
-    let mut opened = Zeroizing::new([0u8; N]);
+    let mut opened = Secret::new([0u8; N]);
     opened[..packet.bytes.len()].copy_from_slice(packet.bytes);
     let bytes = &mut opened[..packet.bytes.len()];
     let pn_len = match key.unprotect_header(bytes, packet_number_offset) {
@@ -1002,7 +1006,7 @@ fn old<'book, 'scope, const N: usize>(
     }
     material.largest_received[index] =
         Some(material.largest_received[index].map_or(pn, |last| last.max(pn)));
-    let outcome = match book.apply_packet(receipt, plaintext, now, ecn) {
+    let outcome = match book.apply_packet(receipt, plaintext, now, now, ecn) {
         Ok(outcome) => outcome,
         Err(recovery::Error::Accounting(AccountingError::HistoryUnavailable)) => return Ok(None),
         Err(error) => return Err(error.into()),

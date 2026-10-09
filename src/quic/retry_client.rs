@@ -3,8 +3,8 @@
 //! handshake roles start only after the first authenticated server Initial.
 use super::*;
 use crate::{
-    packet::{self, Frame, Header, LongType, PacketIter},
-    retry::{self, client_global as p},
+    quic::kernel::packet::{self, Frame, Header, LongType, PacketIter},
+    quic::retry::{self, client_global as p},
 };
 use core::ops::ControlFlow;
 use hibana::g::Message;
@@ -28,10 +28,11 @@ pub(super) struct Response<const N: usize> {
 // Retained ciphertext has no authenticated protocol effects. The same bounded
 // owner moves from the Retry prefix into the ordinary receive continuation.
 pub(super) fn retain_handshake<const N: usize>(
-    pending: &mut Option<([u8; N], ReceivedDatagram)>,
+    pending: &mut Option<([u8; N], ReceivedDatagram, u64)>,
     bytes: &[u8],
     received: ReceivedDatagram,
     config: Config<'_>,
+    received_at: u64,
 ) {
     if pending.is_some() {
         return;
@@ -61,6 +62,7 @@ pub(super) fn retain_handshake<const N: usize>(
                     len: packet.bytes.len(),
                     ..received
                 },
+                received_at,
             ));
             break;
         }
@@ -90,7 +92,7 @@ fn authenticated_initial<const N: usize>(
     else {
         return Ok(false);
     };
-    if (version != config.version && version != crate::version::Version::V1)
+    if (version != config.version && version != crate::quic::kernel::version::Version::V1)
         || destination_id != config.local_connection_id
         || packet.bytes.len() > N
     {
@@ -133,7 +135,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
     clock: &impl Clock,
     issuer: &mut publication_gate::Issuer<'_, 'scope>,
     integrity: &mut IntegrityBudget,
-    pending_handshake: &mut Option<([u8; N], ReceivedDatagram)>,
+    pending_handshake: &mut Option<([u8; N], ReceivedDatagram, u64)>,
 ) -> Result<Option<Response<N>>, Error> {
     let datagram = Inbox::<wire::Datagram<'book, N>>::new();
     let observation = Inbox::<([u8; N], ReceivedDatagram)>::new();
@@ -282,7 +284,13 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                         len: checked.token().len(),
                     };
                 }
-                retain_handshake(pending_handshake, &bytes[..len], received, config);
+                retain_handshake(
+                    pending_handshake,
+                    &bytes[..len],
+                    received,
+                    config,
+                    clock.now(),
+                );
                 if authenticated_initial::<N>(&bytes[..len], config, initial, integrity)? {
                     owner.send::<p::Quiesce>(&()).await?;
                     owner.recv::<p::Quiescent>().await?;
@@ -374,7 +382,13 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 };
                 let len = received.len;
                 rx.received_datagram(len as u64)?;
-                retain_handshake(pending_handshake, &bytes[..len], received, config);
+                retain_handshake(
+                    pending_handshake,
+                    &bytes[..len],
+                    received,
+                    config,
+                    clock.now(),
+                );
                 if authenticated_initial::<N>(&bytes[..len], config, initial, integrity)? {
                     break (bytes, received);
                 }
@@ -412,7 +426,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                 return Err(Error::Binding);
             }
             let result = permit
-                .submit(send_io.send(packet.sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                .submit(send_io.send(packet.sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                 .await;
             let accepted = match result {
                 Ok(Ok(at)) => Some(at),
@@ -421,7 +435,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
             publication.settle(recovery::Completion::from_adapter(
                 packet.reservation,
                 accepted,
-                crate::ecn::Codepoint::NotEct,
+                crate::quic::ecn::Codepoint::NotEct,
             ))?;
             if accepted.is_some() {
                 native.send::<p::Accepted>(&()).await?;
@@ -446,11 +460,13 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                             publication.cancel(packet.reservation)?;
                             return Err(Error::Binding);
                         }
-                        let result = permit
-                            .submit(
-                                send_io.send(packet.sealed.bytes(), crate::ecn::Codepoint::NotEct),
-                            )
-                            .await;
+                        let result =
+                            permit
+                                .submit(send_io.send(
+                                    packet.sealed.bytes(),
+                                    crate::quic::ecn::Codepoint::NotEct,
+                                ))
+                                .await;
                         let accepted = match result {
                             Ok(Ok(at)) => Some(at),
                             _ => None,
@@ -458,7 +474,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                         publication.settle(recovery::Completion::from_adapter(
                             packet.reservation,
                             accepted,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted.is_some() {
                             native.send::<p::Accepted>(&()).await?;
@@ -527,13 +543,12 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                                     publication.cancel(packet.reservation)?;
                                     return Err(Error::Binding);
                                 }
-                                let result =
-                                    permit
-                                        .submit(send_io.send(
-                                            packet.sealed.bytes(),
-                                            crate::ecn::Codepoint::NotEct,
-                                        ))
-                                        .await;
+                                let result = permit
+                                    .submit(send_io.send(
+                                        packet.sealed.bytes(),
+                                        crate::quic::ecn::Codepoint::NotEct,
+                                    ))
+                                    .await;
                                 let accepted = match result {
                                     Ok(Ok(at)) => Some(at),
                                     _ => None,
@@ -541,7 +556,7 @@ pub(super) async fn run<'book, 'scope, const N: usize>(
                                 publication.settle(recovery::Completion::from_adapter(
                                     packet.reservation,
                                     accepted,
-                                    crate::ecn::Codepoint::NotEct,
+                                    crate::quic::ecn::Codepoint::NotEct,
                                 ))?;
                                 if accepted.is_some() {
                                     native.send::<p::RetriedAccepted>(&()).await?;

@@ -57,7 +57,7 @@ impl<'scope> Keys<'scope> {
     }
     pub(super) fn select_write_version(
         &self,
-        version: crate::version::Version,
+        version: crate::quic::kernel::version::Version,
         destination: &[u8],
         side: Side,
     ) -> Result<(), Error> {
@@ -77,7 +77,7 @@ impl<'scope> Keys<'scope> {
     }
     pub(super) fn read_version(
         &self,
-        version: crate::version::Version,
+        version: crate::quic::kernel::version::Version,
     ) -> Ref<'_, Option<ReceivePacketKey<'scope>>> {
         let primary = self.read.borrow();
         if primary.as_ref().is_some_and(|k| k.version() == version) {
@@ -218,7 +218,7 @@ pub(super) async fn retire<'scope, const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounting::PacketNumberSpace;
+    use crate::quic::kernel::accounting::PacketNumberSpace;
     use core::{pin::Pin, task::Context};
 
     macro_rules! setup {
@@ -230,6 +230,7 @@ mod tests {
                 Side::Client,
                 333_000,
                 1200,
+                3,
             )
             .unwrap();
             let packet_keys = crypto::initial_keys(b"initial-destination").unwrap();
@@ -247,7 +248,7 @@ mod tests {
             .settle(recovery::Completion::from_adapter(
                 reservation,
                 Some(0),
-                crate::ecn::Codepoint::NotEct,
+                crate::quic::ecn::Codepoint::NotEct,
             ))
             .unwrap();
         publication.take_initial_retirement().unwrap()
@@ -336,7 +337,7 @@ mod tests {
             .settle(recovery::Completion::from_adapter(
                 reservation,
                 Some(accepted),
-                crate::ecn::Codepoint::NotEct,
+                crate::quic::ecn::Codepoint::NotEct,
             ))
             .unwrap();
         owner.retire_initial(event).unwrap();
@@ -387,7 +388,7 @@ mod tests {
 
     #[test]
     fn finite_retirement_lane_waits_for_udp_cancellation_then_returns_actual_proof() {
-        use crate::carrier::CarrierStorage;
+        use crate::runtime::carrier::CarrierStorage;
         use hibana::{
             g,
             runtime::{
@@ -486,17 +487,13 @@ mod tests {
             let mut event_done = false;
             let mut owner_done = false;
             for _ in 0..128 {
-                if !owner_done {
-                    if let Poll::Ready(result) = retiring.as_mut().poll(&mut cx) {
-                        result.unwrap();
-                        owner_done = true;
-                    }
+                if !owner_done && let Poll::Ready(result) = retiring.as_mut().poll(&mut cx) {
+                    result.unwrap();
+                    owner_done = true;
                 }
-                if !event_done {
-                    if let Poll::Ready(result) = event.as_mut().poll(&mut cx) {
-                        result.unwrap();
-                        event_done = true;
-                    }
+                if !event_done && let Poll::Ready(result) = event.as_mut().poll(&mut cx) {
+                    result.unwrap();
+                    event_done = true;
                 }
                 if owner_done && event_done {
                     break;

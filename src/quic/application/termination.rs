@@ -71,6 +71,8 @@ impl<'a, 'gate, 'scope> Exchange<'a, 'gate, 'scope> {
 /// Missing request ACKs remain missing: response completion permits an explicit
 /// application close, not a transport acknowledgment. Servers still require
 /// acknowledgment of their response chunks before locally finishing.
+// Separate projected endpoints and resource owners are passed explicitly.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::FILES_EVENT }>,
     source_join: &mut Endpoint<'_, { p::SOURCE_JOIN }>,

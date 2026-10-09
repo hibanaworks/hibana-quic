@@ -14,7 +14,7 @@ use hibana::{
         resolver::{DecisionArm, ResolverError, ResolverRef},
     },
 };
-use hibana_quic::{carrier::CarrierStorage, retry::global as p, runtime::join2};
+use hibana_quic::{runtime::carrier::CarrierStorage, quic::retry::global as p, runtime::join2};
 
 fn run(outcomes: &[Option<bool>], wrong_reply: bool) {
     let verdict = Cell::new(None);

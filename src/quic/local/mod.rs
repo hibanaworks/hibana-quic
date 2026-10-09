@@ -4,8 +4,8 @@ use super::wire::{PlainPacket, WriteKeys};
 use super::*;
 use crate::{
     crypto::directional::ApplicationKeyScope,
-    packet::{self, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits},
-    parameters::{Parameters, Peer},
+    quic::kernel::packet::{self, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits},
+    quic::kernel::parameters::{Parameters, Peer},
 };
 use core::{future::Future, pin::pin};
 use hibana::g::Message;

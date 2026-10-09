@@ -1,8 +1,0 @@
-Chain PREROUTING (policy ACCEPT 169K packets, 2156M bytes)
- pkts bytes target     prot opt in     out     source               destination         
-    0     0 DROP       all  --  !br-1b899e44124d *       0.0.0.0/0            193.167.9.2         
-    0     0 DROP       all  --  !br-51686106e8ca *       0.0.0.0/0            193.167.10.2        
-    1  1280 DROP       all  --  !br-51686106e8ca *       0.0.0.0/0            193.167.10.100      
-
-Chain OUTPUT (policy ACCEPT 35110 packets, 4767K bytes)
- pkts bytes target     prot opt in     out     source               destination         

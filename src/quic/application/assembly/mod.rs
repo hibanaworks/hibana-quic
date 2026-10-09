@@ -11,7 +11,7 @@ use super::{
     transmit,
 };
 use crate::{
-    mailbox::Mailbox,
+    runtime::mailbox::Mailbox,
     quic::publication_gate::{Issuer, Stop},
     quic::{
         self, Clock, ConnectionId, DatagramRx, DatagramTx, Side, Storage,
@@ -19,7 +19,7 @@ use crate::{
         recovery::Recovery,
         tls::Transcript,
     },
-    streams,
+    quic::kernel::streams,
 };
 use core::cell::RefCell;
 
@@ -267,11 +267,9 @@ async fn connected<
         let pending = storage.pending_application.borrow_mut().take();
         (read, write, pending)
     };
-    let application_protocol = match source.material().negotiated_alpn() {
-        Some(b"hq-interop") => crate::http3::Protocol::Http09,
-        Some(b"h3") => crate::http3::Protocol::Http3,
-        _ => return Err(Error::Binding),
-    };
+    // The verified Finished owner carries its authenticated ALPN across locals;
+    // no historical TLS state or configured-protocol observation is authority.
+    let application_protocol = read.finished.receipt().protocol();
     let (mut received, write, transcript) =
         ownership::transfer(roles, source, config, read, write).await?;
     let owner = keys::KeyOwner::new(scope, write)?;
@@ -285,34 +283,34 @@ async fn connected<
     let peer_id = ConnectionId::new(received.material.peer_connection_id())?;
     let accepted_early = if let Some(requests) = client_early.as_deref() {
         match requests.decision(peer.finished())? {
-            crate::early_data::EarlyStatus::Accepted => {
+            crate::quic::early_data::EarlyStatus::Accepted => {
                 requests.validate_accepted_limits(peer.parameters())?;
                 requests.accepted_count()
             }
-            crate::early_data::EarlyStatus::Rejected => 0,
+            crate::quic::early_data::EarlyStatus::Rejected => 0,
             _ => return Err(Error::Binding),
         }
     } else {
         0
     };
-    let peer_parameters = crate::parameters::Parameters::parse(
+    let peer_parameters = crate::quic::kernel::parameters::Parameters::parse(
         peer.parameters(),
         if config.side == Side::Client {
-            crate::parameters::Peer::Server
+            crate::quic::kernel::parameters::Peer::Server
         } else {
-            crate::parameters::Peer::Client
+            crate::quic::kernel::parameters::Peer::Client
         },
         &mut [0; 64],
     )
     .map_err(|_| Error::Binding)?;
     let preferred = peer_parameters
         .get(13)
-        .map(crate::path::preferred::Preferred::parse)
+        .map(crate::quic::path::preferred::Preferred::parse)
         .transpose()
         .map_err(|_| Error::Binding)?;
     let initial_token = peer_parameters
         .get(2)
-        .map(|bytes| bytes.try_into().map(crate::connection_id::ResetToken::new))
+        .map(|bytes| bytes.try_into().map(crate::quic::kernel::connection_id::ResetToken::new))
         .transpose()
         .map_err(|_| Error::Binding)?;
     if peer_id.bytes().is_empty() && initial_token.is_some() {
@@ -323,7 +321,7 @@ async fn connected<
     let peers = peer_ids
         .filter(|_| !peer_id.bytes().is_empty())
         .map(|storage| {
-            crate::path::peer_ids::Peers::new(
+            crate::quic::path::peer_ids::Peers::new(
                 storage,
                 scope,
                 peer_id.bytes(),
@@ -391,7 +389,7 @@ async fn connected<
         &reclaim_exchange,
     )
     .await?;
-    let paths = crate::path::validation::Paths::new(
+    let paths = crate::quic::path::validation::Paths::new(
         config.initial_path,
         config.side,
         local_ids.as_ref().map(|storage| storage.seed),
@@ -399,7 +397,7 @@ async fn connected<
     );
     let ids = local_ids
         .map(|storage| {
-            crate::path::ids::Ids::new(
+            crate::quic::path::ids::Ids::new(
                 storage,
                 scope,
                 config.local_connection_id,
@@ -538,6 +536,7 @@ async fn connected<
                 received.material,
                 config,
                 transcript,
+                &early_received.finished,
                 buffers.crypto,
                 &mut book_rx,
                 &mut rx,
@@ -604,7 +603,7 @@ async fn connected<
             &control,
             config.side,
         );
-        let path_validation = crate::path::validation::owner(
+        let path_validation = crate::quic::path::validation::owner(
             &mut roles.handshake.initial_event,
             &publication_state.paths,
             clock,
@@ -635,45 +634,42 @@ async fn connected<
         // Executor boundary: pin each role in its existing local storage before
         // joining references. Moving all large role futures into MaybeDone adds
         // avoidable transient stack usage in an unoptimized host poll.
-        futures_util::pin_mut!(
-            source,
-            ingress,
-            sink,
-            receiving,
-            key_control,
-            clock_role,
-            timer_receive,
-            transmitting,
-            publishing,
-            marking,
-            path_validation,
-            http3_control,
-            completion,
-            terminal_receive,
-            source_collector,
-            input_collector,
-            delivery_collector,
-        );
-        futures_util::try_join!(
-            source,
-            ingress,
-            sink,
-            receiving,
-            key_control,
-            clock_role,
-            timer_receive,
-            transmitting,
-            publishing,
-            marking,
-            path_validation,
-            http3_control,
-            completion,
-            terminal_receive,
-            source_collector,
-            input_collector,
-            delivery_collector,
-        )
-        .map(|_| ())
+        let mut source = core::pin::pin!(source);
+        let mut ingress = core::pin::pin!(ingress);
+        let mut sink = core::pin::pin!(sink);
+        let mut receiving = core::pin::pin!(receiving);
+        let mut key_control = core::pin::pin!(key_control);
+        let mut clock_role = core::pin::pin!(clock_role);
+        let mut timer_receive = core::pin::pin!(timer_receive);
+        let mut transmitting = core::pin::pin!(transmitting);
+        let mut publishing = core::pin::pin!(publishing);
+        let mut marking = core::pin::pin!(marking);
+        let mut path_validation = core::pin::pin!(path_validation);
+        let mut http3_control = core::pin::pin!(http3_control);
+        let mut completion = core::pin::pin!(completion);
+        let mut terminal_receive = core::pin::pin!(terminal_receive);
+        let mut source_collector = core::pin::pin!(source_collector);
+        let mut input_collector = core::pin::pin!(input_collector);
+        let mut delivery_collector = core::pin::pin!(delivery_collector);
+        crate::runtime::TaskSet::new([
+            source.as_mut(),
+            ingress.as_mut(),
+            sink.as_mut(),
+            receiving.as_mut(),
+            key_control.as_mut(),
+            clock_role.as_mut(),
+            timer_receive.as_mut(),
+            transmitting.as_mut(),
+            publishing.as_mut(),
+            marking.as_mut(),
+            path_validation.as_mut(),
+            http3_control.as_mut(),
+            completion.as_mut(),
+            terminal_receive.as_mut(),
+            source_collector.as_mut(),
+            input_collector.as_mut(),
+            delivery_collector.as_mut(),
+        ]).await
     };
     if let Err(error) = result {
         control.revoke()?;
@@ -761,6 +757,7 @@ async fn connected<
     }
     let (validated_paths, preferred_address_used) = publication_state.paths.observation();
     Ok(Report {
+        resumed: early_received.finished.resumed(),
         validated_paths,
         preferred_address_used,
         termination: if matches!(close_kind, super::CloseKind::IdleExpired) {

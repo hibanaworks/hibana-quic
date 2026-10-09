@@ -8,7 +8,7 @@ use core::{
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 use hibana_quic::{
-    mailbox::{AlreadySplit, Closed, InitError, Mailbox, SendError},
+    runtime::mailbox::{AlreadySplit, Closed, InitError, Mailbox, SendError},
     runtime::join2,
 };
 use std::{

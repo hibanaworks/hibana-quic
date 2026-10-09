@@ -9,10 +9,10 @@
 use core::cell::RefCell;
 
 use crate::{
-    accounting::{PacketNumber, PacketNumberSpace},
     crypto::directional::ApplicationKeyScope,
-    packet::{self, Frame},
-    streams::{
+    quic::kernel::accounting::{PacketNumber, PacketNumberSpace},
+    quic::kernel::packet::{self, Frame},
+    quic::kernel::streams::{
         self, ChunkHandle, Limits, PacketReference, Role, SendChunk, SendQueue, StreamHandle,
         StreamSlot, StreamTable,
     },
@@ -1334,7 +1334,7 @@ mod tests {
             fn witness() {}
         }
         impl<T: ?Sized> NotCopy<()> for T {}
-        impl<T: ?Sized + Copy> NotCopy<u8> for T {}
+        impl<T: Copy> NotCopy<u8> for T {}
         let _ = <Production<'static> as NotCopy<_>>::witness;
         let _ = <Delivered<'static> as NotCopy<_>>::witness;
         let _ = <ProductionReleased<'static> as NotCopy<_>>::witness;
@@ -1346,7 +1346,7 @@ mod tests {
             fn witness() {}
         }
         impl<T: ?Sized> NotClone<()> for T {}
-        impl<T: ?Sized + Clone> NotClone<u8> for T {}
+        impl<T: Clone> NotClone<u8> for T {}
         let _ = <Production<'static> as NotClone<_>>::witness;
         let _ = <Delivered<'static> as NotClone<_>>::witness;
         let _ = <ProductionReleased<'static> as NotClone<_>>::witness;
@@ -1373,6 +1373,8 @@ mod tests {
         let allocation = actor_test_allocator::NoAlloc::start();
         let production = app.take_production(stream).unwrap();
         assert!(matches!(app.take_production(stream), Err(Error::Binding)));
+        // Deliberately consume the affine token; it must not become reissuable.
+        #[allow(clippy::drop_non_drop)]
         drop(production);
         app.core.numbers.borrow_mut().register(stream).unwrap();
         assert!(matches!(app.take_production(stream), Err(Error::Binding)));
@@ -1517,7 +1519,7 @@ mod tests {
             let mut production = app.take_production(stream).unwrap();
             assert_eq!(
                 app.enqueue_prefix(&mut production, &data, true).unwrap(),
-                (&data).len()
+                data.len()
             );
         }
         for pn in 3..6 {
@@ -1560,7 +1562,7 @@ mod tests {
         .unwrap();
         let Facets {
             mut app,
-            mut rx,
+            rx,
             mut tx,
             mut publication,
             mut reset,
@@ -1619,7 +1621,7 @@ mod tests {
             mut rx,
             mut tx,
             mut publication,
-            mut reset,
+            reset: _,
         } = core.split();
         rx.apply(&Frame::Stream {
             id: 0,
@@ -2138,7 +2140,7 @@ mod tests {
         let Facets {
             mut app,
             mut rx,
-            mut tx,
+            tx,
             ..
         } = core.split();
         rx.apply(&Frame::Stream {

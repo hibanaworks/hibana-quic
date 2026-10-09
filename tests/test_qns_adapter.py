@@ -4,7 +4,7 @@ import socket
 import unittest
 from unittest import mock
 
-spec = importlib.util.spec_from_file_location('qns_endpoint', Path(__file__).parents[1] / 'interop/qns/endpoint.py')
+spec = importlib.util.spec_from_file_location('qns_endpoint', Path(__file__).parents[1] / 'tests/interop/qns/endpoint.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 

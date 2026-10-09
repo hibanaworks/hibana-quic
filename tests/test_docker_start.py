@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class DockerStart(unittest.TestCase):
     def run_case(self, failure):
-        source = (ROOT / 'ci/run-interop.sh').read_text()
+        source = (ROOT / 'tools/ci/run-interop.sh').read_text()
         block = source.split('if ! sudo systemctl restart docker; then\n', 1)[1]
         block = 'if ! sudo systemctl restart docker; then\n' + block.split('\nfor attempt in ', 1)[0]
         with tempfile.TemporaryDirectory() as directory:

@@ -26,7 +26,7 @@ Commands (Lean 4.30.0, Z3 5.1.0.0):
 
     lean proofs/tls-input-cancellation/Cancellation.lean
     python proofs/tls-input-cancellation/cancellation.py
-    cargo test --locked --manifest-path reference-tls/Cargo.toml --test bounded_tls direct_transcript_roles_validate_full_tls_without_allocating
+    cargo test --locked --manifest-path tests/tls-reference/Cargo.toml --test bounded_tls direct_transcript_roles_validate_full_tls_without_allocating
 
 The direct transcript roles are now wired into the live connection graph.
 The old phase dispatcher and the temporary synchronous test-peer module/feature

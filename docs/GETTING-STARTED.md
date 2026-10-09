@@ -7,8 +7,8 @@ never disable CA or hostname verification to make a demo pass.
 From the repository root:
 
 ```sh
-cargo build --locked --release --manifest-path adapters/host/Cargo.toml --bin hq
-adapters/host/target/release/hq --help
+cargo build --locked --release --manifest-path host/Cargo.toml --bin hq
+host/target/release/hq --help
 mkdir -p www downloads
 printf 'hello from Hibana\n' > www/hello.txt
 ```
@@ -17,9 +17,9 @@ Start the server with the certificate chain and private key, then run the client
 in another terminal with its trusted CA certificate:
 
 ```sh
-adapters/host/target/release/hq server --listen 127.0.0.1:4433 \
+host/target/release/hq server --listen 127.0.0.1:4433 \
   --cert chain.pem --key key.pem --www www --max-requests 1 --http 3
-adapters/host/target/release/hq client --connect 127.0.0.1:4433 \
+host/target/release/hq client --connect 127.0.0.1:4433 \
   --server-name localhost --ca ca.pem --request /hello.txt \
   --downloads downloads --http 3
 cmp www/hello.txt downloads/hello.txt

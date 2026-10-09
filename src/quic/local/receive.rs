@@ -8,13 +8,14 @@ struct ReceiveWire<'keys, 'scope, 'buf, const N: usize> {
     largest: [Option<u64>; 2],
     datagram: [u8; N],
     len: usize,
-    ecn: Option<crate::ecn::Codepoint>,
-    path: Option<crate::path::Address>,
+    received_at: u64,
+    ecn: Option<crate::quic::ecn::Codepoint>,
+    path: Option<crate::quic::path::Address>,
     offset: usize,
     opened: [u8; N],
     // One owned ciphertext packet, not a TLS/protocol phase flag. It cannot
     // produce ACK or CRYPTO effects until the real Handshake key arrives.
-    pending_handshake: Option<([u8; N], ReceivedDatagram)>,
+    pending_handshake: Option<([u8; N], ReceivedDatagram, u64)>,
 }
 impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
     async fn packet<const P: usize>(
@@ -26,11 +27,11 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
         clock: &impl Clock,
     ) -> Result<bool, Error> {
         if self.offset >= self.len {
-            let received = if self.handshake.is_some()
-                && let Some((bytes, received)) = self.pending_handshake.take()
+            let (received, received_at) = if self.handshake.is_some()
+                && let Some((bytes, received, received_at)) = self.pending_handshake.take()
             {
                 self.datagram = bytes;
-                received
+                (received, received_at)
             } else {
                 let received = io.receive(&mut self.datagram).await?;
                 if config.initial_path.is_some() && received.path != config.initial_path {
@@ -41,13 +42,14 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                 }
                 book.received_datagram(received.len as u64)?;
                 slots.schedule.changed()?;
-                received
+                (received, clock.now())
             };
             if config.initial_path.is_some() && received.path != config.initial_path {
                 return Ok(true);
             }
 
             let len = received.len;
+            self.received_at = received_at;
             self.ecn = received.ecn;
             self.path = received.path;
             if len > N {
@@ -80,7 +82,8 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                 ..
             } => {
                 if version != config.version
-                    && !(kind == LongType::Initial && version == crate::version::Version::V1)
+                    && !(kind == LongType::Initial
+                        && version == crate::quic::kernel::version::Version::V1)
                 {
                     return Ok(true);
                 }
@@ -118,7 +121,12 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             }
             Header::Short { destination_id, .. } => {
                 if destination_id == config.local_connection_id {
-                    slots.retain_application(untrusted.bytes, self.ecn, self.path)?;
+                    slots.retain_application(
+                        untrusted.bytes,
+                        self.ecn,
+                        self.path,
+                        self.received_at,
+                    )?;
                 }
                 return Ok(true);
             }
@@ -149,6 +157,7 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
                                     ecn: self.ecn,
                                     path: self.path,
                                 },
+                                self.received_at,
                             ));
                         }
                         return Ok(true);
@@ -183,7 +192,13 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             *slots.peer.borrow_mut() = ConnectionId::new(source_id)?;
         }
         self.largest[index] = Some(self.largest[index].map_or(pn, |last| last.max(pn)));
-        let outcome = book.apply_packet(authentication, plaintext, clock.now(), self.ecn)?;
+        let outcome = book.apply_packet(
+            authentication,
+            plaintext,
+            self.received_at,
+            clock.now(),
+            self.ecn,
+        )?;
         slots.schedule.changed()?;
         if !outcome.duplicate {
             for frame in FrameIter::new(
@@ -220,7 +235,7 @@ pub(in crate::quic) async fn receive<'scope, const N: usize, const P: usize>(
     mut initial_endpoint: Option<&mut Endpoint<'_, { p::INITIAL_EVENT }>>,
     integrity: IntegrityBudget,
     first_response: Option<&retry_client::Response<N>>,
-    pending_handshake: Option<([u8; N], ReceivedDatagram)>,
+    pending_handshake: Option<([u8; N], ReceivedDatagram, u64)>,
     reassembly: [CryptoBuffer<'_>; 2],
     book: &mut recovery::Rx<'_, 'scope, N>,
     clock: &impl Clock,
@@ -233,6 +248,7 @@ pub(in crate::quic) async fn receive<'scope, const N: usize, const P: usize>(
         largest: [None; 2],
         datagram: [0; N],
         len: 0,
+        received_at: 0,
         ecn: None,
         path: None,
         offset: 0,
@@ -245,6 +261,7 @@ pub(in crate::quic) async fn receive<'scope, const N: usize, const P: usize>(
         }
         wire.datagram[..first.received.len].copy_from_slice(&first.bytes[..first.received.len]);
         wire.len = first.received.len;
+        wire.received_at = clock.now();
         wire.ecn = first.received.ecn;
         wire.path = first.received.path;
     }
@@ -380,7 +397,6 @@ pub(in crate::quic) async fn receive<'scope, const N: usize, const P: usize>(
             }
             first
         };
-        drop(input);
         let application = slots.read_application.take()?;
         let finished = slots.finished.take()?;
         let peer = *slots.peer.borrow();

@@ -4,7 +4,7 @@
 #![deny(unsafe_code)]
 #![allow(dead_code)]
 
-#[path = "../../src/trace.rs"]
+#[path = "../../src/runtime/trace.rs"]
 mod trace;
 mod trace_cases;
 

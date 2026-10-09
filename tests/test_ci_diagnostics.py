@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 
-SOURCE = Path(__file__).resolve().parents[1] / 'ci/run_in_tools.py'
+SOURCE = Path(__file__).resolve().parents[1] / 'tools/ci/run_in_tools.py'
 
 
 class Diagnostics(unittest.TestCase):
@@ -310,13 +310,13 @@ class Diagnostics(unittest.TestCase):
                         '-days', '1', '-subj', '/CN=synthetic-test-only',
                         '-keyout', str(key), '-out', str(cert)], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        (self.root / 'ci').mkdir()
+        (self.root / 'tools/ci').mkdir(parents=True)
         diagnostic_key, diagnostic_cert = self.root / 'diagnostic.key', self.root / 'diagnostic.crt'
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
                         '-days', '1', '-subj', '/CN=synthetic-diagnostic-only',
                         '-keyout', str(diagnostic_key), '-out', str(diagnostic_cert)], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        (self.root / 'ci/failure-recipient.json').write_text(json.dumps({
+        (self.root / 'tools/ci/failure-recipient.json').write_text(json.dumps({
             'certificate': cert.read_text(), 'diagnostic_certificate': diagnostic_cert.read_text()}))
         packet = b'PRIVATE_SYNTHETIC_PACKET_BYTES'
         secret = b'PRIVATE_SYNTHETIC_TRAFFIC_KEY'
@@ -362,8 +362,8 @@ class Diagnostics(unittest.TestCase):
 
     def test_failed_capture_requires_valid_public_recipient(self):
         self.assertEqual(self.module.preserve_failed_capture(self.logs, 'hibana-quic', 'neqo', '../bad', 'FAILED'), {'state': 'invalid-scope'})
-        (self.root / 'ci').mkdir()
-        (self.root / 'ci/failure-recipient.json').write_text(json.dumps({'certificate': 'PRIVATE KEY'}))
+        (self.root / 'tools/ci').mkdir(parents=True)
+        (self.root / 'tools/ci/failure-recipient.json').write_text(json.dumps({'certificate': 'PRIVATE KEY'}))
         self.assertEqual(self.module.preserve_failed_capture(self.logs, 'hibana-quic', 'neqo', 'bounded-client', 'FAILED'), {'state': 'invalid-recipient'})
         self.assertFalse(self.module.SAFE.exists())
 
@@ -457,7 +457,7 @@ class Diagnostics(unittest.TestCase):
             if 'rev-parse' in command: return 'pinned\n'
             return ''
         self.module.RAW.parent.mkdir(parents=True, exist_ok=True)
-        request = self.root / 'ci/interop-request.json'
+        request = self.root / 'tools/ci/interop-request.json'
         request.parent.mkdir(parents=True, exist_ok=True)
         for reference in ('neqo', 'quiche'):
             for directions in (['server'], ['client'], ['client', 'server']):

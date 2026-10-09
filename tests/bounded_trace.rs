@@ -1,5 +1,5 @@
 //! Writer-component tests. These events are fixtures, not network observations.
-use hibana_quic::trace::{self, *};
+use hibana_quic::runtime::trace::{self, *};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

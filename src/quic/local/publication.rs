@@ -41,19 +41,19 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                             return Err(Error::Binding);
                         }
                         let is_initial = reservation.packet().space
-                            == crate::accounting::PacketNumberSpace::Initial;
+                            == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
                             initial
                                 .submit(
                                     permit.submit(
-                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                        io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct),
                                     ),
                                 )
                                 .await
                         } else {
                             Some(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                     .await,
                             )
                         };
@@ -64,7 +64,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         book.settle(recovery::Completion::from_adapter(
                             reservation,
                             accepted_at,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
@@ -135,19 +135,19 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                             return Err(Error::Binding);
                         }
                         let is_initial = reservation.packet().space
-                            == crate::accounting::PacketNumberSpace::Initial;
+                            == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
                             initial
                                 .submit(
                                     permit.submit(
-                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                        io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct),
                                     ),
                                 )
                                 .await
                         } else {
                             Some(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                     .await,
                             )
                         };
@@ -158,7 +158,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         book.settle(recovery::Completion::from_adapter(
                             reservation,
                             accepted_at,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
@@ -229,19 +229,19 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                             return Err(Error::Binding);
                         }
                         let is_initial = reservation.packet().space
-                            == crate::accounting::PacketNumberSpace::Initial;
+                            == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
                             initial
                                 .submit(
                                     permit.submit(
-                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                        io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct),
                                     ),
                                 )
                                 .await
                         } else {
                             Some(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                     .await,
                             )
                         };
@@ -252,7 +252,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         book.settle(recovery::Completion::from_adapter(
                             reservation,
                             accepted_at,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
@@ -343,19 +343,19 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                             return Err(Error::Binding);
                         }
                         let is_initial = reservation.packet().space
-                            == crate::accounting::PacketNumberSpace::Initial;
+                            == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
                             initial
                                 .submit(
                                     permit.submit(
-                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                        io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct),
                                     ),
                                 )
                                 .await
                         } else {
                             Some(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                     .await,
                             )
                         };
@@ -366,7 +366,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         book.settle(recovery::Completion::from_adapter(
                             reservation,
                             accepted_at,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
@@ -437,19 +437,19 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                             return Err(Error::Binding);
                         }
                         let is_initial = reservation.packet().space
-                            == crate::accounting::PacketNumberSpace::Initial;
+                            == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
                             initial
                                 .submit(
                                     permit.submit(
-                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                        io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct),
                                     ),
                                 )
                                 .await
                         } else {
                             Some(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                     .await,
                             )
                         };
@@ -460,7 +460,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         book.settle(recovery::Completion::from_adapter(
                             reservation,
                             accepted_at,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
@@ -531,19 +531,19 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                             return Err(Error::Binding);
                         }
                         let is_initial = reservation.packet().space
-                            == crate::accounting::PacketNumberSpace::Initial;
+                            == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
                             initial
                                 .submit(
                                     permit.submit(
-                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                        io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct),
                                     ),
                                 )
                                 .await
                         } else {
                             Some(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                     .await,
                             )
                         };
@@ -554,7 +554,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         book.settle(recovery::Completion::from_adapter(
                             reservation,
                             accepted_at,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
@@ -645,19 +645,19 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                             return Err(Error::Binding);
                         }
                         let is_initial = reservation.packet().space
-                            == crate::accounting::PacketNumberSpace::Initial;
+                            == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
                             initial
                                 .submit(
                                     permit.submit(
-                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                        io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct),
                                     ),
                                 )
                                 .await
                         } else {
                             Some(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                     .await,
                             )
                         };
@@ -668,7 +668,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         book.settle(recovery::Completion::from_adapter(
                             reservation,
                             accepted_at,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
@@ -739,19 +739,19 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                             return Err(Error::Binding);
                         }
                         let is_initial = reservation.packet().space
-                            == crate::accounting::PacketNumberSpace::Initial;
+                            == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
                             initial
                                 .submit(
                                     permit.submit(
-                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                        io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct),
                                     ),
                                 )
                                 .await
                         } else {
                             Some(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                     .await,
                             )
                         };
@@ -762,7 +762,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         book.settle(recovery::Completion::from_adapter(
                             reservation,
                             accepted_at,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
@@ -833,19 +833,19 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                             return Err(Error::Binding);
                         }
                         let is_initial = reservation.packet().space
-                            == crate::accounting::PacketNumberSpace::Initial;
+                            == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                         let result = if is_initial {
                             initial
                                 .submit(
                                     permit.submit(
-                                        io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct),
+                                        io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct),
                                     ),
                                 )
                                 .await
                         } else {
                             Some(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                     .await,
                             )
                         };
@@ -856,7 +856,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         book.settle(recovery::Completion::from_adapter(
                             reservation,
                             accepted_at,
-                            crate::ecn::Codepoint::NotEct,
+                            crate::quic::ecn::Codepoint::NotEct,
                         ))?;
                         if accepted_at.is_some()
                             && let Some(ack) = acknowledgment
@@ -944,18 +944,18 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         return Err(Error::Binding);
                     }
                     let is_initial =
-                        reservation.packet().space == crate::accounting::PacketNumberSpace::Initial;
+                        reservation.packet().space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                     let result = if is_initial {
                         initial
                             .submit(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct)),
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct)),
                             )
                             .await
                     } else {
                         Some(
                             permit
-                                .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                 .await,
                         )
                     };
@@ -966,7 +966,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                     book.settle(recovery::Completion::from_adapter(
                         reservation,
                         accepted_at,
-                        crate::ecn::Codepoint::NotEct,
+                        crate::quic::ecn::Codepoint::NotEct,
                     ))?;
                     if accepted_at.is_some()
                         && let Some(ack) = acknowledgment
@@ -1033,18 +1033,18 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                         return Err(Error::Binding);
                     }
                     let is_initial =
-                        reservation.packet().space == crate::accounting::PacketNumberSpace::Initial;
+                        reservation.packet().space == crate::quic::kernel::accounting::PacketNumberSpace::Initial;
                     let result = if is_initial {
                         initial
                             .submit(
                                 permit
-                                    .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct)),
+                                    .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct)),
                             )
                             .await
                     } else {
                         Some(
                             permit
-                                .submit(io.send(sealed.bytes(), crate::ecn::Codepoint::NotEct))
+                                .submit(io.send(sealed.bytes(), crate::quic::ecn::Codepoint::NotEct))
                                 .await,
                         )
                     };
@@ -1055,7 +1055,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
                     book.settle(recovery::Completion::from_adapter(
                         reservation,
                         accepted_at,
-                        crate::ecn::Codepoint::NotEct,
+                        crate::quic::ecn::Codepoint::NotEct,
                     ))?;
                     if accepted_at.is_some()
                         && let Some(ack) = acknowledgment

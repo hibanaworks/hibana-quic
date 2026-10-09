@@ -12,12 +12,12 @@ use super::{
     StreamSink, global as p,
 };
 use crate::{
-    mailbox::{Receiver, Sender},
+    runtime::mailbox::{Receiver, Sender},
     quic::{
         application_stream::{self, App, MAX_LIVE_STREAMS, Production},
         tls::Inbox,
     },
-    streams::{self, StreamHandle},
+    quic::kernel::streams::{self, StreamHandle},
 };
 
 pub(crate) const REQUEST_BYTES: usize = MAX_REQUEST_BYTES;
@@ -1061,7 +1061,7 @@ mod tests {
     #[test]
     fn all_admitted_requests_enqueue_while_response_source_is_paused() {
         let mut slots = [None; REQUEST_CAPACITY];
-        let mailbox = crate::mailbox::Mailbox::new(&mut slots).unwrap();
+        let mailbox = crate::runtime::mailbox::Mailbox::new(&mut slots).unwrap();
         let (mut sender, mut receiver) = mailbox.split().unwrap();
         // No consumer poll occurs until all admitted stream requests arrive.
         // An eight-entry queue parks here before RX can receive transport ACKs.
@@ -1168,13 +1168,13 @@ mod tests {
 mod stop_tests {
     use super::*;
     use crate::{
-        carrier::CarrierStorage,
+        runtime::carrier::CarrierStorage,
         crypto::directional::ApplicationKeyScope,
         quic::{
             application_stream::{Facets, StreamNumbers},
             publication_gate::PublicationGate,
         },
-        streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
+        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
     };
     use core::{
         future::Future,
@@ -1554,13 +1554,13 @@ mod stop_tests {
 mod interrupted_delivery_tests {
     use super::*;
     use crate::{
-        carrier::CarrierStorage,
+        runtime::carrier::CarrierStorage,
         crypto::directional::ApplicationKeyScope,
         quic::{
             application_stream::{Facets, StreamNumbers},
             publication_gate::PublicationGate,
         },
-        streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
+        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
     };
     use core::{
         future::Future,

@@ -7,7 +7,9 @@ use hibana::{
     EndpointError,
     runtime::{SessionKitStorage, ids::SessionId},
 };
-use hibana_quic::{carrier::CarrierStorage, retry::client_global as p, runtime::join2};
+use hibana_quic::{
+    quic::retry::client_global as p, runtime::carrier::CarrierStorage, runtime::join2,
+};
 #[test]
 fn retry_rekey_is_outside_the_receive_and_publication_rolls() {
     for (retry, repeat) in [(false, false), (true, false), (true, true)] {
@@ -32,15 +34,13 @@ fn retry_rekey_is_outside_the_receive_and_publication_rolls() {
                 owner.offer().await?.recv::<p::Observed>().await?;
                 owner.send::<p::Taken>(&()).await?;
                 owner.send::<p::Quiesce>(&()).await?;
-                owner.recv::<p::Quiescent>().await.map_err(|e| {
+                owner.recv::<p::Quiescent>().await.inspect_err(|&e| {
                     eprintln!("owner Quiescent: {e:?}");
-                    e
                 })?;
                 if retry {
                     owner.send::<p::Rekey>(&()).await?;
-                    owner.recv::<p::Rekeyed>().await.map_err(|e| {
+                    owner.recv::<p::Rekeyed>().await.inspect_err(|&e| {
                         eprintln!("owner Rekeyed: {e:?}");
-                        e
                     })?;
                     if repeat {
                         let result = owner.send::<p::Rekey>(&()).await;
@@ -57,10 +57,12 @@ fn retry_rekey_is_outside_the_receive_and_publication_rolls() {
                 }
                 if retry {
                     owner.send::<p::RetriedQuiesce>(&()).await?;
-                    owner.recv::<p::RetriedQuiescent>().await.map_err(|e| {
-                        eprintln!("owner Quiescent: {e:?}");
-                        e
-                    })?;
+                    owner
+                        .recv::<p::RetriedQuiescent>()
+                        .await
+                        .inspect_err(|&e| {
+                            eprintln!("owner Quiescent: {e:?}");
+                        })?;
                 }
                 if !retry {
                     owner.send::<p::Bypass>(&()).await?;
@@ -85,9 +87,8 @@ fn retry_rekey_is_outside_the_receive_and_publication_rolls() {
                         4 => {
                             branch.recv::<p::Listen>().await?;
                             io.send::<p::Observed>(&()).await?;
-                            io.recv::<p::Taken>().await.map_err(|e| {
+                            io.recv::<p::Taken>().await.inspect_err(|&e| {
                                 eprintln!("io Taken: {e:?}");
-                                e
                             })?;
                         }
                         14 => {
@@ -114,9 +115,8 @@ fn retry_rekey_is_outside_the_receive_and_publication_rolls() {
                                 24 => {
                                     branch.recv::<p::RetriedListen>().await?;
                                     io.send::<p::RetriedObserved>(&()).await?;
-                                    io.recv::<p::RetriedTaken>().await.map_err(|e| {
+                                    io.recv::<p::RetriedTaken>().await.inspect_err(|&e| {
                                         eprintln!("io Taken: {e:?}");
-                                        e
                                     })?;
                                 }
                                 28 => {

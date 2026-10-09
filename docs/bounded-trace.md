@@ -1,6 +1,6 @@
 # Opt-in bounded qlog writer
 
-`src/trace.rs` is the caller-buffer writer. `HandshakeEndpoint::enable_trace`
+`src/runtime/trace.rs` is the caller-buffer writer. `HandshakeEndpoint::enable_trace`
 now explicitly opts into a metadata-only endpoint event subset; the HQ executable
 still does not write qlog files. Standalone serializer tests use invented fixtures,
 while `bounded_wire` separately exercises real encrypted endpoint observations.

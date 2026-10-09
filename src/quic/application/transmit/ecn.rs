@@ -2,8 +2,8 @@
 //! continuation. The exchange retains only the actual next datagram's metadata.
 use super::*;
 use crate::{
-    accounting::{PacketNumber, PacketNumberSpace},
-    ecn::{Codepoint, global as e},
+    quic::kernel::accounting::{PacketNumber, PacketNumberSpace},
+    quic::ecn::{Codepoint, global as e},
     quic::tls::Inbox,
 };
 

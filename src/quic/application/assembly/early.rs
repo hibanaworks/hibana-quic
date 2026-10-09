@@ -2,14 +2,14 @@
 use super::super::{EarlyServer, Error, Roles};
 use crate::{
     crypto::IntegrityBudget,
-    early_data::{EarlyStatus, global as p, owner},
-    packet::{EncryptionLevel, Frame, FrameIter, ParseLimits},
+    quic::early_data::{EarlyStatus, global as p, owner},
+    quic::kernel::packet::{EncryptionLevel, Frame, FrameIter, ParseLimits},
     quic::{Clock, Config, Side, application_stream, early_wire, recovery, tls::Transcript},
     tls::handshake::key_source::{EarlyKeyMaterial, FinishedAuthenticated},
 };
 use hibana::g::Message;
-#[derive(Default)]
-pub(super) struct Received {
+pub(super) struct Received<'scope> {
+    pub finished: FinishedAuthenticated<'scope>,
     pub packets: usize,
     pub stream_bytes: u64,
     pub finished_streams: usize,
@@ -32,7 +32,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
     book: &mut recovery::Rx<'_, 'scope, N>,
     streams: &mut application_stream::Rx<'_, '_, 'scope, RX, CHUNK>,
     clock: &impl Clock,
-) -> Result<Received, Error> {
+) -> Result<Received<'scope>, Error> {
     let generation = finished.scope().connection_generation();
     if config.side != Side::Server || finished.early_status() != EarlyStatus::Accepted {
         source.discard_pending_early_key();
@@ -91,10 +91,17 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
                     .await?;
                 Ok(())
             };
-            futures_util::try_join!(input, owner, tls, application).map(|_| ())
+            crate::runtime::join::values4(input, owner, tls, application)
+                .await
+                .map(|_| ())
         }
         .await?;
-        return Ok(Received::default());
+        return Ok(Received {
+            finished,
+            packets: 0,
+            stream_bytes: 0,
+            finished_streams: 0,
+        });
     }
     let early = early.ok_or(Error::Binding)?;
     if early.packets.len() > crate::quic::application_stream::MAX_LIVE_STREAMS {
@@ -117,7 +124,10 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
     {
         let input = async {
             let mut largest = None;
-            for index in 0..early.packets.len() {
+            if early.packets.len() > stored.len() {
+                return Err(Error::Binding);
+            }
+            for (index, retained) in stored.iter_mut().take(early.packets.len()).enumerate() {
                 let packet = early.packets.packet(index).ok_or(Error::Binding)?;
                 let mut opened = match early_wire::open::<N>(
                     &key,
@@ -147,7 +157,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
                 match result.label() {
                     label if label == p::PacketStored::LOGICAL_LABEL => {
                         check(result.recv::<p::PacketStored>().await?, pn)?;
-                        stored[index] = Some(exchange.take_stored()?);
+                        *retained = Some(exchange.take_stored()?);
                     }
                     label if label == p::PacketDropped::LOGICAL_LABEL => {
                         check(result.recv::<p::PacketDropped>().await?, pn)?
@@ -240,7 +250,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
             }
             Ok(())
         };
-        futures_util::try_join!(input, owner_task, tls, application)?;
+        crate::runtime::join::values4(input, owner_task, tls, application).await?;
     }
     let finished = exchange.take_finished()?;
     let mut accepted = 0;
@@ -252,6 +262,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
     }
     key.discard();
     Ok(Received {
+        finished,
         packets: accepted,
         stream_bytes,
         finished_streams,

@@ -2,13 +2,16 @@ name: Direct choreography runtime checks
 on:
   push:
     branches: [development/rolled-route-runtime, ci/parallel-client-retirement]
-    paths: ['src/**', 'tests/**', 'reference-tls/**', 'adapters/host/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/direct-runtime.yml']
+    paths: ['src/**', 'tests/**', 'host/**', 'tools/ci/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/direct-runtime.yml']
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
   group: direct-runtime-${{ github.ref }}
   cancel-in-progress: false
+defaults:
+  run:
+    working-directory: hibana-quic
 jobs:
   rust:
     runs-on: ubuntu-24.04
@@ -20,23 +23,131 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          path: hibana-quic
+          persist-credentials: false
+      - name: Put build and Miri outputs in the runner temporary directory
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
+      - name: Read the immutable TLS revision
+        id: tls
+        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+      - name: Check out the exact owned TLS source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: hibanaworks/hibana-tls
+          ref: ${{ steps.tls.outputs.revision }}
+          path: hibana-tls
           persist-credentials: false
       - name: Install the pinned Rust toolchain
-        run: rustup toolchain install 1.95.0 --profile minimal --target thumbv6m-none-eabi
-      - name: Verify source and Hibana snapshot
+        run: rustup toolchain install 1.95.0 --profile minimal --component clippy --target thumbv6m-none-eabi
+      - name: Verify both sources and dependency identities
         run: |
-          python3 ci/audit_source.py --check
-          python3 ci/audit_control.py
-          python3 vendor/check_hibana.py
-      - name: Core, integration and compile-fail contracts
-        run: cargo +1.95.0 test --locked
-      - name: Embedded no_std core
-        run: cargo +1.95.0 check --locked --lib --target thumbv6m-none-eabi
-      - name: Actual async TLS and independent reference peers
-        run: cargo +1.95.0 test --locked --manifest-path reference-tls/Cargo.toml --test bounded_tls --test rsa_tls --test resumption --test early_tls
-      - name: Host runtime and endpoint
-        run: cargo +1.95.0 test --locked --manifest-path adapters/host/Cargo.toml
-      - name: Bounded diagnostics and local impairment fixture tests
+          python3 tools/ci/audit_source.py --check
+          python3 tools/ci/audit_control.py
+          python3 tools/ci/check_dependencies.py
+          python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
+      - name: Core, TLS, integration and compile-fail contracts
+        run: |
+          cargo +1.95.0 test --locked
+          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --features alloc
+      - name: Embedded no_std sources
+        run: |
+          cargo +1.95.0 check --locked --lib --target thumbv6m-none-eabi
+          cargo +1.95.0 check --locked --manifest-path ../hibana-tls/Cargo.toml --lib --target thumbv6m-none-eabi
+      - name: Independent reference workspace and Host tests
+        run: |
+          cargo +1.95.0 test --locked --manifest-path tests/tls-reference/Cargo.toml
+          cargo +1.95.0 test --locked --manifest-path host/Cargo.toml
+      - name: Strict Clippy for QUIC, TLS and Host
+        run: |
+          cargo +1.95.0 clippy --locked --lib --tests -- -D warnings
+          cargo +1.95.0 clippy --locked --manifest-path ../hibana-tls/Cargo.toml --all-targets --features alloc -- -D warnings
+          cargo +1.95.0 clippy --locked --manifest-path host/Cargo.toml --all-targets -- -D warnings
+      - name: Exact runner nine-certificate chain including zero-allocation assertion
+        run: |
+          source tools/ci/pins.env
+          git clone --filter=blob:none https://github.com/quic-interop/quic-interop-runner.git "$RUNNER_TEMP/runner"
+          git -C "$RUNNER_TEMP/runner" checkout --detach "$RUNNER_REVISION"
+          mkdir -p "$RUNNER_TEMP/chain9"
+          (cd "$RUNNER_TEMP/runner" && bash certs.sh "$RUNNER_TEMP/chain9" 9)
+          HIBANA_RUNNER_CERTS_DIR="$RUNNER_TEMP/chain9" cargo +1.95.0 test --locked --manifest-path tests/tls-reference/Cargo.toml --test certificate_depth exact_runner_nine_chain_full_tls_handshake_allocate_zero -- --ignored --exact
+      - name: Bounded diagnostics, source pairing and impairment fixtures
         run: |
           python3 -m unittest discover -s tests -p 'test_*.py'
-          python3 -m unittest discover -s adapters/host/tests -p 'test_udp_impairment.py'
+          python3 -m unittest discover -s host/tests -p 'test_udp_impairment.py'
+      - name: Save paired source identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-source-pair-${{ github.run_id }}-${{ github.run_attempt }}
+          path: hibana-quic/.ci-work/paired-source/source-pair.json
+          retention-days: 7
+  secret-miri:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: hibana-quic
+          persist-credentials: false
+      - name: Put build and Miri outputs in the runner temporary directory
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
+      - id: tls
+        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: hibanaworks/hibana-tls
+          ref: ${{ steps.tls.outputs.revision }}
+          path: hibana-tls
+          persist-credentials: false
+      - name: Install the specified Miri and rust-src
+        run: rustup toolchain install nightly-2026-10-08 --profile minimal --component miri --component rust-src
+      - name: Five secret memory boundary contracts
+        run: |
+          cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --features alloc --lib secret::
+  ack-delay-faults:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: hibana-quic
+          persist-credentials: false
+      - name: Put build and Miri outputs in the runner temporary directory
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
+      - id: tls
+        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: hibanaworks/hibana-tls
+          ref: ${{ steps.tls.outputs.revision }}
+          path: hibana-tls
+          persist-credentials: false
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Build one exact candidate for all fault cases
+        run: |
+          python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
+          mkdir -p ci-safe-results
+          cp .ci-work/paired-source/source-pair.json ci-safe-results/
+          cargo +1.95.0 build --locked --release --manifest-path host/Cargo.toml --bin hq
+          sha256sum "$CARGO_TARGET_DIR/release/hq" > ci-safe-results/binary.sha256
+      - name: Finite seven Handshake plus three short packet losses
+        run: python3 host/tests/reproduce_key_wait.py 3 --binary "$CARGO_TARGET_DIR/release/hq" --connections 1 --impairment loss --loss-scope global --timeout-seconds 120 --trace-routes --output ci-safe-results/key-wait.json
+      - name: Fifty concurrent connections, loss and corruption, five seeds each
+        if: success() || failure()
+        run: python3 tools/ci/run-ack-delay-stress.py --binary "$CARGO_TARGET_DIR/release/hq" --output ci-safe-results/stress
+      - name: Retain actual fault and retirement reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ack-delay-faults-${{ github.run_id }}-${{ github.run_attempt }}
+          path: hibana-quic/ci-safe-results/
+          retention-days: 7

@@ -5,8 +5,8 @@ use super::{
 };
 use crate::{
     crypto::directional::ApplicationKeyScope,
-    parameters::{self, Parameters, Peer},
-    streams::Limits,
+    quic::kernel::parameters::{self, Parameters, Peer},
+    quic::kernel::streams::Limits,
     tls::handshake::key_source::FinishedAuthenticated,
 };
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

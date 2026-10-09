@@ -4,7 +4,9 @@ pub(super) fn limited(error: &recovery::Error) -> bool {
     matches!(
         error,
         recovery::Error::CongestionLimited
-            | recovery::Error::Accounting(crate::accounting::AccountingError::AmplificationLimited)
+            | recovery::Error::Accounting(
+                crate::quic::kernel::accounting::AccountingError::AmplificationLimited
+            )
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -15,14 +17,14 @@ pub(in crate::quic) fn prepare<'book, 'scope, const N: usize>(
     peer: &ConnectionId,
     level: Level,
     frame: Frame<'_>,
-    flight: Option<crate::flights::FlightId>,
+    flight: Option<crate::quic::kernel::flights::FlightId>,
     probe: bool,
     ack: Option<recovery::AckSnapshot<'book>>,
     now: u64,
 ) -> Result<Option<wire::Datagram<'book, N>>, Error> {
     if level == Level::OneRtt {
         let keys = keys.application.as_mut().ok_or(Error::Binding)?;
-        let mut plaintext = zeroize::Zeroizing::new([0u8; N]);
+        let mut plaintext = hibana_tls::secret::Secret::new([0u8; N]);
         let len = packet::encode_frame(&frame, &mut plaintext[..])?;
         let bytes = (1 + peer.bytes().len() + 4 + len + 16) as u64;
         let reservation = if let Some(flight) = flight {
@@ -56,7 +58,34 @@ pub(in crate::quic) fn prepare<'book, 'scope, const N: usize>(
         };
     }
     let ack_eliciting = frame.ack_eliciting();
-    let plain = PlainPacket::<N>::new(config, peer, level, frame)?;
+    let mut ack = ack;
+    // An Initial PTO is already authorized by the recovery owner. Include
+    // genuinely received ACK-only ranges in this eliciting packet so the peer
+    // can detect missing ServerHello packets. This never schedules an ACK in
+    // response to an ACK, adds probe credit, or resets the PTO timer.
+    let plain = if probe && level == Level::Initial && ack.is_none() {
+        if let Some(snapshot) = book.ack_for_packet(level) {
+            let extra = Frame::Ack {
+                delay: snapshot.encoded_delay(now)?,
+                ranges: packet::AckRanges::new(snapshot.ranges())?,
+                ecn: snapshot.ecn(),
+            };
+            match PlainPacket::<N>::with_extra(config, peer, level, frame, Some(extra)) {
+                Ok(plain) => {
+                    ack = Some(snapshot);
+                    plain
+                }
+                Err(Error::Capacity | Error::Packet(packet::Error::BufferTooShort)) => {
+                    PlainPacket::<N>::new(config, peer, level, frame)?
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            PlainPacket::<N>::new(config, peer, level, frame)?
+        }
+    } else {
+        PlainPacket::<N>::new(config, peer, level, frame)?
+    };
     let reservation = match book.reserve(
         level,
         plain.len() as u64,
@@ -79,8 +108,8 @@ pub(in crate::quic) fn prepare<'book, 'scope, const N: usize>(
     }
 }
 pub(super) enum RecoveryPacket {
-    Acknowledgment(crate::accounting::PacketNumberSpace),
-    Probe(crate::accounting::PacketNumberSpace),
+    Acknowledgment(crate::quic::kernel::accounting::PacketNumberSpace),
+    Probe(crate::quic::kernel::accounting::PacketNumberSpace),
 }
 pub(super) fn prepare_recovery_packet<'scope, 'book, const N: usize, const P: usize>(
     slots: &Storage<'scope, 'book, N, P>,
@@ -96,7 +125,7 @@ pub(super) fn prepare_recovery_packet<'scope, 'book, const N: usize, const P: us
             && (level != Level::Handshake || keys.handshake.is_some())
         {
             let frame = Frame::Ack {
-                delay: 0,
+                delay: ack.encoded_delay(clock.now())?,
                 ranges: packet::AckRanges::new(ack.ranges())?,
                 ecn: ack.ecn(),
             };

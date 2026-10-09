@@ -20,14 +20,14 @@ class Matrix(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        (self.root / 'ci').mkdir()
-        self.request = json.loads((SOURCE / 'ci/interop-request.json').read_text())
-        (self.root / 'ci/interop-request.json').write_text(json.dumps(self.request))
-        pins_text = (SOURCE / 'ci/pins.env').read_text()
-        (self.root / 'ci/pins.env').write_text(pins_text)
+        (self.root / 'tools/ci').mkdir(parents=True)
+        self.request = json.loads((SOURCE / 'tools/ci/interop-request.json').read_text())
+        (self.root / 'tools/ci/interop-request.json').write_text(json.dumps(self.request))
+        pins_text = (SOURCE / 'tools/ci/pins.env').read_text()
+        (self.root / 'tools/ci/pins.env').write_text(pins_text)
         self.pins = dict(line.split('=', 1) for line in pins_text.splitlines() if line and not line.startswith('#'))
         with patch.dict(os.environ, {'ROOT': str(self.root)}):
-            spec = importlib.util.spec_from_file_location('matrix_runner', SOURCE / 'ci/run_in_tools.py')
+            spec = importlib.util.spec_from_file_location('matrix_runner', SOURCE / 'tools/ci/run_in_tools.py')
             self.module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(self.module)
         self.artifacts = self.root / 'artifacts'
@@ -37,6 +37,7 @@ class Matrix(unittest.TestCase):
             folder.mkdir()
             reference = group['reference_implementation']
             self.put(group, 'environment.json', dict(source_commit=COMMIT, run_id='101', run_attempt='1', interop_group=group['name']))
+            self.put(group, 'source-pair.json', {'trees': {'hibana-quic': '1' * 64, 'hibana-tls': '2' * 64}, 'tls_repository': 'https://github.com/hibanaworks/hibana-tls', 'tls_revision': self.pins['HIBANA_TLS_REVISION']})
             pins = dict(self.pins, REFERENCE_IMPLEMENTATION=reference,
                         SIM_IMAGE='martenseemann/quic-network-simulator@sha256:' + 'b' * 64,
                         REFERENCE_IMAGE=('cloudflare/quiche-qns@sha256:' if reference == 'quiche' else 'sha256:') + 'c' * 64)
@@ -157,11 +158,24 @@ class Matrix(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.verify()
 
+    def test_tls_or_quic_source_cannot_change_between_groups(self):
+        group = self.request['groups'][-1]
+        original = self.get(group, 'source-pair.json')
+        for name in ('hibana-quic', 'hibana-tls'):
+            changed = dict(original, trees=dict(original['trees'], **{name: '3' * 64}))
+            self.put(group, 'source-pair.json', changed)
+            with self.assertRaises(RuntimeError): self.verify()
+            self.put(group, 'source-pair.json', original)
+        (self.folder(group) / 'source-pair.json').unlink()
+        with self.assertRaises(RuntimeError): self.verify()
+
     def test_source_run_group_reference_and_pins_must_match(self):
         group = self.request['groups'][0]
         cases = [('environment.json', 'source_commit', 'e' * 40), ('environment.json', 'run_id', '102'),
                  ('environment.json', 'run_attempt', '2'), ('environment.json', 'interop_group', 'other'),
                  ('pins.json', 'RUNNER_REVISION', 'e' * 40), ('pins.json', 'REFERENCE_IMPLEMENTATION', 'quiche'),
+                 ('pins.json', 'HIBANA_TLS_REVISION', 'e' * 40),
+                 ('source-pair.json', 'tls_revision', 'e' * 40),
                  ('pins.json', 'SIM_IMAGE', 'martenseemann/quic-network-simulator@sha256:' + 'e' * 64),
                  ('summary.json', 'runner_source_unchanged', False), ('summary.json', 'candidate_directions', ['client'])]
         for filename, key, value in cases:

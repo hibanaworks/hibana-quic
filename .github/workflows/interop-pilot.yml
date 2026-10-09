@@ -3,7 +3,7 @@ name: QUIC interoperability pilot
 on:
   push:
     branches: [development/rolled-route-runtime, ci/parallel-client-retirement]
-    paths: [ci/interop-request.json, ci/run-interop.sh, ci/run_in_tools.py, .github/workflows/interop-pilot.yml]
+    paths: [tools/ci/interop-request.json, tools/ci/run-interop.sh, tools/ci/run_in_tools.py, .github/workflows/interop-pilot.yml]
   workflow_dispatch:
     inputs:
       source_ref:
@@ -27,6 +27,10 @@ permissions:
   contents: read
   actions: read
 
+defaults:
+  run:
+    working-directory: hibana-quic
+
 concurrency:
   group: quic-interop-pilot
   cancel-in-progress: false
@@ -39,22 +43,34 @@ jobs:
     outputs:
       groups: ${{ steps.plan.outputs.groups }}
       source_commit: ${{ steps.plan.outputs.source_commit }}
+      tls_revision: ${{ steps.tls.outputs.revision }}
     steps:
       - name: Check out the selected audited source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
+          path: hibana-quic
           persist-credentials: false
           fetch-depth: 1
+      - name: Read the immutable TLS revision
+        id: tls
+        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+      - name: Check out the exact owned TLS source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: hibanaworks/hibana-tls
+          ref: ${{ steps.tls.outputs.revision }}
+          path: hibana-tls
+          persist-credentials: false
       - name: Validate all 44 cells and freeze the source commit
         id: plan
         env:
           INTEROP_DIAGNOSTIC_CASES: ${{ inputs.diagnostic_cases }}
           INTEROP_DIAGNOSTIC_DIRECTIONS: ${{ inputs.diagnostic_directions }}
         run: |
-          python3 ci/audit_source.py --check
+          python3 tools/ci/audit_source.py --check
           env -u INTEROP_DIAGNOSTIC_CASES -u INTEROP_DIAGNOSTIC_DIRECTIONS python3 -m unittest discover -s tests -p 'test_ci*.py'
-          groups=$(ROOT="$PWD" python3 ci/run_in_tools.py --matrix)
+          groups=$(ROOT="$PWD" python3 tools/ci/run_in_tools.py --matrix)
           echo "groups=$groups" >> "$GITHUB_OUTPUT"
           echo "source_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -77,17 +93,25 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ needs.plan.outputs.source_commit }}
+          path: hibana-quic
           persist-credentials: false
           fetch-depth: 1
+      - name: Check out the frozen owned TLS source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: hibanaworks/hibana-tls
+          ref: ${{ needs.plan.outputs.tls_revision }}
+          path: hibana-tls
+          persist-credentials: false
       - name: Run the pinned candidate interoperability subset
         timeout-minutes: 55
-        run: timeout --signal=TERM --kill-after=30s 54m bash ci/run-interop.sh
+        run: timeout --signal=TERM --kill-after=30s 54m bash tools/ci/run-interop.sh
       - name: Upload sanitized reports and sealed failure evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: interop-pilot-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
-          path: ci-safe-results/
+          path: hibana-quic/ci-safe-results/
           if-no-files-found: warn
           retention-days: 1
           compression-level: 9
@@ -106,21 +130,29 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ needs.plan.outputs.source_commit }}
+          path: hibana-quic
           persist-credentials: false
           fetch-depth: 1
+      - name: Check out the frozen owned TLS source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: hibanaworks/hibana-tls
+          ref: ${{ needs.plan.outputs.tls_revision }}
+          path: hibana-tls
+          persist-credentials: false
       - name: Collect every group from this run and attempt
         run: |
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --pattern "interop-pilot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-*" \
             --dir .ci-work/matrix-artifacts
       - name: Require 44 actual candidate passes on one commit
-        run: ROOT="$PWD" python3 ci/run_in_tools.py --verify-matrix .ci-work/matrix-artifacts
+        run: ROOT="$PWD" python3 tools/ci/run_in_tools.py --verify-matrix .ci-work/matrix-artifacts
       - name: Upload the verified qualification matrix
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: interop-qualification-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ci-safe-results/
+          path: hibana-quic/ci-safe-results/
           if-no-files-found: warn
           retention-days: 1
           compression-level: 9

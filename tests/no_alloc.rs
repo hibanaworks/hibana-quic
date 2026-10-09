@@ -1,17 +1,17 @@
 //! Measures implemented component paths only, not a complete QUIC/TLS handshake.
 use hibana_quic::{
-    accounting::{AckRange, PacketKind, PathBudget, SentLedger},
-    flow::{ConnectionReceive, StreamReceive},
-    handshake::CryptoBuffer,
-    packet::{decode_varint, encode_varint},
-    storage::{LeasePool, OwnerId},
+    quic::kernel::accounting::{AckRange, PacketKind, PathBudget, SentLedger},
+    quic::kernel::flow::{ConnectionReceive, StreamReceive},
+    tls::buffer::CryptoBuffer,
+    quic::kernel::packet::{decode_varint, encode_varint},
+    quic::kernel::storage::{LeasePool, OwnerId},
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
 };
 
-#[path = "../examples/support/component_smoke.rs"]
+#[path = "embedded/support/component_smoke.rs"]
 mod component_smoke;
 
 struct Counting;

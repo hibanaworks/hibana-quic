@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 spec = importlib.util.spec_from_file_location(
-    'target_budget', Path(__file__).parents[1] / 'scripts/read_target_budget.py')
+    'target_budget', Path(__file__).parents[1] / 'tools/dev/read_target_budget.py')
 reader = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reader)
 

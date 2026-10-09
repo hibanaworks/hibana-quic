@@ -8,25 +8,9 @@ license = "MIT OR Apache-2.0"
 description = "Experimental bounded QUIC v1 transport driven by Hibana choreography"
 
 [dependencies]
-futures-util = { version = "=0.3.31", default-features = false, features = ["async-await-macro"] }
-hibana = { path = "vendor/hibana", default-features = false }
-aes = { version = "=0.8.4", default-features = false, features = ["zeroize"] }
-aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "zeroize"] }
-chacha20 = { version = "=0.9.1", default-features = false, features = ["zeroize"] }
-chacha20poly1305 = { version = "=0.10.1", default-features = false }
-hkdf = { version = "=0.12.4", default-features = false }
-sha2 = { version = "=0.10.9", default-features = false }
-zeroize = { version = "=1.8.2", default-features = false }
-hmac = { version = "=0.12.1", default-features = false }
-subtle = { version = "=2.6.1", default-features = false }
-p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "ecdh"] }
-rand_core = { version = "=0.6.4", default-features = false }
-rustls-webpki = { version = "=0.103.15", path = "vendor/rustls-webpki-0.103.15", default-features = false }
-rustls-pki-types = { version = "=1.15.1", default-features = false }
-der = { version = "=0.7.10", default-features = false }
-x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
-crypto-bigint = { version = "=0.5.5", default-features = false }
-pkcs1 = { version = "=0.7.5", default-features = false }
+# The owned TLS repository is pinned to the same source checked out by CI.
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "b5cd10fcabb26ed0b121ae9a192b4c254f000426", default-features = false }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "6fccdbf81038b00d99ec1bb2b9c43a487521628e", default-features = false }
 
 [features]
 default = []
@@ -34,6 +18,7 @@ target-link-smoke = []
 
 [[example]]
 name = "thumb_link"
+path = "tests/embedded/thumb_link.rs"
 required-features = ["target-link-smoke"]
 
 [profile.release]
@@ -47,8 +32,7 @@ connection-target-budget = "unavailable: legacy controller probes removed; recov
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"
 branch = "development/rolled-route-ownership"
-revision = "cf084d22a473b26c8cd0b8be80631eaf3e7184b4"
-upstream-base = "5cd7a6a570886c592a88f0f35a01d5a7daa158d7"
+revision = "6fccdbf81038b00d99ec1bb2b9c43a487521628e"
 local-patches = false
 
 [dev-dependencies]

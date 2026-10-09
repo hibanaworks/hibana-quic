@@ -114,7 +114,7 @@ pub(super) async fn receive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::carrier::CarrierStorage;
+    use crate::runtime::carrier::CarrierStorage;
     use core::{
         future::pending,
         task::{Context, Waker},
@@ -133,7 +133,7 @@ mod tests {
         async fn send(
             &mut self,
             _bytes: &[u8],
-            _ecn: crate::ecn::Codepoint,
+            _ecn: crate::quic::ecn::Codepoint,
         ) -> Result<u64, IoError> {
             pending().await
         }
@@ -190,6 +190,7 @@ mod tests {
             Side::Client,
             333_000,
             1200,
+            3,
         )
         .unwrap();
         let key_scope = book.scope();
@@ -218,7 +219,7 @@ mod tests {
             Ok::<(), Error>(())
         });
         let mut udp = PendingUdp;
-        let mut publication = pin!(udp.send(&[0], crate::ecn::Codepoint::NotEct));
+        let mut publication = pin!(udp.send(&[0], crate::quic::ecn::Codepoint::NotEct));
         let mut tasks = pin!(crate::runtime::TaskSet::new([
             timer.as_mut(),
             receiver.as_mut(),
@@ -287,6 +288,7 @@ mod tests {
             Side::Client,
             333_000,
             1200,
+            3,
         )
         .unwrap();
         let key_scope = book.scope();
@@ -374,7 +376,7 @@ mod tests {
         let mut receiver_endpoint = rendezvous.enter(sid, &receiver_program).unwrap();
         let schedule = Schedule::new();
         let mut udp = PendingUdp;
-        let mut publication = pin!(udp.send(&[0], crate::ecn::Codepoint::NotEct));
+        let mut publication = pin!(udp.send(&[0], crate::quic::ecn::Codepoint::NotEct));
         let mut producer = pin!(async {
             for _ in 0..3 {
                 producer_endpoint
@@ -401,11 +403,9 @@ mod tests {
             if !producer_done {
                 producer_done = producer.as_mut().poll(&mut cx).is_ready();
             }
-            if !receiver_done {
-                if let Poll::Ready(result) = receiver.as_mut().poll(&mut cx) {
-                    result.unwrap();
-                    receiver_done = true;
-                }
+            if !receiver_done && let Poll::Ready(result) = receiver.as_mut().poll(&mut cx) {
+                result.unwrap();
+                receiver_done = true;
             }
             if producer_done && receiver_done {
                 break;

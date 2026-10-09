@@ -12,7 +12,7 @@ use hibana::{
         program::{RoleProgram, project},
     },
 };
-use hibana_quic::carrier::CarrierStorage;
+use hibana_quic::runtime::carrier::CarrierStorage;
 fn run(f: impl Future<Output = ()>) {
     let mut f = pin!(f);
     let mut cx = Context::from_waker(Waker::noop());

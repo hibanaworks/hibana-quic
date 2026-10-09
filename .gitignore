@@ -11,3 +11,6 @@
 .env.*
 # Per-machine editor/runtime files
 .DS_Store
+
+# Generated local qualification and license inventories
+/.ci-work/

@@ -6,10 +6,10 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('validator', ROOT / 'interop/validate_results.py')
+spec = importlib.util.spec_from_file_location('validator', ROOT / 'tests/interop/validate_results.py')
 v = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v)
-TARGETS = json.loads((ROOT / 'interop/targets.json').read_text())
+TARGETS = json.loads((ROOT / 'tests/interop/targets.json').read_text())
 
 
 def fixture():

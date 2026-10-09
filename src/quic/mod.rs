@@ -1,7 +1,13 @@
 //! Direct role-local QUIC connection from the composed global choreography.
-//! TLS message order runs in bounded_tls::{protocol,locals}; packet framing,
+//! TLS message order runs in tls::handshake::{global,local}; packet framing,
 //! cryptographic arithmetic and recovery bookkeeping remain role-owned data.
 //! See the current validation ledger for tested and unqualified scenarios.
+
+pub mod early_data;
+pub mod ecn;
+pub mod kernel;
+pub mod path;
+pub mod retry;
 
 pub mod application;
 pub mod application_stream;
@@ -27,8 +33,8 @@ use crate::{
         self, IntegrityBudget,
         directional::{ApplicationKeyScope, ApplicationReadKeys, ApplicationWriteKeys},
     },
-    handshake::CryptoBuffer,
     tls::Level,
+    tls::buffer::CryptoBuffer,
     tls::handshake::key_source::{ReceivePacketKey, TransmitPacketKey},
 };
 use core::{
@@ -51,9 +57,9 @@ pub enum Side {
 
 #[derive(Clone, Copy)]
 pub struct Config<'a> {
-    pub initial_path: Option<crate::path::Address>,
-    pub local_preferred: Option<crate::path::preferred::Preferred>,
-    pub version: crate::version::Version,
+    pub initial_path: Option<crate::quic::path::Address>,
+    pub local_preferred: Option<crate::quic::path::preferred::Preferred>,
+    pub version: crate::quic::kernel::version::Version,
     pub side: Side,
     pub local_connection_id: &'a [u8],
     pub original_destination_id: &'a [u8],
@@ -94,8 +100,8 @@ pub enum Error {
         error: EndpointError,
     },
     Tls(crate::tls::Error),
-    Packet(crate::packet::Error),
-    Reassembly(crate::handshake::Error),
+    Packet(crate::quic::kernel::packet::Error),
+    Reassembly(crate::tls::buffer::Error),
     Recovery(recovery::Error),
     Gate(publication_gate::Error),
     Slot(InboxError),
@@ -126,13 +132,13 @@ impl From<crate::tls::Error> for Error {
         Self::Tls(v)
     }
 }
-impl From<crate::packet::Error> for Error {
-    fn from(v: crate::packet::Error) -> Self {
+impl From<crate::quic::kernel::packet::Error> for Error {
+    fn from(v: crate::quic::kernel::packet::Error) -> Self {
         Self::Packet(v)
     }
 }
-impl From<crate::handshake::Error> for Error {
-    fn from(v: crate::handshake::Error) -> Self {
+impl From<crate::tls::buffer::Error> for Error {
+    fn from(v: crate::tls::buffer::Error) -> Self {
         Self::Reassembly(v)
     }
 }
@@ -223,6 +229,8 @@ pub struct Roles<'a> {
     pub tls_rx: Endpoint<'a, { global::TLS_RX }>,
     pub tx: Endpoint<'a, { global::TX }>,
     pub tls_tx: Endpoint<'a, { global::TLS_TX }>,
+    pub tls_complete: Endpoint<'a, { global::TLS_COMPLETE }>,
+    pub tls_handoff: Endpoint<'a, { global::TLS_HANDOFF }>,
     pub udp: Endpoint<'a, { global::UDP }>,
     pub timer: Endpoint<'a, { global::TIMER }>,
     pub initial_event: Endpoint<'a, { global::INITIAL_EVENT }>,
@@ -290,7 +298,7 @@ pub struct Storage<'scope, 'book, const N: usize, const P: usize> {
     datagram: Inbox<wire::Datagram<'book, N>>,
     failure: Cell<Option<crate::tls::Error>>,
     early_packets: RefCell<Option<&'book mut dyn early_wire::RetainPackets>>,
-    pending_application: RefCell<Option<([u8; N], ReceivedDatagram)>>,
+    pending_application: RefCell<Option<([u8; N], ReceivedDatagram, u64)>>,
 }
 impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P> {
     pub fn new(peer: &[u8]) -> Result<Self, Error> {
@@ -324,8 +332,9 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
     fn retain_application(
         &self,
         packet: &[u8],
-        ecn: Option<crate::ecn::Codepoint>,
-        path: Option<crate::path::Address>,
+        ecn: Option<crate::quic::ecn::Codepoint>,
+        path: Option<crate::quic::path::Address>,
+        received_at: u64,
     ) -> Result<(), Error> {
         if packet.is_empty() || packet.len() > N {
             return Err(Error::Capacity);
@@ -341,6 +350,7 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
                     len: packet.len(),
                     ecn,
                 },
+                received_at,
             ));
         }
         Ok(())
@@ -447,7 +457,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         Side::Server => (initial.client, initial.server),
     };
     let initial = initial::Keys::new(scope, read, write)?;
-    if config.version != crate::version::Version::V1 {
+    if config.version != crate::quic::kernel::version::Version::V1 {
         let pair = crypto::initial_keys_for_version(
             config.version,
             config
@@ -468,7 +478,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         application: None,
     });
     let message_buffer = source
-        .material()
+        .source
         .take_message_buffer()
         .map_err(|_| Error::Binding)?;
     let message_slot = crate::tls::handshake::local::MessageSlot::new(message_buffer);
@@ -522,6 +532,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     )
     .await?;
     let numbers = transcript::Numbers::new(source);
+    let handoff = hibana_tls::handshake::key_source::Handoff::<P>::new();
     let mut initial_owner = tx.initial_retirement_owner();
     let (mut receive_initial, publish_initial) = match config.side {
         Side::Client => (None, Some(&mut roles.initial_event)),
@@ -573,11 +584,21 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         let mut tls_receive = pin!(transcript::receive(
             &mut roles.tls_rx,
             &numbers,
-            storage,
+            &handoff,
             &message_slot,
             config.side
         ));
-        let mut tls_transmit = pin!(transcript::transmit(&mut roles.tls_tx, &numbers, storage));
+        let mut key_handoff = pin!(transcript::handoff(
+            &mut roles.tls_handoff,
+            &handoff,
+            storage
+        ));
+        let mut tls_transmit = pin!(transcript::transmit(
+            &mut roles.tls_tx,
+            &mut roles.tls_complete,
+            &numbers,
+            storage
+        ));
         let mut publish = pin!(local::publish(
             &mut roles.udp,
             send_io,
@@ -611,6 +632,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
             transmit.as_mut(),
             tls_receive.as_mut(),
             tls_transmit.as_mut(),
+            key_handoff.as_mut(),
             publish.as_mut(),
             timer.as_mut(),
             timer_receiver.as_mut(),
@@ -621,7 +643,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     if initial.available() {
         return Err(Error::Binding);
     }
-    numbers.restore_buffer(message_slot.into_buffer().map_err(Error::Transcript)?);
+    numbers.restore_buffer(message_slot.into_buffer().map_err(Error::Transcript)?)?;
     numbers.record_verified_consumed(received.as_ref().ok_or(Error::Binding)?.verified_consumed)?;
     retirement.disarm();
     Ok((
@@ -640,10 +662,11 @@ mod retained_application_tests {
     fn first_packet_is_owned_and_not_overwritten() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
         let mut packet = [1, 2, 3];
-        storage.retain_application(&packet, None, None).unwrap();
+        storage.retain_application(&packet, None, None, 10).unwrap();
         packet.fill(9);
-        storage.retain_application(&packet, None, None).unwrap();
-        let (bytes, len) = storage.pending_application.borrow_mut().take().unwrap();
+        storage.retain_application(&packet, None, None, 99).unwrap();
+        let (bytes, len, received_at) = storage.pending_application.borrow_mut().take().unwrap();
+        assert_eq!(received_at, 10);
         assert_eq!(&bytes[..len.len], &[1, 2, 3]);
         assert!(storage.pending_application.borrow_mut().take().is_none());
     }
@@ -651,17 +674,18 @@ mod retained_application_tests {
     fn cleanup_preserves_ciphertext_for_successful_single_use_transfer() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
         storage.claim().unwrap();
-        storage.retain_application(&[7], None, None).unwrap();
+        storage.retain_application(&[7], None, None, 10).unwrap();
         storage.clear();
         assert!(storage.claim().is_err());
-        let (bytes, len) = storage.pending_application.borrow_mut().take().unwrap();
+        let (bytes, len, received_at) = storage.pending_application.borrow_mut().take().unwrap();
+        assert_eq!(received_at, 10);
         assert_eq!(&bytes[..len.len], &[7]);
     }
     #[test]
     fn invalid_packet_lengths_do_not_publish_a_buffer() {
         let storage = Storage::<8, 1>::new(b"peer").unwrap();
-        assert!(storage.retain_application(&[], None, None).is_err());
-        assert!(storage.retain_application(&[1; 9], None, None).is_err());
+        assert!(storage.retain_application(&[], None, None, 10).is_err());
+        assert!(storage.retain_application(&[1; 9], None, None, 10).is_err());
         assert!(storage.pending_application.borrow().is_none());
     }
 }

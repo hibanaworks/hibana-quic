@@ -20,7 +20,7 @@ be pinned and audited for target and selected features before use. A TLS referen
 backend, if later added, must remain explicitly labeled `reference-tls` and cannot
 qualify G-HOST or G-PICO.
 
-`src/handshake.rs` implements sliding caller-storage CRYPTO reassembly and raw TLS
+`src/tls/buffer.rs` implements sliding caller-storage CRYPTO reassembly and raw TLS
 Handshake framing only. It deliberately does not expose a handshake-success,
 certificate-verified, or traffic-key event. No plaintext or fixed-secret transport
 has been added to hide this gap.

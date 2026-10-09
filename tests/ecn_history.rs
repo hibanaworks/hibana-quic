@@ -1,8 +1,8 @@
 //! Migrated accounting/ECN regression assertions from the removed endpoint.
 use hibana_quic::{
-    accounting::{self, PacketKind, PacketNumberSpace, SentLedger},
-    ecn::{self, Codepoint, MarkedPackets},
-    packet, recovery,
+    quic::kernel::accounting::{self, PacketKind, PacketNumberSpace, SentLedger},
+    quic::ecn::{self, Codepoint, MarkedPackets},
+    quic::kernel::packet, quic::kernel::recovery,
 };
 fn ecn_congestion_event<const N: usize>(
     cc: &mut recovery::NewReno,

@@ -4,90 +4,27 @@
 //! receipts leave RX blocked until the quic is discarded.
 
 use super::{Error, HP_SAMPLE_LEN, IntegrityBudget, KeyKind, Opened, PacketKey};
-use zeroize::Zeroize;
+use hibana_tls::secret::Erase;
 
 #[cfg(test)]
 #[path = "directional_tests.rs"]
 mod tests;
 
-/// Caller-owned identity claimed once. It has no keys or shared running state.
-#[derive(Debug)]
-pub struct ApplicationKeyScope {
-    connection_generation: u64,
-    claimed: bool,
-}
-impl ApplicationKeyScope {
-    pub const fn new(connection_generation: u64) -> Self {
-        Self {
-            connection_generation,
-            claimed: false,
-        }
-    }
-    pub const fn connection_generation(&self) -> u64 {
-        self.connection_generation
-    }
-    /// Claim before application keys exist, then share immutable identity with
-    /// the actual authority producers. Dropping the claim cannot reissue it.
-    pub fn claim(&mut self) -> Result<ApplicationKeyInstallation<'_>, Error> {
-        if self.claimed {
-            return Err(Error::KeyUpdateNotAllowed);
-        }
-        self.claimed = true;
-        Ok(ApplicationKeyInstallation {
-            scope: self,
-            recovery_claimed: false,
-            publication_gate_claimed: false,
-        })
-    }
-    pub fn install(
-        &mut self,
-        local: PacketKey,
-        remote: PacketKey,
-    ) -> Result<(ApplicationReadKeys<'_>, ApplicationWriteKeys<'_>), Error> {
-        self.claim()?.install(local, remote)
-    }
-}
+pub use hibana_tls::quic::scope::{
+    ApplicationKeyInstallation, ApplicationKeyScope, PublicationGateInstallation,
+    RecoveryInstallation,
+};
 
-/// One-shot installation capability. Fresh provider-owned 1-RTT keys are the
-/// intended source; installation does not import old raw authorization state.
-/// ```compile_fail
-/// use hibana_quic::crypto::directional::ApplicationKeyInstallation;
-/// fn duplicate(grant: ApplicationKeyInstallation<'_>) { let first = grant; let second = grant; }
-/// ```
-#[must_use = "dropping installation permanently closes this scope to new keys"]
-#[derive(Debug)]
-pub struct ApplicationKeyInstallation<'a> {
-    scope: &'a ApplicationKeyScope,
-    recovery_claimed: bool,
-    publication_gate_claimed: bool,
-}
-impl<'a> ApplicationKeyInstallation<'a> {
-    pub fn take_recovery(&mut self) -> Result<RecoveryInstallation<'a>, Error> {
-        if self.recovery_claimed {
-            return Err(Error::KeyUpdateNotAllowed);
-        }
-        self.recovery_claimed = true;
-        Ok(RecoveryInstallation { scope: self.scope })
-    }
-
-    pub fn take_publication_gate(&mut self) -> Result<PublicationGateInstallation<'a>, Error> {
-        if self.publication_gate_claimed {
-            return Err(Error::KeyUpdateNotAllowed);
-        }
-        self.publication_gate_claimed = true;
-        Ok(PublicationGateInstallation { scope: self.scope })
-    }
-    pub const fn scope(&self) -> &'a ApplicationKeyScope {
-        self.scope
-    }
+impl<'a> ApplicationReadKeys<'a> {
     pub fn install(
-        self,
+        installation: ApplicationKeyInstallation<'a>,
         local: PacketKey,
         remote: PacketKey,
     ) -> Result<(ApplicationReadKeys<'a>, ApplicationWriteKeys<'a>), Error> {
-        if local.kind != KeyKind::OneRtt
-            || remote.kind != KeyKind::OneRtt
-            || local.suite != remote.suite
+        let scope = installation.into_scope();
+        if local.kind() != KeyKind::OneRtt
+            || remote.kind() != KeyKind::OneRtt
+            || local.suite() != remote.suite()
         {
             return Err(Error::KeyUpdateNotAllowed);
         }
@@ -95,10 +32,12 @@ impl<'a> ApplicationKeyInstallation<'a> {
         let remote_next = remote.derive_next()?;
         Ok((
             ApplicationReadKeys {
-                scope: self.scope,
-                current: Some(remote),
-                next: Some(remote_next),
-                previous: None,
+                scope,
+                material: Some(ReadKeyMaterial {
+                    current: Some(remote),
+                    next: Some(remote_next),
+                    previous: None,
+                }),
                 generation: 0,
                 installed_write_generation: 0,
                 current_min: None,
@@ -106,10 +45,9 @@ impl<'a> ApplicationKeyInstallation<'a> {
                 previous_max: None,
                 previous_deadline: None,
                 last_now: 0,
-                active: true,
             },
             ApplicationWriteKeys {
-                scope: self.scope,
+                scope,
                 current: local,
                 next: Some(local_next),
                 generation: 0,
@@ -118,47 +56,8 @@ impl<'a> ApplicationKeyInstallation<'a> {
                 confirmation: None,
                 update_evidence: None,
                 last_now: 0,
-                active: true,
             },
         ))
-    }
-}
-
-/// One affine recovery-installation capability for an actual key scope.
-/// ```compile_fail
-/// use hibana_quic::crypto::directional::RecoveryInstallation;
-/// fn duplicate(token: RecoveryInstallation<'_>) {
-///     let first = token; let second = token;
-/// }
-/// ```
-#[must_use = "dropping installation permanently closes this scope to recovery"]
-#[derive(Debug)]
-pub struct RecoveryInstallation<'a> {
-    scope: &'a ApplicationKeyScope,
-}
-
-impl<'a> RecoveryInstallation<'a> {
-    pub(crate) fn into_scope(self) -> &'a ApplicationKeyScope {
-        self.scope
-    }
-}
-
-/// One affine publication-gate capability for an actual key scope.
-/// ```compile_fail
-/// use hibana_quic::crypto::directional::PublicationGateInstallation;
-/// fn duplicate(token: PublicationGateInstallation<'_>) {
-///     let first = token; let second = token;
-/// }
-/// ```
-#[must_use = "dropping installation permanently closes this scope to a publication gate"]
-#[derive(Debug)]
-pub struct PublicationGateInstallation<'a> {
-    scope: &'a ApplicationKeyScope,
-}
-
-impl<'a> PublicationGateInstallation<'a> {
-    pub(crate) fn into_scope(self) -> &'a ApplicationKeyScope {
-        self.scope
     }
 }
 
@@ -195,7 +94,8 @@ impl<'a> ValidatedKeyAck<'a> {
     pub(crate) fn from_connection_ack(
         grant: crate::quic::recovery::KeyAcknowledged<'a>,
     ) -> Result<Self, Error> {
-        if grant.packet().space != crate::accounting::PacketNumberSpace::ApplicationData
+        if grant.packet().space
+            != crate::quic::kernel::accounting::PacketNumberSpace::ApplicationData
             || grant.received_key_generation() < grant.sent_key_generation()
         {
             return Err(Error::KeyUpdateError);
@@ -224,9 +124,7 @@ struct UpdateEvidence<'a> {
 /// ```
 pub struct ApplicationReadKeys<'a> {
     scope: &'a ApplicationKeyScope,
-    current: Option<PacketKey>,
-    next: Option<PacketKey>,
-    previous: Option<PacketKey>,
+    material: Option<ReadKeyMaterial>,
     generation: u64,
     installed_write_generation: u64,
     current_min: Option<u64>,
@@ -234,7 +132,14 @@ pub struct ApplicationReadKeys<'a> {
     previous_max: Option<u64>,
     previous_deadline: Option<u64>,
     last_now: u64,
-    active: bool,
+}
+/// The actual receive-key collection remains owned while a current key is
+/// loaned through the affine update exchange. Retirement drops the collection,
+/// so a late returned key cannot revive it.
+struct ReadKeyMaterial {
+    current: Option<PacketKey>,
+    next: Option<PacketKey>,
+    previous: Option<PacketKey>,
 }
 /// TX owns current/next write keys and all send-key usage exclusively.
 /// ```compile_fail
@@ -253,7 +158,6 @@ pub struct ApplicationWriteKeys<'a> {
     confirmation: Option<ScopedHandshakeConfirmation<'a>>,
     update_evidence: Option<UpdateEvidence<'a>>,
     last_now: u64,
-    active: bool,
 }
 #[derive(Debug)]
 pub enum AuthenticatedRead<'a> {
@@ -297,7 +201,7 @@ impl<'a> AckEligible<'a> {
         self.opened
     }
     pub const fn connection_generation(&self) -> u64 {
-        self.scope.connection_generation
+        self.scope.connection_generation()
     }
     pub fn authenticates_plaintext(&self, plaintext: &[u8]) -> bool {
         self.plaintext_digest == crate::crypto::plaintext_digest(plaintext)
@@ -386,10 +290,7 @@ pub struct LocalUpdateRejected<'a> {
     pub ready: LocalUpdateReady<'a>,
 }
 
-fn time(active: bool, last_now: &mut u64, now: u64, pto: u64) -> Result<u64, Error> {
-    if !active {
-        return Err(Error::KeyDiscarded);
-    }
+fn time(last_now: &mut u64, now: u64, pto: u64) -> Result<u64, Error> {
     if now < *last_now || pto == 0 {
         return Err(Error::InvalidTime);
     }
@@ -412,20 +313,36 @@ impl<'a> ApplicationReadKeys<'a> {
         self.previous_deadline
     }
     fn ensure_ready(&self) -> Result<(), Error> {
-        if !self.active {
+        if self.material.is_none() {
             return Err(Error::KeyDiscarded);
         }
-        if self.current.is_none() {
+        if self
+            .material
+            .as_ref()
+            .ok_or(Error::KeyDiscarded)?
+            .current
+            .is_none()
+        {
             return Err(Error::KeyUpdateNotAllowed);
         }
         Ok(())
     }
     pub fn maintain(&mut self, now: u64, pto: u64) -> Result<(), Error> {
-        time(self.active, &mut self.last_now, now, pto)?;
+        self.material.as_ref().ok_or(Error::KeyDiscarded)?;
+        time(&mut self.last_now, now, pto)?;
         self.expire(now);
-        if self.next.is_none() {
-            self.next = Some(
-                self.current
+        if self
+            .material
+            .as_ref()
+            .ok_or(Error::KeyDiscarded)?
+            .next
+            .is_none()
+        {
+            self.material.as_mut().ok_or(Error::KeyDiscarded)?.next = Some(
+                self.material
+                    .as_ref()
+                    .ok_or(Error::KeyDiscarded)?
+                    .current
                     .as_ref()
                     .ok_or(Error::KeyUpdateNotAllowed)?
                     .derive_next()?,
@@ -438,15 +355,20 @@ impl<'a> ApplicationReadKeys<'a> {
             .previous_deadline
             .is_some_and(|deadline| now >= deadline)
         {
-            self.previous = None;
+            if let Some(material) = self.material.as_mut() {
+                material.previous = None;
+            }
             self.previous_deadline = None;
         }
     }
     pub fn header_mask(&self, sample: &[u8; HP_SAMPLE_LEN]) -> Result<[u8; 5], Error> {
-        if !self.active {
+        if self.material.is_none() {
             return Err(Error::KeyDiscarded);
         }
-        self.current
+        self.material
+            .as_ref()
+            .ok_or(Error::KeyDiscarded)?
+            .current
             .as_ref()
             .ok_or(Error::KeyUpdateNotAllowed)?
             .header_mask(sample)
@@ -468,23 +390,42 @@ impl<'a> ApplicationReadKeys<'a> {
         if header.first().is_none_or(|first| (first & 4 != 0) != phase) {
             return Err(Error::InvalidHeader);
         }
-        let deadline = time(self.active, &mut self.last_now, now, pto)?;
+        self.material.as_ref().ok_or(Error::KeyDiscarded)?;
+        let deadline = time(&mut self.last_now, now, pto)?;
         self.expire(now);
         let different_phase = phase != (self.generation & 1 != 0);
         let previous = different_phase && self.current_min.is_some_and(|min| pn < min);
         let next = different_phase && !previous;
         let candidate = if previous {
-            self.previous.as_ref()
+            self.material
+                .as_ref()
+                .ok_or(Error::KeyDiscarded)?
+                .previous
+                .as_ref()
         } else if next {
-            self.next.as_ref()
+            self.material
+                .as_ref()
+                .ok_or(Error::KeyDiscarded)?
+                .next
+                .as_ref()
         } else {
-            self.current.as_ref()
+            self.material
+                .as_ref()
+                .ok_or(Error::KeyDiscarded)?
+                .current
+                .as_ref()
         };
-        let selected =
-            candidate.unwrap_or(self.current.as_ref().ok_or(Error::KeyUpdateNotAllowed)?);
+        let selected = candidate.unwrap_or(
+            self.material
+                .as_ref()
+                .ok_or(Error::KeyDiscarded)?
+                .current
+                .as_ref()
+                .ok_or(Error::KeyUpdateNotAllowed)?,
+        );
         let result = selected.open(pn, header, buffer, budget);
         if candidate.is_none() {
-            buffer.zeroize();
+            buffer.erase();
             return match result {
                 Ok(_) => Err(budget.record_failure()),
                 Err(error) => Err(error),
@@ -493,7 +434,7 @@ impl<'a> ApplicationReadKeys<'a> {
         let len = result?;
         if next {
             let Some(generation) = self.generation.checked_add(1) else {
-                buffer.zeroize();
+                buffer.erase();
                 self.discard();
                 return Err(Error::KeyUpdateError);
             };
@@ -501,12 +442,23 @@ impl<'a> ApplicationReadKeys<'a> {
                 || self.installed_write_generation < self.generation
                 || self.installed_write_generation > generation
             {
-                buffer.zeroize();
+                buffer.erase();
                 self.discard();
                 return Err(Error::KeyUpdateError);
             }
-            let promoted = self.next.take().ok_or(Error::KeyUpdateNotAllowed)?;
-            self.previous = self.current.take();
+            let promoted = self
+                .material
+                .as_mut()
+                .ok_or(Error::KeyDiscarded)?
+                .next
+                .take()
+                .ok_or(Error::KeyUpdateNotAllowed)?;
+            self.material.as_mut().ok_or(Error::KeyDiscarded)?.previous = self
+                .material
+                .as_mut()
+                .ok_or(Error::KeyDiscarded)?
+                .current
+                .take();
             self.previous_max = self.current_max;
             self.current_min = Some(pn);
             self.current_max = Some(pn);
@@ -533,7 +485,7 @@ impl<'a> ApplicationReadKeys<'a> {
                 self.generation - 1
             } else {
                 if self.previous_max.is_some_and(|max| pn <= max) {
-                    buffer.zeroize();
+                    buffer.erase();
                     self.discard();
                     return Err(Error::KeyUpdateError);
                 }
@@ -557,19 +509,24 @@ impl<'a> ApplicationReadKeys<'a> {
         &mut self,
         installed: WriteEpochInstalled<'a>,
     ) -> Result<AckEligible<'a>, Error> {
-        if !self.active {
+        if self.material.is_none() {
             return Err(Error::KeyDiscarded);
         }
         let receipt = installed.authenticated;
         if !core::ptr::eq(self.scope, receipt.scope)
-            || self.current.is_some()
+            || self
+                .material
+                .as_ref()
+                .ok_or(Error::KeyDiscarded)?
+                .current
+                .is_some()
             || receipt.opened.generation != self.generation
             || self.current_min != Some(receipt.packet_number)
         {
             return Err(Error::KeyUpdateError);
         }
         self.installed_write_generation = receipt.opened.generation;
-        self.current = Some(receipt.receive_key);
+        self.material.as_mut().ok_or(Error::KeyDiscarded)?.current = Some(receipt.receive_key);
         Ok(AckEligible {
             scope: self.scope,
             packet_number: receipt.packet_number,
@@ -579,22 +536,40 @@ impl<'a> ApplicationReadKeys<'a> {
     }
     pub(crate) fn prepare_local_update(&mut self) -> Result<LocalUpdateReady<'a>, Error> {
         self.ensure_ready()?;
-        if self.next.is_none() || self.generation != self.installed_write_generation {
+        if self
+            .material
+            .as_ref()
+            .ok_or(Error::KeyDiscarded)?
+            .next
+            .is_none()
+            || self.generation != self.installed_write_generation
+        {
             return Err(Error::KeyUpdateNotAllowed);
         }
         Ok(LocalUpdateReady {
-            receive_key: self.current.take().ok_or(Error::KeyUpdateNotAllowed)?,
+            receive_key: self
+                .material
+                .as_mut()
+                .ok_or(Error::KeyDiscarded)?
+                .current
+                .take()
+                .ok_or(Error::KeyUpdateNotAllowed)?,
             scope: self.scope,
             receive_generation: self.generation,
             prepared_at: self.last_now,
         })
     }
     fn check_local(&self, ready: &LocalUpdateReady<'a>) -> Result<(), Error> {
-        if !self.active {
+        if self.material.is_none() {
             return Err(Error::KeyDiscarded);
         }
         if !core::ptr::eq(self.scope, ready.scope)
-            || self.current.is_some()
+            || self
+                .material
+                .as_ref()
+                .ok_or(Error::KeyDiscarded)?
+                .current
+                .is_some()
             || ready.receive_generation != self.generation
         {
             return Err(Error::KeyUpdateError);
@@ -611,20 +586,18 @@ impl<'a> ApplicationReadKeys<'a> {
         }
         self.installed_write_generation = installed.write_generation;
         self.last_now = self.last_now.max(installed.installed_at);
-        self.current = Some(installed.ready.receive_key);
+        self.material.as_mut().ok_or(Error::KeyDiscarded)?.current =
+            Some(installed.ready.receive_key);
         Ok(())
     }
     pub(crate) fn cancel_local_update(&mut self, ready: LocalUpdateReady<'a>) -> Result<(), Error> {
         self.check_local(&ready)?;
-        self.current = Some(ready.receive_key);
+        self.material.as_mut().ok_or(Error::KeyDiscarded)?.current = Some(ready.receive_key);
         Ok(())
     }
     pub fn discard(&mut self) {
-        self.current = None;
-        self.next = None;
-        self.previous = None;
+        self.material = None;
         self.previous_deadline = None;
-        self.active = false;
     }
 }
 
@@ -639,14 +612,10 @@ impl<'a> ApplicationWriteKeys<'a> {
         self.generation & 1 != 0
     }
     pub const fn last_sealed_packet_number(&self) -> Option<u64> {
-        self.current.last_sealed
+        self.current.last_sealed_packet_number()
     }
     fn ensure_active(&self) -> Result<(), Error> {
-        if self.active {
-            Ok(())
-        } else {
-            Err(Error::KeyDiscarded)
-        }
+        self.current.ensure_active()
     }
     /// Actual scope-bound QUIC confirmation, not merely TLS completion.
     /// ```compile_fail
@@ -685,7 +654,8 @@ impl<'a> ApplicationWriteKeys<'a> {
         let pn = grant.sent_packet_number;
         let sent_generation = grant.sent_key_generation;
         let received_generation = grant.received_key_generation;
-        let deadline = time(self.active, &mut self.last_now, now, pto)?;
+        self.current.ensure_active()?;
+        let deadline = time(&mut self.last_now, now, pto)?;
         if pn > super::MAX_PACKET_NUMBER || received_generation > self.receive_generation {
             return Err(Error::InvalidAcknowledgment);
         }
@@ -702,7 +672,10 @@ impl<'a> ApplicationWriteKeys<'a> {
                 // in an older send epoch. Its ACK remains valid before the
                 // current epoch seals anything, but cannot open this epoch's
                 // update barrier. Retain every available local PN bound.
-                if self.current.last_sealed.is_some_and(|last| pn > last)
+                if self
+                    .current
+                    .last_sealed_packet_number()
+                    .is_some_and(|last| pn > last)
                     || self.first_sent.is_some_and(|first| pn >= first)
                 {
                     return Err(Error::InvalidAcknowledgment);
@@ -715,7 +688,11 @@ impl<'a> ApplicationWriteKeys<'a> {
                 return Err(Error::InvalidAcknowledgment);
             }
         }
-        if self.current.last_sealed.is_none_or(|last| pn > last) {
+        if self
+            .current
+            .last_sealed_packet_number()
+            .is_none_or(|last| pn > last)
+        {
             return Err(Error::InvalidAcknowledgment);
         }
         if self.first_sent.is_some_and(|first| pn >= first) {
@@ -752,7 +729,8 @@ impl<'a> ApplicationWriteKeys<'a> {
         )
     }
     pub fn maintain(&mut self, now: u64, pto: u64) -> Result<(), Error> {
-        time(self.active, &mut self.last_now, now, pto)?;
+        self.current.ensure_active()?;
+        time(&mut self.last_now, now, pto)?;
         if self.next.is_none() {
             self.next = Some(self.current.derive_next()?);
         }
@@ -786,7 +764,8 @@ impl<'a> ApplicationWriteKeys<'a> {
             if !core::ptr::eq(self.scope, ready.scope) {
                 return Err(Error::KeyUpdateNotAllowed);
             }
-            time(self.active, &mut self.last_now, now, pto)?;
+            self.current.ensure_active()?;
+            time(&mut self.last_now, now, pto)?;
             if now < ready.prepared_at {
                 return Err(Error::InvalidTime);
             }
@@ -835,7 +814,7 @@ impl<'a> ApplicationWriteKeys<'a> {
             .checked_add(1)
             .ok_or(Error::KeyUpdateNotAllowed)?;
         let mut next = self.next.take().ok_or(Error::KeyUpdateNotAllowed)?;
-        next.last_sealed = self.current.last_sealed;
+        next.inherit_application_packet_numbers(&self.current)?;
         self.current = next;
         self.generation = generation;
         self.first_sent = None;
@@ -850,7 +829,11 @@ impl<'a> ApplicationWriteKeys<'a> {
         plaintext_len: usize,
     ) -> Result<usize, Error> {
         self.ensure_active()?;
-        if self.current.last_sealed.is_some_and(|last| pn <= last) {
+        if self
+            .current
+            .last_sealed_packet_number()
+            .is_some_and(|last| pn <= last)
+        {
             return Err(Error::PacketNumberReuse);
         }
         if header
@@ -872,7 +855,8 @@ impl<'a> ApplicationWriteKeys<'a> {
     pub fn discard(&mut self) {
         self.current.discard();
         self.next = None;
-        self.active = false;
+        self.confirmation = None;
+        self.update_evidence = None;
     }
 }
 

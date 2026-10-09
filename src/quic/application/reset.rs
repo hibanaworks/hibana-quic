@@ -67,9 +67,9 @@ mod tests {
     use super::*;
     use crate::{
         crypto::directional::ApplicationKeyScope,
-        packet::{EncryptionLevel, Frame, FrameIter, ParseLimits},
+        quic::kernel::packet::{EncryptionLevel, Frame, FrameIter, ParseLimits},
         quic::application_stream::{Facets, StreamNumbers},
-        streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
+        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
     };
 
     fn exercise(cancel: bool) {

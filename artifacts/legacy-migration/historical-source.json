@@ -1,7 +1,0 @@
-{
-  "original": "src/handshake_endpoint.rs.orig",
-  "retained": "artifacts/legacy-migration/historical/handshake_endpoint.rs.orig",
-  "sha256_before": "c41936266999ba2cd9197f494b9ea7962891e50f019971d7f90c0b1ee9467f1a",
-  "sha256_after": "c41936266999ba2cd9197f494b9ea7962891e50f019971d7f90c0b1ee9467f1a",
-  "disposition": "existing uncompiled backup moved outside source; bytes preserved"
-}

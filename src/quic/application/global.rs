@@ -1,6 +1,6 @@
 //! The connected global: actual affine startup, concurrent ordinary roles,
 //! complete ordinary retirement, then closing or draining.
-use crate::ecn::global as e;
+use crate::quic::ecn::global as e;
 use crate::quic::global::{RX as PREFIX_RX, TLS_RX as PREFIX_TLS_RX, TX as PREFIX_TX};
 use hibana::{
     g,
@@ -416,7 +416,7 @@ pub type BaseActive = g::Par<
     g::Par<ReceiveFlow, g::Par<KeyFlow, g::Par<TimerFlow, g::Par<PublicationFlow, Terminal>>>>,
 >;
 pub type Active = g::Par<
-    g::Par<g::Par<BaseActive, e::Flow>, crate::path::global::Flow>,
+    g::Par<g::Par<BaseActive, e::Flow>, crate::quic::path::global::Flow>,
     crate::http3::global::Flow,
 >;
 pub type Retirement = g::Seq<
@@ -797,7 +797,7 @@ pub fn choreography() -> g::Program<Flow> {
     let ordinary = g::par(
         g::par(
             g::par(ordinary_base, e::choreography()),
-            crate::path::global::choreography(),
+            crate::quic::path::global::choreography(),
         ),
         crate::http3::global::choreography(),
     );
@@ -925,7 +925,7 @@ pub fn programs() -> Programs {
         g::seq(
             startup(),
             g::seq(
-                crate::early_data::global::bridge(),
+                crate::quic::early_data::global::bridge(),
                 g::seq(early_admission(), choreography()),
             ),
         ),
@@ -937,6 +937,8 @@ pub fn programs() -> Programs {
             tls_rx: project(&global),
             tx: project(&global),
             tls_tx: project(&global),
+            tls_complete: project(&global),
+            tls_handoff: project(&global),
             udp: project(&global),
             timer: project(&global),
             timer_tx: project(&global),

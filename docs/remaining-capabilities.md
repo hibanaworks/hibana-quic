@@ -1,80 +1,22 @@
-# Remaining capabilities and release gates
+# Open release requirements
 
-The executable is experimental. This document describes the current direct
-implementation, not features once exercised by a removed driver.
+The latest published recovery change still has one failed official
+handshakeloss case. Exact results and prior successful baselines are recorded
+in QUALIFICATION.md; results from different commits are not combined.
 
-## Verified scope
+Before claiming public release quality:
 
-The cumulative verified inventory is 30/44 unique case/direction cells across
-recorded revisions: seven original cases both directions, resumption, blackhole,
-0-RTT, key update and amplification limit both directions, handshake loss, handshake corruption and multiplexing both directions. Passing quiche controls are accepted where
-Neqo self-controls failed; the failed controls remain recorded. This inventory
-is not a complete rerun of all 44 cells on the latest commit.
-
-See [the exact case inventory](../interop/qualification.json) and
-[implementation/evidence](ACTIVE-IMPLEMENTATION.md). Missing, unsupported,
-failed and skipped cells are never counted as passes. The full three-attempt
-matrix has not run.
-
-## Current priority
-
-The user's2026-10-06 direction is to revalidate the30 historically qualified
-case/direction cells on the current product code once, then advance to the14
-remaining cells. New failures are diagnosed from their actual packet captures
-and endpoint logs. Do not keep repeating only the selected eight cells.
-
-Product code29ba476cd1e40a30ecbcfeb9879fb9bde114cf52 passed C1/L1/M/Z in both
-directions twice. The already-started third run finishes without further
-focused repeats. The remaining current-code sweep is ten Neqo cases
-(handshake, transfer, longrtt, chacha20, ipv6, transferloss, transfercorruption,
-resumption, blackhole, keyupdate), both directions, plus quiche
-amplificationlimit both directions. Run bounded groups without increasing
-existing case or phase deadlines. Count each cell only with its actual passing
-control and result. Whole-file direct-local cleanup remains relevant but
-does not justify indefinitely deferring this sweep.
-
-The [15-second performance requirement and evidence](performance-follow-up.md)
-remain open; speed tuning is not the current gate.
-
-## Architecture work
-
-- Finish the remaining control audit and projected CID/key-update integration;
-  stream reclamation and lower key ownership now have explicit local checkpoints.
-- Bind every transferred resource to the current affine scope. Correlation IDs
-  and private side slots do not acquire Hibana guarantees merely by being
-  mentioned in a choreography. Scoped Lean/Z3 models and actual negative tests
-  document the existing boundaries.
-- Keep numerical parsing, cryptography and bounded storage distinct from
-  protocol-control permission. No legacy FSM compatibility path.
-
-## Unqualified capabilities
-
-- The other 14 runner cells, including Retry, HTTP/3, QUIC v2,
-  ECN and path migration, lack historical official
-  qualification. TLS-only or numerical-kernel tests do not qualify the endpoint.
-- [Multiplexing](multiplexing.md) now reuses at most 64 live slots for a finite
-  4,096-request admission bound. Native 1,999-file transfer and credit refill
-  are verified. Both official directions passed at 4fdc24a7 with a passing Neqo control.
-- Legacy standalone idle, close, migration, path validation, ECN marking, client
-  Retry, version-negotiation and early-data
-  controllers have been deleted. Their old component tests do not demonstrate
-  current endpoint support. The live connection's projected close/drain flow
-  remains and is tested independently.
-- Private qlog/keylog capture needed by some runner verdicts is incomplete;
-  fabricated log files must never replace actual evidence.
-- Core no-allocation tests and thumbv6m compilation cover their stated scopes.
-  Whole-stack allocation closure, board drivers/entropy, stack/RAM/flash fit,
-  timing and real Pico hardware qualification remain open.
-
-## Execution boundaries
-
-The current cloud workspace cannot run the runner's Docker/ns-3 topology. Native
-unchanged-Neqo diagnostics compare real bytes locally; the official runner runs
-in the user-authorized disposable GitHub CI environment. Native results do not
-stand in for topology/trace verdicts.
-
-Path/ECN/Retry cleanup preserves address types, receive metadata, counter
-validation, Retry packet integrity and token cryptography/replay bookkeeping.
-Deleted standalone phase controllers are not an alternate implementation of
-the pending features. Their replacement endpoint capabilities must be written
-with Hibana when those interop cases are implemented.
+- Reproduce and diagnose each handshake-loss failure on actual peers. Preserve
+  deadlines, loss conditions, authenticity and physical completion semantics.
+- Finish repository/documentation cleanup and requalify the exact resulting
+  commit, including all 44 candidate case/direction cells.
+- Extract TLS into an independent hibana-tls dependency with no QUIC/HTTP3
+  backreferences. Its initial building blocks are not a TLS replacement yet.
+- Eliminate non-Hibana production dependencies in staged, independently checked
+  changes. Preserve no_std, no_alloc, trust checks and proof scope throughout.
+- Provide complete application choreography examples for request/reply,
+  parallelism, streaming and cancellation. Internal descriptor transport is not
+  automatically a network transport or a usable public application SDK.
+- Complete target resource and full-path allocation qualification, inspect
+  secret handling and constant-time code, and compare complete developer
+  workflows rather than claiming usability from shorter snippets alone.

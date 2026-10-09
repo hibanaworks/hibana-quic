@@ -1,51 +1,33 @@
 #![no_std]
 #![allow(long_running_const_eval)]
 #![forbid(unsafe_code)]
-//! Experimental bounded QUIC v1 with direct Hibana choreography and async locals.
-//! Core storage is caller-owned. See the qualification inventory for tested
-//! revisions and the architecture ledger for incomplete lifecycle migration.
+// Failure must return actual affine reservations/keys inline. Boxing would add
+// allocation and change ownership; their bounded sizes are deliberate.
+#![allow(clippy::result_large_err)]
+//! QUIC and HTTP/3 with communication authority expressed by Hibana choreography.
+//! Start with each protocol's global and direct locals; numerical mechanisms
+//! live with their owning domain. Storage is bounded and caller-owned.
 
 #[cfg(test)]
 extern crate self as hibana_quic;
-
-pub mod accounting;
-pub mod carrier;
-pub mod crypto;
-pub mod version;
-
-pub mod flights;
-pub mod flow;
-pub mod handshake;
-pub mod key_exchange;
-
-pub mod ecn;
-pub mod packet;
-pub mod parameters;
-
-pub mod recovery;
-pub mod retry;
-pub mod storage;
-pub mod streams;
-pub mod tls;
-
 #[cfg(test)]
 extern crate std;
 
-pub mod connection_id;
-pub mod early_data;
-pub mod path;
-
-pub mod trace;
-
-pub mod runtime;
-
-pub mod mailbox;
-
-pub mod quic;
-
-pub mod new_token;
-
+pub mod crypto;
 pub mod http3;
-
-/// Physical UDP and monotonic-clock contracts for adapter implementers.
 pub mod io;
+pub mod quic;
+pub mod runtime;
+pub mod tls;
+
+/// Caller-owned cryptographic entropy input.
+pub use hibana_tls::entropy;
+
+#[cfg(test)]
+#[path = "../tests/support/async_tls_fixture.rs"]
+pub(crate) mod scoped_tls_fixture;
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/support/tls_actor_fixture.rs"]
+pub(crate) mod tls_fixture;

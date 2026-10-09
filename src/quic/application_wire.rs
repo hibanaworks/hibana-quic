@@ -2,14 +2,14 @@
 //! Recovered from the original edit commands after executor replacement.
 use super::{Error, recovery::Reservation};
 use crate::{
-    accounting::PacketNumberSpace,
+    quic::kernel::accounting::PacketNumberSpace,
     crypto::{
         IntegrityBudget,
         directional::{ApplicationReadKeys, ApplicationWriteKeys, AuthenticatedRead},
     },
-    packet::{self, Header, PacketIter, ShortHeader},
+    quic::kernel::packet::{self, Header, PacketIter, ShortHeader},
 };
-use zeroize::Zeroize;
+use hibana_tls::secret::Erase;
 
 #[must_use = "consume authentication before frame effects"]
 pub struct OpenedApplication<'scope, const N: usize> {
@@ -32,7 +32,7 @@ impl<'scope, const N: usize> OpenedApplication<'scope, N> {
 }
 impl<const N: usize> Drop for OpenedApplication<'_, N> {
     fn drop(&mut self) {
-        self.bytes.zeroize();
+        self.bytes.erase();
     }
 }
 #[allow(clippy::too_many_arguments)]
@@ -117,7 +117,7 @@ impl<'book, const N: usize> SealedApplicationDatagram<'book, N> {
 }
 impl<const N: usize> Drop for SealedApplicationDatagram<'_, N> {
     fn drop(&mut self) {
-        self.bytes.zeroize();
+        self.bytes.erase();
     }
 }
 pub fn seal<'book, const N: usize>(
@@ -130,7 +130,7 @@ pub fn seal<'book, const N: usize>(
     let result = (|| -> Result<usize, Error> {
         if !core::ptr::eq(keys.scope(), reservation.scope())
             || reservation.packet().space != PacketNumberSpace::ApplicationData
-            || reservation.kind() != crate::accounting::PacketKind::OneRtt
+            || reservation.kind() != crate::quic::kernel::accounting::PacketKind::OneRtt
             || keys.generation() != reservation.key_generation()
             || plaintext.is_empty()
             || !reservation.matches_plaintext(plaintext)?
@@ -177,7 +177,7 @@ pub fn seal<'book, const N: usize>(
             reservation: Some(reservation),
         }),
         Err(error) => {
-            bytes.zeroize();
+            bytes.erase();
             Err((error, reservation))
         }
     }

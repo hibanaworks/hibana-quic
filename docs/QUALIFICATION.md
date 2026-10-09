@@ -8,17 +8,17 @@ The unchanged selected interop matrix passed on
 - All cells are from the same commit, run and attempt; no cumulative substitution.
 - [Interop run 37639879838](https://github.com/hibanaworks/hibana-quic/actions/runs/37639879838), attempt 1.
 - [Runtime run 37639879744](https://github.com/hibanaworks/hibana-quic/actions/runs/37639879744) passed.
-- [Generated qualification report](../interop/qualification.json), retained from artifact 11492259003.
+- [Generated qualification report](../tests/interop/qualification.json), retained from artifact 11492259003.
 
 This is qualification of that selected matrix on that exact commit, not a
 production-readiness, arbitrary-network, complete TLS/HTTP3, or repeatability proof.
 The module/API cleanup after that commit requires its own regression checks and
 same-commit matrix. A passing baseline does not automatically qualify later edits.
 
-The qualified baseline used exact Hibana `b92a1fe4153e6b2404a183c9231245efd58e3237`,
-with no local vendor patch. The current development snapshot now imports exact
-Hibana `cf084d22a473b26c8cd0b8be80631eaf3e7184b4`, also without a vendor patch;
-its consumer and remote qualification must be established separately. Runner and reference revisions are in `ci/pins.env`.
+The qualified baseline used exact Hibana `b92a1fe4153e6b2404a183c9231245efd58e3237`.
+The current local cleanup imports unpatched Hibana Git revision
+`8302a07b5f0f2d224229afdba4d0afef62d6aa2b`; its own remote qualification
+is still pending. Runner and reference revisions are in `tools/ci/pins.env`.
 Original simulator rules, capacities and deadlines remain unchanged.
 
 Locally, the baseline passed 586 Rust tests, the thumbv6m core check, 87 Python
@@ -31,16 +31,14 @@ Scoped Lean/Z3 models document their own assumptions; none proves all Rust code,
 cryptographic security, or liveness under arbitrary loss. Private packet captures
 and key logs are never part of the public qualification report.
 
-## Post-baseline module organization and core refresh
+## Latest published revision
 
-The reorganized consumer, with exact core `cf084d22a473b26c8cd0b8be80631eaf3e7184b4`,
-passed 586 core/consumer Rust tests across 18 suites, 123 host tests across nine
-suites, and the `thumbv6m-none-eabi` no-default-features check locally. The exact
-1207-file upstream snapshot audit and the source inventory audit also passed.
-These checks do not replace the selected official interop matrix on a new commit.
-Native Neqo loss, HTTP/3, and connection migration also passed in both directions
-with this release binary, including byte comparison and verified retirement.
-They remain local native checks, not official simulator verdicts.
+`593e78d1202d821328702effd5f81e4d757f6a99` passed
+[normal CI](https://github.com/hibanaworks/hibana-quic/actions/runs/37698852840).
+Its [official interop run](https://github.com/hibanaworks/hibana-quic/actions/runs/37698852775)
+executed all 44 candidate cells: 43 passed, client handshakeloss failed.
+Server handshakeloss passed. This does not establish a root fix or qualify
+subsequent module cleanup. See [working status](WORKING-STATUS.md).
 
 ## Current CI scope
 

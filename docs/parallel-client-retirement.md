@@ -1,6 +1,6 @@
 # Experimental independent client retirement
 
-This candidate is isolated on `ci/parallel-client-retirement`. The qualified
+This candidate is isolated on `tools/ci/parallel-client-retirement`. The qualified
 `development/rolled-route-runtime` head remains f160c2d2. Do not infer adoption
 from this document or a native diagnostic.
 

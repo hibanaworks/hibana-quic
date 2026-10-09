@@ -1,6 +1,6 @@
 //! Allocation measurement of the remaining numeric CID history kernel.
 //! PKT authentication is outside this fixture; this is not a QUIC wire test.
-use hibana_quic::connection_id::{
+use hibana_quic::quic::kernel::connection_id::{
     Cid, LocalCidSlot, LocalCidTable, PeerCidSlot, PeerCidTable, ResetToken,
 };
 use std::{
