@@ -137,6 +137,11 @@ docker pull --platform linux/amd64 "$SIMULATOR_TAG"
 SIM_IMAGE=$(docker image inspect "$SIMULATOR_TAG" --format '{{index .RepoDigests 0}}')
 [[ $SIM_IMAGE =~ ^martenseemann/quic-network-simulator@sha256:[a-f0-9]{64}$ ]]
 export SIM_IMAGE
+# Preserve capture bytes at container termination. Scenario/network code and
+# image remain pinned; only the exact known shell shutdown tail is changed.
+docker run --rm --entrypoint cat "$SIM_IMAGE" /ns3/run.sh > .ci-work/simulator-original.sh
+python3 tools/ci/simulator_shutdown.py .ci-work/simulator-original.sh .ci-work/simulator-run.sh ci-safe-results/simulator-shutdown.json
+bash -n .ci-work/simulator-run.sh
 docker pull --platform linux/amd64 "$RUST_IMAGE"
 docker pull --platform linux/amd64 "$ENDPOINT_IMAGE"
 docker pull --platform linux/amd64 "$UBUNTU_IMAGE"

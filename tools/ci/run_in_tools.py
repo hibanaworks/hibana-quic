@@ -750,7 +750,7 @@ def setup_workdir(name, candidate):
             'url': 'https://github.com/hibanaworks/hibana-quic', 'role': 'both'}
     (work / 'implementations_quic.json').write_text(json.dumps(config, indent=2) + '\n')
     overlay = work / 'pinned-images.override.yml'
-    overlay.write_text('services:\n  sim:\n    image: ' + os.environ['SIM_IMAGE'] + '\n    pull_policy: never\n')
+    overlay.write_text('services:\n  sim:\n    image: ' + os.environ['SIM_IMAGE'] + '\n    pull_policy: never\n    volumes:\n      - ' + json.dumps(str(ROOT / '.ci-work/simulator-run.sh') + ':/ns3/run.sh:ro') + '\n')
     return work, overlay
 
 def phase(name, client, server, candidate):
@@ -898,7 +898,7 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
     expected_pins = dict(line.split('=', 1) for line in (ROOT / 'tools/ci/pins.env').read_text().splitlines()
                          if line and not line.startswith('#'))
     cells, verified_groups = [], []
-    simulator, quiche_image = None, None
+    simulator, quiche_image, simulator_shutdown = None, None, None
     source_pair = None
     all_passed = True
     for group in groups:
@@ -941,6 +941,14 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
         if simulator is None:
             simulator = image
         require(image == simulator, 'matrix simulator image changed')
+        shutdown = read('simulator-shutdown.json')
+        require(shutdown.get('change') == 'forward termination and wait for capture children; scenarios unchanged'
+                and all(isinstance(shutdown.get(key), str) and re.fullmatch(r'[0-9a-f]{64}', shutdown[key])
+                        for key in ('original_sha256', 'patched_sha256')),
+                'invalid simulator shutdown identity')
+        if simulator_shutdown is None:
+            simulator_shutdown = shutdown
+        require(shutdown == simulator_shutdown, 'matrix simulator shutdown changed')
         expected = requested_cases(group['cases'])
         require(summary.get('selected_cases') == sorted(expected), 'matrix case scope mismatch')
         require(summary.get('candidate_directions') == ['client', 'server'], 'matrix direction scope mismatch')
@@ -986,7 +994,7 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
               'candidate_passed': sum(cell['result'] == 'succeeded' for cell in cells),
               'candidate_unexecuted': sum(cell['result'] is None for cell in cells),
               'reference_self_tests': 'omitted', 'control_results': 0, 'control_passed': 0,
-              'runner_source_unchanged': True, 'simulator_image': simulator, 'source_pair_trees': source_pair, 'groups': verified_groups,
+              'runner_source_unchanged': True, 'simulator_image': simulator, 'simulator_shutdown': simulator_shutdown, 'source_pair_trees': source_pair, 'groups': verified_groups,
               'candidate_cells': cells, 'control_cells': [], 'full_44_case_direction_matrix': True}
     output = SAFE
     output.mkdir(exist_ok=True)

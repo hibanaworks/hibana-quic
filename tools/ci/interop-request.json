@@ -1,6 +1,6 @@
 {
-  "request": "Qualify retained Finished probe priority with non-starving cross-space PTO service on all 44 cells",
-  "requested_at": "2026-10-09T05:56:00Z",
+  "request": "Qualify all 44 cells with capture children reaped on simulator shutdown; transport unchanged from 296dd52",
+  "requested_at": "2026-10-09T06:57:00Z",
   "scope": [
     "same source commit across all qualification groups",
     "reference self-tests omitted by user request",

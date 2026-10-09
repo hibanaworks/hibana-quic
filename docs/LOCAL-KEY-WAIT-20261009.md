@@ -130,3 +130,28 @@ reverse native quiche handshake-corruption case passed as well. Earlier failures
 are retained; repeated success is not a guarantee for every possible loss pattern.
 
 Final Host validation passed all 130 tests and strict Clippy before publication.
+
+## Simulator capture shutdown
+
+Remote 296dd52 runtime CI `37892461592` passed Rust, Miri, both finite fault
+regressions, and every one of the ten native stress cases with strict close.
+Interop attempt 1 was 43/44: reverse quiche handshakecorruption lost all three
+observed peer Finished datagrams before peer exit. Three additional local reverse
+seeds passed; this remains recorded as an intermittent failure, not reclassified.
+
+A complete same-source rerun (attempt 2) exposed a different observation failure
+in reverse Neqo retry. Both endpoints exited successfully, and 10,240 bytes were
+received. The client-side pcap contained 37 decoded QUIC rows including completion,
+but the server-side pcap contained only the initial four rows and no server
+Initial. The unchanged runner counts handshakes from that server-side capture.
+
+The upstream simulator shell forwards TERM to dumpcap children and exits without
+waiting for their termination. A local process regression reproduces loss of a
+delayed final flush when the container kills remaining children at parent exit.
+Waiting for the signalled children preserves the final bytes. The CI preparation
+now changes only that exact known termination tail; unexpected upstream scripts
+are rejected. Scenario code, packet impairment, images, endpoint code, runner
+source, case deadlines, and result criteria are unchanged. The original and
+patched entrypoint SHA-256 values are published and must match across every group.
+This is an explicit simulator shutdown adaptation, not an unchanged entrypoint
+claim. Docker execution of the adaptation is still to be verified by the new CI.

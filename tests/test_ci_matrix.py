@@ -42,6 +42,7 @@ class Matrix(unittest.TestCase):
                         SIM_IMAGE='martenseemann/quic-network-simulator@sha256:' + 'b' * 64,
                         REFERENCE_IMAGE=('cloudflare/quiche-qns@sha256:' if reference == 'quiche' else 'sha256:') + 'c' * 64)
             self.put(group, 'pins.json', pins)
+            self.put(group, 'simulator-shutdown.json', {'change': 'forward termination and wait for capture children; scenarios unchanged', 'original_sha256': '3' * 64, 'patched_sha256': '4' * 64})
             phases = ['bounded-client', 'bounded-server']
             for phase, client, server in [(phases[0], 'hibana-quic', reference), (phases[1], reference, 'hibana-quic')]:
                 rows = [dict(name=case, abbr=self.module.CASE_ABBREVIATIONS[case], result='succeeded') for case in group['cases']]
@@ -175,6 +176,9 @@ class Matrix(unittest.TestCase):
                  ('environment.json', 'run_attempt', '2'), ('environment.json', 'interop_group', 'other'),
                  ('pins.json', 'RUNNER_REVISION', 'e' * 40), ('pins.json', 'REFERENCE_IMPLEMENTATION', 'quiche'),
                  ('pins.json', 'HIBANA_TLS_REVISION', 'e' * 40),
+                 ('simulator-shutdown.json', 'original_sha256', 'e' * 64),
+                 ('simulator-shutdown.json', 'patched_sha256', 'e' * 64),
+                 ('simulator-shutdown.json', 'change', 'other'),
                  ('source-pair.json', 'tls_revision', 'e' * 40),
                  ('pins.json', 'SIM_IMAGE', 'martenseemann/quic-network-simulator@sha256:' + 'e' * 64),
                  ('summary.json', 'runner_source_unchanged', False), ('summary.json', 'candidate_directions', ['client'])]
@@ -185,6 +189,11 @@ class Matrix(unittest.TestCase):
                 with self.assertRaises(RuntimeError): self.verify()
                 self.assertEqual(self.report()['status'], 'NOT_PASSED')
                 self.put(group, filename, original)
+
+    def test_missing_simulator_shutdown_identity_rejected(self):
+        group = self.request['groups'][0]
+        (self.folder(group) / 'simulator-shutdown.json').unlink()
+        with self.assertRaises(RuntimeError): self.verify()
 
     def test_missing_duplicate_wrong_direction_or_wrong_abbreviation_rejected(self):
         group = self.request['groups'][0]
