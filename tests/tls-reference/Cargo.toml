@@ -9,7 +9,7 @@ description = "Allocating rustls QUIC TLS reference backend for development; not
 
 [dependencies]
 hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "80f7ebdad3cd80718df10af1cd3555f0cf9f90aa", default-features = false }
-hibana-quic-pal = { path = "../../host" }
+hibana-quic-pal = { path = "../../pal" }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["alloc"] }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "af69def928f498ad474a4d2add238615e175a49b", default-features = false }
 hibana-quic = { path = "../.." }

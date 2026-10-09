@@ -373,7 +373,7 @@ peer runs the same source code. TLS, strict frame parsing and the receiver's
 projected endpoint enforce their respective boundaries.
 
 - [Network session entry points](pal/src/launch.rs) own native resources.
-- [Network session execution](pal/src/session/local/mod.rs) joins a caller's
+- [Network session execution](src/session/local/owned.rs) joins a caller's
   localside with the QUIC/HTTP/3 driver.
 - [OS-independent role attachment](src/session/local/mod.rs) joins the localside
   and its stream driver.
