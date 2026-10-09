@@ -187,10 +187,11 @@ jobs:
         run: |
           certs="$RUNNER_TEMP/example-certificates"
           mkdir -p "$certs"
+          printf '[req]\ndistinguished_name=dn\n[dn]\n[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n' > "$certs/request.cnf"
           openssl ecparam -name prime256v1 -genkey -noout -out "$certs/ca.key"
-          openssl req -new -x509 -sha256 -set_serial 1 -key "$certs/ca.key" -out "$certs/ca.pem" -days 1 -subj /CN=ExampleCA -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
+          openssl req -config "$certs/request.cnf" -extensions ca -new -x509 -sha256 -set_serial 1 -key "$certs/ca.key" -out "$certs/ca.pem" -days 1 -subj /CN=ExampleCA
           openssl ecparam -name prime256v1 -genkey -noout -out "$certs/server.key"
-          openssl req -new -key "$certs/server.key" -out "$certs/server.csr" -subj /CN=localhost
+          openssl req -config "$certs/request.cnf" -new -key "$certs/server.key" -out "$certs/server.csr" -subj /CN=localhost
           printf 'subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' > "$certs/extensions"
           openssl x509 -req -sha256 -set_serial 2 -in "$certs/server.csr" -CA "$certs/ca.pem" -CAkey "$certs/ca.key" -out "$certs/server.pem" -days 1 -extfile "$certs/extensions"
           python3 examples/check-transfers.py "$CARGO_TARGET_DIR/release/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem"
