@@ -155,3 +155,25 @@ source, case deadlines, and result criteria are unchanged. The original and
 patched entrypoint SHA-256 values are published and must match across every group.
 This is an explicit simulator shutdown adaptation, not an unchanged entrypoint
 claim. Docker execution of the adaptation is still to be verified by the new CI.
+
+
+## Capture verification and bounded runner failure evidence
+
+Remote f1c9779 runtime CI 37896442777 passed all Rust, Host, embedded, strict
+Clippy, Miri and additional stress gates. Retry now passes in actual Docker CI;
+both capture sides contain 37 decoded QUIC observations. This verifies the
+simulator shutdown adaptation for that case, without implying every capture is
+complete in every possible failure.
+
+Interop 37896442735 still failed in the Neqo v2/rebinding group. Its candidate
+client runner exited 1 before a valid result JSON was available; the candidate
+server direction passed. The 30,889,530-byte console exceeded the safe diagnostic
+limit, so the exception was not available in the public evidence. No transport
+cause is asserted and this run is not a 44/44 pass.
+
+Oversized logs now additionally expose a separately labelled, bounded 64 KiB
+terminal slice through the same allowlisted diagnostic parsers. No raw text,
+exception message, path or secret is published. Partial first records are dropped;
+symlinks, hardlinks, changing files, invalid text and oversized records retain
+fail-closed handling. The tail has its own offset, byte count and hash, never a
+whole-file identity. Result validation and qualification remain unchanged.

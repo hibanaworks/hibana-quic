@@ -556,6 +556,57 @@ class Diagnostics(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'case abbreviation mismatch'):
             self.module.checked_result(output, 'hibana-quic', 'neqo')
 
+    def test_oversized_tail_exposes_only_safe_exception_locations(self):
+        m = self.module
+        secret = 'PRIVATE_TOKEN_AND_PATH'
+        trace = ('Traceback (most recent call last):\n'
+                 f'  File "{m.RUNNER}/testcase.py", line 321, in check\n'
+                 f'RuntimeError: {secret}\n').encode()
+        path = self.put('output.txt', b'x' * (m.MAX_LOG_BYTES + 1) + b'\n' + trace)
+        full, raw = m.diagnostic_file(self.case, ('output.txt',))
+        self.assertEqual(full['state'], 'too-large')
+        self.assertIsNone(raw)
+        result = m.diagnostic_tail(self.case, ('output.txt',))
+        self.assertEqual(result['state'], 'partial-tail')
+        self.assertEqual(result['bytes'], len(trace))
+        self.assertEqual(result['offset'] + result['bytes'], path.stat().st_size)
+        self.assertEqual(result['tail_sha256'], hashlib.sha256(trace).hexdigest())
+        self.assertNotIn('sha256', result)
+        self.assertNotIn(secret, json.dumps(result))
+        self.assertEqual(result['tracebacks'][0]['exception_type'], 'RuntimeError')
+        self.assertEqual(result['tracebacks'][0]['frames'][0]['source'], 'runner/testcase.py')
+        self.assertEqual(result['tracebacks'][0]['frames'][0]['line'], 321)
+
+    def test_tail_rejects_links_traversal_and_mutating_file(self):
+        m = self.module
+        path = self.put('output.txt', 'secret\n')
+        (self.case / 'link').symlink_to(path)
+        os.link(path, self.case / 'hardlink')
+        for parts in [('link',), ('hardlink',), ('..', 'secret')]:
+            self.assertNotEqual(m.diagnostic_tail(self.case, parts)['state'], 'partial-tail')
+        (self.case / 'hardlink').unlink()
+        original = os.read
+        def changed(fd, count):
+            raw = original(fd, count)
+            if raw:
+                with path.open('ab') as out:
+                    out.write(b'changed')
+            return raw
+        with patch.object(m.os, 'read', side_effect=changed):
+            self.assertEqual(m.diagnostic_tail(self.case, ('output.txt',))['state'], 'changed-or-too-large')
+
+    def test_tail_never_parses_partial_first_record_or_invalid_utf8(self):
+        m = self.module
+        with patch.object(m, 'MAX_LOG_TAIL_BYTES', 64):
+            self.put('output.txt', b'x' * 80 + b'RuntimeError: secret')
+            result = m.diagnostic_tail(self.case, ('output.txt',))
+            self.assertEqual(result['bytes'], 0)
+            self.assertEqual(result['tracebacks'], [])
+            self.put('output.txt', b'x' * 80 + b'\n\xff\n')
+            result = m.diagnostic_tail(self.case, ('output.txt',))
+            self.assertEqual(result['parse_state'], 'invalid-utf8')
+            self.assertEqual(result['tracebacks'], [])
+
     def test_traceback_unknown_filename_function_and_exception_are_withheld(self):
         raw = ('Traceback (most recent call last):\n'
                '  File "/SECRET_PATH.py", line 123, in SECRET_FUNCTION\n'
@@ -565,6 +616,31 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(result[0]['frames'][0]['source'], 'external-source-withheld')
         self.assertEqual(result[0]['frames'][0]['line'], 123)
         self.assertTrue(result[0]['exception_type']['withheld'])
+
+    def test_phase_oversized_console_keeps_failure_and_safe_tail(self):
+        m = self.module
+        m.SAFE.mkdir()
+        m.RAW.mkdir(parents=True)
+        work = self.root / 'work'
+        work.mkdir()
+        def execute(command, **kwargs):
+            if command[0] != 'docker':
+                kwargs['stdout'].write(b'x' * (m.MAX_LOG_BYTES + 1) + b'\n'
+                    b'Traceback (most recent call last):\n'
+                    b'  File "/private/secret.py", line 5, in private_function\n'
+                    b'ValueError: private_token\n')
+            return SimpleNamespace(returncode=1)
+        with patch.object(m, 'setup_workdir', return_value=(work, work / 'overlay')):
+            with patch.object(m.subprocess, 'run', side_effect=execute):
+                result = m.phase('bounded-client', 'hibana-quic', 'neqo', True)
+        self.assertEqual(result['status'], 'INFRASTRUCTURE_OR_RESULT_FAILURE')
+        self.assertEqual(result['console_file']['state'], 'too-large')
+        self.assertEqual(result['console_tail']['tracebacks'][0]['exception_type'], 'ValueError')
+        self.assertNotIn('private_token', json.dumps(result))
+        self.assertNotIn('secret.py', json.dumps(result))
+        verdict = json.loads((m.SAFE / 'bounded-client-verdict.json').read_text())
+        self.assertEqual(verdict['status'], result['status'])
+        self.assertNotIn('console_tail', verdict)
 
     def test_phase_collects_diagnostics_without_changing_failed_verdict(self):
         m = self.module

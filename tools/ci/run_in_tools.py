@@ -26,6 +26,7 @@ IMPLEMENTATIONS = {'neqo', 'quiche', 'hibana-quic'}
 # Diagnostics are untrusted input, including logs produced by the peer. Nothing
 # below copies a message, pathname, JSON key, or unknown enum into the artifact.
 MAX_LOG_BYTES = 8 * 1024 * 1024
+MAX_LOG_TAIL_BYTES = 65536
 MAX_LOG_LINES = 65536
 MAX_LINE_BYTES = 32768
 MAX_JSON_BYTES = 16384
@@ -195,6 +196,48 @@ def diagnostic_file(root, parts, limit=MAX_LOG_BYTES, content=True):
         return metadata, b''.join(chunks) if content else None
     except (OSError, ValueError) as error:
         return {'state': _file_error(error)}, None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+def diagnostic_tail(root, parts):
+    """Separate, explicitly partial evidence; never a full-file hash or verdict."""
+    fd = None
+    try:
+        fd = _open_beneath(root, parts)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            return {'state': 'rejected-nonregular-or-linked'}
+        if not 0 <= before.st_size <= MAX_BYTES:
+            return {'state': 'size-out-of-range'}
+        offset = max(0, before.st_size - MAX_LOG_TAIL_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        chunks, count = [], 0
+        while count <= MAX_LOG_TAIL_BYTES:
+            chunk = os.read(fd, min(65536, MAX_LOG_TAIL_BYTES + 1 - count))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            count += len(chunk)
+        after = os.fstat(fd)
+        if count != before.st_size - offset or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            return {'state': 'changed-or-too-large'}
+        raw = b''.join(chunks)
+        # The seek may land within UTF-8 or a log record. Discard that record
+        # even when it happens to look like a complete exception or JSON line.
+        if offset:
+            newline = raw.find(b'\n')
+            skipped = newline + 1 if newline >= 0 else len(raw)
+            offset += skipped
+            raw = raw[skipped:]
+        parse_state, lines = diagnostic_lines(raw)
+        text = '\n'.join(lines)
+        return {'state': 'partial-tail', 'file_bytes': before.st_size,
+            'offset': offset, 'bytes': len(raw), 'tail_sha256': hashlib.sha256(raw).hexdigest(),
+            'parse_state': parse_state, 'error_classes': console_classes(text),
+            'tracebacks': traceback_evidence(text), 'diagnostics': summarize_log(raw)}
+    except (OSError, ValueError) as error:
+        return {'state': _file_error(error)}
     finally:
         if fd is not None:
             os.close(fd)
@@ -623,6 +666,8 @@ def collect_case_diagnostics(logs, client, server):
             metadata, raw = diagnostic_file(logs, prefix + suffix)
             if raw is not None:
                 metadata.update(summarize_log(raw, endpoint=label in ('client_log', 'server_log')))
+            if metadata.get('state') == 'too-large':
+                metadata['tail'] = diagnostic_tail(logs, prefix + suffix)
             record[label] = metadata
         record['captures'] = {}
         for side in ('left', 'right'):
@@ -790,6 +835,8 @@ def phase(name, client, server, candidate):
             record['cleanup_error_type'] = type(error).__name__
         metadata, raw = diagnostic_file(RAW, (name + '-console.log',))
         record['console_file'] = metadata
+        if metadata.get('state') == 'too-large':
+            record['console_tail'] = diagnostic_tail(RAW, (name + '-console.log',))
         if raw is not None:
             parse_state, lines = diagnostic_lines(raw)
             record['console_parse_state'] = parse_state
