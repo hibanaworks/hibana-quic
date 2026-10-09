@@ -2,24 +2,34 @@
 //! Plaintext, affine key transitions and stream handles remain local; only the
 //! declared key, delivery and termination edges cross async role boundaries.
 use super::{CloseKind, Control, Error, global as p, io, keys, reset, termination};
-use crate::{
-    crypto::{
-        self,
-        directional::{AuthenticatedRead, ScopedHandshakeConfirmation, ValidatedKeyAck},
-    },
-    quic::kernel::accounting::AccountingError,
-    quic::kernel::packet::{self, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits},
-    quic::kernel::streams,
-    quic::{
-        self, Clock, Config, DatagramRx, ReceiveMaterial, Side, application_stream,
-        application_wire, recovery,
-        tls::{CryptoInput, Transcript},
-    },
-    tls::Level,
-    tls::buffer::CryptoBuffer,
-};
+use crate::crypto;
+use crate::crypto::directional::AuthenticatedRead;
+use crate::crypto::directional::ScopedHandshakeConfirmation;
+use crate::crypto::directional::ValidatedKeyAck;
+use crate::quic;
+use crate::quic::Clock;
+use crate::quic::Config;
+use crate::quic::DatagramRx;
+use crate::quic::ReceiveMaterial;
+use crate::quic::Side;
+use crate::quic::application::imp::stream;
+use crate::quic::imp::application_wire;
+use crate::quic::imp::crypto_buffer::CryptoBuffer;
+use crate::quic::imp::kernel::accounting::AccountingError;
+use crate::quic::imp::kernel::packet;
+use crate::quic::imp::kernel::packet::Frame;
+use crate::quic::imp::kernel::packet::FrameIter;
+use crate::quic::imp::kernel::packet::Header;
+use crate::quic::imp::kernel::packet::LongType;
+use crate::quic::imp::kernel::packet::PacketIter;
+use crate::quic::imp::kernel::packet::ParseLimits;
+use crate::quic::imp::kernel::streams;
+use crate::quic::imp::recovery;
+use crate::quic::imp::tls::CryptoInput;
+use crate::quic::imp::tls::Transcript;
 use core::cell::RefCell;
 use hibana::Endpoint;
+use hibana_tls::endpoint::Level;
 use hibana_tls::secret::Secret;
 
 #[allow(clippy::too_many_arguments)]
@@ -38,13 +48,13 @@ pub(crate) async fn run<
     mut material: ReceiveMaterial<'scope>,
     config: Config<'_>,
     transcript: &mut Transcript<'scope, '_, '_>,
-    finished: &crate::tls::handshake::key_source::FinishedAuthenticated<'scope>,
+    finished: &hibana_tls::handshake::local::keys::FinishedAuthenticated<'scope>,
     mut crypto: CryptoBuffer<'_>,
     book: &mut recovery::Rx<'_, 'scope, N>,
-    streams: &mut application_stream::Rx<'streams, '_, 'scope, RX, CHUNK>,
+    streams: &mut stream::Rx<'streams, '_, 'scope, RX, CHUNK>,
     reset: &reset::Exchange<'streams>,
     acknowledgments: &super::acknowledgments::Exchange<'scope>,
-    app: &RefCell<application_stream::App<'_, '_, 'scope, RX, CHUNK>>,
+    app: &RefCell<stream::App<'_, '_, 'scope, RX, CHUNK>>,
     state: &io::State<'_, CHUNK, B>,
     mut keys: keys::RxControl<'_, 'owner, 'scope>,
     control: &Control<'_, 'scope>,
@@ -53,10 +63,10 @@ pub(crate) async fn run<
     termination: &termination::Exchange<'_, '_, 'scope>,
     initial_confirmation: Option<recovery::HandshakeConfirmed<'scope>>,
     key_update_target: u64,
-    responses: &crate::quic::path::responses::Responses,
-    local_ids: &RefCell<Option<crate::quic::path::ids::Ids<'_, 'scope>>>,
-    peer_ids: &RefCell<Option<crate::quic::path::peer_ids::Peers<'_, 'scope>>>,
-    paths: &crate::quic::path::validation::Paths<'_>,
+    responses: &crate::quic::path::imp::responses::Responses,
+    local_ids: &RefCell<Option<crate::quic::path::imp::ids::Ids<'_, 'scope>>>,
+    peer_ids: &RefCell<Option<crate::quic::path::imp::peer_ids::Peers<'_, 'scope>>>,
+    paths: &crate::quic::path::local::Paths<'_>,
     mut pending_application: Option<([u8; N], quic::ReceivedDatagram, u64)>,
 ) -> Result<(), Error> {
     let scope = material.application.scope();
@@ -520,7 +530,7 @@ pub(crate) async fn run<
                                                     reset.observe(intent)?;
                                                     control.changed()?;
                                                 }
-                                                Err(application_stream::Error::Streams(
+                                                Err(stream::Error::Streams(
                                                     streams::Error::Retired,
                                                 )) => {}
                                                 Err(error) => return Err(error.into()),
@@ -924,7 +934,7 @@ fn old<'book, 'scope, const N: usize>(
     transcript: &Transcript<'scope, '_, '_>,
     book: &mut recovery::Rx<'book, 'scope, N>,
     now: u64,
-    ecn: Option<crate::quic::ecn::Codepoint>,
+    ecn: Option<crate::quic::ecn::imp::Codepoint>,
 ) -> Result<Option<(bool, u64)>, Error> {
     let Header::Long {
         version,
@@ -1080,9 +1090,9 @@ fn discard_before_authentication(error: &quic::Error) -> bool {
 
 fn protocol_code(error: &Error) -> u64 {
     match error {
-        Error::Streams(application_stream::Error::Streams(streams::Error::FlowControl)) => 0x3,
-        Error::Streams(application_stream::Error::Streams(streams::Error::StreamLimit)) => 0x4,
-        Error::Streams(application_stream::Error::Streams(streams::Error::FinalSize)) => 0x6,
+        Error::Streams(stream::Error::Streams(streams::Error::FlowControl)) => 0x3,
+        Error::Streams(stream::Error::Streams(streams::Error::StreamLimit)) => 0x4,
+        Error::Streams(stream::Error::Streams(streams::Error::FinalSize)) => 0x6,
         Error::Streams(_) => 0x5,
         Error::Crypto(crypto::Error::KeyUpdateError)
         | Error::Connection(quic::Error::Crypto(crypto::Error::KeyUpdateError)) => 0xe,

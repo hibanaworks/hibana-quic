@@ -15,8 +15,8 @@ use hibana::{
     },
 };
 use hibana_quic::{
-    runtime::carrier::CarrierStorage,
     quic::{application, global as p},
+    runtime::carrier::CarrierStorage,
 };
 use std::{
     sync::Arc,
@@ -133,10 +133,10 @@ fn run_publications(publications: &[u8], combined: bool) {
     let start = async {
         if let Some(endpoint) = starter.as_mut() {
             endpoint
-                .send::<hibana_quic::quic::retry::client_global::Skip>(&())
+                .send::<hibana_quic::quic::retry::global::client::Skip>(&())
                 .await?;
             endpoint
-                .recv::<hibana_quic::quic::retry::client_global::Skipped>()
+                .recv::<hibana_quic::quic::retry::global::client::Skipped>()
                 .await?;
             endpoint.send::<p::EarlySkip>(&()).await?;
         }
@@ -186,10 +186,10 @@ fn run_publications(publications: &[u8], combined: bool) {
             receiver
                 .offer()
                 .await?
-                .recv::<hibana_quic::quic::retry::client_global::Skip>()
+                .recv::<hibana_quic::quic::retry::global::client::Skip>()
                 .await?;
             receiver
-                .send::<hibana_quic::quic::retry::client_global::Skipped>(&())
+                .send::<hibana_quic::quic::retry::global::client::Skipped>(&())
                 .await?;
             receiver.offer().await?.recv::<p::EarlySkip>().await?;
         }

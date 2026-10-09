@@ -18,7 +18,6 @@ pub mod http3;
 pub mod io;
 pub mod quic;
 pub mod runtime;
-pub mod tls;
 
 /// Caller-owned cryptographic entropy input.
 pub use hibana_tls::entropy;

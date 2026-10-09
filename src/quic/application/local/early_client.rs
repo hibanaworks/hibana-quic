@@ -2,10 +2,10 @@
 //! The finite projected prefix transfers real production receipts to the same
 //! collector used by ordinary streams. Rejected intents use the ordinary source.
 use super::{Error, Roles, global as p, io, reclaim};
-use crate::quic::{
-    application_stream::{App, Publication, Tx},
-    early_client::Requests,
-};
+use crate::quic::application::imp::stream::App;
+use crate::quic::application::imp::stream::Publication;
+use crate::quic::application::imp::stream::Tx;
+use crate::quic::local::early_client::Requests;
 use core::cell::RefCell;
 fn check(actual: u64, expected: u64) -> Result<(), Error> {
     if actual == expected {
@@ -128,5 +128,7 @@ pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: u
             count as u64,
         )
     };
-    crate::runtime::join::values3(source, ingress, collector).await.map(|_| ())
+    crate::runtime::join::values3(source, ingress, collector)
+        .await
+        .map(|_| ())
 }

@@ -1,9 +1,13 @@
 //! Migrated accounting/ECN regression assertions from the removed endpoint.
-use hibana_quic::{
-    quic::kernel::accounting::{self, PacketKind, PacketNumberSpace, SentLedger},
-    quic::ecn::{self, Codepoint, MarkedPackets},
-    quic::kernel::packet, quic::kernel::recovery,
-};
+use hibana_quic::quic::ecn;
+use hibana_quic::quic::ecn::imp::Codepoint;
+use hibana_quic::quic::ecn::imp::MarkedPackets;
+use hibana_quic::quic::imp::kernel::accounting;
+use hibana_quic::quic::imp::kernel::accounting::PacketKind;
+use hibana_quic::quic::imp::kernel::accounting::PacketNumberSpace;
+use hibana_quic::quic::imp::kernel::accounting::SentLedger;
+use hibana_quic::quic::imp::kernel::packet;
+use hibana_quic::quic::imp::kernel::recovery;
 fn ecn_congestion_event<const N: usize>(
     cc: &mut recovery::NewReno,
     sent: &SentLedger<N>,
@@ -45,7 +49,7 @@ fn reclaimed_ack_only_and_lost_ce_react_without_fabricated_exact_time() {
     assert_eq!(ledger.sent_at(ack_only), None);
     assert_eq!(ledger.congestion_sent_at_upper_bound(ack_only), Some(10));
     assert_eq!(
-        ecn::validate_feedback(
+        ecn::imp::validate_feedback(
             MarkedPackets { ect0: 2, ect1: 0 },
             counts(1, 0).unwrap(),
             MarkedPackets::default(),
@@ -59,7 +63,7 @@ fn reclaimed_ack_only_and_lost_ce_react_without_fabricated_exact_time() {
     assert!(ecn_congestion_event(&mut cc, &ledger, ack_only, 20).unwrap());
     let reduced = cc.congestion_window();
     assert_eq!(
-        ecn::validate_feedback(
+        ecn::imp::validate_feedback(
             MarkedPackets { ect0: 2, ect1: 0 },
             counts(1, 1).unwrap(),
             MarkedPackets::default(),

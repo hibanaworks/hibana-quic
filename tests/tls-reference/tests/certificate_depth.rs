@@ -1,13 +1,17 @@
 //! Depth-eight certificate verification, with runtime-generated private keys.
 #[path = "../../support/async_tls_fixture.rs"]
 mod async_fixture;
-use hibana_quic::{
-    tls::certificate::*,
-    tls::handshake::{BoundedTls, ClientConfig, Failure, ServerConfig, SigningKey, Storage},
-    tls::wire as tls_wire,
-    tls::{Level, Provider},
-};
 use hibana_quic_host::entropy::KernelEntropy;
+use hibana_tls::certificate::*;
+use hibana_tls::endpoint::Level;
+use hibana_tls::endpoint::Provider;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::ClientConfig;
+use hibana_tls::handshake::Failure;
+use hibana_tls::handshake::ServerConfig;
+use hibana_tls::handshake::SigningKey;
+use hibana_tls::handshake::Storage;
+use hibana_tls::wire as tls_wire;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, GeneralSubtree, IsCa, KeyPair, KeyUsagePurpose,
     NameConstraints,
@@ -133,7 +137,12 @@ fn chain_with_names(count: usize, constraint: Constraint, names: Vec<String>) ->
     }
     let leaf_key = KeyPair::generate().unwrap();
     let signing = SigningKey::from_pkcs8_der(&leaf_key.serialize_der()).unwrap();
-    let leaf = p.signed_by(&leaf_key, &issuer, &key).unwrap().der().as_ref().to_vec();
+    let leaf = p
+        .signed_by(&leaf_key, &issuer, &key)
+        .unwrap()
+        .der()
+        .as_ref()
+        .to_vec();
     intermediates.reverse();
     Chain {
         root,
@@ -143,18 +152,20 @@ fn chain_with_names(count: usize, constraint: Constraint, names: Vec<String>) ->
     }
 }
 fn check(chain: &Chain, name: &str) -> Result<(), Error> {
-    let leaf=CertificateDer::from(chain.leaf.as_slice());
-    let certificates:Vec<_>=chain.intermediates.iter().map(|c|CertificateDer::from(c.as_slice())).collect();
-    let anchors = [trust_anchor_from_der(&CertificateDer::from(chain.root.as_ref()))?];
+    let leaf = CertificateDer::from(chain.leaf.as_slice());
+    let certificates: Vec<_> = chain
+        .intermediates
+        .iter()
+        .map(|c| CertificateDer::from(c.as_slice()))
+        .collect();
+    let anchors = [trust_anchor_from_der(&CertificateDer::from(
+        chain.root.as_ref(),
+    ))?];
     let time = UnixTime::since_unix_epoch(Duration::from_secs(1_800_000_000));
     let verifier = ServerVerifier::new(&anchors, time, Limits::default())?;
     measured(|| {
         verifier
-            .verify_server(
-                &leaf,
-                &certificates,
-                &ServerName::try_from(name).unwrap(),
-            )
+            .verify_server(&leaf, &certificates, &ServerName::try_from(name).unwrap())
             .map(|_| ())
     })
 }
@@ -213,7 +224,7 @@ fn ten_chain_is_rejected_by_bounded_wrapper() {
         measured(|| BoundedTls::server(
             ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &c.signing,
                 transport_parameters: &[4, 1, 63]
@@ -235,7 +246,11 @@ fn generated_nine_chain_authenticates_only_expected_hosts_and_root() {
             .to_vec(),
     );
     let leaf = CertificateDer::from(c.leaf.as_slice());
-    let certificates:Vec<_> = c.intermediates.iter().map(|c|CertificateDer::from(c.as_slice())).collect();
+    let certificates: Vec<_> = c
+        .intermediates
+        .iter()
+        .map(|c| CertificateDer::from(c.as_slice()))
+        .collect();
     assert_eq!(certificates.len(), 8);
     let anchors = [trust_anchor_from_der(&CertificateDer::from(c.root.as_ref())).unwrap()];
     let time = UnixTime::since_unix_epoch(Duration::from_secs(1_800_000_000));
@@ -256,7 +271,8 @@ fn generated_nine_chain_authenticates_only_expected_hosts_and_root() {
             .is_err()
     );
     let wrong = chain(0, Constraint::None);
-    let wrong_anchors = [trust_anchor_from_der(&CertificateDer::from(wrong.root.as_ref())).unwrap()];
+    let wrong_anchors =
+        [trust_anchor_from_der(&CertificateDer::from(wrong.root.as_ref())).unwrap()];
     let wrong_verifier = ServerVerifier::new(&wrong_anchors, time, Limits::default()).unwrap();
     assert!(
         wrong_verifier
@@ -271,8 +287,12 @@ fn generated_nine_chain_authenticates_only_expected_hosts_and_root() {
 #[test]
 fn deep_chain_time_and_signature_failures_still_reject() {
     let c = chain(8, Constraint::None);
-    let leaf=CertificateDer::from(c.leaf.as_slice());
-    let certificates:Vec<_>=c.intermediates.iter().map(|c|CertificateDer::from(c.as_slice())).collect();
+    let leaf = CertificateDer::from(c.leaf.as_slice());
+    let certificates: Vec<_> = c
+        .intermediates
+        .iter()
+        .map(|c| CertificateDer::from(c.as_slice()))
+        .collect();
     let anchors = [trust_anchor_from_der(&CertificateDer::from(c.root.as_ref())).unwrap()];
     let name = ServerName::try_from("server.allowed.test").unwrap();
     for seconds in [0, u64::MAX] {
@@ -324,7 +344,7 @@ fn handshake(
     client: &mut BoundedTls<'_, '_>,
     server: &mut BoundedTls<'_, '_>,
     fragment: usize,
-) -> Result<(), hibana_quic::tls::handshake::local::Error> {
+) -> Result<(), hibana_tls::handshake::local::Error> {
     async_fixture::try_handshake_with::<16384>(client, server, fragment, false).map(|_| ())
 }
 fn authenticated_packets(client: &mut impl Provider, server: &mut impl Provider) {
@@ -358,7 +378,7 @@ fn full_handshake(
         let mut client = BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 server_name: name,
                 trust_anchors: &anchors,
                 now: time,
@@ -372,7 +392,7 @@ fn full_handshake(
         let mut server = BoundedTls::server(
             ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 certificate_chain: chain,
                 signing_key: signing,
                 transport_parameters: &[4, 1, 63],
@@ -436,7 +456,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
         let mut client = BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 server_name: "server.allowed.test",
                 trust_anchors: &anchors,
                 now: time,
@@ -450,7 +470,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
         let mut server = BoundedTls::server(
             ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
                 transport_parameters: &[4, 1, 63],
@@ -463,7 +483,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
         assert!(
             matches!(
                 rejected,
-                Err(hibana_quic::tls::handshake::local::Error::Crypto(
+                Err(hibana_tls::handshake::local::Error::Crypto(
                     Failure::Capacity
                 ))
             ),
@@ -483,7 +503,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
             let mut client = BoundedTls::client(
                 ClientConfig {
                     protocol: Default::default(),
-                    version: hibana_quic::quic::kernel::version::Version::V1,
+                    version: hibana_quic::quic::imp::kernel::version::Version::V1,
                     server_name: name,
                     trust_anchors: trust,
                     now: time,
@@ -497,7 +517,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
             let mut server = BoundedTls::server(
                 ServerConfig {
                     protocol: Default::default(),
-                    version: hibana_quic::quic::kernel::version::Version::V1,
+                    version: hibana_quic::quic::imp::kernel::version::Version::V1,
                     certificate_chain: &chain,
                     signing_key: &id.signing,
                     transport_parameters: &[4, 1, 63],
@@ -510,7 +530,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
             assert!(
                 matches!(
                     rejected,
-                    Err(hibana_quic::tls::handshake::local::Error::Crypto(
+                    Err(hibana_tls::handshake::local::Error::Crypto(
                         Failure::Certificate(_)
                     ))
                 ),
@@ -534,8 +554,10 @@ fn exact_runner_nine_chain_full_tls_handshake_allocate_zero() {
         std::env::var_os("HIBANA_RUNNER_CERTS_DIR")
             .expect("set HIBANA_RUNNER_CERTS_DIR to an ephemeral certs.sh chain9 directory"),
     );
-    let root =
-        rustls_pki_types::CertificateDer::from_pem_slice(&std::fs::read(path.join("ca.pem")).unwrap()).unwrap();
+    let root = rustls_pki_types::CertificateDer::from_pem_slice(
+        &std::fs::read(path.join("ca.pem")).unwrap(),
+    )
+    .unwrap();
     let pem = std::fs::read(path.join("cert.pem")).unwrap();
     let certs: Vec<_> = rustls_pki_types::CertificateDer::pem_slice_iter(&pem)
         .collect::<Result<_, _>>()
@@ -561,14 +583,39 @@ fn exact_runner_nine_chain_full_tls_handshake_allocate_zero() {
 fn project_owned_verifier_matches_generated_depth_and_constraint_cases() {
     use hibana_tls::x509::{name::Identity, verify};
     for (constraint, expected) in [
-        (Constraint::None,true),(Constraint::Permitted,true),
-        (Constraint::Excluded,false),(Constraint::PathLen,false),
-        (Constraint::BadCaUsage,false),(Constraint::BadLeafUsage,false),
+        (Constraint::None, true),
+        (Constraint::Permitted, true),
+        (Constraint::Excluded, false),
+        (Constraint::PathLen, false),
+        (Constraint::BadCaUsage, false),
+        (Constraint::BadLeafUsage, false),
     ] {
-        let c=chain(8,constraint);
-        let intermediate:Vec<&[u8]>=c.intermediates.iter().map(|c|c.as_ref()).collect();
-        let result=measured(||verify::server(c.leaf.as_ref(),&intermediate,&[c.root.as_ref()],Identity::Dns("server.allowed.test"),1800000000));
-        assert_eq!(result.is_ok(),expected,"owned verifier: {:?}",result.err());
-        assert!(measured(||verify::server(c.leaf.as_ref(),&intermediate,&[c.root.as_ref()],Identity::Dns("wrong.allowed.test"),1800000000)).is_err());
+        let c = chain(8, constraint);
+        let intermediate: Vec<&[u8]> = c.intermediates.iter().map(|c| c.as_ref()).collect();
+        let result = measured(|| {
+            verify::server(
+                c.leaf.as_ref(),
+                &intermediate,
+                &[c.root.as_ref()],
+                Identity::Dns("server.allowed.test"),
+                1800000000,
+            )
+        });
+        assert_eq!(
+            result.is_ok(),
+            expected,
+            "owned verifier: {:?}",
+            result.err()
+        );
+        assert!(
+            measured(|| verify::server(
+                c.leaf.as_ref(),
+                &intermediate,
+                &[c.root.as_ref()],
+                Identity::Dns("wrong.allowed.test"),
+                1800000000
+            ))
+            .is_err()
+        );
     }
 }

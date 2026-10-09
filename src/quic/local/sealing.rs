@@ -5,7 +5,7 @@ pub(super) fn limited(error: &recovery::Error) -> bool {
         error,
         recovery::Error::CongestionLimited
             | recovery::Error::Accounting(
-                crate::quic::kernel::accounting::AccountingError::AmplificationLimited
+                crate::quic::imp::kernel::accounting::AccountingError::AmplificationLimited
             )
     )
 }
@@ -17,7 +17,7 @@ pub(in crate::quic) fn prepare<'book, 'scope, const N: usize>(
     peer: &ConnectionId,
     level: Level,
     frame: Frame<'_>,
-    flight: Option<crate::quic::kernel::flights::FlightId>,
+    flight: Option<crate::quic::imp::kernel::flights::FlightId>,
     probe: bool,
     ack: Option<recovery::AckSnapshot<'book>>,
     now: u64,
@@ -108,8 +108,8 @@ pub(in crate::quic) fn prepare<'book, 'scope, const N: usize>(
     }
 }
 pub(super) enum RecoveryPacket {
-    Acknowledgment(crate::quic::kernel::accounting::PacketNumberSpace),
-    Probe(crate::quic::kernel::accounting::PacketNumberSpace),
+    Acknowledgment(crate::quic::imp::kernel::accounting::PacketNumberSpace),
+    Probe(crate::quic::imp::kernel::accounting::PacketNumberSpace),
 }
 pub(super) fn prepare_recovery_packet<'scope, 'book, const N: usize, const P: usize>(
     slots: &Storage<'scope, 'book, N, P>,

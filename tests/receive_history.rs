@@ -1,16 +1,15 @@
 //! Real authenticated sparse packet numbers must not exhaust ACK storage.
 use actor_test_allocator::NoAlloc;
-use hibana_quic::{
-    crypto::{
-        CipherSuite, IntegrityBudget, KeyKind, PacketKey,
-        directional::{ApplicationKeyScope, AuthenticatedRead},
-    },
-    quic::kernel::accounting::AccountingError,
-    quic::{
-        Side,
-        recovery::{self, Recovery},
-    },
-};
+use hibana_quic::crypto::CipherSuite;
+use hibana_quic::crypto::IntegrityBudget;
+use hibana_quic::crypto::KeyKind;
+use hibana_quic::crypto::PacketKey;
+use hibana_quic::crypto::directional::ApplicationKeyScope;
+use hibana_quic::crypto::directional::AuthenticatedRead;
+use hibana_quic::quic::Side;
+use hibana_quic::quic::imp::kernel::accounting::AccountingError;
+use hibana_quic::quic::imp::recovery;
+use hibana_quic::quic::imp::recovery::Recovery;
 
 #[test]
 fn authenticated_loss_gaps_prune_without_fabricating_acks_or_readmitting_replays() {

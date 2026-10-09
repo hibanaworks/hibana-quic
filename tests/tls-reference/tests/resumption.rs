@@ -2,19 +2,31 @@
 mod async_fixture;
 // Real two-connection PSK_DHE resumption. Fixture setup is host-only; measured
 // constructors, encrypted TLS flights, issuance, cache and resumption allocate zero.
-use hibana_quic::{
-    tls::certificate::{CertificateDer, Limits, TrustAnchor, UnixTime, trust_anchor_from_der},
-    tls::handshake::{BoundedTls, ClientConfig, ServerConfig, SigningKey, Storage},
-    tls::{Level, Provider},
-};
-use hibana_quic::{
-    tls::handshake::{ClientResumption, Failure, ServerResumption},
-    tls::ticket::{
-        self as ticket, Binding, ClientCache, ClientOffer, ClientSlot, ReplayPolicy, ReplaySlot,
-        TicketKey, VerificationContext,
-    },
-};
 use hibana_quic_host::entropy::KernelEntropy;
+use hibana_tls::certificate::CertificateDer;
+use hibana_tls::certificate::Limits;
+use hibana_tls::certificate::TrustAnchor;
+use hibana_tls::certificate::UnixTime;
+use hibana_tls::certificate::trust_anchor_from_der;
+use hibana_tls::endpoint::Level;
+use hibana_tls::endpoint::Provider;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::ClientConfig;
+use hibana_tls::handshake::ClientResumption;
+use hibana_tls::handshake::Failure;
+use hibana_tls::handshake::ServerConfig;
+use hibana_tls::handshake::ServerResumption;
+use hibana_tls::handshake::SigningKey;
+use hibana_tls::handshake::Storage;
+use hibana_tls::ticket;
+use hibana_tls::ticket::Binding;
+use hibana_tls::ticket::ClientCache;
+use hibana_tls::ticket::ClientOffer;
+use hibana_tls::ticket::ClientSlot;
+use hibana_tls::ticket::ReplayPolicy;
+use hibana_tls::ticket::ReplaySlot;
+use hibana_tls::ticket::TicketKey;
+use hibana_tls::ticket::VerificationContext;
 #[allow(dead_code)]
 #[path = "../../support/tls_actor_fixture.rs"]
 mod public_identity;
@@ -158,7 +170,7 @@ fn connect_clocks(
         policy,
         params,
         fragment,
-        hibana_quic::tls::handshake::CipherPolicy::Default,
+        hibana_tls::handshake::CipherPolicy::Default,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -173,7 +185,7 @@ fn connect_clocks_with_cipher(
     policy: &[u8],
     params: &[u8],
     fragment: usize,
-    cipher: hibana_quic::tls::handshake::CipherPolicy,
+    cipher: hibana_tls::handshake::CipherPolicy,
 ) -> Outcome {
     let mut cb = Buffers::new();
     let mut sb = Buffers::new();
@@ -182,7 +194,7 @@ fn connect_clocks_with_cipher(
     let mut entropy = KernelEntropy;
     let cfg = ClientConfig {
         protocol: Default::default(),
-        version: hibana_quic::quic::kernel::version::Version::V1,
+        version: hibana_quic::quic::imp::kernel::version::Version::V1,
         server_name: "localhost",
         trust_anchors: anchors,
         now: now(),
@@ -210,7 +222,7 @@ fn connect_clocks_with_cipher(
     let mut server = BoundedTls::server_with_tickets_and_policy(
         ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: params,
@@ -432,7 +444,7 @@ fn changed_trust_anchor_or_verification_limits_cannot_reuse_old_offer() {
         let result = BoundedTls::client_resuming(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: changed,
                 now: now(),
@@ -486,7 +498,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     let mut client = BoundedTls::client_resuming(
         ClientConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: now(),
@@ -505,7 +517,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     let mut server = BoundedTls::server_with_tickets(
         ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: SERVER_PARAMS,
@@ -524,7 +536,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     .unwrap();
     let mut hello = [0; 4096];
     let out = client.transmit(&mut hello).unwrap().unwrap();
-    let psk = hibana_quic::tls::wire::parse_client_hello_psk(&hello[..out.len])
+    let psk = hibana_tls::wire::parse_client_hello_psk(&hello[..out.len])
         .unwrap()
         .psk
         .unwrap();
@@ -533,7 +545,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     let error = async_fixture::reject_server_message(&mut server, &hello[..out.len]);
     assert!(matches!(
         error,
-        hibana_quic::tls::handshake::local::Error::Crypto(Failure::Ticket(ticket::Error::Binder))
+        hibana_tls::handshake::local::Error::Crypto(Failure::Ticket(ticket::Error::Binder))
     ));
     assert!(server.last_failure().is_some());
     assert!(!server.has_keys(Level::OneRtt));
@@ -646,7 +658,8 @@ fn transport_binding_is_canonical_excludes_cids_and_rejects_changed_limits() {
 
 #[test]
 fn strict_chacha_ticket_roundtrip_and_policy_mismatch_before_output() {
-    use hibana_quic::tls::handshake::{CipherPolicy, Failure};
+    use hibana_tls::handshake::CipherPolicy;
+    use hibana_tls::handshake::Failure;
     let id = identity();
     let anchors = [trust_anchor_from_der(&CertificateDer::from(id.root.as_slice())).unwrap()];
     let mut slots = [ClientSlot::<SIZE>::empty()];
@@ -704,7 +717,7 @@ fn strict_chacha_ticket_roundtrip_and_policy_mismatch_before_output() {
         let result = BoundedTls::client_resuming_with_policy(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),

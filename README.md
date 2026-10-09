@@ -1,72 +1,84 @@
 # hibana-quic
 
-QUIC v1/v2 and HTTP/3 in Rust, with protocol order and resource handoff expressed
-by [Hibana](https://github.com/hibanaworks/hibana) globals and direct async locals.
-The core is `no_std`, allocation-free and forbids unsafe Rust. Host allocation
-and OS effects live in the separate `hibana-quic-host` crate.
+QUIC v1/v2 and HTTP/3 for Rust, using [Hibana](https://github.com/hibanaworks/hibana)
+to express protocol order and transfer ownership between roles.
+TLS is provided by [hibana-tls](https://github.com/hibanaworks/hibana-tls).
 
-Experimental software: test coverage is not a complete cryptographic proof.
-The latest verified baseline is **5c58cec**: official Neqo/quiche interoperability
-**44/44 twice**, plus runtime, Host, embedded, Clippy and Miri CI. Current local
-reorganization must pass its own checks before inheriting any qualification.
-See [verification and limits](docs/QUALIFICATION.md).
+The core is `no_std`, allocation-free, and forbids unsafe Rust. The separate
+Host crate supplies Linux UDP, a reactor, entropy and allocated buffers.
+This is experimental software; passing interoperability tests does not establish
+complete cryptographic security.
 
-## Read the Hibana program first
+## Try a real transfer
 
-- QUIC handshake: [global](src/quic/global.rs) → [local composition](src/quic/local/mod.rs) → [receive](src/quic/local/receive.rs), [transmit](src/quic/local/transmit.rs), [publication](src/quic/local/publication.rs).
-- Connected QUIC application: [global](src/quic/application/global.rs) → [local composition](src/quic/application/local/mod.rs) → [affine handoff](src/quic/application/local/ownership.rs), [source/ingress/sink](src/quic/application/local/io.rs), [three-way reclaim](src/quic/application/local/reclaim.rs).
-- TLS message ordering: [canonical TLS global](https://github.com/hibanaworks/hibana-tls/blob/99e933efbcb7d164b7f6aa9fc598f240a3772661/src/handshake/global.rs) → [direct TLS locals](https://github.com/hibanaworks/hibana-tls/blob/99e933efbcb7d164b7f6aa9fc598f240a3772661/src/handshake/local.rs).
-
-The first two local entry files contain the actual composed operations and joins,
-not a forwarding controller. Follow `send`, `recv`, and `offer` into their role
-files. Stream buffers, flow/retransmission arithmetic and receipt bookkeeping
-live below [stream/imp](src/quic/stream/imp/mod.rs); packet encoding
-and numeric kernels remain below [kernel](src/quic/kernel/mod.rs). The old
-`quic::application_stream` import is a direct re-export, not another implementation.
-
-## Choose your starting point
-
-- **Run HTTP/3 now:** [build and run the client/server CLI](docs/GETTING-STARTED.md).
-- **Build an application:** [available APIs and the application design](docs/APPLICATION-API.md).
-  The complete ergonomic Hibana-over-network application API is still unfinished.
-- **Read the implementation:** [global → local → mechanism map](docs/ARCHITECTURE.md).
-- **Review safety:** [guarantees](docs/GUARANTEES.md) and
-  [TLS validation](https://github.com/hibanaworks/hibana-tls/blob/99e933efbcb7d164b7f6aa9fc598f240a3772661/SECURITY-VALIDATION.md).
-- **Contribute:** [current work](docs/WORKING-STATUS.md), [CI requirements](CI-REQUIRED.md).
-
-## Crates and ownership
-
-| Crate | Responsibility |
-|---|---|
-| `hibana` | Global projection, endpoint progression and affine communication authority |
-| `hibana-tls` | QUIC-specific TLS, canonical TLS locals, keys and Finished material |
-| `hibana-quic` | QUIC/HTTP/3 globals and locals, bounded transport mechanisms, executor-neutral I/O |
-| `hibana-quic-host` | OS I/O, bounded buffer allocation, file-service effects and the `hq` CLI |
-
-QUIC depends on the immutable owned Hibana/TLS revisions in `Cargo.toml`.
-Third-party reference implementations are confined to the separate test workspace
-and interop tools. They are not production TLS dependencies.
-
-A `global.rs` defines legal order; its locals contain the actual `send`, `recv`,
-`offer` and joins. Numerical code cannot advance that order. Startup supplies
-storage and endpoints rather than running another connection state machine.
-The internal `runtime::carrier` is not a network transport for applications.
-
-## Build and verify
-
-Rust 1.95.0 is pinned. For paired development/ZIPs, keep `hibana-quic/` and the
-pinned `hibana-tls/` checkout adjacent; see [CI instructions](CI-REQUIRED.md).
+You need Linux, Rust 1.95, and a server certificate/key with `DNS:localhost` and
+its trusted CA certificate. From the repository root:
 
 ```sh
-cargo test --locked
-cargo check --locked --lib --target thumbv6m-none-eabi
-cargo test --locked --manifest-path host/Cargo.toml
-cargo test --locked --manifest-path tests/tls-reference/Cargo.toml --all-targets
-python3 tools/ci/check_dependencies.py
-python3 tools/ci/audit_source.py --check
+./examples/http3-transfer.sh chain.pem key.pem ca.pem
 ```
 
-For official interop, run all 22 cases in both directions on the same commit and
-attempt, and inspect `qualification`; selected passing jobs are insufficient.
+The example builds the client/server, transfers `hello.txt` over HTTP/3, waits
+for both processes and compares the file contents. Logs and output are kept in
+the temporary directory printed on success. Port 4433 must be free.
+It never disables certificate or hostname verification.
 
-MIT OR Apache-2.0. [Third-party notices](THIRD_PARTY_NOTICES.md).
+For separate terminals and CLI options, see [Host usage](host/README.md).
+
+## Write an application
+
+Start with [a response handler and borrowed body](examples/response_body.rs):
+
+```sh
+cargo run --locked --example response_body
+```
+
+This small example exercises the application effects without a network. The
+HTTP/3 example above exercises the actual network client/server.
+
+
+- [Host application client/server](host/src/application/local/mod.rs) connect
+  caller-owned request, response-body and receive-sink implementations to the
+  actual QUIC application choreography.
+- [Application effects](src/quic/application/mod.rs) define `ClientRequests`,
+  `StreamSink`, `ServerHandler` and `BodyReader`.
+- [Core I/O contracts](src/io/mod.rs) permit other operating systems and bare-metal
+  adapters. Host Linux support is not a core requirement.
+
+The current application profile is bounded request/response transfer. A general
+bidirectional HTTP/3 application framework is not yet available. The in-process
+Hibana carrier is not a QUIC network transport for arbitrary application globals.
+
+## Find the protocol and its implementation
+
+Every protocol directory puts ordering first, execution second, and computation
+below `imp/`:
+
+| Protocol | Order | Execution | Implementation |
+|---|---|---|---|
+| QUIC handshake | [global.rs](src/quic/global.rs) | [local/](src/quic/local/mod.rs) | [imp/](src/quic/imp/mod.rs) |
+| Application | [global.rs](src/quic/application/global.rs) | [local/](src/quic/application/local/mod.rs) | [imp/](src/quic/application/imp/mod.rs) |
+| Early data | [global.rs](src/quic/early_data/global.rs) | [local/](src/quic/early_data/local/mod.rs) | [imp/](src/quic/early_data/imp/mod.rs) |
+| ECN | [global.rs](src/quic/ecn/global.rs) | [local/](src/quic/ecn/local/mod.rs) | [imp/](src/quic/ecn/imp/mod.rs) |
+| Path validation | [global.rs](src/quic/path/global.rs) | [local/](src/quic/path/local/mod.rs) | [imp/](src/quic/path/imp/mod.rs) |
+| Retry client | [global/client.rs](src/quic/retry/global/client.rs) | [local/](src/quic/retry/local/mod.rs) | [imp/](src/quic/retry/imp/mod.rs) |
+
+Server Retry admission uses the same core [global](src/quic/retry/global.rs)
+with the [Host input/owner/output locals](host/src/retry/local/mod.rs).
+
+`local/mod.rs` contains the composition or direct role entry. The role files
+contain the actual endpoint operations; `imp/` contains buffers, codecs and
+arithmetic. Use these canonical module paths directly. Legacy module aliases are removed.
+
+## Build
+
+```sh
+cargo check --locked --lib
+cargo test --locked
+cargo check --locked --lib --target thumbv6m-none-eabi
+```
+
+For development tests that use the sibling TLS sources, place `hibana-tls/`
+next to `hibana-quic/` at the revision pinned in Cargo.toml.
+
+Licensed under MIT OR Apache-2.0; see LICENSE-MIT and LICENSE-APACHE.

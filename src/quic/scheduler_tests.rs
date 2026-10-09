@@ -38,7 +38,7 @@ fn fixed_connection_preflight_bounds_original_id_without_banning_zero_peer_id() 
         let config = Config {
             local_preferred: None,
             initial_path: None,
-            version: crate::quic::kernel::version::Version::V1,
+            version: crate::quic::imp::kernel::version::Version::V1,
             side: Side::Client,
             local_connection_id: &[],
             original_destination_id: &ids[..length],
@@ -51,7 +51,7 @@ fn fixed_connection_preflight_bounds_original_id_without_banning_zero_peer_id() 
     let valid = Config {
         local_preferred: None,
         initial_path: None,
-        version: crate::quic::kernel::version::Version::V1,
+        version: crate::quic::imp::kernel::version::Version::V1,
         side: Side::Client,
         local_connection_id: &[],
         original_destination_id: &ids[..8],
@@ -64,7 +64,7 @@ fn fixed_connection_preflight_bounds_original_id_without_banning_zero_peer_id() 
         Config {
             local_preferred: None,
             initial_path: None,
-            version: crate::quic::kernel::version::Version::V1,
+            version: crate::quic::imp::kernel::version::Version::V1,
             local_connection_id: &ids,
             ..valid
         }

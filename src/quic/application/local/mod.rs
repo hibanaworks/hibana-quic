@@ -2,6 +2,7 @@
 //! authenticated application admission, ordinary role retirement and close.
 //! No host callback chooses connection phases or owns a replacement FSM.
 mod acknowledgments;
+mod attach;
 mod http3;
 mod io;
 pub(super) mod keys;
@@ -17,17 +18,21 @@ mod early_client;
 pub(super) mod ownership;
 
 use super::*;
-use crate::{
-    runtime::mailbox::Mailbox,
-    quic::publication_gate::{Issuer, Stop},
-    quic::{
-        self, Clock, ConnectionId, DatagramRx, DatagramTx, Side, Storage,
-        application_stream::{self, StreamNumbers},
-        recovery::Recovery,
-        tls::Transcript,
-    },
-    quic::kernel::streams,
-};
+use crate::quic;
+use crate::quic::Clock;
+use crate::quic::ConnectionId;
+use crate::quic::DatagramRx;
+use crate::quic::DatagramTx;
+use crate::quic::Side;
+use crate::quic::Storage;
+use crate::quic::application::imp::stream;
+use crate::quic::application::imp::stream::StreamNumbers;
+use crate::quic::imp::kernel::streams;
+use crate::quic::imp::publication_gate::Issuer;
+use crate::quic::imp::publication_gate::Stop;
+use crate::quic::imp::recovery::Recovery;
+use crate::quic::imp::tls::Transcript;
+use crate::runtime::mailbox::Mailbox;
 use core::cell::RefCell;
 
 /// Run the single connected global with client request and response handlers.
@@ -85,10 +90,10 @@ pub async fn client_early<
     outcomes: &Outcomes,
     requests: &mut impl ClientRequests,
     sink: &mut impl StreamSink,
-    slots: &mut [quic::early_client::RequestSlot],
+    slots: &mut [quic::local::early_client::RequestSlot],
 ) -> Result<Report, Error> {
     let limits = source.remembered_early_limits().ok_or(Error::Binding)?;
-    let mut retained = quic::early_client::Requests::new(
+    let mut retained = quic::local::early_client::Requests::new(
         source.scope(),
         slots,
         limits,
@@ -214,7 +219,7 @@ async fn connected<
     outcomes: &Outcomes,
     source_io: Source<'_, C, H>,
     sink_io: Sink<'_, S>,
-    mut client_early: Option<&mut quic::early_client::Requests<'_, 'scope>>,
+    mut client_early: Option<&mut quic::local::early_client::Requests<'_, 'scope>>,
 ) -> Result<Report, Error> {
     if !matches!(
         (&source_io, setup.config.side),
@@ -242,7 +247,7 @@ async fn connected<
         || buffers.streams.is_empty()
         || buffers.chunks.is_empty()
         || buffers.references.is_empty()
-        || buffers.streams.len() > application_stream::MAX_LIVE_STREAMS
+        || buffers.streams.len() > stream::MAX_LIVE_STREAMS
     {
         return Err(Error::Capacity);
     }
@@ -288,34 +293,38 @@ async fn connected<
     let peer_id = ConnectionId::new(received.material.peer_connection_id())?;
     let accepted_early = if let Some(requests) = client_early.as_deref() {
         match requests.decision(peer.finished())? {
-            crate::quic::early_data::EarlyStatus::Accepted => {
+            crate::quic::early_data::imp::EarlyStatus::Accepted => {
                 requests.validate_accepted_limits(peer.parameters())?;
                 requests.accepted_count()
             }
-            crate::quic::early_data::EarlyStatus::Rejected => 0,
+            crate::quic::early_data::imp::EarlyStatus::Rejected => 0,
             _ => return Err(Error::Binding),
         }
     } else {
         0
     };
-    let peer_parameters = crate::quic::kernel::parameters::Parameters::parse(
+    let peer_parameters = crate::quic::imp::kernel::parameters::Parameters::parse(
         peer.parameters(),
         if config.side == Side::Client {
-            crate::quic::kernel::parameters::Peer::Server
+            crate::quic::imp::kernel::parameters::Peer::Server
         } else {
-            crate::quic::kernel::parameters::Peer::Client
+            crate::quic::imp::kernel::parameters::Peer::Client
         },
         &mut [0; 64],
     )
     .map_err(|_| Error::Binding)?;
     let preferred = peer_parameters
         .get(13)
-        .map(crate::quic::path::preferred::Preferred::parse)
+        .map(crate::quic::path::imp::preferred::Preferred::parse)
         .transpose()
         .map_err(|_| Error::Binding)?;
     let initial_token = peer_parameters
         .get(2)
-        .map(|bytes| bytes.try_into().map(crate::quic::kernel::connection_id::ResetToken::new))
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map(crate::quic::imp::kernel::connection_id::ResetToken::new)
+        })
         .transpose()
         .map_err(|_| Error::Binding)?;
     if peer_id.bytes().is_empty() && initial_token.is_some() {
@@ -326,7 +335,7 @@ async fn connected<
     let peers = peer_ids
         .filter(|_| !peer_id.bytes().is_empty())
         .map(|storage| {
-            crate::quic::path::peer_ids::Peers::new(
+            crate::quic::path::imp::peer_ids::Peers::new(
                 storage,
                 scope,
                 peer_id.bytes(),
@@ -351,7 +360,7 @@ async fn connected<
         buffers.chunks,
         buffers.references,
     )?;
-    let application_stream::Facets {
+    let stream::Facets {
         app,
         mut rx,
         mut tx,
@@ -394,7 +403,7 @@ async fn connected<
         &reclaim_exchange,
     )
     .await?;
-    let paths = crate::quic::path::validation::Paths::new(
+    let paths = crate::quic::path::local::Paths::new(
         config.initial_path,
         config.side,
         local_ids.as_ref().map(|storage| storage.seed),
@@ -402,7 +411,7 @@ async fn connected<
     );
     let ids = local_ids
         .map(|storage| {
-            crate::quic::path::ids::Ids::new(
+            crate::quic::path::imp::ids::Ids::new(
                 storage,
                 scope,
                 config.local_connection_id,
@@ -413,7 +422,7 @@ async fn connected<
         .transpose()
         .map_err(|_| Error::Binding)?;
     let publication_state = transmit::State::new(book_publication, publication, ids, paths, peers);
-    let ecn_exchange = transmit::ecn::Exchange::new();
+    let ecn_exchange = crate::quic::ecn::local::Exchange::new();
 
     let acknowledgments = acknowledgments::Exchange::new();
     let mut request_slots = [const { None }; io::REQUEST_CAPACITY];
@@ -598,8 +607,12 @@ async fn connected<
             &mut reset_owner,
             send_io,
         );
-        let marking =
-            transmit::ecn::owner(&mut roles.ecn_owner, &ecn_exchange, &completion_book, clock);
+        let marking = crate::quic::ecn::local::owner(
+            &mut roles.ecn_owner,
+            &ecn_exchange,
+            &completion_book,
+            clock,
+        );
         let http3_control = http3::owner(
             &mut roles.handshake.initial_owner,
             application_protocol,
@@ -608,7 +621,7 @@ async fn connected<
             &control,
             config.side,
         );
-        let path_validation = crate::quic::path::validation::owner(
+        let path_validation = crate::quic::path::local::owner(
             &mut roles.handshake.initial_event,
             &publication_state.paths,
             clock,
@@ -674,7 +687,8 @@ async fn connected<
             source_collector.as_mut(),
             input_collector.as_mut(),
             delivery_collector.as_mut(),
-        ]).await
+        ])
+        .await
     };
     if let Err(error) = result {
         control.revoke()?;

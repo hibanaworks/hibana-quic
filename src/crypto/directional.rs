@@ -70,7 +70,7 @@ impl<'a> ScopedHandshakeConfirmation<'a> {
     /// Consume the direct connection's actual validated peer-Finished or
     /// authenticated HANDSHAKE_DONE receipt. No caller supplies a replacement scope.
     pub(crate) fn from_connection(
-        confirmation: crate::quic::recovery::HandshakeConfirmed<'a>,
+        confirmation: crate::quic::imp::recovery::HandshakeConfirmed<'a>,
     ) -> Self {
         Self {
             scope: confirmation.scope(),
@@ -92,10 +92,10 @@ impl<'a> ValidatedKeyAck<'a> {
     /// the authenticated receiving epoch. Earlier read keys cannot acknowledge
     /// a later write generation for the key-update barrier.
     pub(crate) fn from_connection_ack(
-        grant: crate::quic::recovery::KeyAcknowledged<'a>,
+        grant: crate::quic::imp::recovery::KeyAcknowledged<'a>,
     ) -> Result<Self, Error> {
         if grant.packet().space
-            != crate::quic::kernel::accounting::PacketNumberSpace::ApplicationData
+            != crate::quic::imp::kernel::accounting::PacketNumberSpace::ApplicationData
             || grant.received_key_generation() < grant.sent_key_generation()
         {
             return Err(Error::KeyUpdateError);

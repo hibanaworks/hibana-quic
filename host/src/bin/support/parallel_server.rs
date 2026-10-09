@@ -35,7 +35,7 @@ impl ticket::ServerTicketStore for TicketAccess<'_, '_> {
     fn seal(
         &mut self,
         token: ticket::IssueToken,
-        psk: hibana_quic::tls::schedule::Secret32,
+        psk: hibana_tls::schedule::Secret32,
         out: &mut [u8],
     ) -> std::result::Result<ticket::IssuedTicket, ticket::Error> {
         self.0
@@ -70,8 +70,8 @@ struct Admission {
     peer: Vec<u8>,
     local: [u8; 8],
     first: Vec<u8>,
-    ecn: Option<hibana_quic::quic::ecn::Codepoint>,
-    new_token: [u8; hibana_quic::quic::kernel::new_token::TOKEN_LEN],
+    ecn: Option<hibana_quic::quic::ecn::imp::Codepoint>,
+    new_token: [u8; hibana_quic::quic::imp::kernel::new_token::TOKEN_LEN],
     receiver: Receiver<BYTES>,
 }
 
@@ -83,8 +83,8 @@ pub async fn run<const S: usize, const T: usize>(
     listen: SocketAddr,
     credentials: (&std::path::Path, &std::path::Path),
     files: &cli::ServerFiles,
-    cipher: hibana_quic::tls::handshake::CipherPolicy,
-    version: hibana_quic::quic::kernel::version::Version,
+    cipher: hibana_tls::handshake::CipherPolicy,
+    version: hibana_quic::quic::imp::kernel::version::Version,
     count: usize,
     idle_timeout_ms: u64,
 ) -> Result<Report> {
@@ -246,7 +246,7 @@ pub async fn run<const S: usize, const T: usize>(
         let mut routes =
             Dispatcher::<BYTES>::new(count, 8).map_err(|e| format!("routes: {e:?}"))?;
         let mut seen: Vec<(Address, Vec<u8>)> = Vec::with_capacity(count);
-        let mut tokens = hibana_quic::quic::kernel::new_token::Issuer::<MAX>::new();
+        let mut tokens = hibana_quic::quic::imp::kernel::new_token::Issuer::<MAX>::new();
         let mut bytes = [0; BYTES];
         loop {
             hibana_quic::runtime::yield_now().await;

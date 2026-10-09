@@ -8,11 +8,10 @@
 //! digitalSignature/serverAuth and the localhost DNS SAN. No runtime trust or
 //! authentication bypass is installed, and no test-time package is required.
 
-use hibana_quic::{
-    tls::certificate::UnixTime,
-    tls::handshake::{SigningKey, Storage},
-};
+use hibana_tls::certificate::UnixTime;
 use hibana_tls::entropy::{Entropy, Unavailable};
+use hibana_tls::handshake::SigningKey;
+use hibana_tls::handshake::Storage;
 use std::time::Duration;
 
 pub const CLIENT_PARAMS: &[u8] = &[4, 1, 42];

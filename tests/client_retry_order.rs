@@ -7,9 +7,9 @@ use hibana::{
     EndpointError,
     runtime::{SessionKitStorage, ids::SessionId},
 };
-use hibana_quic::{
-    quic::retry::client_global as p, runtime::carrier::CarrierStorage, runtime::join2,
-};
+use hibana_quic::quic::retry::global::client as p;
+use hibana_quic::runtime::carrier::CarrierStorage;
+use hibana_quic::runtime::join2;
 #[test]
 fn retry_rekey_is_outside_the_receive_and_publication_rolls() {
     for (retry, repeat) in [(false, false), (true, false), (true, true)] {

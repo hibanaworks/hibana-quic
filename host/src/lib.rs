@@ -21,7 +21,7 @@ pub mod storage;
 #[cfg(target_os = "linux")]
 pub mod entropy;
 
-#[cfg(any(target_os="linux",target_os="macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(unsafe_code)]
 mod os;
 
@@ -32,3 +32,11 @@ pub mod http3;
 /// Host-owned attachment of the canonical QUIC handshake.
 #[cfg(target_os = "linux")]
 pub mod connection;
+
+/// Caller-provided request/body/sink effects on the canonical application graph.
+#[cfg(target_os = "linux")]
+pub mod application;
+
+/// Server Retry admission before connection attachment.
+#[cfg(target_os = "linux")]
+pub mod retry;

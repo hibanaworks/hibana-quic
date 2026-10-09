@@ -802,10 +802,13 @@ use crate::{scoped_tls_fixture as owned_tls_fixture, tls_fixture};
 
 #[test]
 fn actual_tls_finished_and_packet_ownership_do_not_fabricate_quic_update_permission() {
-    use crate::tls::{
-        certificate::{CertificateDer, Limits, trust_anchor_from_der},
-        handshake::{BoundedTls, CipherPolicy, ClientConfig, ServerConfig},
-    };
+    use hibana_tls::certificate::CertificateDer;
+    use hibana_tls::certificate::Limits;
+    use hibana_tls::certificate::trust_anchor_from_der;
+    use hibana_tls::handshake::BoundedTls;
+    use hibana_tls::handshake::CipherPolicy;
+    use hibana_tls::handshake::ClientConfig;
+    use hibana_tls::handshake::ServerConfig;
     for policy in [CipherPolicy::Aes128Only, CipherPolicy::ChaCha20Only] {
         for p256 in [false, true] {
             let root = CertificateDer::from(tls_fixture::ROOT_DER);
@@ -820,7 +823,7 @@ fn actual_tls_finished_and_packet_ownership_do_not_fabricate_quic_update_permiss
             let mut client = BoundedTls::client_with_policy(
                 ClientConfig {
                     protocol: Default::default(),
-                    version: crate::quic::kernel::version::Version::V1,
+                    version: crate::quic::imp::kernel::version::Version::V1,
                     server_name: "localhost",
                     trust_anchors: &anchors,
                     now: tls_fixture::now(),
@@ -836,7 +839,7 @@ fn actual_tls_finished_and_packet_ownership_do_not_fabricate_quic_update_permiss
             .unwrap();
             let config = ServerConfig {
                 protocol: Default::default(),
-                version: crate::quic::kernel::version::Version::V1,
+                version: crate::quic::imp::kernel::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &signer,
                 transport_parameters: tls_fixture::SERVER_PARAMS,

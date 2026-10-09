@@ -1,13 +1,16 @@
 //! Explicit host allocations for one bounded direct-role connection. No file
 //! body is stored here: streams use rolling receive windows and send chunks.
-use hibana_quic::{
-    quic::kernel::streams::{Limits, PacketReference, SendChunk, StreamSlot},
-    quic::{Config, Side, application},
-    tls::buffer::CryptoBuffer,
-};
+use hibana_quic::quic::Config;
+use hibana_quic::quic::Side;
+use hibana_quic::quic::application;
+use hibana_quic::quic::imp::crypto_buffer::CryptoBuffer;
+use hibana_quic::quic::imp::kernel::streams::Limits;
+use hibana_quic::quic::imp::kernel::streams::PacketReference;
+use hibana_quic::quic::imp::kernel::streams::SendChunk;
+use hibana_quic::quic::imp::kernel::streams::StreamSlot;
 /// Datagram capacity shared by the host IO and buffer profile.
 pub const DATAGRAM: usize = 1536;
-pub const STREAMS: usize = hibana_quic::quic::application_stream::MAX_LIVE_STREAMS;
+pub const STREAMS: usize = hibana_quic::quic::application::imp::stream::MAX_LIVE_STREAMS;
 pub const RECEIVE_BYTES: usize = 64 * 1024;
 pub const CLIENT_RECEIVE_BYTES: usize = 1024 * 1024;
 // Keep the original total receive-storage budget. A small known request set
@@ -56,8 +59,8 @@ pub fn local_limits<const RX: usize>(
 }
 pub struct Storage<const RX: usize> {
     protocol: hibana_quic::http3::Protocol,
-    cid_slots: Vec<hibana_quic::quic::kernel::connection_id::LocalCidSlot>,
-    peer_cid_slots: Vec<hibana_quic::quic::kernel::connection_id::PeerCidSlot<4>>,
+    cid_slots: Vec<hibana_quic::quic::imp::kernel::connection_id::LocalCidSlot>,
+    peer_cid_slots: Vec<hibana_quic::quic::imp::kernel::connection_id::PeerCidSlot<4>>,
     cid_seed: hibana_tls::secret::Secret<[u8; 32]>,
     initial: Vec<u8>,
     handshake: Vec<u8>,
@@ -87,9 +90,9 @@ impl<const RX: usize> Storage<RX> {
         }
         Ok(Self {
             protocol,
-            cid_slots: vec![hibana_quic::quic::kernel::connection_id::LocalCidSlot::EMPTY; 16],
+            cid_slots: vec![hibana_quic::quic::imp::kernel::connection_id::LocalCidSlot::EMPTY; 16],
             peer_cid_slots: (0..16)
-                .map(|_| hibana_quic::quic::kernel::connection_id::PeerCidSlot::EMPTY)
+                .map(|_| hibana_quic::quic::imp::kernel::connection_id::PeerCidSlot::EMPTY)
                 .collect(),
             cid_seed,
             initial: vec![0; 8192],
@@ -109,11 +112,11 @@ impl<const RX: usize> Storage<RX> {
         local_idle_timeout_ms: u64,
     ) -> Result<application::Setup<'a, RX, CHUNK_BYTES>, String> {
         Ok(application::Setup {
-            peer_ids: Some(hibana_quic::quic::path::peer_ids::Storage {
+            peer_ids: Some(hibana_quic::quic::path::imp::peer_ids::Storage {
                 slots: &mut self.peer_cid_slots,
                 active_limit: 2,
             }),
-            local_ids: Some(hibana_quic::quic::path::ids::Storage {
+            local_ids: Some(hibana_quic::quic::path::imp::ids::Storage {
                 slots: &mut self.cid_slots,
                 seed: &self.cid_seed,
             }),
@@ -144,28 +147,28 @@ impl<const RX: usize> Storage<RX> {
 /// connected quarantine owner; it is never substituted by an unbacked limit.
 pub struct EarlyStorage {
     bytes: Vec<u8>,
-    ends: Vec<hibana_quic::quic::early_wire::PacketEnd>,
-    pub slots: Vec<hibana_quic::quic::early_data::QuarantineSlot<RECEIVE_BYTES>>,
+    ends: Vec<hibana_quic::quic::imp::early_wire::PacketEnd>,
+    pub slots: Vec<hibana_quic::quic::early_data::imp::QuarantineSlot<RECEIVE_BYTES>>,
 }
 impl EarlyStorage {
     pub fn new() -> Self {
         Self {
             bytes: vec![0; STREAMS * DATAGRAM],
-            ends: vec![hibana_quic::quic::early_wire::PacketEnd::EMPTY; STREAMS],
+            ends: vec![hibana_quic::quic::imp::early_wire::PacketEnd::EMPTY; STREAMS],
             slots: (0..STREAMS)
-                .map(|_| hibana_quic::quic::early_data::QuarantineSlot::EMPTY)
+                .map(|_| hibana_quic::quic::early_data::imp::QuarantineSlot::EMPTY)
                 .collect(),
         }
     }
-    pub fn policy() -> hibana_quic::quic::early_data::ServerPolicy {
-        hibana_quic::quic::early_data::ServerPolicy::BufferedReplaySafeRequests {
+    pub fn policy() -> hibana_quic::quic::early_data::imp::ServerPolicy {
+        hibana_quic::quic::early_data::imp::ServerPolicy::BufferedReplaySafeRequests {
             max_bytes: STREAMS * RECEIVE_BYTES,
             max_streams: STREAMS,
         }
     }
     pub fn borrow(&mut self) -> application::EarlyServer<'_, RECEIVE_BYTES> {
         application::EarlyServer {
-            packets: hibana_quic::quic::early_wire::PendingPackets::new(
+            packets: hibana_quic::quic::imp::early_wire::PendingPackets::new(
                 &mut self.bytes,
                 &mut self.ends,
             ),

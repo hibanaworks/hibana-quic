@@ -1,19 +1,27 @@
 //! Independent cross-peer PSK_DHE tests using pinned rustls QUIC directly.
 //! The rustls peer allocates; bounded zero-allocation evidence is in resumption.rs.
-use hibana_quic::{
-    tls::certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
-    tls::handshake::{
-        BoundedTls, ClientConfig, ClientResumption, ServerConfig, ServerResumption, SigningKey,
-        Storage,
-    },
-    tls::ticket::{
-        self as ticket, Binding, ClientCache, ClientSlot, ReplayPolicy, TicketKey,
-        VerificationContext,
-    },
-    tls::{Level, Provider},
-};
 use hibana_quic_host::entropy::KernelEntropy;
 use hibana_quic_reference_tls::rustls;
+use hibana_tls::certificate::CertificateDer;
+use hibana_tls::certificate::Limits;
+use hibana_tls::certificate::UnixTime;
+use hibana_tls::certificate::trust_anchor_from_der;
+use hibana_tls::endpoint::Level;
+use hibana_tls::endpoint::Provider;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::ClientConfig;
+use hibana_tls::handshake::ClientResumption;
+use hibana_tls::handshake::ServerConfig;
+use hibana_tls::handshake::ServerResumption;
+use hibana_tls::handshake::SigningKey;
+use hibana_tls::handshake::Storage;
+use hibana_tls::ticket;
+use hibana_tls::ticket::Binding;
+use hibana_tls::ticket::ClientCache;
+use hibana_tls::ticket::ClientSlot;
+use hibana_tls::ticket::ReplayPolicy;
+use hibana_tls::ticket::TicketKey;
+use hibana_tls::ticket::VerificationContext;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
 use rustls::quic::{Connection, Version};
 use std::{sync::Arc, time::Duration};
@@ -149,7 +157,7 @@ fn bounded_client_resumes_with_rustls_server() {
         let mut buffers = Buffers::new();
         let cfg = ClientConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: now(),
@@ -228,7 +236,7 @@ fn rustls_client_resumes_with_bounded_server_including_real_group_hrr() {
             let mut entropy = KernelEntropy;
             let server = ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
                 transport_parameters: SERVER_PARAMS,

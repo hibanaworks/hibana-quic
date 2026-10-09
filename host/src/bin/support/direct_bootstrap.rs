@@ -1,12 +1,13 @@
 //! Host allocation and endpoint attachment for one direct Hibana global.
 use super::direct_wire::{HostClock, Receive, Transmit};
 use super::{application_storage, host_files};
-use hibana::runtime::{SessionKitStorage, ids::SessionId};
-use hibana_quic::{
-    quic::publication_gate::{Issuer, Stop},
-    quic::{Config, Side, application, recovery::Recovery, tls::Transcript},
-    runtime::carrier::CarrierStorage,
-};
+use hibana_quic::quic::Config;
+use hibana_quic::quic::Side;
+use hibana_quic::quic::application;
+use hibana_quic::quic::imp::publication_gate::Issuer;
+use hibana_quic::quic::imp::publication_gate::Stop;
+use hibana_quic::quic::imp::recovery::Recovery;
+use hibana_quic::quic::imp::tls::Transcript;
 pub use hibana_quic_host::connection::handshake;
 pub use hibana_quic_host::connection::{DATAGRAM, PARAMETERS};
 
@@ -18,7 +19,7 @@ pub enum Files {
 }
 
 impl Files {
-    pub fn local_limits(&self) -> hibana_quic::quic::kernel::streams::Limits {
+    pub fn local_limits(&self) -> hibana_quic::quic::imp::kernel::streams::Limits {
         match self {
             Self::Client(client) => {
                 if application_storage::client_uses_large_window(client.count) {
@@ -61,188 +62,63 @@ pub async fn files<'scope, const S: usize, const T: usize>(
     book: &mut Recovery<'scope, DATAGRAM>,
     generation: u64,
     files: &mut Files,
-    mut early: Option<application_storage::EarlyStorage>,
+    early: Option<application_storage::EarlyStorage>,
     key_update_target: u64,
     server_token: Option<&[u8]>,
     idle_timeout_ms: u64,
 ) -> Result<application::Report, String> {
-    let programs = application::global::programs();
-    // Resolver states precede the kit so all endpoint borrows expire first.
-    let outcomes = application::Outcomes::new();
-    let queues = Box::new(CarrierStorage::<1, 32, 128>::new());
-    let mut slab = vec![0; 256 * 1024];
-    let mut kit_storage = Box::new(SessionKitStorage::uninit());
-    let kit = kit_storage.init();
-    let session = SessionId::new(generation as u32);
-    let rendezvous = kit
-        .rendezvous(
-            &mut slab,
-            queues
-                .bind(session)
-                .map_err(|e| format!("carrier: {e:?}"))?,
-        )
-        .map_err(|e| format!("rendezvous: {e:?}"))?;
-
-    let mut roles = application::Roles::attach(&rendezvous, session, &programs, &outcomes)
-        .map_err(|e| format!("application attachment: {e:?}"))?;
-    let statistics = receive.statistics;
-    let observed_clock = super::direct_wire::ObservedClock {
-        physical: clock,
-        session: generation as u32,
-    };
-    let mut application = Box::pin(async {
-        match files {
-            Files::Client(client) => {
-                macro_rules! run_client {
-                    ($rx:expr) => {{
-                        let mut storage = application_storage::Storage::<$rx>::new(
-                            application_storage::capacity(client.protocol, client.count),
-                            client.protocol,
-                        )?;
-                        let mut setup = storage.setup(config, idle_timeout_ms)?;
-                        setup.key_update_target = key_update_target;
-                        if source.early_status()
-                            == hibana_quic::quic::early_data::EarlyStatus::Offered
-                        {
-                            let mut early_slots = (0..client.count)
-                                .map(|_| hibana_quic::quic::early_client::RequestSlot::EMPTY)
-                                .collect::<Vec<_>>();
-                            Box::pin(application::client_early::<
-                                DATAGRAM,
-                                PARAMETERS,
-                                $rx,
-                                { application_storage::CHUNK_BYTES },
-                            >(
-                                &mut roles,
-                                source,
-                                setup,
-                                receive,
-                                transmit,
-                                &observed_clock,
-                                issuer,
-                                stop,
-                                book,
-                                &outcomes,
-                                &mut client.requests,
-                                &mut client.downloads,
-                                &mut early_slots,
-                            ))
-                            .await
-                        } else {
-                            Box::pin(application::client::<
-                                DATAGRAM,
-                                PARAMETERS,
-                                $rx,
-                                { application_storage::CHUNK_BYTES },
-                            >(
-                                &mut roles,
-                                source,
-                                setup,
-                                receive,
-                                transmit,
-                                &observed_clock,
-                                issuer,
-                                stop,
-                                book,
-                                &outcomes,
-                                &mut client.requests,
-                                &mut client.downloads,
-                            ))
-                            .await
-                        }
-                    }};
-                }
-                if application_storage::client_uses_large_window(client.count) {
-                    run_client!({ application_storage::CLIENT_RECEIVE_BYTES })
-                } else {
-                    run_client!({ application_storage::RECEIVE_BYTES })
-                }
-            }
-            Files::Server(server) => {
-                let mut storage =
-                    application_storage::Storage::<{ application_storage::RECEIVE_BYTES }>::new(
-                        application_storage::capacity(
-                            server.protocol,
-                            application_storage::server_capacity(server.completion_limit),
-                        ),
-                        server.protocol,
-                    )?;
-                let mut setup = storage.setup(config, idle_timeout_ms)?;
-                setup.server_token = server_token;
-                setup.early = early
-                    .as_mut()
-                    .map(application_storage::EarlyStorage::borrow);
-                Box::pin(application::server::<
-                    DATAGRAM,
-                    PARAMETERS,
-                    { application_storage::RECEIVE_BYTES },
-                    { application_storage::CHUNK_BYTES },
+    match files {
+        Files::Client(client) => {
+            let profile = hibana_quic_host::application::ClientProfile {
+                generation,
+                protocol: client.protocol,
+                stream_capacity: application_storage::capacity(client.protocol, client.count),
+                early_request_capacity: client.count,
+                key_update_target,
+                idle_timeout_ms,
+            };
+            if application_storage::client_uses_large_window(client.count) {
+                hibana_quic_host::application::client::<
+                    { application_storage::CLIENT_RECEIVE_BYTES },
+                    S,
+                    T,
                 >(
-                    &mut roles,
                     source,
-                    setup,
+                    config,
                     receive,
                     transmit,
-                    &observed_clock,
+                    clock,
                     issuer,
                     stop,
                     book,
-                    &outcomes,
-                    server,
-                ))
+                    profile,
+                    &mut client.requests,
+                    &mut client.downloads,
+                )
                 .await
+            } else {
+                hibana_quic_host::application::client::<{application_storage::RECEIVE_BYTES}, S, T>(
+                    source, config, receive, transmit, clock, issuer, stop, book,
+                    profile, &mut client.requests, &mut client.downloads,
+                ).await
             }
         }
-        .map_err(|e| format!("direct application: {e:?}"))
-    });
-
-    // Read-only diagnostic sampling at the host executor boundary. This never
-    // wakes a task or changes an endpoint, deadline, or success condition.
-    let diagnostics = std::env::var("HIBANA_QUIC_DIAGNOSTICS").as_deref() == Ok("1");
-    let started = std::time::Instant::now();
-    let mut sampled_at = None;
-    let mut traced_through = None;
-    let mut trace_records = 0u16;
-    let result = std::future::poll_fn(|cx| {
-        let result = std::future::Future::poll(application.as_mut(), cx);
-        if diagnostics && (result.is_ready() || sampled_at.is_none_or(|at: std::time::Instant| at.elapsed() >= std::time::Duration::from_secs(1))) {
-            sampled_at = Some(std::time::Instant::now());
-            // A bounded sample of preceding committed operations distinguishes
-            // Flight from Idle without adding protocol state or private bytes.
-            for event in rendezvous.tap().filter(|event| matches!(event.id(),
-                hibana::runtime::tap::ENDPOINT_SEND | hibana::runtime::tap::ENDPOINT_RECV | hibana::runtime::tap::ENDPOINT_SESSION)) {
-                if traced_through.is_none_or(|ordinal| event.ts() > ordinal) {
-                    traced_through = Some(event.ts());
-                    if trace_records < 512 {
-                        eprintln!("connection-trace session={} ordinal={} event={} metadata={}", event.arg0(), event.ts(), event.id(), event.arg1());
-                        trace_records += 1;
-                    } else if trace_records == 512 {
-                        eprintln!("connection-trace-capacity session={}", event.arg0());
-                        trace_records += 1;
-                    }
-                }
-            }
-            if let Some(event) = rendezvous.tap().filter(|event| matches!(event.id(),
-                hibana::runtime::tap::ENDPOINT_SEND | hibana::runtime::tap::ENDPOINT_RECV | hibana::runtime::tap::ENDPOINT_SESSION)).last() {
-                eprintln!("connection-frontier session={} ordinal={} event={} metadata={} finished={} elapsed_ms={} sent={} received={}",
-                    event.arg0(), event.ts(), event.id(), event.arg1(), result.is_ready(), started.elapsed().as_millis(), statistics.sent.get(), statistics.received.get());
-            }
-        }
-        result
-    }).await;
-    drop(application);
-    if (result.is_err()
-        || result
-            .as_ref()
-            .is_ok_and(|report| report.termination == application::Termination::IdleExpired))
-        && std::env::var("HIBANA_QUIC_DIAGNOSTICS").as_deref() == Ok("1")
-    {
-        for event in rendezvous.tap() {
-            eprintln!("direct Hibana runtime: {event:?}");
+        Files::Server(server) => {
+            let profile = hibana_quic_host::application::ServerProfile {
+                generation,
+                protocol: server.protocol,
+                stream_capacity: application_storage::capacity(
+                    server.protocol,
+                    application_storage::server_capacity(server.completion_limit),
+                ),
+                server_token,
+                idle_timeout_ms,
+            };
+            hibana_quic_host::application::server::<S, T>(
+                source, config, receive, transmit, clock, issuer, stop, book, profile, server,
+                early,
+            )
+            .await
         }
     }
-    if result.is_ok() && queues.queued() != 0 {
-        return Err("connected roles left queued carrier frames".into());
-    }
-    result
 }

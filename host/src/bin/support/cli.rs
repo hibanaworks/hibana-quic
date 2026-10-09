@@ -1,5 +1,5 @@
 use super::host_files::{MAX_REQUESTS, Request};
-use hibana_quic::tls::handshake::CipherPolicy;
+use hibana_tls::handshake::CipherPolicy;
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
 pub const USAGE: &str = "Direct Hibana QUIC v1/v2 / hq-interop or h3\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi]\n\nOne connection, two ticket-resuming connections with --session resume, or one full connection per request with --session multi (server: --connections 1..64); at most 4096 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
 #[derive(Debug)]
@@ -16,7 +16,7 @@ pub struct ServerFiles {
 pub enum Options {
     Client {
         protocol: hibana_quic::http3::Protocol,
-        version: hibana_quic::quic::kernel::version::Version,
+        version: hibana_quic::quic::imp::kernel::version::Version,
         connect: SocketAddr,
         server_name: String,
         ca: PathBuf,
@@ -31,7 +31,7 @@ pub enum Options {
     Server {
         preferred_port: Option<u16>,
         protocol: hibana_quic::http3::Protocol,
-        version: hibana_quic::quic::kernel::version::Version,
+        version: hibana_quic::quic::imp::kernel::version::Version,
         listen: SocketAddr,
         cert: PathBuf,
         key: PathBuf,
@@ -105,8 +105,8 @@ pub fn options(args: &[String]) -> Result<Options> {
         _ => return Err("--http must be hq or 3; HTTP/3 requires file mode".into()),
     };
     let version = match flags.remove("--version").unwrap_or("1") {
-        "1" => hibana_quic::quic::kernel::version::Version::V1,
-        "2" => hibana_quic::quic::kernel::version::Version::V2,
+        "1" => hibana_quic::quic::imp::kernel::version::Version::V1,
+        "2" => hibana_quic::quic::imp::kernel::version::Version::V2,
         _ => return Err("--version must be 1 or 2".into()),
     };
     let session = flags.remove("--session").unwrap_or("single");
@@ -281,7 +281,7 @@ pub fn options(args: &[String]) -> Result<Options> {
         }
         _ => return Err(USAGE.into()),
     };
-    if version == hibana_quic::quic::kernel::version::Version::V2
+    if version == hibana_quic::quic::imp::kernel::version::Version::V2
         && matches!(
             &result,
             Options::Client { early: true, .. }

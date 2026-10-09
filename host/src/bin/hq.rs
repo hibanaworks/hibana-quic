@@ -17,27 +17,38 @@ use hibana_quic_host::http3 as http3_files;
 mod parallel_server;
 #[path = "../pem.rs"]
 mod pem;
-#[path = "support/retry_admission.rs"]
-mod retry_admission;
 use cli::{Options, USAGE, options};
 use direct_wire::{
     HostClock, HostReactor, HostSocket, Receive, Statistics, Transmit, before_deadline,
 };
+use hibana_quic::crypto::directional::ApplicationKeyScope;
 use hibana_quic::entropy::Entropy;
-use hibana_quic::{
-    crypto::directional::ApplicationKeyScope,
-    quic::kernel::packet::{Header, LongType, PacketIter, encode_varint},
-    quic::path::Address,
-    quic::publication_gate::PublicationGate,
-    quic::{Config, Side, application, recovery::Recovery, tls::Transcript},
-    tls::certificate::{Limits, UnixTime, trust_anchor_from_der},
-    tls::handshake::{
-        BoundedTls, ClientConfig, ClientEarlyData, ClientResumption, ServerConfig,
-        ServerResumption, SigningKey, Storage as TlsStorage,
-    },
-    tls::ticket::{self as ticket, TicketClock},
-};
+use hibana_quic::quic::Config;
+use hibana_quic::quic::Side;
+use hibana_quic::quic::application;
+use hibana_quic::quic::imp::kernel::packet::Header;
+use hibana_quic::quic::imp::kernel::packet::LongType;
+use hibana_quic::quic::imp::kernel::packet::PacketIter;
+use hibana_quic::quic::imp::kernel::packet::encode_varint;
+use hibana_quic::quic::imp::publication_gate::PublicationGate;
+use hibana_quic::quic::imp::recovery::Recovery;
+use hibana_quic::quic::imp::tls::Transcript;
+use hibana_quic::quic::path::Address;
 use hibana_quic_host::entropy::KernelEntropy;
+use hibana_quic_host::retry::local as retry_admission;
+use hibana_tls::certificate::Limits;
+use hibana_tls::certificate::UnixTime;
+use hibana_tls::certificate::trust_anchor_from_der;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::ClientConfig;
+use hibana_tls::handshake::ClientEarlyData;
+use hibana_tls::handshake::ClientResumption;
+use hibana_tls::handshake::ServerConfig;
+use hibana_tls::handshake::ServerResumption;
+use hibana_tls::handshake::SigningKey;
+use hibana_tls::handshake::Storage as TlsStorage;
+use hibana_tls::ticket;
+use hibana_tls::ticket::TicketClock;
 use pem::PrivateKeyDer;
 use std::{
     net::{SocketAddr, UdpSocket},
@@ -53,15 +64,15 @@ fn random<const N: usize>() -> Result<[u8; N]> {
     Ok(bytes)
 }
 fn parameters(
-    version: hibana_quic::quic::kernel::version::Version,
+    version: hibana_quic::quic::imp::kernel::version::Version,
     local: &[u8],
     original: Option<&[u8]>,
-    application_limits: Option<hibana_quic::quic::kernel::streams::Limits>,
+    application_limits: Option<hibana_quic::quic::imp::kernel::streams::Limits>,
     retry_source: Option<&[u8]>,
     idle_timeout_ms: u64,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    if version == hibana_quic::quic::kernel::version::Version::V2 {
+    if version == hibana_quic::quic::imp::kernel::version::Version::V2 {
         let chosen = if original.is_some() {
             version.wire()
         } else {
@@ -319,7 +330,7 @@ async fn connected<const S: usize, const T: usize>(
     address: Address,
     config: Config<'_>,
     tls: BoundedTls<'_, '_>,
-    first: Option<(&[u8], Option<hibana_quic::quic::ecn::Codepoint>)>,
+    first: Option<(&[u8], Option<hibana_quic::quic::ecn::imp::Codepoint>)>,
     mut files: Option<direct_bootstrap::Files>,
     early: Option<application_storage::EarlyStorage>,
     key_update_target: u64,
@@ -519,14 +530,14 @@ async fn respond_unsupported_version<const S: usize, const T: usize>(
         reply[end..end + destination_id.len()].copy_from_slice(destination_id);
         end += destination_id.len();
         reply[end..end + 4]
-            .copy_from_slice(&hibana_quic::quic::kernel::packet::QUIC_V1.to_be_bytes());
+            .copy_from_slice(&hibana_quic::quic::imp::kernel::packet::QUIC_V1.to_be_bytes());
         end += 4;
         if end <= received_len.saturating_mul(3) {
             socket
                 .send_to(
                     &reply[..end],
                     source,
-                    hibana_quic::quic::ecn::Codepoint::NotEct,
+                    hibana_quic::quic::ecn::imp::Codepoint::NotEct,
                 )
                 .await
                 .map_err(|error| format!("Version Negotiation: {error}"))?;
@@ -534,49 +545,7 @@ async fn respond_unsupported_version<const S: usize, const T: usize>(
     }
     Ok(true)
 }
-/// Stateless integrity check before committing routing identities or a worker.
-/// Initial keys are public: this is not TLS peer authentication. The untouched
-/// datagram still enters the ordinary Hibana receive/authentication contract.
-fn initial_integrity(packet: &hibana_quic::quic::kernel::packet::Packet<'_>) -> Option<()> {
-    let Header::Long {
-        kind: LongType::Initial,
-        destination_id,
-        packet_number_offset,
-        ..
-    } = packet.header
-    else {
-        return None;
-    };
-    if packet.bytes.len() > direct_bootstrap::DATAGRAM {
-        return None;
-    }
-    let key = hibana_quic::crypto::initial_keys(destination_id)
-        .ok()?
-        .client;
-    let mut bytes = packet.bytes.to_vec();
-    let pn_len = key
-        .unprotect_header(&mut bytes, packet_number_offset)
-        .ok()?;
-    let (truncated, _) = hibana_quic::quic::kernel::packet::decode_truncated_packet_number(
-        bytes[0],
-        bytes.get(packet_number_offset..packet_number_offset.checked_add(pn_len)?)?,
-    )
-    .ok()?;
-    let pn =
-        hibana_quic::quic::kernel::packet::restore_packet_number(truncated, pn_len as u8, None)
-            .ok()?;
-    let first = bytes[0];
-    let (aad, ciphertext) = bytes.split_at_mut(packet_number_offset + pn_len);
-    key.open(
-        pn,
-        aad,
-        ciphertext,
-        &mut hibana_quic::crypto::IntegrityBudget::new(),
-    )
-    .ok()?;
-    hibana_quic::quic::kernel::packet::validate_reserved_bits(first).ok()?;
-    Some(())
-}
+use hibana_quic_host::retry::imp::initial_integrity;
 
 async fn admit_initial<const S: usize, const T: usize>(
     socket: &HostSocket<'_, S, T>,
@@ -586,7 +555,7 @@ async fn admit_initial<const S: usize, const T: usize>(
     Vec<u8>,
     Vec<u8>,
     usize,
-    Option<hibana_quic::quic::ecn::Codepoint>,
+    Option<hibana_quic::quic::ecn::imp::Codepoint>,
 )> {
     loop {
         // Every rejection returns through this guaranteed Pending yield,
@@ -791,7 +760,7 @@ async fn run_async<const S: usize, const T: usize>(
             let anchors = roots
                 .iter()
                 .map(|root| {
-                    trust_anchor_from_der(&hibana_quic::tls::certificate::CertificateDer::from(
+                    trust_anchor_from_der(&hibana_tls::certificate::CertificateDer::from(
                         root.as_ref(),
                     ))
                 })
@@ -939,8 +908,8 @@ async fn run_async<const S: usize, const T: usize>(
                     let context = ticket::VerificationContext::new(&anchors, Limits::default())
                         .map_err(|e| format!("ticket trust: {e:?}"))?;
                     let suites: &[u16] = match cipher {
-                        hibana_quic::tls::handshake::CipherPolicy::Aes128Only => &[0x1301],
-                        hibana_quic::tls::handshake::CipherPolicy::ChaCha20Only => &[0x1303],
+                        hibana_tls::handshake::CipherPolicy::Aes128Only => &[0x1301],
+                        hibana_tls::handshake::CipherPolicy::ChaCha20Only => &[0x1303],
                         _ => &[0x1301, 0x1303],
                     };
                     for suite in suites {
@@ -1022,7 +991,7 @@ async fn run_async<const S: usize, const T: usize>(
                     .map_err(|e| format!("listen address: {e}"))?
             );
             let mut replay = [const { ticket::ReplaySlot::empty() }; 8];
-            let mut early_replay = hibana_quic::quic::early_data::ReplayStorage::<64>::new();
+            let mut early_replay = hibana_quic::quic::early_data::imp::ReplayStorage::<64>::new();
             let mut tickets = if early {
                 ticket::TicketKey::generate_with_early_replay(
                     &mut KernelEntropy,
@@ -1042,10 +1011,10 @@ async fn run_async<const S: usize, const T: usize>(
             let mut entropy = KernelEntropy;
             let mut retry_tokens = if require_retry {
                 Some(
-                    hibana_quic::quic::retry::RetryTokens::<64>::generate(
+                    hibana_quic::quic::retry::imp::RetryTokens::<64>::generate(
                         &mut entropy,
                         u32::from_be_bytes(random::<4>()?),
-                        hibana_quic::quic::retry::DEFAULT_TOKEN_LIFETIME_US,
+                        hibana_quic::quic::retry::imp::DEFAULT_TOKEN_LIFETIME_US,
                     )
                     .map_err(|e| format!("Retry issuer: {e:?}"))?,
                 )
@@ -1103,7 +1072,7 @@ async fn run_async<const S: usize, const T: usize>(
                     .map(|port| -> Result<_> {
                         let mut target = address.local;
                         target.set_port(port);
-                        Ok(hibana_quic::quic::path::preferred::Preferred {
+                        Ok(hibana_quic::quic::path::imp::preferred::Preferred {
                             ipv4: match target {
                                 SocketAddr::V4(a) => Some(a),
                                 _ => None,
@@ -1112,10 +1081,11 @@ async fn run_async<const S: usize, const T: usize>(
                                 SocketAddr::V6(a) => Some(a),
                                 _ => None,
                             },
-                            cid:
-                                hibana_quic::quic::kernel::connection_id::Cid::new(&random::<8>()?)
-                                    .map_err(|e| format!("preferred CID: {e:?}"))?,
-                            token: hibana_quic::quic::kernel::connection_id::ResetToken::new(
+                            cid: hibana_quic::quic::imp::kernel::connection_id::Cid::new(
+                                &random::<8>()?,
+                            )
+                            .map_err(|e| format!("preferred CID: {e:?}"))?,
+                            token: hibana_quic::quic::imp::kernel::connection_id::ResetToken::new(
                                 random::<16>()?,
                             ),
                         })
@@ -1147,7 +1117,7 @@ async fn run_async<const S: usize, const T: usize>(
                 };
                 let early_storage = early.then(application_storage::EarlyStorage::new);
                 let tls = if let Some(storage) = early_storage.as_ref() {
-                    let early_config = hibana_quic::tls::handshake::ServerEarlyData::buffered::<
+                    let early_config = hibana_tls::handshake::ServerEarlyData::buffered::<
                         { application_storage::RECEIVE_BYTES },
                     >(
                         u64::try_from(connection_index + 1)
@@ -1155,7 +1125,7 @@ async fn run_async<const S: usize, const T: usize>(
                         application_storage::EarlyStorage::policy(),
                         &parameters,
                         storage.slots.len(),
-                        hibana_quic::quic::early_data::EarlyFreshness::new(10000)
+                        hibana_quic::quic::early_data::imp::EarlyFreshness::new(10000)
                             .map_err(|e| format!("early freshness: {e:?}"))?,
                     )
                     .map_err(|e| format!("early capacity: {e:?}"))?;
@@ -1302,13 +1272,14 @@ mod admission_tests {
 
     #[test]
     fn requested_idle_budget_matches_wire_and_application_setup() {
-        use hibana_quic::quic::kernel::parameters::{Parameters, Peer};
+        use hibana_quic::quic::imp::kernel::parameters::Parameters;
+        use hibana_quic::quic::imp::kernel::parameters::Peer;
         for side in [Side::Client, Side::Server] {
             for idle_timeout_ms in [30_000, 180_000] {
                 let config = Config {
                     local_preferred: None,
                     initial_path: None,
-                    version: hibana_quic::quic::kernel::version::Version::V1,
+                    version: hibana_quic::quic::imp::kernel::version::Version::V1,
                     side,
                     local_connection_id: b"local001",
                     original_destination_id: b"original",
@@ -1344,7 +1315,7 @@ mod admission_tests {
     #[test]
     fn damaged_initial_source_id_cannot_become_the_connection_identity() {
         let mut bytes = [0; direct_bootstrap::DATAGRAM];
-        let header = hibana_quic::quic::kernel::packet::LongHeader {
+        let header = hibana_quic::quic::imp::kernel::packet::LongHeader {
             kind: LongType::Initial,
             destination_id: b"original",
             source_id: b"client01",
@@ -1352,8 +1323,9 @@ mod admission_tests {
             packet_number: 0,
             packet_number_len: 4,
         };
-        let hlen = hibana_quic::quic::kernel::packet::encode_long_header(&header, 1176, &mut bytes)
-            .unwrap();
+        let hlen =
+            hibana_quic::quic::imp::kernel::packet::encode_long_header(&header, 1176, &mut bytes)
+                .unwrap();
         let mut key = hibana_quic::crypto::initial_keys(b"original")
             .unwrap()
             .client;
@@ -1386,7 +1358,7 @@ mod admission_tests {
         else {
             panic!("the following intact Initial was not admitted");
         };
-        assert_eq!(ecn, Some(hibana_quic::quic::ecn::Codepoint::NotEct));
+        assert_eq!(ecn, Some(hibana_quic::quic::ecn::imp::Codepoint::NotEct));
         assert_eq!(original, b"original");
         assert_eq!(source, b"client01");
         assert_eq!(len, hlen + 1176);
@@ -1429,7 +1401,7 @@ mod admission_tests {
                 assert_eq!(source_id, b"dest");
                 assert_eq!(
                     versions.iter().collect::<Vec<_>>(),
-                    [hibana_quic::quic::kernel::packet::QUIC_V1]
+                    [hibana_quic::quic::imp::kernel::packet::QUIC_V1]
                 );
             }
             other => panic!("unexpected version selection reply: {other:?}"),

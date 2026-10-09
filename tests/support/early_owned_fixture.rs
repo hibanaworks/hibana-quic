@@ -2,24 +2,32 @@
 //! Genuine ticket/binder/ECDHE/Finished inputs for isolated early-owner tests.
 //! Test credentials are public; no production receipt constructor is exposed.
 use crate::{scoped_tls_fixture as driver, tls_fixture as fixture};
-use hibana_quic::{
-    crypto::directional::ApplicationKeyScope,
-    quic::{
-        early_data::{EarlyFreshness, EarlyStatus, ReplayStorage, ServerPolicy},
-        kernel::version::Version,
-    },
-    tls::{
-        certificate::{CertificateDer, Limits, trust_anchor_from_der},
-        handshake::{
-            BoundedTls, CipherPolicy, ClientConfig, ClientEarlyData, ClientResumption,
-            ServerConfig, ServerEarlyData, ServerResumption,
-            key_source::{Admission, FinishedAuthenticated},
-        },
-        ticket::{
-            self, Binding, ClientCache, ClientSlot, ReplayPolicy, TicketKey, VerificationContext,
-        },
-    },
-};
+use hibana_quic::crypto::directional::ApplicationKeyScope;
+use hibana_quic::quic::early_data::imp::EarlyFreshness;
+use hibana_quic::quic::early_data::imp::EarlyStatus;
+use hibana_quic::quic::early_data::imp::ReplayStorage;
+use hibana_quic::quic::early_data::imp::ServerPolicy;
+use hibana_quic::quic::imp::kernel::version::Version;
+use hibana_tls::certificate::CertificateDer;
+use hibana_tls::certificate::Limits;
+use hibana_tls::certificate::trust_anchor_from_der;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::CipherPolicy;
+use hibana_tls::handshake::ClientConfig;
+use hibana_tls::handshake::ClientEarlyData;
+use hibana_tls::handshake::ClientResumption;
+use hibana_tls::handshake::ServerConfig;
+use hibana_tls::handshake::ServerEarlyData;
+use hibana_tls::handshake::ServerResumption;
+use hibana_tls::handshake::local::keys::Admission;
+use hibana_tls::handshake::local::keys::FinishedAuthenticated;
+use hibana_tls::ticket;
+use hibana_tls::ticket::Binding;
+use hibana_tls::ticket::ClientCache;
+use hibana_tls::ticket::ClientSlot;
+use hibana_tls::ticket::ReplayPolicy;
+use hibana_tls::ticket::TicketKey;
+use hibana_tls::ticket::VerificationContext;
 struct Clock;
 impl ticket::TicketClock for Clock {
     fn now_ms(&self) -> Result<u64, ticket::Error> {

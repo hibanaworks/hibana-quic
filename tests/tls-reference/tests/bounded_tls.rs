@@ -1,12 +1,19 @@
 //! Real bounded TLS full handshakes; rcgen/rustls and fixture setup are host-only.
+use hibana_quic::crypto::CipherSuite;
 use hibana_quic::entropy::{Entropy, Unavailable};
-use hibana_quic::{
-    crypto::CipherSuite,
-    tls::certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
-    tls::handshake::{BoundedTls, ClientConfig, ServerConfig, SigningKey, Storage},
-    tls::{self, Level, Provider},
-};
 use hibana_quic_host::entropy::KernelEntropy;
+use hibana_tls::certificate::CertificateDer;
+use hibana_tls::certificate::Limits;
+use hibana_tls::certificate::UnixTime;
+use hibana_tls::certificate::trust_anchor_from_der;
+use hibana_tls::endpoint as tls;
+use hibana_tls::endpoint::Level;
+use hibana_tls::endpoint::Provider;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::ClientConfig;
+use hibana_tls::handshake::ServerConfig;
+use hibana_tls::handshake::SigningKey;
+use hibana_tls::handshake::Storage;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -134,7 +141,7 @@ fn packets(sender: &mut impl Provider, receiver: &mut impl Provider) {
     }
 }
 
-use hibana_quic::tls::handshake::CipherPolicy;
+use hibana_tls::handshake::CipherPolicy;
 #[derive(Clone, Copy)]
 struct Case {
     fragment: usize,
@@ -253,7 +260,7 @@ fn bounded_case(case: Case) {
                 BoundedTls::client_with_policy(
                     ClientConfig {
                         protocol: Default::default(),
-                        version: hibana_quic::quic::kernel::version::Version::V1,
+                        version: hibana_quic::quic::imp::kernel::version::Version::V1,
                         server_name: if case.wrong_name {
                             "wrong.invalid"
                         } else {
@@ -277,7 +284,7 @@ fn bounded_case(case: Case) {
                 BoundedTls::server_with_policy(
                     ServerConfig {
                         protocol: Default::default(),
-                        version: hibana_quic::quic::kernel::version::Version::V1,
+                        version: hibana_quic::quic::imp::kernel::version::Version::V1,
                         certificate_chain: &chain,
                         signing_key: &identity.signing,
                         transport_parameters: SERVER_PARAMS,
@@ -473,11 +480,10 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
-use hibana_quic::{
-    runtime::TaskSet,
-    runtime::carrier::CarrierStorage,
-    tls::handshake::{global, local},
-};
+use hibana_quic::runtime::TaskSet;
+use hibana_quic::runtime::carrier::CarrierStorage;
+use hibana_tls::handshake::global;
+use hibana_tls::handshake::local;
 struct Shared<P> {
     tls: RefCell<P>,
     reader: RefCell<Option<Waker>>,
@@ -589,7 +595,7 @@ fn reference_case(candidate_client: bool, retry: bool) {
         BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),
@@ -603,7 +609,7 @@ fn reference_case(candidate_client: bool, retry: bool) {
     } else {
         let config = ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: SERVER_PARAMS,
@@ -706,9 +712,9 @@ fn reference_case(candidate_client: bool, retry: bool) {
     assert_eq!(
         candidate.negotiated_group(),
         Some(if retry {
-            hibana_quic::tls::wire::GROUP_P256
+            hibana_tls::wire::GROUP_P256
         } else {
-            hibana_quic::tls::wire::GROUP_X25519
+            hibana_tls::wire::GROUP_X25519
         })
     );
     packets(&mut *candidate, &mut *reference);
@@ -770,7 +776,7 @@ fn caller_entropy_failure_does_not_construct_a_provider() {
         BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),
@@ -780,6 +786,6 @@ fn caller_entropy_failure_does_not_construct_a_provider() {
             buffers.storage(),
             &mut NoEntropy
         ),
-        Err(hibana_quic::tls::handshake::Failure::Entropy)
+        Err(hibana_tls::handshake::Failure::Entropy)
     ));
 }

@@ -1,10 +1,14 @@
 //! Real certificate and CertificateVerify paths shared by allocator/link probes.
 //! Public generated fixtures only; no private key, TLS connection or network I/O.
 use core::time::Duration;
-use hibana_quic::tls::certificate::{
-    CertificateDer, ECDSA_SECP256R1_SHA256, Error, Limits, ServerName, ServerVerifier, UnixTime,
-    trust_anchor_from_der,
-};
+use hibana_tls::certificate::CertificateDer;
+use hibana_tls::certificate::ECDSA_SECP256R1_SHA256;
+use hibana_tls::certificate::Error;
+use hibana_tls::certificate::Limits;
+use hibana_tls::certificate::ServerName;
+use hibana_tls::certificate::ServerVerifier;
+use hibana_tls::certificate::UnixTime;
+use hibana_tls::certificate::trust_anchor_from_der;
 
 const ROOT: &[u8] = include_bytes!("../../vectors/certificates/root.der");
 const WRONG_ROOT: &[u8] = include_bytes!("../../vectors/certificates/wrong_root.der");

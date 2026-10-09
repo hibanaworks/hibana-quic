@@ -1,13 +1,23 @@
 //! Finished-gated optional early receive bridge in the connected global.
 use super::{EarlyServer, Error, Roles};
-use crate::{
-    crypto::IntegrityBudget,
-    quic::early_data::{EarlyStatus, global as p, owner},
-    quic::kernel::packet::{EncryptionLevel, Frame, FrameIter, ParseLimits},
-    quic::{Clock, Config, Side, application_stream, early_wire, recovery, tls::Transcript},
-    tls::handshake::key_source::{EarlyKeyMaterial, FinishedAuthenticated},
-};
+use crate::crypto::IntegrityBudget;
+use crate::quic::Clock;
+use crate::quic::Config;
+use crate::quic::Side;
+use crate::quic::application::imp::stream;
+use crate::quic::early_data::global as p;
+use crate::quic::early_data::imp::EarlyStatus;
+use crate::quic::early_data::local;
+use crate::quic::imp::early_wire;
+use crate::quic::imp::kernel::packet::EncryptionLevel;
+use crate::quic::imp::kernel::packet::Frame;
+use crate::quic::imp::kernel::packet::FrameIter;
+use crate::quic::imp::kernel::packet::ParseLimits;
+use crate::quic::imp::recovery;
+use crate::quic::imp::tls::Transcript;
 use hibana::g::Message;
+use hibana_tls::handshake::local::keys::EarlyKeyMaterial;
+use hibana_tls::handshake::local::keys::FinishedAuthenticated;
 pub(super) struct Received<'scope> {
     pub finished: FinishedAuthenticated<'scope>,
     pub packets: usize,
@@ -30,7 +40,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
     finished: FinishedAuthenticated<'scope>,
     integrity: &mut IntegrityBudget,
     book: &mut recovery::Rx<'_, 'scope, N>,
-    streams: &mut application_stream::Rx<'_, '_, 'scope, RX, CHUNK>,
+    streams: &mut stream::Rx<'_, '_, 'scope, RX, CHUNK>,
     clock: &impl Clock,
 ) -> Result<Received<'scope>, Error> {
     let generation = finished.scope().connection_generation();
@@ -104,7 +114,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
         });
     }
     let early = early.ok_or(Error::Binding)?;
-    if early.packets.len() > crate::quic::application_stream::MAX_LIVE_STREAMS {
+    if early.packets.len() > crate::quic::application::imp::stream::MAX_LIVE_STREAMS {
         return Err(Error::Capacity);
     }
     let admission = source
@@ -116,11 +126,11 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
     else {
         return Err(Error::Binding);
     };
-    let exchange = owner::Exchange::<N>::new();
+    let exchange = local::Exchange::<N>::new();
     let mut stream_bytes = 0u64;
     let mut finished_streams = 0usize;
-    let mut stored: [Option<owner::StoredPacket<'scope>>;
-        crate::quic::application_stream::MAX_LIVE_STREAMS] = core::array::from_fn(|_| None);
+    let mut stored: [Option<local::StoredPacket<'scope>>;
+        crate::quic::application::imp::stream::MAX_LIVE_STREAMS] = core::array::from_fn(|_| None);
     {
         let input = async {
             let mut largest = None;
@@ -145,7 +155,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
                 let receipt = opened.take_receipt().ok_or(Error::Binding)?;
                 let pn = receipt.packet_number();
                 largest = Some(largest.map_or(pn, |old: u64| old.max(pn)));
-                let input = owner::AuthenticatedInput::from_authentication(
+                let input = local::AuthenticatedInput::from_authentication(
                     receipt,
                     claim,
                     opened.plaintext(),
@@ -171,7 +181,7 @@ pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK
             Ok(())
         };
         let owner_task = async {
-            owner::run(
+            local::run(
                 &mut roles.handshake.tls_rx,
                 admission,
                 early.policy,

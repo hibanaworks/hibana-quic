@@ -24,14 +24,14 @@ pub struct Packet<const BYTES: usize> {
     address: Address,
     bytes: [u8; BYTES],
     len: usize,
-    ecn: Option<hibana_quic::quic::ecn::Codepoint>,
+    ecn: Option<hibana_quic::quic::ecn::imp::Codepoint>,
 }
 impl<const BYTES: usize> Packet<BYTES> {
     pub fn address(&self) -> Address {
         self.address
     }
 
-    pub fn ecn(&self) -> Option<hibana_quic::quic::ecn::Codepoint> {
+    pub fn ecn(&self) -> Option<hibana_quic::quic::ecn::imp::Codepoint> {
         self.ecn
     }
     pub fn bytes(&self) -> &[u8] {
@@ -117,7 +117,7 @@ impl<const BYTES: usize> Dispatcher<BYTES> {
         address: Address,
         destination: &[u8],
         bytes: &[u8],
-        ecn: Option<hibana_quic::quic::ecn::Codepoint>,
+        ecn: Option<hibana_quic::quic::ecn::imp::Codepoint>,
     ) -> Delivery {
         if bytes.len() > BYTES {
             return Delivery::Oversized;
@@ -220,7 +220,7 @@ mod tests {
                 address(1),
                 b"new-local",
                 b"new packet",
-                Some(hibana_quic::quic::ecn::Codepoint::Ect1)
+                Some(hibana_quic::quic::ecn::imp::Codepoint::Ect1)
             ),
             Delivery::Queued
         );
@@ -229,7 +229,10 @@ mod tests {
             panic!("new owner did not receive");
         };
         assert_eq!(packet.bytes(), b"new packet");
-        assert_eq!(packet.ecn(), Some(hibana_quic::quic::ecn::Codepoint::Ect1));
+        assert_eq!(
+            packet.ecn(),
+            Some(hibana_quic::quic::ecn::imp::Codepoint::Ect1)
+        );
         assert!(old_read.as_mut().poll(&mut cx).is_pending());
     }
     #[test]

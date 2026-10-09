@@ -1,10 +1,11 @@
 //! Validated ACK evidence is retained without blocking handshake confirmation.
 //! Only the projected adapter continuation consumes it to apply stream effects.
 use super::{Control, Error};
-use crate::quic::{recovery::FrameAcknowledgments, tls::Inbox};
+use crate::quic::imp::recovery::FrameAcknowledgments;
+use crate::quic::imp::tls::Inbox;
 pub(super) struct Exchange<'scope> {
     pub(super) pending: Inbox<FrameAcknowledgments<'scope>>,
-    pub(super) loss: Inbox<crate::quic::recovery::ApplicationLoss<'scope>>,
+    pub(super) loss: Inbox<crate::quic::imp::recovery::ApplicationLoss<'scope>>,
 }
 impl<'scope> Exchange<'scope> {
     pub(super) fn new() -> Self {

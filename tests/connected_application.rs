@@ -17,28 +17,46 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
-use hibana_quic::{
-    crypto::{
-        IntegrityBudget,
-        directional::{ApplicationKeyScope, ApplicationReadKeys},
-    },
-    quic::kernel::packet::{
-        self, EncryptionLevel, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits,
-        encode_varint,
-    },
-    quic::kernel::streams::{Limits, PacketReference, SendChunk, StreamSlot},
-    quic::publication_gate::PublicationGate,
-    quic::{
-        self, Clock, Config, DatagramRx, DatagramTx, IoError, Side,
-        application::{self, BodyReader, ClientRequests, ServerHandler, StreamSink},
-        recovery::Recovery,
-        tls::Transcript,
-    },
-    runtime::carrier::CarrierStorage,
-    tls::buffer::CryptoBuffer,
-    tls::certificate::{CertificateDer, Limits as CertificateLimits, trust_anchor_from_der},
-    tls::handshake::{BoundedTls, ClientConfig, ServerConfig, key_source::ReceivePacketKey},
-};
+use hibana_quic::crypto::IntegrityBudget;
+use hibana_quic::crypto::directional::ApplicationKeyScope;
+use hibana_quic::crypto::directional::ApplicationReadKeys;
+use hibana_quic::quic;
+use hibana_quic::quic::Clock;
+use hibana_quic::quic::Config;
+use hibana_quic::quic::DatagramRx;
+use hibana_quic::quic::DatagramTx;
+use hibana_quic::quic::IoError;
+use hibana_quic::quic::Side;
+use hibana_quic::quic::application;
+use hibana_quic::quic::application::BodyReader;
+use hibana_quic::quic::application::ClientRequests;
+use hibana_quic::quic::application::ServerHandler;
+use hibana_quic::quic::application::StreamSink;
+use hibana_quic::quic::imp::crypto_buffer::CryptoBuffer;
+use hibana_quic::quic::imp::kernel::packet;
+use hibana_quic::quic::imp::kernel::packet::EncryptionLevel;
+use hibana_quic::quic::imp::kernel::packet::Frame;
+use hibana_quic::quic::imp::kernel::packet::FrameIter;
+use hibana_quic::quic::imp::kernel::packet::Header;
+use hibana_quic::quic::imp::kernel::packet::LongType;
+use hibana_quic::quic::imp::kernel::packet::PacketIter;
+use hibana_quic::quic::imp::kernel::packet::ParseLimits;
+use hibana_quic::quic::imp::kernel::packet::encode_varint;
+use hibana_quic::quic::imp::kernel::streams::Limits;
+use hibana_quic::quic::imp::kernel::streams::PacketReference;
+use hibana_quic::quic::imp::kernel::streams::SendChunk;
+use hibana_quic::quic::imp::kernel::streams::StreamSlot;
+use hibana_quic::quic::imp::publication_gate::PublicationGate;
+use hibana_quic::quic::imp::recovery::Recovery;
+use hibana_quic::quic::imp::tls::Transcript;
+use hibana_quic::runtime::carrier::CarrierStorage;
+use hibana_tls::certificate::CertificateDer;
+use hibana_tls::certificate::Limits as CertificateLimits;
+use hibana_tls::certificate::trust_anchor_from_der;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::ClientConfig;
+use hibana_tls::handshake::ServerConfig;
+use hibana_tls::handshake::local::keys::ReceivePacketKey;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -272,7 +290,7 @@ impl Inspector<'_> {
                     classify_frames(&payload[..len], level)
                 }
                 Header::Short { .. } => {
-                    let opened = quic::application_wire::open::<DATAGRAM>(
+                    let opened = quic::imp::application_wire::open::<DATAGRAM>(
                         &mut self.application,
                         &mut self.integrity,
                         packet.bytes,
@@ -451,7 +469,7 @@ struct Datagram {
     bytes: [u8; DATAGRAM],
     len: usize,
     ready_at: u64,
-    ecn: Option<hibana_quic::quic::ecn::Codepoint>,
+    ecn: Option<hibana_quic::quic::ecn::imp::Codepoint>,
 }
 struct Path {
     queued: RefCell<std::collections::VecDeque<Datagram>>,
@@ -547,7 +565,7 @@ impl DatagramTx for Tx<'_, '_> {
     async fn send(
         &mut self,
         bytes: &[u8],
-        ecn: hibana_quic::quic::ecn::Codepoint,
+        ecn: hibana_quic::quic::ecn::imp::Codepoint,
     ) -> Result<u64, IoError> {
         poll_fn(|cx| {
             if self.path.queued.borrow().len() == self.path.capacity {
@@ -625,7 +643,7 @@ impl DatagramTx for Tx<'_, '_> {
                 }
                 Loss::HandshakeBeforeAnyInitial => {
                     let initial = matches!(
-                        hibana_quic::quic::kernel::packet::PacketIter::new(
+                        hibana_quic::quic::imp::kernel::packet::PacketIter::new(
                             bytes,
                             CLIENT_ID.len(),
                             1
@@ -634,8 +652,8 @@ impl DatagramTx for Tx<'_, '_> {
                         .and_then(|mut p| p.next())
                         .and_then(Result::ok)
                         .map(|p| p.header),
-                        Some(hibana_quic::quic::kernel::packet::Header::Long {
-                            kind: hibana_quic::quic::kernel::packet::LongType::Initial,
+                        Some(hibana_quic::quic::imp::kernel::packet::Header::Long {
+                            kind: hibana_quic::quic::imp::kernel::packet::LongType::Initial,
                             ..
                         })
                     );
@@ -685,7 +703,7 @@ impl DatagramTx for Tx<'_, '_> {
                 len: bytes.len(),
                 ecn: match self.loss {
                     Loss::MissingEcnMetadata => None,
-                    Loss::BleachedEcn => Some(hibana_quic::quic::ecn::Codepoint::NotEct),
+                    Loss::BleachedEcn => Some(hibana_quic::quic::ecn::imp::Codepoint::NotEct),
                     _ => Some(ecn),
                 },
                 ready_at: self.clock.now()
@@ -892,7 +910,8 @@ fn actual_get_selects_encrypted_body_and_completes_close() {
 
 #[test]
 fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
-    use hibana_quic::quic::application_stream::{Error, StreamNumbers};
+    use hibana_quic::quic::application::imp::stream::Error;
+    use hibana_quic::quic::application::imp::stream::StreamNumbers;
     let scope = ApplicationKeyScope::new(101);
     let mut slots: Vec<_> = (0..STREAMS)
         .map(|_| StreamSlot::<RECEIVE_WINDOW>::EMPTY)
@@ -904,7 +923,7 @@ fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
     assert!(matches!(
         StreamNumbers::new(
             &scope,
-            hibana_quic::quic::kernel::streams::Role::Client,
+            hibana_quic::quic::imp::kernel::streams::Role::Client,
             limits(Side::Server),
             unbacked,
             &mut slots,
@@ -912,12 +931,12 @@ fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
             &mut references
         ),
         Err(Error::Streams(
-            hibana_quic::quic::kernel::streams::Error::InvalidConfiguration
+            hibana_quic::quic::imp::kernel::streams::Error::InvalidConfiguration
         ))
     ));
     StreamNumbers::new(
         &scope,
-        hibana_quic::quic::kernel::streams::Role::Client,
+        hibana_quic::quic::imp::kernel::streams::Role::Client,
         limits(Side::Server),
         limits(Side::Client),
         &mut slots,
@@ -929,7 +948,7 @@ fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
 
 #[test]
 fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
-    use hibana_quic::quic::application_stream::StreamNumbers;
+    use hibana_quic::quic::application::imp::stream::StreamNumbers;
     let scope = ApplicationKeyScope::new(102);
     let mut slots: Vec<_> = (0..STREAMS)
         .map(|_| StreamSlot::<RECEIVE_WINDOW>::EMPTY)
@@ -938,7 +957,7 @@ fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
     let mut references = [PacketReference::EMPTY; 64];
     let mut numbers = StreamNumbers::new(
         &scope,
-        hibana_quic::quic::kernel::streams::Role::Client,
+        hibana_quic::quic::imp::kernel::streams::Role::Client,
         limits(Side::Server),
         limits(Side::Client),
         &mut slots,
@@ -952,8 +971,8 @@ fn client_slots_are_reserved_for_its_requests_not_peer_initiated_streams() {
     }
     assert!(matches!(
         facets.app.open_local(),
-        Err(hibana_quic::quic::application_stream::Error::Streams(
-            hibana_quic::quic::kernel::streams::Error::StreamLimit
+        Err(hibana_quic::quic::application::imp::stream::Error::Streams(
+            hibana_quic::quic::imp::kernel::streams::Error::StreamLimit
         ))
     ));
 }
@@ -1094,7 +1113,7 @@ fn connection_case_with_failure(
         &mut observation_scope,
         ClientConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: fixture::now(),
@@ -1103,7 +1122,7 @@ fn connection_case_with_failure(
         },
         ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &signing,
             transport_parameters: &server_params,
@@ -1114,7 +1133,7 @@ fn connection_case_with_failure(
     let client_tls = BoundedTls::client(
         ClientConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: fixture::now(),
@@ -1126,22 +1145,22 @@ fn connection_case_with_failure(
     )
     .unwrap();
     struct TicketTime;
-    impl hibana_quic::tls::ticket::TicketClock for TicketTime {
-        fn now_ms(&self) -> Result<u64, hibana_quic::tls::ticket::Error> {
+    impl hibana_tls::ticket::TicketClock for TicketTime {
+        fn now_ms(&self) -> Result<u64, hibana_tls::ticket::Error> {
             Ok(1_000_000)
         }
     }
-    let mut replay = [const { hibana_quic::tls::ticket::ReplaySlot::empty() }; 8];
-    let mut ticket_key = hibana_quic::tls::ticket::TicketKey::generate(
+    let mut replay = [const { hibana_tls::ticket::ReplaySlot::empty() }; 8];
+    let mut ticket_key = hibana_tls::ticket::TicketKey::generate(
         &mut fixture::TestRandom(991),
-        hibana_quic::tls::ticket::ReplayPolicy::ReusableOneRtt,
+        hibana_tls::ticket::ReplayPolicy::ReusableOneRtt,
         &mut replay,
     )
     .unwrap();
     let mut ticket_entropy = fixture::TestRandom(992);
     let server_config = ServerConfig {
         protocol: Default::default(),
-        version: hibana_quic::quic::kernel::version::Version::V1,
+        version: hibana_quic::quic::imp::kernel::version::Version::V1,
         certificate_chain: &chain,
         signing_key: &signing,
         transport_parameters: &server_params,
@@ -1151,7 +1170,7 @@ fn connection_case_with_failure(
             server_config,
             server_tls_buffers.storage(),
             &mut fixture::TestRandom(701),
-            hibana_quic::tls::handshake::ServerResumption {
+            hibana_tls::handshake::ServerResumption {
                 store: &mut ticket_key,
                 entropy: &mut ticket_entropy,
                 clock: &TicketTime,
@@ -1255,9 +1274,9 @@ fn connection_case_with_failure(
     let mut client_roles = roles!(client_rv, client_sid, programs);
     let mut server_roles = roles!(server_rv, server_sid, programs);
     let mut client_data = [[0; 8192]; 3];
-    let mut client_maps = [[0; hibana_quic::tls::buffer::bitmap_bytes(8192)]; 3];
+    let mut client_maps = [[0; hibana_quic::quic::imp::crypto_buffer::bitmap_bytes(8192)]; 3];
     let mut server_data = [[0; 8192]; 3];
-    let mut server_maps = [[0; hibana_quic::tls::buffer::bitmap_bytes(8192)]; 3];
+    let mut server_maps = [[0; hibana_quic::quic::imp::crypto_buffer::bitmap_bytes(8192)]; 3];
     let [c0, c1, ca] = &mut client_data;
     let [cm0, cm1, cma] = &mut client_maps;
     let [s0, s1, sa] = &mut server_data;
@@ -1278,7 +1297,7 @@ fn connection_case_with_failure(
         config: Config {
             local_preferred: None,
             initial_path: None,
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             side: Side::Client,
             local_connection_id: CLIENT_ID,
             original_destination_id: ORIGINAL,
@@ -1308,7 +1327,7 @@ fn connection_case_with_failure(
         config: Config {
             local_preferred: None,
             initial_path: None,
-            version: hibana_quic::quic::kernel::version::Version::V1,
+            version: hibana_quic::quic::imp::kernel::version::Version::V1,
             side: Side::Server,
             local_connection_id: SERVER_ID,
             original_destination_id: ORIGINAL,
@@ -1495,11 +1514,11 @@ fn connection_case_with_failure(
     // receipts; no duplicate source-state query authorizes this boundary.
     for transcript in [&client_transcript, &server_transcript] {
         assert!(
-            transcript.received_offset(hibana_quic::tls::Level::Initial) > 0,
+            transcript.received_offset(hibana_tls::endpoint::Level::Initial) > 0,
             "verified Initial consumption must cross the application handoff"
         );
         assert!(
-            transcript.received_offset(hibana_quic::tls::Level::Handshake) > 0,
+            transcript.received_offset(hibana_tls::endpoint::Level::Handshake) > 0,
             "verified Handshake consumption must cross the application handoff"
         );
     }
@@ -1533,9 +1552,9 @@ fn connection_case_with_failure(
     }
     if matches!(loss, Loss::MissingEcnMetadata | Loss::BleachedEcn) {
         let expected = if matches!(loss, Loss::MissingEcnMetadata) {
-            hibana_quic::quic::ecn::Failure::MissingCounts
+            hibana_quic::quic::ecn::imp::Failure::MissingCounts
         } else {
-            hibana_quic::quic::ecn::Failure::Bleached
+            hibana_quic::quic::ecn::imp::Failure::Bleached
         };
         for report in [&client, &server] {
             assert!(
@@ -1547,7 +1566,7 @@ fn connection_case_with_failure(
             assert_eq!(report.ecn_acknowledgments_sent, 0);
             assert_eq!(
                 report.ecn_feedback_error,
-                Some(hibana_quic::quic::ecn::Error::Validation(expected))
+                Some(hibana_quic::quic::ecn::imp::Error::Validation(expected))
             );
         }
     }

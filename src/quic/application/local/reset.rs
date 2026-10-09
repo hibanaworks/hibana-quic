@@ -2,10 +2,9 @@
 //! projected publication boundary can authorize their application: no receive
 //! callback or publication-completion callback secretly advances reset state.
 use super::Error;
-use crate::quic::{
-    application_stream::{MAX_LIVE_STREAMS, StopIntent},
-    tls::Inbox,
-};
+use crate::quic::application::imp::stream::MAX_LIVE_STREAMS;
+use crate::quic::application::imp::stream::StopIntent;
+use crate::quic::imp::tls::Inbox;
 use core::cell::RefCell;
 
 pub(crate) struct Exchange<'book> {
@@ -65,12 +64,18 @@ impl<'book> Exchange<'book> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        crypto::directional::ApplicationKeyScope,
-        quic::kernel::packet::{EncryptionLevel, Frame, FrameIter, ParseLimits},
-        quic::application_stream::{Facets, StreamNumbers},
-        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
-    };
+    use crate::crypto::directional::ApplicationKeyScope;
+    use crate::quic::application::imp::stream::Facets;
+    use crate::quic::application::imp::stream::StreamNumbers;
+    use crate::quic::imp::kernel::packet::EncryptionLevel;
+    use crate::quic::imp::kernel::packet::Frame;
+    use crate::quic::imp::kernel::packet::FrameIter;
+    use crate::quic::imp::kernel::packet::ParseLimits;
+    use crate::quic::imp::kernel::streams::Limits;
+    use crate::quic::imp::kernel::streams::PacketReference;
+    use crate::quic::imp::kernel::streams::Role;
+    use crate::quic::imp::kernel::streams::SendChunk;
+    use crate::quic::imp::kernel::streams::StreamSlot;
 
     fn exercise(cancel: bool) {
         let scope = ApplicationKeyScope::new(900);

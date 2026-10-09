@@ -1,25 +1,27 @@
 //! Synchronous application write ownership with an independent projected
 //! key-control continuation. No key borrow survives a wire or UDP await.
 use super::global as p;
-use crate::{
-    crypto::{
-        self, PacketKey,
-        directional::{
-            ApplicationKeyScope, ApplicationWriteKeys, LocalUpdateReady, LocalUpdateRejected,
-            LocalWriteEpochInstalled, PeerUpdateAuthenticated, ScopedHandshakeConfirmation,
-            ValidatedKeyAck, WriteEpochInstalled,
-        },
-    },
-    quic::{
-        self, TransmitContinuation,
-        application_wire::{self, SealedApplicationDatagram},
-        recovery::Reservation,
-        tls::{Inbox, InboxError},
-    },
-    tls::handshake::key_source::TransmitPacketKey,
-};
+use crate::crypto;
+use crate::crypto::PacketKey;
+use crate::crypto::directional::ApplicationKeyScope;
+use crate::crypto::directional::ApplicationWriteKeys;
+use crate::crypto::directional::LocalUpdateReady;
+use crate::crypto::directional::LocalUpdateRejected;
+use crate::crypto::directional::LocalWriteEpochInstalled;
+use crate::crypto::directional::PeerUpdateAuthenticated;
+use crate::crypto::directional::ScopedHandshakeConfirmation;
+use crate::crypto::directional::ValidatedKeyAck;
+use crate::crypto::directional::WriteEpochInstalled;
+use crate::quic;
+use crate::quic::TransmitContinuation;
+use crate::quic::imp::application_wire;
+use crate::quic::imp::application_wire::SealedApplicationDatagram;
+use crate::quic::imp::recovery::Reservation;
+use crate::quic::imp::tls::Inbox;
+use crate::quic::imp::tls::InboxError;
 use core::cell::RefCell;
 use hibana::{Endpoint, EndpointError};
+use hibana_tls::handshake::local::keys::TransmitPacketKey;
 
 #[derive(Debug)]
 pub(crate) enum Error {
@@ -108,10 +110,10 @@ impl<'scope> KeyOwner<'scope> {
     /// their actual key. Application key control remains independently usable.
     pub(crate) fn seal_long<'book, const N: usize>(
         &self,
-        level: crate::tls::Level,
+        level: hibana_tls::endpoint::Level,
         plain: quic::wire::PlainPacket<N>,
         reservation: Reservation<'book>,
-        acknowledgment: Option<quic::recovery::AckSnapshot<'book>>,
+        acknowledgment: Option<quic::imp::recovery::AckSnapshot<'book>>,
     ) -> Result<quic::wire::Datagram<'book, N>, (quic::Error, Reservation<'book>)> {
         let Ok(mut owned) = self.owned.try_borrow_mut() else {
             return Err((quic::Error::Binding, reservation));
@@ -120,15 +122,17 @@ impl<'scope> KeyOwner<'scope> {
             return Err((quic::Error::Binding, reservation));
         }
         match level {
-            crate::tls::Level::Initial => match owned.initial.as_mut() {
+            hibana_tls::endpoint::Level::Initial => match owned.initial.as_mut() {
                 Some(key) => plain.seal_initial(key, reservation, acknowledgment),
                 None => Err((quic::Error::UnsupportedLevel, reservation)),
             },
-            crate::tls::Level::Handshake => match owned.handshake.as_mut() {
+            hibana_tls::endpoint::Level::Handshake => match owned.handshake.as_mut() {
                 Some(key) => plain.seal_handshake(key, reservation, acknowledgment),
                 None => Err((quic::Error::UnsupportedLevel, reservation)),
             },
-            crate::tls::Level::OneRtt => Err((quic::Error::UnsupportedLevel, reservation)),
+            hibana_tls::endpoint::Level::OneRtt => {
+                Err((quic::Error::UnsupportedLevel, reservation))
+            }
         }
     }
 
@@ -398,7 +402,7 @@ pub(super) fn check_result<T>(result: &Result<T, Error>, accepted: bool) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{runtime::carrier::CarrierStorage, runtime::TaskSet};
+    use crate::{runtime::TaskSet, runtime::carrier::CarrierStorage};
     use core::{
         future::Future,
         pin::pin,
@@ -414,21 +418,22 @@ mod tests {
         // Raw cryptographic fixture only: deliberately no handshake/ACK grant.
         // The actual projected owner must reject update and return the parked key.
         let mut scope = ApplicationKeyScope::new(1200);
-        let (mut read, mut write) = crate::crypto::directional::ApplicationReadKeys::install(scope.claim().unwrap(),
-                PacketKey::from_secret(
-                    crypto::CipherSuite::Aes128GcmSha256,
-                    crypto::KeyKind::OneRtt,
-                    &[1; 32],
-                )
-                .unwrap(),
-                PacketKey::from_secret(
-                    crypto::CipherSuite::Aes128GcmSha256,
-                    crypto::KeyKind::OneRtt,
-                    &[2; 32],
-                )
-                .unwrap(),
+        let (mut read, mut write) = crate::crypto::directional::ApplicationReadKeys::install(
+            scope.claim().unwrap(),
+            PacketKey::from_secret(
+                crypto::CipherSuite::Aes128GcmSha256,
+                crypto::KeyKind::OneRtt,
+                &[1; 32],
             )
-            .unwrap();
+            .unwrap(),
+            PacketKey::from_secret(
+                crypto::CipherSuite::Aes128GcmSha256,
+                crypto::KeyKind::OneRtt,
+                &[2; 32],
+            )
+            .unwrap(),
+        )
+        .unwrap();
         if authorized_fixture {
             crate::crypto::directional::synthetic_confirmed_ack_for_role_test(&mut write);
         }

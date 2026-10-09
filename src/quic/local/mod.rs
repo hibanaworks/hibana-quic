@@ -2,14 +2,23 @@
 use super::global as p;
 use super::wire::{PlainPacket, WriteKeys};
 use super::*;
-use crate::{
-    crypto::directional::ApplicationKeyScope,
-    quic::kernel::packet::{self, Frame, FrameIter, Header, LongType, PacketIter, ParseLimits},
-    quic::kernel::parameters::{Parameters, Peer},
-};
+use crate::crypto::directional::ApplicationKeyScope;
+use crate::quic::imp::kernel::packet;
+use crate::quic::imp::kernel::packet::Frame;
+use crate::quic::imp::kernel::packet::FrameIter;
+use crate::quic::imp::kernel::packet::Header;
+use crate::quic::imp::kernel::packet::LongType;
+use crate::quic::imp::kernel::packet::PacketIter;
+use crate::quic::imp::kernel::packet::ParseLimits;
+use crate::quic::imp::kernel::parameters::Parameters;
+use crate::quic::imp::kernel::parameters::Peer;
 use core::{future::Future, pin::pin};
 use hibana::g::Message;
 
+pub(crate) mod timer;
+pub(crate) mod transcript;
+use crate::quic::retry::local::client as retry_client;
+pub(crate) mod attach;
 mod publication;
 mod receive;
 mod sealing;
@@ -85,8 +94,8 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         return Err(Error::Binding);
     }
     let expected_side = match config.side {
-        Side::Client => crate::tls::schedule::Side::Client,
-        Side::Server => crate::tls::schedule::Side::Server,
+        Side::Client => hibana_tls::schedule::Side::Client,
+        Side::Server => hibana_tls::schedule::Side::Server,
     };
     if source.side() != expected_side || source.version() != config.version {
         return Err(Error::Binding);
@@ -104,7 +113,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         Side::Server => (initial.client, initial.server),
     };
     let initial = initial::Keys::new(scope, read, write)?;
-    if config.version != crate::quic::kernel::version::Version::V1 {
+    if config.version != crate::quic::imp::kernel::version::Version::V1 {
         let pair = crypto::initial_keys_for_version(
             config.version,
             config
@@ -128,7 +137,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         .source
         .take_message_buffer()
         .map_err(|_| Error::Binding)?;
-    let message_slot = crate::tls::handshake::local::MessageSlot::new(message_buffer);
+    let message_slot = hibana_tls::handshake::local::MessageSlot::new(message_buffer);
     let (mut tx, mut rx, mut clock_book, mut publication, mut retirement) = book.split()?;
     let mut pending_handshake = None;
     let first_response = retry_client::run(
@@ -179,7 +188,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     )
     .await?;
     let numbers = transcript::Numbers::new(source);
-    let handoff = hibana_tls::handshake::key_source::Handoff::<P>::new();
+    let handoff = hibana_tls::handshake::local::keys::Handoff::<P>::new();
     let mut initial_owner = tx.initial_retirement_owner();
     let (mut receive_initial, publish_initial) = match config.side {
         Side::Client => (None, Some(&mut roles.initial_event)),
@@ -300,3 +309,7 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         pending,
     ))
 }
+
+pub(crate) mod initial;
+
+pub mod early_client;

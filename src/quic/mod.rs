@@ -1,57 +1,48 @@
 //! Direct role-local QUIC connection from the composed global choreography.
 //! TLS message order runs in tls::handshake::{global,local}; packet framing,
 //! cryptographic arithmetic and recovery bookkeeping remain role-owned data.
-//! See the current validation ledger for tested and unqualified scenarios.
 
 pub mod early_data;
 pub mod ecn;
-pub mod kernel;
+use imp::kernel;
 pub mod path;
 pub mod retry;
 
-mod attach;
 pub use attach::Error as AttachmentError;
+pub(crate) use local::attach;
 
 pub mod application;
-pub mod stream;
-// Existing import path; the implementation has one canonical stream parts module.
-pub use stream::imp as application_stream;
-pub mod application_wire;
-pub mod early_client;
-pub mod early_wire;
+use application::imp::stream;
+use imp::application_wire;
+use imp::early_wire;
 pub mod global;
-mod idle;
-mod initial;
+pub mod imp;
+pub(crate) use local::initial;
 pub mod local;
-pub mod parameters;
-pub mod recovery;
-mod retry_client;
+use imp::parameters;
+use imp::recovery;
 #[cfg(test)]
 mod scheduler_tests;
-mod timer;
-pub mod tls;
-mod transcript;
-mod wire;
+use imp::tls;
+pub(crate) use imp::wire;
 
-use crate::{
-    crypto::{
-        self, IntegrityBudget,
-        directional::{ApplicationKeyScope, ApplicationReadKeys, ApplicationWriteKeys},
-    },
-    tls::Level,
-    tls::buffer::CryptoBuffer,
-    tls::handshake::key_source::{ReceivePacketKey, TransmitPacketKey},
-};
+use crate::crypto;
+use crate::crypto::IntegrityBudget;
+use crate::crypto::directional::ApplicationReadKeys;
+use crate::crypto::directional::ApplicationWriteKeys;
+use crate::quic::imp::crypto_buffer::CryptoBuffer;
 use core::{
     cell::{Cell, RefCell},
-    future::{Future, poll_fn},
-    pin::pin,
+    future::poll_fn,
     task::{Poll, Waker},
 };
 use hibana::{
     Endpoint, EndpointError,
     runtime::resolver::{DecisionArm, ResolverError, ResolverRef},
 };
+use hibana_tls::endpoint::Level;
+use hibana_tls::handshake::local::keys::ReceivePacketKey;
+use hibana_tls::handshake::local::keys::TransmitPacketKey;
 use tls::{CryptoFlight, CryptoInput, Finished, Inbox, InboxError, Transcript};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,8 +54,8 @@ pub enum Side {
 #[derive(Clone, Copy)]
 pub struct Config<'a> {
     pub initial_path: Option<crate::quic::path::Address>,
-    pub local_preferred: Option<crate::quic::path::preferred::Preferred>,
-    pub version: crate::quic::kernel::version::Version,
+    pub local_preferred: Option<crate::quic::path::imp::preferred::Preferred>,
+    pub version: crate::quic::imp::kernel::version::Version,
     pub side: Side,
     pub local_connection_id: &'a [u8],
     pub original_destination_id: &'a [u8],
@@ -96,7 +87,7 @@ pub use crate::io::{Clock, DatagramRx, DatagramTx, IoError, ReceivedDatagram};
 #[derive(Debug)]
 pub enum Error {
     Endpoint(EndpointError),
-    Transcript(crate::tls::handshake::local::Error),
+    Transcript(hibana_tls::handshake::local::Error),
     Resolver(ResolverError),
     Crypto(crypto::Error),
     EndpointAt {
@@ -104,9 +95,9 @@ pub enum Error {
         expected_label: u8,
         error: EndpointError,
     },
-    Tls(crate::tls::Error),
-    Packet(crate::quic::kernel::packet::Error),
-    Reassembly(crate::tls::buffer::Error),
+    Tls(hibana_tls::endpoint::Error),
+    Packet(crate::quic::imp::kernel::packet::Error),
+    Reassembly(crate::quic::imp::crypto_buffer::Error),
     Recovery(recovery::Error),
     Gate(publication_gate::Error),
     Slot(InboxError),
@@ -132,18 +123,18 @@ impl From<crypto::Error> for Error {
         Self::Crypto(v)
     }
 }
-impl From<crate::tls::Error> for Error {
-    fn from(v: crate::tls::Error) -> Self {
+impl From<hibana_tls::endpoint::Error> for Error {
+    fn from(v: hibana_tls::endpoint::Error) -> Self {
         Self::Tls(v)
     }
 }
-impl From<crate::quic::kernel::packet::Error> for Error {
-    fn from(v: crate::quic::kernel::packet::Error) -> Self {
+impl From<crate::quic::imp::kernel::packet::Error> for Error {
+    fn from(v: crate::quic::imp::kernel::packet::Error) -> Self {
         Self::Packet(v)
     }
 }
-impl From<crate::tls::buffer::Error> for Error {
-    fn from(v: crate::tls::buffer::Error) -> Self {
+impl From<crate::quic::imp::crypto_buffer::Error> for Error {
+    fn from(v: crate::quic::imp::crypto_buffer::Error) -> Self {
         Self::Reassembly(v)
     }
 }
@@ -313,7 +304,7 @@ pub struct Storage<'scope, 'book, const N: usize, const P: usize> {
     write_application: Inbox<ApplicationWriteKeys<'scope>>,
     finished: Inbox<Finished<'scope, P>>,
     datagram: Inbox<wire::Datagram<'book, N>>,
-    failure: Cell<Option<crate::tls::Error>>,
+    failure: Cell<Option<hibana_tls::endpoint::Error>>,
     early_packets: RefCell<Option<&'book mut dyn early_wire::RetainPackets>>,
     pending_application: RefCell<Option<([u8; N], ReceivedDatagram, u64)>>,
 }
@@ -348,7 +339,7 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
     fn retain_application(
         &self,
         packet: &[u8],
-        ecn: Option<crate::quic::ecn::Codepoint>,
+        ecn: Option<crate::quic::ecn::imp::Codepoint>,
         path: Option<crate::quic::path::Address>,
         received_at: u64,
     ) -> Result<(), Error> {
@@ -394,7 +385,7 @@ impl<const N: usize, const P: usize> Drop for Clear<'_, '_, '_, N, P> {
 pub use local::handshake;
 pub(crate) use local::handshake_with_early;
 
-pub mod publication_gate;
+use imp::publication_gate;
 
 #[cfg(test)]
 mod retained_application_tests {

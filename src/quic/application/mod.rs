@@ -1,17 +1,19 @@
 //! A single projected connection from authenticated application admission to
 //! bounded stream IO, ordinary retirement, closing and draining.
 
-mod attach;
-pub mod local;
+pub mod imp;
+
 pub mod global;
+pub mod local;
 
 pub use local::{client, client_early, server};
 
-use super::{Config, Outcome, application_stream, parameters, recovery};
-use crate::{
-    crypto, quic::kernel::packet, quic::kernel::streams, quic::publication_gate,
-    tls::buffer::CryptoBuffer,
-};
+use super::{Config, Outcome, parameters, recovery, stream};
+use crate::crypto;
+use crate::quic::imp::crypto_buffer::CryptoBuffer;
+use crate::quic::imp::kernel::packet;
+use crate::quic::imp::kernel::streams;
+use crate::quic::imp::publication_gate;
 use core::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},
@@ -74,12 +76,12 @@ pub struct Buffers<'a, const RX: usize, const CHUNK: usize> {
 }
 pub struct EarlyServer<'a, const RX: usize> {
     pub packets: super::early_wire::PendingPackets<'a>,
-    pub slots: &'a mut [crate::quic::early_data::QuarantineSlot<RX>],
-    pub policy: crate::quic::early_data::ServerPolicy,
+    pub slots: &'a mut [crate::quic::early_data::imp::QuarantineSlot<RX>],
+    pub policy: crate::quic::early_data::imp::ServerPolicy,
 }
 pub struct Setup<'a, const RX: usize, const CHUNK: usize> {
-    pub local_ids: Option<crate::quic::path::ids::Storage<'a>>,
-    pub peer_ids: Option<crate::quic::path::peer_ids::Storage<'a>>,
+    pub local_ids: Option<crate::quic::path::imp::ids::Storage<'a>>,
+    pub peer_ids: Option<crate::quic::path::imp::peer_ids::Storage<'a>>,
     /// Opaque server-issued address token, published only after authenticated Finished.
     pub server_token: Option<&'a [u8]>,
     /// Must match the local max_idle_timeout actually advertised in TLS.
@@ -146,7 +148,7 @@ pub struct Report {
     /// carried nonzero counts, observed before ordinary retirement.
     pub ecn_received_packets: u64,
     pub ecn_acknowledgments_sent: u64,
-    pub ecn_feedback_error: Option<crate::quic::ecn::Error>,
+    pub ecn_feedback_error: Option<crate::quic::ecn::imp::Error>,
 }
 
 pub struct Roles<'a> {
@@ -178,7 +180,7 @@ pub enum Error {
     Connection(super::Error),
     Endpoint(EndpointError),
     Recovery(recovery::Error),
-    Streams(application_stream::Error),
+    Streams(stream::Error),
     Crypto(crypto::Error),
     Packet(packet::Error),
     Parameters(parameters::Error),
@@ -188,7 +190,7 @@ pub enum Error {
     Incomplete,
     KeyControlBinding,
     KeyControlRetired,
-    Early(crate::quic::early_data::owner::Failure),
+    Early(crate::quic::early_data::local::Failure),
     UnexpectedLabel(u8),
 }
 impl From<super::Error> for Error {
@@ -206,8 +208,8 @@ impl From<recovery::Error> for Error {
         Self::Recovery(value)
     }
 }
-impl From<application_stream::Error> for Error {
-    fn from(value: application_stream::Error) -> Self {
+impl From<stream::Error> for Error {
+    fn from(value: stream::Error) -> Self {
         Self::Streams(value)
     }
 }
@@ -340,8 +342,8 @@ impl<'scope> OrdinaryRetired<'scope> {
     }
 }
 
-impl From<crate::quic::early_data::owner::Failure> for Error {
-    fn from(value: crate::quic::early_data::owner::Failure) -> Self {
+impl From<crate::quic::early_data::local::Failure> for Error {
+    fn from(value: crate::quic::early_data::local::Failure) -> Self {
         Self::Early(value)
     }
 }

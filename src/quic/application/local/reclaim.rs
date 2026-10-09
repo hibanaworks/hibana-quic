@@ -1,12 +1,12 @@
 //! Three independent projected receipt lanes join actual owned stream resources.
 //! Correlation uses the complete table/slot/generation identity, never a phase enum.
 use super::{Control, Error, global as p};
-use crate::quic::{
-    application_stream::{
-        DeliveryReleased, InputReleased, MAX_LIVE_STREAMS, Origin, ProductionReleased,
-    },
-    tls::Inbox,
-};
+use crate::quic::application::imp::stream::DeliveryReleased;
+use crate::quic::application::imp::stream::InputReleased;
+use crate::quic::application::imp::stream::MAX_LIVE_STREAMS;
+use crate::quic::application::imp::stream::Origin;
+use crate::quic::application::imp::stream::ProductionReleased;
+use crate::quic::imp::tls::Inbox;
 use core::cell::{Cell, RefCell};
 use hibana::Endpoint;
 

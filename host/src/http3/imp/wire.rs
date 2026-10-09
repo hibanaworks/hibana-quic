@@ -19,12 +19,16 @@ fn varint(file: &File, cursor: &mut u64, total: u64) -> Result<u64> {
         .map_err(fail)?;
     *cursor += len as u64;
     Ok(
-        hibana_quic::quic::kernel::packet::decode_varint(&bytes[..len])
+        hibana_quic::quic::imp::kernel::packet::decode_varint(&bytes[..len])
             .map_err(fail)?
             .0,
     )
 }
-pub(in crate::http3) fn next(file: &File, cursor: &mut u64, total: u64) -> Result<Option<FrameHeader>> {
+pub(in crate::http3) fn next(
+    file: &File,
+    cursor: &mut u64,
+    total: u64,
+) -> Result<Option<FrameHeader>> {
     if *cursor == total {
         return Ok(None);
     }

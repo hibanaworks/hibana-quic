@@ -2,11 +2,12 @@
 use crate::async_io::{AsyncUdp, Reactor};
 /// Fixed datagram buffer size of the current host profile.
 pub use crate::storage::DATAGRAM;
-use hibana_quic::{
-    quic::ecn::Codepoint,
-    quic::path::Address,
-    quic::{Clock, DatagramRx, DatagramTx, IoError},
-};
+use hibana_quic::quic::Clock;
+use hibana_quic::quic::DatagramRx;
+use hibana_quic::quic::DatagramTx;
+use hibana_quic::quic::IoError;
+use hibana_quic::quic::ecn::imp::Codepoint;
+use hibana_quic::quic::path::Address;
 use std::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},

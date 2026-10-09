@@ -1,11 +1,15 @@
 //! Measures implemented component paths only, not a complete QUIC/TLS handshake.
-use hibana_quic::{
-    quic::kernel::accounting::{AckRange, PacketKind, PathBudget, SentLedger},
-    quic::kernel::flow::{ConnectionReceive, StreamReceive},
-    tls::buffer::CryptoBuffer,
-    quic::kernel::packet::{decode_varint, encode_varint},
-    quic::kernel::storage::{LeasePool, OwnerId},
-};
+use hibana_quic::quic::imp::crypto_buffer::CryptoBuffer;
+use hibana_quic::quic::imp::kernel::accounting::AckRange;
+use hibana_quic::quic::imp::kernel::accounting::PacketKind;
+use hibana_quic::quic::imp::kernel::accounting::PathBudget;
+use hibana_quic::quic::imp::kernel::accounting::SentLedger;
+use hibana_quic::quic::imp::kernel::flow::ConnectionReceive;
+use hibana_quic::quic::imp::kernel::flow::StreamReceive;
+use hibana_quic::quic::imp::kernel::packet::decode_varint;
+use hibana_quic::quic::imp::kernel::packet::encode_varint;
+use hibana_quic::quic::imp::kernel::storage::LeasePool;
+use hibana_quic::quic::imp::kernel::storage::OwnerId;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

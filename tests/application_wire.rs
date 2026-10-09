@@ -1,15 +1,15 @@
 //! Reconstructed integration tests; not executed after environment replacement.
-use hibana_quic::quic::{
-    Error,
-    application_wire::{open, seal},
-};
-use hibana_quic::{
-    crypto::{
-        CipherSuite, IntegrityBudget, KeyKind, PacketKey,
-        directional::{ApplicationKeyScope, AuthenticatedRead},
-    },
-    quic::kernel::packet::{self, ShortHeader},
-};
+use hibana_quic::crypto::CipherSuite;
+use hibana_quic::crypto::IntegrityBudget;
+use hibana_quic::crypto::KeyKind;
+use hibana_quic::crypto::PacketKey;
+use hibana_quic::crypto::directional::ApplicationKeyScope;
+use hibana_quic::crypto::directional::AuthenticatedRead;
+use hibana_quic::quic::Error;
+use hibana_quic::quic::imp::application_wire::open;
+use hibana_quic::quic::imp::application_wire::seal;
+use hibana_quic::quic::imp::kernel::packet;
+use hibana_quic::quic::imp::kernel::packet::ShortHeader;
 fn key(suite: CipherSuite, byte: u8) -> PacketKey {
     PacketKey::from_secret(suite, KeyKind::OneRtt, &[byte; 32]).unwrap()
 }
@@ -192,7 +192,8 @@ fn authenticated_peer_epoch_waits_for_actual_tx_install_before_ack_authority() {
 }
 #[test]
 fn seal_retains_reservation_and_rejects_changed_plaintext_scope_epoch_or_length() {
-    use hibana_quic::quic::{Side, recovery::Recovery};
+    use hibana_quic::quic::Side;
+    use hibana_quic::quic::imp::recovery::Recovery;
     let guard = actor_test_allocator::NoAlloc::start();
     let suite = CipherSuite::Aes128GcmSha256;
     let mut scope = ApplicationKeyScope::new(94);

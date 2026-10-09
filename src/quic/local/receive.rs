@@ -9,7 +9,7 @@ struct ReceiveWire<'keys, 'scope, 'buf, const N: usize> {
     datagram: [u8; N],
     len: usize,
     received_at: u64,
-    ecn: Option<crate::quic::ecn::Codepoint>,
+    ecn: Option<crate::quic::ecn::imp::Codepoint>,
     path: Option<crate::quic::path::Address>,
     offset: usize,
     opened: [u8; N],
@@ -83,7 +83,7 @@ impl<'scope, const N: usize> ReceiveWire<'_, 'scope, '_, N> {
             } => {
                 if version != config.version
                     && !(kind == LongType::Initial
-                        && version == crate::quic::kernel::version::Version::V1)
+                        && version == crate::quic::imp::kernel::version::Version::V1)
                 {
                     return Ok(true);
                 }
@@ -227,7 +227,7 @@ pub(in crate::quic) async fn receive<'scope, const N: usize, const P: usize>(
     endpoint: &mut Endpoint<'_, { p::RX }>,
     stop: &mut Endpoint<'_, { p::RECEIVE_STOP }>,
     io: &mut impl DatagramRx,
-    message: &crate::tls::handshake::local::MessageSlot<'_>,
+    message: &hibana_tls::handshake::local::MessageSlot<'_>,
     slots: &Storage<'scope, '_, N, P>,
     config: Config<'_>,
     initial: &initial::Keys<'scope>,
@@ -265,7 +265,8 @@ pub(in crate::quic) async fn receive<'scope, const N: usize, const P: usize>(
         wire.ecn = first.received.ecn;
         wire.path = first.received.path;
     }
-    use crate::tls::handshake::{global as tls, local as direct};
+    use hibana_tls::handshake::global as tls;
+    use hibana_tls::handshake::local as direct;
     struct Input<F>(F);
     impl<F> direct::MessageInput for Input<F>
     where

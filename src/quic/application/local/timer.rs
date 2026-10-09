@@ -1,6 +1,7 @@
 //! Deadline progress is independent of a pending UDP publication.
 use super::{Control, Error, global as p, keys::KeyOwner};
-use crate::quic::{Clock, recovery};
+use crate::quic::Clock;
+use crate::quic::imp::recovery;
 use hibana::Endpoint;
 
 pub(crate) async fn run<const N: usize>(

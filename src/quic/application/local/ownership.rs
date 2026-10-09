@@ -1,11 +1,15 @@
 //! Affine transitions between the projected prefix, ordinary application and
 //! closing continuations. Hibana owns progress; actual affine slots own resources.
 use super::{Error, OrdinaryRetired, Roles, global as p, keys, termination};
-use crate::quic::{
-    Config, ReceiveContinuation, ReceiveMaterial, Side, TransmitContinuation,
-    parameters::{self, ValidatedPeer},
-    tls::{Inbox, Transcript},
-};
+use crate::quic::Config;
+use crate::quic::ReceiveContinuation;
+use crate::quic::ReceiveMaterial;
+use crate::quic::Side;
+use crate::quic::TransmitContinuation;
+use crate::quic::imp::parameters;
+use crate::quic::imp::parameters::ValidatedPeer;
+use crate::quic::imp::tls::Inbox;
+use crate::quic::imp::tls::Transcript;
 
 pub(crate) struct Received<'scope, const P: usize> {
     pub material: ReceiveMaterial<'scope>,
@@ -168,7 +172,8 @@ pub(crate) async fn admit<'lane, 'owner, 'scope, const P: usize>(
             roles.source.recv::<p::StreamAdmission>().await?;
             peer_slot.take().map_err(|_| Error::Binding)
         };
-        crate::runtime::join::values4(send_owner, admit_control, admit_transmit, admit_source).await?
+        crate::runtime::join::values4(send_owner, admit_control, admit_transmit, admit_source)
+            .await?
     };
     Ok((peer, writer, control))
 }

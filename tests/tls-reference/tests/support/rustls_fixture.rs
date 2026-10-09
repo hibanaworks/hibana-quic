@@ -7,14 +7,14 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
-use hibana_quic::{
-    runtime::{TaskSet, carrier::CarrierStorage},
-    tls::{
-        Level, Provider,
-        handshake::{BoundedTls, global, local},
-    },
-};
+use hibana_quic::runtime::TaskSet;
+use hibana_quic::runtime::carrier::CarrierStorage;
 use hibana_quic_reference_tls::rustls::quic::{Connection, KeyChange, Keys};
+use hibana_tls::endpoint::Level;
+use hibana_tls::endpoint::Provider;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::global;
+use hibana_tls::handshake::local;
 use std::collections::VecDeque;
 pub struct Peer {
     pub connection: Connection,
@@ -130,7 +130,7 @@ pub fn handshake_observe(
         let mut out = [0; 4096];
         while let Some(message) = candidate.borrow_mut().transmit(&mut out).unwrap() {
             let mut p = peer.borrow_mut();
-            if hibana_quic::tls::wire::is_hello_retry_request(&out[..message.len]) {
+            if hibana_tls::wire::is_hello_retry_request(&out[..message.len]) {
                 p.saw_hrr = true;
             }
             for fragment in out[..message.len].chunks(37) {

@@ -1,36 +1,59 @@
-# Bounded-profile host adapters
+# hibana-quic-host
 
-This package intentionally has **no rustls TLS dependency**. Its QUIC/TLS provider
-is `hibana_quic::bounded_tls::BoundedTls`; selected cryptographic primitives,
-borrowed webpki validation and caller-owned core storage are shared with the
-thumbv6m build. The allocating reference TLS implementation lives in the separate
-`reference-tls` package and is only for development comparison.
+Linux adapters and a command-line client/server for hibana-quic. TLS comes from
+hibana-tls. The normal dependency graph consists of the Hibana projects; PEM
+parsing, certificate import and OS bindings are implemented in this workspace.
 
-The binary sources are shared with the development harness to avoid divergent
-application logic. Host argument parsing, files/PEM, root/key import, UDP adapter
-and JSON reporting use `std` and may allocate. This is not a claim that the entire
-host process never allocates. The measured core boundary is documented by the
-allocation tests; no-allocation error-path tests must use this dependency closure,
-not a mixed reference-TLS graph that enables webpki's diagnostic `alloc` feature.
+## Build
 
-PEM import uses `rustls-pki-types` 1.15.1 `PemObject` slice APIs in the shared
-host-only `src/pem.rs`. It reads PEM setup files into host memory and enables
-only `pki-types/alloc`, not `pki-types/std` or webpki diagnostic features. The
-standalone core dependency graph enables neither feature. Certificate import
-validates every PEM block; key import selects the first PKCS#1, PKCS#8 or SEC1
-block. Empty inputs and malformed supported blocks fail closed. PEM decoding
-does not replace DER, algorithm, certificate-chain, hostname or time validation.
+From the repository root:
 
 ```sh
-cargo build --manifest-path host/Cargo.toml --release
-cargo test --manifest-path host/Cargo.toml --test bounded_wire
-cargo tree --manifest-path host/Cargo.toml -e features -i rustls-webpki
+cargo build --locked --release --manifest-path host/Cargo.toml --bin hq
+host/target/release/hq --help
 ```
 
-The profile's algorithm/protocol exclusions remain in `docs/bounded-tls.md`.
-Direct handshakes or transfers are not the 40-case runner gate, and host tests
-are not Pico hardware-in-loop evidence.
+If CARGO_TARGET_DIR is set, the executable is in its `release/` directory instead.
 
-The separately tested native IPv4/IPv6 ECN metadata socket helper and bounded
-validation component are documented in [ECN.md](ECN.md). Endpoint wiring and direct real-peer tests are covered there; full runner
-qualification is still separate.
+## Serve and fetch a file
+
+Use a certificate chain and private key for `localhost`. The client must trust
+the certificate's CA. Prepare the served directory:
+
+```sh
+mkdir -p www downloads
+printf 'hello from Hibana\n' > www/hello.txt
+```
+
+Server terminal:
+
+```sh
+host/target/release/hq server --listen 127.0.0.1:4433 \
+  --cert chain.pem --key key.pem --www www --max-requests 1 --http 3
+```
+
+Client terminal:
+
+```sh
+host/target/release/hq client --connect 127.0.0.1:4433 \
+  --server-name localhost --ca ca.pem --request /hello.txt \
+  --downloads downloads --http 3
+cmp www/hello.txt downloads/hello.txt
+```
+
+The [single-command example](../examples/http3-transfer.sh) runs these together.
+Never use a production private key for a local demonstration.
+
+## Library entry points
+
+- [application/local/](src/application/local/mod.rs): execute the connected
+  client/server graph with your request source, body reader and response sink.
+- [connection/local/mod.rs](src/connection/local/mod.rs): attach and execute a handshake.
+- [retry/local/](src/retry/local/mod.rs): projected server address admission.
+- [io.rs](src/io.rs): asynchronous UDP and clock effects.
+- [storage.rs](src/storage.rs): caller-selected bounded connection storage.
+- [http3/](src/http3/mod.rs): FIN-complete HTTP/3 file response framing.
+
+Host owns allocation and OS effects. Protocol order and key ownership remain in
+Hibana global/local code. The CLI's file handling is one application of that API.
+The present profile is request/response file transfer, not a general HTTP/3 SDK.

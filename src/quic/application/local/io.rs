@@ -11,14 +11,15 @@ use super::{
     BodyReader, ClientRequests, Control, Error, MAX_REQUEST_BYTES, MAX_REQUESTS, ServerHandler,
     StreamSink, global as p,
 };
-use crate::{
-    quic::kernel::streams::{self, StreamHandle},
-    quic::{
-        application_stream::{self, App, MAX_LIVE_STREAMS, Production},
-        tls::Inbox,
-    },
-    runtime::mailbox::{Receiver, Sender},
-};
+use crate::quic::application::imp::stream;
+use crate::quic::application::imp::stream::App;
+use crate::quic::application::imp::stream::MAX_LIVE_STREAMS;
+use crate::quic::application::imp::stream::Production;
+use crate::quic::imp::kernel::streams;
+use crate::quic::imp::kernel::streams::StreamHandle;
+use crate::quic::imp::tls::Inbox;
+use crate::runtime::mailbox::Receiver;
+use crate::runtime::mailbox::Sender;
 
 pub(crate) const REQUEST_BYTES: usize = MAX_REQUEST_BYTES;
 // One retained complete request per admitted stream slot. A response body may
@@ -125,10 +126,10 @@ fn check(actual: u64, expected: u64) -> Result<(), Error> {
     }
 }
 
-fn backpressure(error: &application_stream::Error) -> bool {
+fn backpressure(error: &stream::Error) -> bool {
     matches!(
         error,
-        application_stream::Error::Streams(
+        stream::Error::Streams(
             streams::Error::Capacity | streams::Error::FlowControl | streams::Error::StreamLimit
         )
     )
@@ -179,7 +180,7 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                     Ok(stream) => break stream,
                     // Peer credit and the actual three-owner reclamation can
                     // unblock the bounded slot; neither is fabricated here.
-                    Err(application_stream::Error::Streams(
+                    Err(stream::Error::Streams(
                         streams::Error::StreamLimit | streams::Error::Capacity,
                     )) => {
                         control.wait(0, revision).await;
@@ -669,7 +670,7 @@ async fn admit<const RX: usize, const CHUNK: usize>(
                     return Err(Error::Binding);
                 }
             }
-            Err(application_stream::Error::Streams(streams::Error::SendClosed)) => {
+            Err(stream::Error::Streams(streams::Error::SendClosed)) => {
                 return Ok(Admission::Stopped);
             }
             Err(error) if backpressure(&error) => control.wait(1, revision).await,
@@ -1011,7 +1012,7 @@ async fn receive_request<'book, const RX: usize, const CHUNK: usize, B>(
                 .len
                 .checked_add(len)
                 .filter(|end| *end <= REQUEST_BYTES)
-                .ok_or(application_stream::Error::Capacity)?;
+                .ok_or(stream::Error::Capacity)?;
             let middle = request.len + view.first.len();
             request.bytes[request.len..middle].copy_from_slice(view.first);
             request.bytes[middle..end].copy_from_slice(view.second);
@@ -1068,12 +1069,15 @@ mod tests {
     #[test]
     fn retained_request_accepts_exact_capacity_and_rejects_overflow_without_consuming() {
         use crate::crypto::directional::ApplicationKeyScope;
-        use crate::quic::application_stream::{Facets, StreamNumbers};
-        use crate::quic::kernel::{
-            packet::Frame,
-            streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
-        };
-        use crate::quic::publication_gate::PublicationGate;
+        use crate::quic::application::imp::stream::Facets;
+        use crate::quic::application::imp::stream::StreamNumbers;
+        use crate::quic::imp::kernel::packet::Frame;
+        use crate::quic::imp::kernel::streams::Limits;
+        use crate::quic::imp::kernel::streams::PacketReference;
+        use crate::quic::imp::kernel::streams::Role;
+        use crate::quic::imp::kernel::streams::SendChunk;
+        use crate::quic::imp::kernel::streams::StreamSlot;
+        use crate::quic::imp::publication_gate::PublicationGate;
         let mut scope = ApplicationKeyScope::new(917);
         let mut installation = scope.claim().unwrap();
         let mut gate = PublicationGate::new(installation.take_publication_gate().unwrap());
@@ -1298,15 +1302,16 @@ mod tests {
 #[cfg(test)]
 mod stop_tests {
     use super::*;
-    use crate::{
-        crypto::directional::ApplicationKeyScope,
-        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
-        quic::{
-            application_stream::{Facets, StreamNumbers},
-            publication_gate::PublicationGate,
-        },
-        runtime::carrier::CarrierStorage,
-    };
+    use crate::crypto::directional::ApplicationKeyScope;
+    use crate::quic::application::imp::stream::Facets;
+    use crate::quic::application::imp::stream::StreamNumbers;
+    use crate::quic::imp::kernel::streams::Limits;
+    use crate::quic::imp::kernel::streams::PacketReference;
+    use crate::quic::imp::kernel::streams::Role;
+    use crate::quic::imp::kernel::streams::SendChunk;
+    use crate::quic::imp::kernel::streams::StreamSlot;
+    use crate::quic::imp::publication_gate::PublicationGate;
+    use crate::runtime::carrier::CarrierStorage;
     use core::{
         future::Future,
         pin::pin,
@@ -1684,15 +1689,16 @@ mod stop_tests {
 #[cfg(test)]
 mod interrupted_delivery_tests {
     use super::*;
-    use crate::{
-        crypto::directional::ApplicationKeyScope,
-        quic::kernel::streams::{Limits, PacketReference, Role, SendChunk, StreamSlot},
-        quic::{
-            application_stream::{Facets, StreamNumbers},
-            publication_gate::PublicationGate,
-        },
-        runtime::carrier::CarrierStorage,
-    };
+    use crate::crypto::directional::ApplicationKeyScope;
+    use crate::quic::application::imp::stream::Facets;
+    use crate::quic::application::imp::stream::StreamNumbers;
+    use crate::quic::imp::kernel::streams::Limits;
+    use crate::quic::imp::kernel::streams::PacketReference;
+    use crate::quic::imp::kernel::streams::Role;
+    use crate::quic::imp::kernel::streams::SendChunk;
+    use crate::quic::imp::kernel::streams::StreamSlot;
+    use crate::quic::imp::publication_gate::PublicationGate;
+    use crate::runtime::carrier::CarrierStorage;
     use core::{
         future::Future,
         pin::pin,

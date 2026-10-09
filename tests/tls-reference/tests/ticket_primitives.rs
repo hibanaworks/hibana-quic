@@ -1,13 +1,17 @@
 //! Host-only allocation instrumentation for the bounded ticket/cache primitives.
 //! This is not a claim that PSK wire negotiation is integrated into BoundedTls.
-use hibana_quic::{
-    tls::schedule::{KeySchedule, Transcript},
-    tls::ticket::{
-        Acceptance, Binding, ClientCache, ClientSlot, ReceivedTicket, ReplayPolicy, ReplaySlot,
-        SEALED_TICKET_BYTES, TicketKey,
-    },
-};
 use hibana_quic_host::entropy::KernelEntropy;
+use hibana_tls::schedule::KeySchedule;
+use hibana_tls::schedule::Transcript;
+use hibana_tls::ticket::Acceptance;
+use hibana_tls::ticket::Binding;
+use hibana_tls::ticket::ClientCache;
+use hibana_tls::ticket::ClientSlot;
+use hibana_tls::ticket::ReceivedTicket;
+use hibana_tls::ticket::ReplayPolicy;
+use hibana_tls::ticket::ReplaySlot;
+use hibana_tls::ticket::SEALED_TICKET_BYTES;
+use hibana_tls::ticket::TicketKey;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

@@ -1,13 +1,17 @@
 //! Bounded client authenticated by an independently signing rustls RSA server.
 //! OpenSSL key generation and the allocating peer are outside the bounded call
 //! counter. No private test key is written to disk or committed to the repository.
-use hibana_quic::{
-    tls::certificate::{CertificateDer, Limits, UnixTime, trust_anchor_from_der},
-    tls::handshake::{BoundedTls, ClientConfig, Storage},
-    tls::{Level, Provider},
-};
 use hibana_quic_host::entropy::KernelEntropy;
 use hibana_quic_reference_tls::{RustlsProvider, rustls};
+use hibana_tls::certificate::CertificateDer;
+use hibana_tls::certificate::Limits;
+use hibana_tls::certificate::UnixTime;
+use hibana_tls::certificate::trust_anchor_from_der;
+use hibana_tls::endpoint::Level;
+use hibana_tls::endpoint::Provider;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::ClientConfig;
+use hibana_tls::handshake::Storage;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::{
@@ -149,7 +153,7 @@ fn exchange(
     client: &mut BoundedTls<'_, '_>,
     server: &mut RustlsProvider,
     corrupt_cv: bool,
-) -> Result<bool, hibana_quic::tls::handshake::local::Error> {
+) -> Result<bool, hibana_tls::handshake::local::Error> {
     use core::{
         cell::RefCell,
         future::poll_fn,
@@ -157,11 +161,10 @@ fn exchange(
         task::{Poll, Waker},
     };
     use hibana::runtime::{SessionKitStorage, ids::SessionId};
-    use hibana_quic::{
-        runtime::TaskSet,
-        runtime::carrier::CarrierStorage,
-        tls::handshake::{global, local},
-    };
+    use hibana_quic::runtime::TaskSet;
+    use hibana_quic::runtime::carrier::CarrierStorage;
+    use hibana_tls::handshake::global;
+    use hibana_tls::handshake::local;
     struct Access<'a, 'cfg, 'buf> {
         tls: RefCell<&'a mut BoundedTls<'cfg, 'buf>>,
         reader: RefCell<Option<Waker>>,
@@ -353,7 +356,7 @@ fn run(bits: u16, corrupt_cv: bool) {
         BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::kernel::version::Version::V1,
+                version: hibana_quic::quic::imp::kernel::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: UnixTime::since_unix_epoch(Duration::from_secs(1_800_000_000)),
@@ -370,7 +373,7 @@ fn run(bits: u16, corrupt_cv: bool) {
     if corrupt_cv {
         assert!(matches!(
             result,
-            Err(hibana_quic::tls::handshake::local::Error::Crypto(_))
+            Err(hibana_tls::handshake::local::Error::Crypto(_))
         ));
         assert!(client.last_failure().is_some());
         assert!(!client.has_keys(Level::OneRtt));

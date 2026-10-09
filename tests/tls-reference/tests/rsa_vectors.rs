@@ -1,7 +1,8 @@
 //! Complete published signature corpora through the bounded adapter.
 //! Corpus decoding uses borrowed static slices; each public verification call is
 //! independently measured, including invalid signatures and parse failures.
-use hibana_quic::tls::rsa::{self as tls_rsa, Error};
+use hibana_tls::signature::rsa as tls_rsa;
+use hibana_tls::signature::rsa::Error;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

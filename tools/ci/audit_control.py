@@ -9,16 +9,16 @@ REMOVED = {
     "src/quic/mod.rs": [r"\bclaimed\s*:\s*Cell<bool>"],
     "src/crypto/mod.rs": [r"\bstruct\s+ApplicationKeys\b", r"\bfn\s+take_for_role\b"],
     "src/crypto/directional.rs": [r"\bactive\s*:\s*bool", r"\benum\s+Pending\b", r"\bcurrent_acked\s*:\s*bool", r"\bhandshake_confirmed\s*:\s*bool"],
-    "src/quic/early_data.rs": [r"\benum\s+Phase\b", r"\bstruct\s+Quarantine\b", r"\b(fin_pending|marker_pending|opened_in_table|fin_released)\s*:\s*bool"],
-    "src/quic/path.rs": [r"\bstruct\s+(Paths|PathSlot)\b"],
-    "src/quic/ecn.rs": [r"\bstruct\s+PathEcn\b", r"\benum\s+State\b"],
-    "src/quic/retry.rs": [r"\bstruct\s+(ClientRetry|CommittedRetry)\b", r"\binitial_processed\s*:\s*bool"],
-    "src/quic/kernel/connection_id.rs": [r"\bretirement_acked\s*:\s*bool"],
+    "src/quic/early_data/imp/mod.rs": [r"\benum\s+Phase\b", r"\bstruct\s+Quarantine\b", r"\b(fin_pending|marker_pending|opened_in_table|fin_released)\s*:\s*bool"],
+    "src/quic/path/mod.rs": [r"\bstruct\s+(Paths|PathSlot)\b"],
+    "src/quic/ecn/imp/mod.rs": [r"\bstruct\s+PathEcn\b", r"\benum\s+State\b"],
+    "src/quic/retry/imp/mod.rs": [r"\bstruct\s+(ClientRetry|CommittedRetry)\b", r"\binitial_processed\s*:\s*bool"],
+    "src/quic/imp/kernel/connection_id.rs": [r"\bretirement_acked\s*:\s*bool"],
     "src/quic/application/local/keys.rs": [r"\bretired\s*:\s*bool"],
     "src/quic/application/local/transmit.rs": [r"\bclosing\s*:\s*Cell<bool>"],
-    "src/quic/recovery.rs": [r"\bparameters_bound\s*:\s*bool",r"\b(close_only|terminal)\s*:\s*bool"],
-    "src/quic/transcript.rs": [r"\bNumericOwner\b", r"\bwith_crypto\b", r"\.material\("],
-    "src/quic/tls.rs": [r"\bretired\s*:\s*bool"],
+    "src/quic/imp/recovery.rs": [r"\bparameters_bound\s*:\s*bool",r"\b(close_only|terminal)\s*:\s*bool"],
+    "src/quic/local/transcript.rs": [r"\bNumericOwner\b", r"\bwith_crypto\b", r"\.material\("],
+    "src/quic/imp/tls.rs": [r"\bretired\s*:\s*bool"],
     "src/tls/handshake.rs": [r"\benum\s+State\b", r"\bstate\s*:\s*State", r"\b(handshake_created|application_created|handshake_discarded|application_discarded|key_handoff|tx_post_handshake)\s*:\s*bool"],
     "src/tls/handshake/key_source.rs": [r"\b(integrity_taken|early_taken|finished_taken)\s*:\s*bool"],
 }
@@ -44,10 +44,10 @@ def main():
     for pattern in REMOVED["src/crypto/mod.rs"] + [r"\bactive\s*:\s*bool"]:
         if re.search(pattern, packet):
             failures.append("removed packet material controller returned in canonical hibana-tls")
-    source = (material / "src/handshake/key_source.rs").read_text()
+    source = (material / "src/handshake/local/keys.rs").read_text()
     if re.search(r"\bpub\s+fn\s+material\b|\bpub\s+provider\s*:", source):
         failures.append("public mutable TLS material escape returned")
-    local = (material / "src/handshake/local.rs").read_text()
+    local = (material / "src/handshake/local/mod.rs").read_text()
     if re.search(r"\b(CryptoAccess|SourceAccess|with_crypto|client_source_owner|server_source_owner)\b", local):
         failures.append("removed TLS forwarding adapter returned")
     if re.search(r"\bfn\s+(material|client_transcript_role)\b", source):

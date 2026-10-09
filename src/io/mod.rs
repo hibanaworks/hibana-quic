@@ -14,7 +14,7 @@ pub enum IoError {
 pub struct ReceivedDatagram {
     pub path: Option<crate::quic::path::Address>,
     pub len: usize,
-    pub ecn: Option<crate::quic::ecn::Codepoint>,
+    pub ecn: Option<crate::quic::ecn::imp::Codepoint>,
 }
 pub trait DatagramRx {
     fn receive(
@@ -28,7 +28,7 @@ pub trait DatagramTx {
     fn send_on_path(
         &mut self,
         bytes: &[u8],
-        ecn: crate::quic::ecn::Codepoint,
+        ecn: crate::quic::ecn::imp::Codepoint,
         path: Option<crate::quic::path::Address>,
     ) -> impl Future<Output = Result<u64, IoError>> {
         async move {
@@ -42,7 +42,7 @@ pub trait DatagramTx {
     fn send(
         &mut self,
         bytes: &[u8],
-        ecn: crate::quic::ecn::Codepoint,
+        ecn: crate::quic::ecn::imp::Codepoint,
     ) -> impl Future<Output = Result<u64, IoError>>;
 }
 pub trait Clock {

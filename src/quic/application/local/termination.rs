@@ -1,10 +1,10 @@
 //! Independent peer and application terminal edges carry actual affine close
 //! permissions. Wire payloads are correlation observations, never authority.
 use super::{CloseKind, Control, Error, global as p, io};
-use crate::{
-    crypto::directional::ApplicationKeyScope,
-    quic::{Side, application_stream::App, tls::Inbox},
-};
+use crate::crypto::directional::ApplicationKeyScope;
+use crate::quic::Side;
+use crate::quic::application::imp::stream::App;
+use crate::quic::imp::tls::Inbox;
 use core::{
     cell::RefCell,
     future::{Future, poll_fn},
@@ -79,7 +79,7 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
     exchange: &Exchange<'_, '_, '_>,
     state: &io::State<'_, CHUNK, B>,
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
-    book: &crate::quic::recovery::CompletionObserver<'_, '_, N>,
+    book: &crate::quic::imp::recovery::CompletionObserver<'_, '_, N>,
     side: Side,
     idle: (u64, &impl crate::quic::Clock),
 ) -> Result<(), Error> {

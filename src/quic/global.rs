@@ -9,7 +9,7 @@ pub const TLS_RX: u8 = 1;
 pub const TX: u8 = 2;
 pub const TLS_TX: u8 = 3;
 pub const TLS_COMPLETE: u8 = 32;
-pub const TLS_HANDOFF: u8 = hibana_tls::owned_global::HANDOFF;
+pub const TLS_HANDOFF: u8 = hibana_tls::handshake::global::owned::HANDOFF;
 pub type TranscriptComplete = g::Msg<227, ()>;
 pub const UDP: u8 = 4;
 pub const TIMER: u8 = 5;
@@ -297,8 +297,11 @@ pub type InitialRetirementFlow = g::Seq<
     g::Send<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>,
 >;
 pub type ReceiveFlow = g::Seq<
-    hibana_tls::owned_global::Flow,
-    g::Seq<g::Send<TLS_RX, TLS_COMPLETE, TranscriptComplete>, g::Seq<g::Send<RX, TLS_RX, ReceiveComplete>, g::Send<TLS_RX, RX, ReceiveContinuation>>>,
+    hibana_tls::handshake::global::owned::Flow,
+    g::Seq<
+        g::Send<TLS_RX, TLS_COMPLETE, TranscriptComplete>,
+        g::Seq<g::Send<RX, TLS_RX, ReceiveComplete>, g::Send<TLS_RX, RX, ReceiveContinuation>>,
+    >,
 >;
 pub type DrainFlow = g::Roll<
     g::Route<
@@ -412,17 +415,19 @@ pub fn early_prefix() -> g::Program<EarlyFlow> {
 pub type MainFlow =
     g::Par<ReceiveFlow, g::Par<TransmitFlow, g::Par<TimerFlow, InitialRetirementFlow>>>;
 pub type Flow = g::Seq<
-    crate::quic::retry::client_global::Prefix,
+    crate::quic::retry::global::client::Prefix,
     g::Seq<EarlyFlow, g::Seq<g::Send<TLS_TX, TX, EarlyContinue>, MainFlow>>,
 >;
 
 pub fn choreography() -> g::Program<Flow> {
     let receive = g::seq(
-        hibana_tls::owned_global::choreography(),
+        hibana_tls::handshake::global::owned::choreography(),
         g::seq(
             g::send::<TLS_RX, TLS_COMPLETE, TranscriptComplete>(),
-            g::seq(g::send::<RX, TLS_RX, ReceiveComplete>(),
-                g::send::<TLS_RX, RX, ReceiveContinuation>()),
+            g::seq(
+                g::send::<RX, TLS_RX, ReceiveComplete>(),
+                g::send::<TLS_RX, RX, ReceiveContinuation>(),
+            ),
         ),
     );
     let drain = g::route(
@@ -487,7 +492,7 @@ pub fn choreography() -> g::Program<Flow> {
         g::send::<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>(),
     );
     g::seq(
-        crate::quic::retry::client_global::prefix(),
+        crate::quic::retry::global::client::prefix(),
         g::seq(
             early_prefix(),
             g::seq(

@@ -8,12 +8,13 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
-use hibana_quic::{
-    runtime::TaskSet,
-    runtime::carrier::CarrierStorage,
-    tls::handshake::{BoundedTls, global, local},
-    tls::{Level, Provider},
-};
+use hibana_quic::runtime::TaskSet;
+use hibana_quic::runtime::carrier::CarrierStorage;
+use hibana_tls::endpoint::Level;
+use hibana_tls::endpoint::Provider;
+use hibana_tls::handshake::BoundedTls;
+use hibana_tls::handshake::global;
+use hibana_tls::handshake::local;
 struct Input<'a, 'b, 'cfg, 'buf, 'remote_cfg, 'remote_buf> {
     local: &'a RefCell<&'b mut BoundedTls<'cfg, 'buf>>,
     fragment: usize,
@@ -312,14 +313,14 @@ pub fn drain_authenticated_tickets(
 /// Actual projected transcript processing through pristine KeySource ownership.
 /// This component fixture transports CRYPTO plaintext, not QUIC packets.
 pub fn handshake_key_sources_observe<'client, 'server>(
-    client: &mut hibana_quic::tls::handshake::key_source::KeySource<'client, '_, '_>,
-    server: &mut hibana_quic::tls::handshake::key_source::KeySource<'server, '_, '_>,
+    client: &mut hibana_tls::handshake::local::keys::KeySource<'client, '_, '_>,
+    server: &mut hibana_tls::handshake::local::keys::KeySource<'server, '_, '_>,
     mut observe: impl FnMut(
-        &mut hibana_quic::tls::handshake::key_source::KeySource<'_, '_, '_>,
-        &mut hibana_quic::tls::handshake::key_source::KeySource<'_, '_, '_>,
+        &mut hibana_tls::handshake::local::keys::KeySource<'_, '_, '_>,
+        &mut hibana_tls::handshake::local::keys::KeySource<'_, '_, '_>,
     ),
 ) -> (Collected<'client>, Collected<'server>) {
-    use hibana_quic::tls::handshake::key_source::KeySource;
+    use hibana_tls::handshake::local::keys::KeySource;
     struct SourceInput<'a, 'scope, 'cfg, 'buf> {
         remote: &'a RefCell<&'a mut KeySource<'scope, 'cfg, 'buf>>,
         bytes: [u8; 8208],
@@ -404,16 +405,16 @@ pub fn handshake_key_sources_observe<'client, 'server>(
         .init()
         .rendezvous(&mut sm, sc.bind(sid).unwrap())
         .unwrap();
-    let cp = hibana_tls::owned_global::programs();
-    let sp = hibana_tls::owned_global::programs();
+    let cp = hibana_tls::handshake::global::owned::programs();
+    let sp = hibana_tls::handshake::global::owned::programs();
     let mut cv = cr.enter(cid, &cp.verify).unwrap();
     let mut cw = cr.enter(cid, &cp.input).unwrap();
     let mut sv = sr.enter(sid, &sp.verify).unwrap();
     let mut sw = sr.enter(sid, &sp.input).unwrap();
     let mut ch = cr.enter(cid, &cp.handoff).unwrap();
     let mut sh = sr.enter(sid, &sp.handoff).unwrap();
-    let cmaterial = hibana_tls::handshake::key_source::Handoff::<1024>::new();
-    let smaterial = hibana_tls::handshake::key_source::Handoff::<1024>::new();
+    let cmaterial = hibana_tls::handshake::local::keys::Handoff::<1024>::new();
+    let smaterial = hibana_tls::handshake::local::keys::Handoff::<1024>::new();
     let mut cout = Collected::new();
     let mut sout = Collected::new();
     {
@@ -463,9 +464,9 @@ pub fn handshake_key_sources_observe<'client, 'server>(
 /// Actual affine material retained by the test's projected receiving local.
 /// No keys or Finished receipt are reconstructed from the source after handoff.
 pub struct Collected<'scope> {
-    pub handshake: Option<hibana_tls::handshake::key_source::HandshakeKeyMaterial<'scope>>,
-    pub application: Option<hibana_tls::handshake::key_source::ApplicationKeyMaterial<'scope>>,
-    pub finished: Option<hibana_tls::handshake::key_source::Finished<'scope, 1024>>,
+    pub handshake: Option<hibana_tls::handshake::local::keys::HandshakeKeyMaterial<'scope>>,
+    pub application: Option<hibana_tls::handshake::local::keys::ApplicationKeyMaterial<'scope>>,
+    pub finished: Option<hibana_tls::handshake::local::keys::Finished<'scope, 1024>>,
 }
 impl Collected<'_> {
     fn new() -> Self {
@@ -477,14 +478,14 @@ impl Collected<'_> {
     }
 }
 async fn collect<'scope>(
-    endpoint: &mut hibana::Endpoint<'_, { hibana_tls::owned_global::HANDOFF }>,
-    material: &hibana_tls::handshake::key_source::Handoff<'scope, 1024>,
+    endpoint: &mut hibana::Endpoint<'_, { hibana_tls::handshake::global::owned::HANDOFF }>,
+    material: &hibana_tls::handshake::local::keys::Handoff<'scope, 1024>,
     out: &mut Collected<'scope>,
 ) -> Result<(), local::Error> {
-    use hibana_tls::owned_global as h;
+    use hibana_tls::handshake::global::owned as h;
     async fn take<'scope>(
-        endpoint: &mut hibana::Endpoint<'_, { hibana_tls::owned_global::HANDOFF }>,
-        material: &hibana_tls::handshake::key_source::Handoff<'scope, 1024>,
+        endpoint: &mut hibana::Endpoint<'_, { hibana_tls::handshake::global::owned::HANDOFF }>,
+        material: &hibana_tls::handshake::local::keys::Handoff<'scope, 1024>,
         out: &mut Collected<'scope>,
     ) -> Result<(), local::Error> {
         endpoint.recv::<h::KeysReady>().await?;

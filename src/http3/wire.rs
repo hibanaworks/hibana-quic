@@ -319,8 +319,9 @@ pub fn response_fields(out: &mut [u8]) -> Result<usize, Error> {
     Ok(3)
 }
 pub fn frame_header(kind: u64, length: u64, out: &mut [u8]) -> Result<usize, Error> {
-    let n = crate::quic::kernel::packet::encode_varint(kind, out).map_err(|_| Error::Integer)?;
-    let m = crate::quic::kernel::packet::encode_varint(length, &mut out[n..])
+    let n =
+        crate::quic::imp::kernel::packet::encode_varint(kind, out).map_err(|_| Error::Integer)?;
+    let m = crate::quic::imp::kernel::packet::encode_varint(length, &mut out[n..])
         .map_err(|_| Error::Integer)?;
     Ok(n + m)
 }
@@ -336,9 +337,9 @@ pub struct FrameHeader {
 }
 pub fn decode_frame_header(input: &[u8]) -> Result<FrameHeader, Error> {
     let (kind, a) =
-        crate::quic::kernel::packet::decode_varint(input).map_err(|_| Error::Truncated)?;
-    let (length, b) =
-        crate::quic::kernel::packet::decode_varint(&input[a..]).map_err(|_| Error::Truncated)?;
+        crate::quic::imp::kernel::packet::decode_varint(input).map_err(|_| Error::Truncated)?;
+    let (length, b) = crate::quic::imp::kernel::packet::decode_varint(&input[a..])
+        .map_err(|_| Error::Truncated)?;
     if matches!(kind, 2 | 6 | 8 | 9) {
         return Err(Error::Frame);
     }
@@ -369,18 +370,18 @@ pub fn decode_settings(input: &[u8]) -> Result<Settings, Error> {
     // fields for duplicates, avoiding an unrelated capacity for unknown settings.
     while pos < input.len() {
         let start = pos;
-        let (id, n) = crate::quic::kernel::packet::decode_varint(&input[pos..])
+        let (id, n) = crate::quic::imp::kernel::packet::decode_varint(&input[pos..])
             .map_err(|_| Error::Truncated)?;
         pos += n;
-        let (value, n) = crate::quic::kernel::packet::decode_varint(&input[pos..])
+        let (value, n) = crate::quic::imp::kernel::packet::decode_varint(&input[pos..])
             .map_err(|_| Error::Truncated)?;
         pos += n;
         let mut prior = 0;
         while prior < start {
-            let (old, n) = crate::quic::kernel::packet::decode_varint(&input[prior..])
+            let (old, n) = crate::quic::imp::kernel::packet::decode_varint(&input[prior..])
                 .map_err(|_| Error::Truncated)?;
             prior += n;
-            let (_, n) = crate::quic::kernel::packet::decode_varint(&input[prior..])
+            let (_, n) = crate::quic::imp::kernel::packet::decode_varint(&input[prior..])
                 .map_err(|_| Error::Truncated)?;
             prior += n;
             if old == id {

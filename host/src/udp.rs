@@ -4,7 +4,7 @@
 use crate::os::udp::{self as native, Metadata as ControlMessageOwned};
 #[cfg(test)]
 use crate::os::udp::{In6Addr, InAddr, Info4, Info6};
-pub use hibana_quic::quic::ecn::Codepoint;
+pub use hibana_quic::quic::ecn::imp::Codepoint;
 use hibana_quic::quic::path::Address;
 use std::{
     io::{self},
@@ -340,7 +340,9 @@ fn decode_ecn(
         let bits = match message {
             ControlMessageOwned::Ipv4Tos(tos) => tos,
             ControlMessageOwned::Ipv6TClass(class) => traffic_class(class)?,
-            ControlMessageOwned::Ipv4PacketInfo(_) | ControlMessageOwned::Ipv6PacketInfo(_) => continue,
+            ControlMessageOwned::Ipv4PacketInfo(_) | ControlMessageOwned::Ipv6PacketInfo(_) => {
+                continue;
+            }
         };
         record_ecn(&mut found, bits)?;
     }
