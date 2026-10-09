@@ -1,5 +1,6 @@
 //! One-shot client Retry boundary. The Retry branch is outside both rolls:
 //! the post-Retry continuation cannot select it a second time.
+use hibana::runtime::program::Projectable;
 use hibana::{
     g,
     runtime::program::{RoleProgram, project},
@@ -32,54 +33,7 @@ pub type RetriedExpired = g::Msg<26, ()>;
 pub type RetriedTaken = g::Msg<27, ()>;
 pub type RetriedQuiesce = g::Msg<28, ()>;
 pub type RetriedQuiescent = g::Msg<29, ()>;
-pub type Publish = g::Seq<
-    g::Send<OWNER, IO, Packet>,
-    g::Seq<
-        g::Route<g::Send<IO, OWNER, Accepted>, g::Send<IO, OWNER, Rejected>>,
-        g::Send<OWNER, IO, Settled>,
-    >,
->;
-pub type Receive = g::Seq<
-    g::Send<OWNER, IO, Listen>,
-    g::Seq<
-        g::Route<g::Send<IO, OWNER, Observed>, g::Send<IO, OWNER, Expired>>,
-        g::Send<OWNER, IO, Taken>,
-    >,
->;
-pub type Pause = g::Seq<g::Send<OWNER, IO, Quiesce>, g::Send<IO, OWNER, Quiescent>>;
-pub type Work = g::Roll<g::Route<Publish, g::Route<Receive, Pause>>>;
-pub type RetriedPublish = g::Seq<
-    g::Send<OWNER, IO, RetriedPacket>,
-    g::Seq<
-        g::Route<g::Send<IO, OWNER, RetriedAccepted>, g::Send<IO, OWNER, RetriedRejected>>,
-        g::Send<OWNER, IO, RetriedSettled>,
-    >,
->;
-pub type RetriedReceive = g::Seq<
-    g::Send<OWNER, IO, RetriedListen>,
-    g::Seq<
-        g::Route<g::Send<IO, OWNER, RetriedObserved>, g::Send<IO, OWNER, RetriedExpired>>,
-        g::Send<OWNER, IO, RetriedTaken>,
-    >,
->;
-pub type RetriedPause =
-    g::Seq<g::Send<OWNER, IO, RetriedQuiesce>, g::Send<IO, OWNER, RetriedQuiescent>>;
-pub type RetriedWork = g::Roll<g::Route<RetriedPublish, g::Route<RetriedReceive, RetriedPause>>>;
-pub type Finish = g::Seq<g::Send<OWNER, IO, Proceed>, g::Send<IO, OWNER, Joined>>;
-pub type Flow = g::Seq<
-    Publish,
-    g::Seq<
-        Work,
-        g::Seq<
-            g::Route<
-                g::Seq<g::Send<OWNER, IO, Rekey>, g::Seq<g::Send<IO, OWNER, Rekeyed>, RetriedWork>>,
-                g::Seq<g::Send<OWNER, IO, Bypass>, g::Send<IO, OWNER, Bypassed>>,
-            >,
-            Finish,
-        >,
-    >,
->;
-fn publish() -> g::Program<Publish> {
+fn publish() -> impl Projectable {
     g::seq(
         g::send::<OWNER, IO, Packet>(),
         g::seq(
@@ -91,7 +45,7 @@ fn publish() -> g::Program<Publish> {
         ),
     )
 }
-fn receive() -> g::Program<Receive> {
+fn receive() -> impl Projectable {
     g::seq(
         g::send::<OWNER, IO, Listen>(),
         g::seq(
@@ -103,7 +57,7 @@ fn receive() -> g::Program<Receive> {
         ),
     )
 }
-fn work() -> g::Program<Work> {
+fn work() -> impl Projectable {
     g::route(
         publish(),
         g::route(
@@ -116,7 +70,7 @@ fn work() -> g::Program<Work> {
     )
     .roll()
 }
-fn retried_publish() -> g::Program<RetriedPublish> {
+fn retried_publish() -> impl Projectable {
     g::seq(
         g::send::<OWNER, IO, RetriedPacket>(),
         g::seq(
@@ -128,7 +82,7 @@ fn retried_publish() -> g::Program<RetriedPublish> {
         ),
     )
 }
-fn retried_receive() -> g::Program<RetriedReceive> {
+fn retried_receive() -> impl Projectable {
     g::seq(
         g::send::<OWNER, IO, RetriedListen>(),
         g::seq(
@@ -140,7 +94,7 @@ fn retried_receive() -> g::Program<RetriedReceive> {
         ),
     )
 }
-fn retried_work() -> g::Program<RetriedWork> {
+fn retried_work() -> impl Projectable {
     g::route(
         retried_publish(),
         g::route(
@@ -153,13 +107,13 @@ fn retried_work() -> g::Program<RetriedWork> {
     )
     .roll()
 }
-fn finish() -> g::Program<Finish> {
+fn finish() -> impl Projectable {
     g::seq(
         g::send::<OWNER, IO, Proceed>(),
         g::send::<IO, OWNER, Joined>(),
     )
 }
-pub fn choreography() -> g::Program<Flow> {
+pub fn choreography() -> impl Projectable {
     g::seq(
         publish(),
         g::seq(
@@ -187,8 +141,7 @@ pub fn programs() -> (RoleProgram<OWNER>, RoleProgram<IO>) {
 
 pub type Skip = g::Msg<30, ()>;
 pub type Skipped = g::Msg<31, ()>;
-pub type Prefix = g::Route<Flow, g::Seq<g::Send<OWNER, IO, Skip>, g::Send<IO, OWNER, Skipped>>>;
-pub fn prefix() -> g::Program<Prefix> {
+pub fn prefix() -> impl Projectable {
     g::route(
         choreography(),
         g::seq(

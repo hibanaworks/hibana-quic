@@ -73,7 +73,7 @@ accepted native I/O. A submitted datagram is not evidence of peer delivery.
 
 The Lean/Z3 models are not an extraction or end-to-end proof of the Rust code.
 Miri checks the executions it runs; it does not prove cryptographic strength or
-constant-time machine code. See [Hibana's guarantee boundary](https://github.com/hibanaworks/hibana/blob/6fccdbf81038b00d99ec1bb2b9c43a487521628e/README.md#guarantees)
+constant-time machine code. See [Hibana's guarantee boundary](https://github.com/hibanaworks/hibana/blob/2eaba16d204a3f33f25ab00087d504380fe7e27f/README.md#guarantees)
 for the underlying runtime and carrier assumptions.
 
 ## Write an application with Hibana
@@ -95,15 +95,19 @@ application conversations; the launcher's `session::Protocol` selects the carrie
 
 ### Shared global
 
+Choreography functions return `impl Projectable`. Rust infers the step-list
+from the expression, and the same value composes with `g::seq`, `g::route`, or
+`g::par` before role projection. Message types describe the wire values; no
+separate type-level copy of the conversation is needed.
+
 ```rust
 use hibana::g;
+use hibana::runtime::program::Projectable;
 pub const CLIENT: u8 = 0;
 pub const SERVER: u8 = 1;
 pub type Number = g::Msg<0, u64>;
 pub type Square = g::Msg<1, u64>;
-pub type Exchange = g::Seq<g::Send<CLIENT, SERVER, Number>, g::Send<SERVER, CLIENT, Square>>;
-pub type Conversation = g::Seq<Exchange, Exchange>;
-pub fn choreography() -> g::Program<Conversation> {
+pub fn choreography() -> impl Projectable {
     g::seq(
         g::seq(
             g::send::<CLIENT, SERVER, Number>(),

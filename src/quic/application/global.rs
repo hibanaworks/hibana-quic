@@ -2,6 +2,7 @@
 //! complete ordinary retirement, then closing or draining.
 use crate::quic::ecn::global as e;
 use crate::quic::global::{RX as PREFIX_RX, TLS_RX as PREFIX_TLS_RX, TX as PREFIX_TX};
+use hibana::runtime::program::Projectable;
 use hibana::{
     g,
     runtime::program::{RoleProgram, project},
@@ -123,247 +124,21 @@ pub type LocalUpdate = g::Msg<205, ()>;
 pub type LocalInstalled = g::Msg<206, ()>;
 pub type LocalRejected = g::Msg<207, ()>;
 pub type LocalSettled = g::Msg<208, ()>;
-pub type LocalUpdateFlow = g::Seq<
-    g::Send<RX_KEYS, TX_KEYS, LocalUpdate>,
-    g::Seq<
-        g::Route<
-            g::Send<TX_KEYS, RX_KEYS, LocalInstalled>,
-            g::Send<TX_KEYS, RX_KEYS, LocalRejected>,
-        >,
-        g::Send<RX_KEYS, TX_KEYS, LocalSettled>,
-    >,
->;
-pub type ProductionTransfer = g::Seq<
-    g::Send<INGRESS, SOURCE_COLLECTOR, ProductionReclaim>,
-    g::Send<SOURCE_COLLECTOR, INGRESS, ProductionStored>,
->;
-pub type ProductionClose = g::Seq<
-    g::Send<INGRESS, SOURCE_COLLECTOR, ProductionReclaimsDone>,
-    g::Send<SOURCE_COLLECTOR, INGRESS, ProductionReclaimsClosed>,
->;
-pub type InputTransfer = g::Seq<
-    g::Route<
-        g::Send<SINK, INPUT_COLLECTOR, InputReclaim>,
-        g::Send<SINK, INPUT_COLLECTOR, NoInputReclaim>,
-    >,
-    g::Send<INPUT_COLLECTOR, SINK, InputStored>,
->;
-pub type InputClose = g::Seq<
-    g::Send<SINK, INPUT_COLLECTOR, InputReclaimsDone>,
-    g::Send<INPUT_COLLECTOR, SINK, InputReclaimsClosed>,
->;
-pub type DeliveryTransfer = g::Seq<
-    g::Send<TRANSMIT, DELIVERY_COLLECTOR, DeliveryReclaim>,
-    g::Send<DELIVERY_COLLECTOR, TRANSMIT, DeliveryStored>,
->;
-pub type DeliveryClose = g::Seq<
-    g::Send<TRANSMIT, DELIVERY_COLLECTOR, DeliveryReclaimsDone>,
-    g::Send<DELIVERY_COLLECTOR, TRANSMIT, DeliveryReclaimsClosed>,
->;
-pub type Reclaim = g::Seq<
-    g::Send<TRANSMIT, ADAPTER, ReclaimStream>,
-    g::Seq<g::Send<ADAPTER, TRANSMIT, StreamReclaimed>, g::Send<TRANSMIT, ADAPTER, ReclaimSettled>>,
->;
-pub type SourceChunk = g::Seq<
-    g::Send<SOURCE, INGRESS, SourceData>,
-    g::Seq<
-        g::Route<
-            g::Send<INGRESS, SOURCE, SourceAccepted>,
-            g::Route<
-                g::Send<INGRESS, SOURCE, SourceStopped>,
-                g::Route<
-                    g::Send<INGRESS, SOURCE, SourceRejected>,
-                    g::Send<INGRESS, SOURCE, SourceDataFailed>,
-                >,
-            >,
-        >,
-        g::Send<SOURCE, INGRESS, SourceTaken>,
-    >,
->;
-pub type StreamProduction = g::Seq<
-    g::Send<SOURCE, INGRESS, SourceOpen>,
-    g::Seq<
-        g::Roll<g::Route<SourceChunk, g::Send<SOURCE, INGRESS, SourceDataFinished>>>,
-        g::Seq<
-            g::Route<g::Send<SOURCE, INGRESS, SourceFin>, g::Send<SOURCE, INGRESS, SourceAbandon>>,
-            g::Route<
-                g::Send<INGRESS, SOURCE, SourceEnded>,
-                g::Route<
-                    g::Send<INGRESS, SOURCE, SourceEndStopped>,
-                    g::Route<
-                        g::Send<INGRESS, SOURCE, SourceEndRejected>,
-                        g::Send<INGRESS, SOURCE, SourceEndFailed>,
-                    >,
-                >,
-            >,
-        >,
-    >,
->;
-pub type SourceBase = g::Seq<
-    g::Roll<g::Route<StreamProduction, g::Send<SOURCE, INGRESS, SourceDone>>>,
-    g::Seq<
-        g::Send<INGRESS, SOURCE, SourceRetired>,
-        g::Route<
-            g::Send<SOURCE, SOURCE_JOIN, SourceJoined>,
-            g::Send<SOURCE, SOURCE_JOIN, SourceFailed>,
-        >,
-    >,
->;
-pub type ReceiveBase = g::Seq<
-    g::Roll<
-        g::Route<
-            g::Seq<
-                g::Send<RECEIVE, SINK, ReceivedData>,
-                g::Route<
-                    g::Send<SINK, RECEIVE, ReceivedMore>,
-                    g::Route<
-                        g::Send<SINK, RECEIVE, ReceivedFin>,
-                        g::Route<
-                            g::Send<SINK, RECEIVE, ReceivedFailed>,
-                            g::Send<SINK, RECEIVE, ReceivedInterrupted>,
-                        >,
-                    >,
-                >,
-            >,
-            g::Send<RECEIVE, SINK, ReceiveRetire>,
-        >,
-    >,
-    g::Send<SINK, RECEIVE, ReceiveRetired>,
->;
-pub type SourceFlow = g::Par<SourceBase, g::Roll<g::Route<ProductionTransfer, ProductionClose>>>;
-pub type ReceiveFlow = g::Par<ReceiveBase, g::Roll<g::Route<InputTransfer, InputClose>>>;
-pub type KeyFlow = g::Seq<
-    g::Roll<
-        g::Route<
-            g::Seq<
-                g::Send<RX_KEYS, TX_KEYS, PeerUpdate>,
-                g::Route<
-                    g::Send<TX_KEYS, RX_KEYS, WriteInstalled>,
-                    g::Send<TX_KEYS, RX_KEYS, UpdateFailed>,
-                >,
-            >,
-            g::Route<
-                g::Seq<
-                    g::Send<RX_KEYS, TX_KEYS, KeyAck>,
-                    g::Route<
-                        g::Send<TX_KEYS, RX_KEYS, KeyAckApplied>,
-                        g::Send<TX_KEYS, RX_KEYS, KeyAckFailed>,
-                    >,
-                >,
-                g::Route<
-                    g::Seq<
-                        g::Send<RX_KEYS, TX_KEYS, Confirmed>,
-                        g::Route<
-                            g::Send<TX_KEYS, RX_KEYS, ConfirmationApplied>,
-                            g::Send<TX_KEYS, RX_KEYS, ConfirmationFailed>,
-                        >,
-                    >,
-                    g::Route<LocalUpdateFlow, g::Send<RX_KEYS, TX_KEYS, KeysRetire>>,
-                >,
-            >,
-        >,
-    >,
-    g::Send<TX_KEYS, RX_KEYS, KeysRetired>,
->;
-pub type TimerFlow = g::Roll<
-    g::Route<
-        g::Seq<g::Send<CLOCK, TX_CLOCK, Expired>, g::Send<TX_CLOCK, CLOCK, TimerTaken>>,
-        g::Seq<g::Send<CLOCK, TX_CLOCK, ClockRetired>, g::Send<TX_CLOCK, CLOCK, ClockAcknowledged>>,
-    >,
->;
-pub type Publish = g::Seq<
-    g::Send<TRANSMIT, ADAPTER, Datagram>,
-    g::Seq<
-        g::Route<g::Send<ADAPTER, TRANSMIT, Accepted>, g::Send<ADAPTER, TRANSMIT, Rejected>>,
-        g::Send<TRANSMIT, ADAPTER, Settled>,
-    >,
->;
-pub type ClosePublish = g::Seq<
-    g::Send<TRANSMIT, ADAPTER, CloseDatagram>,
-    g::Seq<
-        g::Resolve<
-            g::Route<
-                g::Send<ADAPTER, TRANSMIT, CloseAccepted>,
-                g::Send<ADAPTER, TRANSMIT, CloseRejected>,
-            >,
-            SUBMISSION_RESULT,
-        >,
-        g::Send<TRANSMIT, ADAPTER, CloseSettled>,
-    >,
->;
-pub type Closing = g::Seq<
-    g::Roll<g::Route<ClosePublish, g::Send<TRANSMIT, ADAPTER, CloseFlightDone>>>,
-    g::Send<ADAPTER, TRANSMIT, CloseFlightSettled>,
->;
-pub type Draining = g::Seq<g::Send<TRANSMIT, ADAPTER, Drain>, g::Send<ADAPTER, TRANSMIT, Drained>>;
 pub type ApplyStop = g::Msg<174, u64>;
 pub type StopApplied = g::Msg<175, u64>;
 pub type StopFailed = g::Msg<176, u64>;
 pub type StopSettled = g::Msg<177, u64>;
-pub type ResetApply = g::Seq<
-    g::Send<TRANSMIT, ADAPTER, ApplyStop>,
-    g::Seq<
-        g::Resolve<
-            g::Route<
-                g::Send<ADAPTER, TRANSMIT, StopApplied>,
-                g::Send<ADAPTER, TRANSMIT, StopFailed>,
-            >,
-            STOP_RESULT,
-        >,
-        g::Send<TRANSMIT, ADAPTER, StopSettled>,
-    >,
->;
 pub type ApplyAcknowledgments = g::Msg<178, ()>;
 pub type AcknowledgmentsApplied = g::Msg<179, ()>;
 pub type AcknowledgmentsSettled = g::Msg<180, ()>;
 pub type StreamDelivered = g::Msg<181, u64>;
 pub type StreamDeliverySeen = g::Msg<182, u64>;
 pub type DeliveriesDone = g::Msg<183, ()>;
-pub type Deliveries = g::Roll<
-    g::Route<
-        g::Seq<
-            g::Send<ADAPTER, TRANSMIT, StreamDelivered>,
-            g::Send<TRANSMIT, ADAPTER, StreamDeliverySeen>,
-        >,
-        g::Send<ADAPTER, TRANSMIT, DeliveriesDone>,
-    >,
->;
-pub type AcknowledgmentApply = g::Seq<
-    g::Send<TRANSMIT, ADAPTER, ApplyAcknowledgments>,
-    g::Seq<
-        g::Send<ADAPTER, TRANSMIT, AcknowledgmentsApplied>,
-        g::Seq<Deliveries, g::Send<TRANSMIT, ADAPTER, AcknowledgmentsSettled>>,
-    >,
->;
 pub type ApplyLoss = g::Msg<184, u64>;
 pub type LossApplied = g::Msg<185, u64>;
 pub type LossSettled = g::Msg<186, u64>;
-pub type LossApply = g::Seq<
-    g::Send<TRANSMIT, ADAPTER, ApplyLoss>,
-    g::Seq<g::Send<ADAPTER, TRANSMIT, LossApplied>, g::Send<TRANSMIT, ADAPTER, LossSettled>>,
->;
 // Applying a stop is an exclusive alternative to the complete publication
 // fragment. The actual adapter owner settles its send before offering again.
-pub type PublicationBase = g::Seq<
-    g::Roll<
-        g::Route<
-            Publish,
-            g::Route<
-                ResetApply,
-                g::Route<
-                    AcknowledgmentApply,
-                    g::Route<
-                        LossApply,
-                        g::Route<Reclaim, g::Send<TRANSMIT, ADAPTER, StopPublication>>,
-                    >,
-                >,
-            >,
-        >,
-    >,
-    g::Send<ADAPTER, TRANSMIT, PublicationStopped>,
->;
-pub type PublicationFlow =
-    g::Par<PublicationBase, g::Roll<g::Route<DeliveryTransfer, DeliveryClose>>>;
 pub type FilesOutcome = g::Msg<52, ()>;
 pub type KeyRetirement = g::Msg<53, ()>;
 pub type CloseAuthority = g::Msg<54, ()>;
@@ -381,95 +156,7 @@ pub type ReadAdmission = g::Msg<165, ()>;
 pub type KeyControlAdmission = g::Msg<166, ()>;
 pub type WriteForAdmission = g::Msg<167, ()>;
 
-pub type PeerTerminal = g::Seq<
-    g::Route<
-        g::Send<PEER_EVENT, PEER_CLOSE, PeerClose>,
-        g::Route<
-            g::Send<PEER_EVENT, PEER_CLOSE, PeerFailed>,
-            g::Route<
-                g::Send<PEER_EVENT, PEER_CLOSE, PeerApplicationFailed>,
-                g::Send<PEER_EVENT, PEER_CLOSE, PeerCancelled>,
-            >,
-        >,
-    >,
-    g::Send<PEER_CLOSE, PEER_EVENT, PeerSeen>,
->;
-pub type FilesTerminal = g::Seq<
-    g::Route<
-        g::Route<
-            g::Send<FILES_EVENT, FILES_CLOSE, FilesComplete>,
-            g::Send<FILES_EVENT, FILES_CLOSE, ResponsesComplete>,
-        >,
-        g::Route<
-            g::Send<FILES_EVENT, FILES_CLOSE, ApplicationFailed>,
-            g::Route<
-                g::Send<FILES_EVENT, FILES_CLOSE, IdleExpired>,
-                g::Send<FILES_EVENT, FILES_CLOSE, CompletionCancelled>,
-            >,
-        >,
-    >,
-    g::Send<FILES_CLOSE, FILES_EVENT, CompletionSeen>,
->;
-pub type Terminal = g::Par<PeerTerminal, FilesTerminal>;
-pub type BaseActive = g::Par<
-    SourceFlow,
-    g::Par<ReceiveFlow, g::Par<KeyFlow, g::Par<TimerFlow, g::Par<PublicationFlow, Terminal>>>>,
->;
-pub type Active = g::Par<
-    g::Par<g::Par<BaseActive, e::Flow>, crate::quic::path::global::Flow>,
-    crate::http3::global::Flow,
->;
-pub type Retirement = g::Seq<
-    g::Par<
-        g::Send<TRANSMIT, CLOSE_JOIN, PublicationRetired>,
-        g::Par<
-            g::Seq<
-                g::Send<CLOSE_JOIN, RX_KEYS, KeyRetirementGrant>,
-                g::Send<RX_KEYS, CLOSE_JOIN, KeyRetirement>,
-            >,
-            g::Par<
-                g::Seq<
-                    g::Send<CLOSE_JOIN, PEER_CLOSE, PeerRetirementGrant>,
-                    g::Send<PEER_CLOSE, CLOSE_JOIN, PeerOutcome>,
-                >,
-                g::Seq<
-                    g::Send<CLOSE_JOIN, FILES_CLOSE, FilesRetirementGrant>,
-                    g::Send<FILES_CLOSE, CLOSE_JOIN, FilesOutcome>,
-                >,
-            >,
-        >,
-    >,
-    g::Send<CLOSE_JOIN, TRANSMIT, CloseAuthority>,
->;
-pub type ClosingDraining = g::Seq<
-    g::Route<Closing, Draining>,
-    g::Seq<g::Send<TRANSMIT, ADAPTER, Retire>, g::Send<ADAPTER, TRANSMIT, Retired>>,
->;
-pub type Flow = g::Seq<Active, g::Seq<Retirement, ClosingDraining>>;
-pub type Startup = g::Seq<
-    g::Par<
-        g::Seq<
-            g::Send<PREFIX_RX, PREFIX_TLS_RX, FinishedValidated>,
-            g::Seq<
-                g::Send<PREFIX_TLS_RX, RECEIVE, TranscriptStart>,
-                g::Send<RECEIVE, TX_KEYS, ReadAdmission>,
-            >,
-        >,
-        g::Seq<
-            g::Send<PREFIX_TX, TX_KEYS, WriteStart>,
-            g::Send<TX_KEYS, PREFIX_RX, WriteForAdmission>,
-        >,
-    >,
-    g::Seq<
-        g::Send<TX_KEYS, RX_KEYS, KeyControlAdmission>,
-        g::Seq<
-            g::Send<TX_KEYS, TRANSMIT, WriteAdmission>,
-            g::Send<TRANSMIT, SOURCE, StreamAdmission>,
-        >,
-    >,
->;
-
-fn startup() -> g::Program<Startup> {
+fn startup() -> impl Projectable {
     // The write continuation visits RX for the actual Finished/parameter/scope
     // check. Its owned bundle then returns through the transcript/read path.
     // RX cannot publish FinishedValidated before receiving WriteForAdmission,
@@ -497,7 +184,7 @@ fn startup() -> g::Program<Startup> {
     )
 }
 
-fn source_base() -> g::Program<SourceBase> {
+fn source_base() -> impl Projectable {
     let chunks = g::route(
         g::seq(
             g::send::<SOURCE, INGRESS, SourceData>(),
@@ -552,7 +239,7 @@ fn source_base() -> g::Program<SourceBase> {
     )
 }
 
-pub fn source_choreography() -> g::Program<SourceFlow> {
+pub fn source_choreography() -> impl Projectable {
     let receipts = g::route(
         g::seq(
             g::send::<INGRESS, SOURCE_COLLECTOR, ProductionReclaim>(),
@@ -566,7 +253,7 @@ pub fn source_choreography() -> g::Program<SourceFlow> {
     .roll();
     g::par(source_base(), receipts)
 }
-pub fn receive_choreography() -> g::Program<ReceiveFlow> {
+pub fn receive_choreography() -> impl Projectable {
     let packets = g::seq(
         g::route(
             g::seq(
@@ -603,7 +290,7 @@ pub fn receive_choreography() -> g::Program<ReceiveFlow> {
     .roll();
     g::par(packets, receipts)
 }
-pub fn publication_choreography() -> g::Program<PublicationFlow> {
+pub fn publication_choreography() -> impl Projectable {
     let publish = g::seq(
         g::send::<TRANSMIT, ADAPTER, Datagram>(),
         g::seq(
@@ -687,7 +374,7 @@ pub fn publication_choreography() -> g::Program<PublicationFlow> {
     g::par(base, receipt)
 }
 
-pub fn key_choreography() -> g::Program<KeyFlow> {
+pub fn key_choreography() -> impl Projectable {
     let peer_update = g::seq(
         g::send::<RX_KEYS, TX_KEYS, PeerUpdate>(),
         g::route(
@@ -735,7 +422,7 @@ pub fn key_choreography() -> g::Program<KeyFlow> {
     g::seq(key_work, g::send::<TX_KEYS, RX_KEYS, KeysRetired>())
 }
 
-pub fn choreography() -> g::Program<Flow> {
+pub fn choreography() -> impl Projectable {
     let source = source_choreography();
     let receive = receive_choreography();
 
@@ -861,19 +548,7 @@ pub type EarlyRequest = g::Msg<209, u64>;
 pub type EarlyStored = g::Msg<210, u64>;
 pub type EarlyRequestsDone = g::Msg<211, u64>;
 pub type EarlyReceiptsDone = g::Msg<212, u64>;
-pub type EarlyAdmission = g::Roll<
-    g::Route<
-        g::Seq<
-            g::Send<SOURCE, INGRESS, EarlyRequest>,
-            g::Seq<ProductionTransfer, g::Send<INGRESS, SOURCE, EarlyStored>>,
-        >,
-        g::Seq<
-            g::Send<SOURCE, INGRESS, EarlyRequestsDone>,
-            g::Send<INGRESS, SOURCE_COLLECTOR, EarlyReceiptsDone>,
-        >,
-    >,
->;
-fn early_admission() -> g::Program<EarlyAdmission> {
+fn early_admission() -> impl Projectable {
     g::route(
         g::seq(
             g::send::<SOURCE, INGRESS, EarlyRequest>(),

@@ -1,5 +1,6 @@
 //! Finite handshake graph: direct TLS message order, independent TX publication,
 //! timer ownership and affine Initial-key retirement compose in parallel.
+use hibana::runtime::program::Projectable;
 use hibana::{
     g,
     runtime::program::{RoleProgram, project},
@@ -183,20 +184,7 @@ pub type TimerExpired = g::Msg<141, ()>;
 pub type TimerTaken = g::Msg<142, ()>;
 pub type TimerRetired = g::Msg<143, ()>;
 pub type TimerAcknowledged = g::Msg<144, ()>;
-type Publish<P> = g::Seq<
-    g::Send<TX_WIRE, UDP, <P as Publication>::Datagram>,
-    g::Seq<
-        g::Resolve<
-            g::Route<
-                g::Send<UDP, TX_WIRE, <P as Publication>::Accepted>,
-                g::Send<UDP, TX_WIRE, <P as Publication>::Rejected>,
-            >,
-            ADAPTER_RESULT,
-        >,
-        g::Send<TX_WIRE, UDP, <P as Publication>::Settled>,
-    >,
->;
-fn publication<P: Publication>() -> g::Program<Publish<P>> {
+fn publication<P: Publication>() -> impl Projectable {
     g::seq(
         g::send::<TX_WIRE, UDP, P::Datagram>(),
         g::seq(
@@ -209,41 +197,7 @@ fn publication<P: Publication>() -> g::Program<Publish<P>> {
         ),
     )
 }
-type TxResponse<P> = g::Route<
-    g::Seq<
-        g::Send<TLS_TX, TX, <P as TransmitPhase>::Flight>,
-        g::Send<TX, TLS_TX, <P as TransmitPhase>::Taken>,
-    >,
-    g::Route<
-        g::Seq<
-            g::Send<TLS_TX, TX, <P as TransmitPhase>::Idle>,
-            g::Send<TX, TLS_TX, <P as TransmitPhase>::Taken>,
-        >,
-        g::Send<TLS_TX, TX, <P as TransmitPhase>::Boundary>,
-    >,
->;
-type SourceWork<P> =
-    g::Roll<g::Seq<g::Send<TX, TLS_TX, <P as TransmitPhase>::Request>, TxResponse<P>>>;
-type WireWork<P> = g::Roll<
-    g::Route<
-        Publish<<P as TransmitPhase>::Data>,
-        g::Route<
-            Publish<<P as TransmitPhase>::Ack>,
-            g::Route<
-                Publish<<P as TransmitPhase>::Probe>,
-                g::Seq<
-                    g::Send<TX_WIRE, UDP, <P as TransmitPhase>::WireBoundary>,
-                    g::Send<UDP, TX_WIRE, <P as TransmitPhase>::WireBoundarySeen>,
-                >,
-            >,
-        >,
-    >,
->;
-type TxWork<P> = g::Seq<
-    g::Par<SourceWork<P>, WireWork<P>>,
-    g::Send<TX, TLS_TX, <P as TransmitPhase>::PhaseSettled>,
->;
-fn tx_work<P: TransmitPhase>() -> g::Program<TxWork<P>> {
+fn tx_work<P: TransmitPhase>() -> impl Projectable {
     let source = g::seq(
         g::send::<TX, TLS_TX, P::Request>(),
         g::route(
@@ -289,73 +243,12 @@ pub const INITIAL_OWNER: u8 = 19;
 pub type ClientInitialRetire = g::Msg<145, ()>;
 pub type ServerInitialRetire = g::Msg<146, ()>;
 pub type InitialRetired = g::Msg<147, ()>;
-pub type InitialRetirementFlow = g::Seq<
-    g::Route<
-        g::Send<INITIAL_EVENT, INITIAL_OWNER, ClientInitialRetire>,
-        g::Send<INITIAL_EVENT, INITIAL_OWNER, ServerInitialRetire>,
-    >,
-    g::Send<INITIAL_OWNER, INITIAL_EVENT, InitialRetired>,
->;
-pub type ReceiveFlow = g::Seq<
-    hibana_tls::handshake::global::owned::Flow,
-    g::Seq<
-        g::Send<TLS_RX, TLS_COMPLETE, TranscriptComplete>,
-        g::Seq<g::Send<RX, TLS_RX, ReceiveComplete>, g::Send<TLS_RX, RX, ReceiveContinuation>>,
-    >,
->;
-pub type DrainFlow = g::Roll<
-    g::Route<
-        Publish<DrainAck>,
-        g::Route<Publish<DrainProbe>, g::Send<TX_WIRE, UDP, HandshakeRecoveryTransferred>>,
-    >,
->;
 pub const TIMER_STOP: u8 = 20;
 pub const RECEIVE_STOP: u8 = 21;
 pub type StopTimer = g::Msg<222, ()>;
 pub type TimerStopped = g::Msg<223, ()>;
 pub type StopReceive = g::Msg<225, ()>;
 pub type ReceiveStopped = g::Msg<226, ()>;
-pub type CompleteFlow = g::Seq<
-    g::Send<TX_WIRE, RECEIVE_STOP, StopReceive>,
-    g::Seq<
-        g::Send<RECEIVE_STOP, TX_WIRE, ReceiveStopped>,
-        g::Seq<
-            g::Send<TX_WIRE, TIMER_STOP, StopTimer>,
-            g::Seq<
-                g::Send<TIMER_STOP, TX_WIRE, TimerStopped>,
-                g::Seq<
-                    g::Send<TX, TLS_TX, TransmitComplete>,
-                    g::Seq<
-                        g::Send<TLS_TX, TX, TransmitContinuation>,
-                        g::Seq<
-                            g::Send<TX_WIRE, UDP, AdapterComplete>,
-                            g::Send<UDP, TX_WIRE, AdapterRetired>,
-                        >,
-                    >,
-                >,
-            >,
-        >,
-    >,
->;
-pub type TransmitFlow = g::Seq<
-    TxWork<InitialTransmit>,
-    g::Seq<
-        g::Send<TLS_TX, TX, WriteHandshake>,
-        g::Seq<
-            TxWork<HandshakeTransmit>,
-            g::Seq<
-                g::Send<TLS_TX, TX, WriteApplication>,
-                g::Seq<TxWork<ApplicationTransmit>, g::Seq<DrainFlow, CompleteFlow>>,
-            >,
-        >,
-    >,
->;
-pub type TimerFlow = g::Roll<
-    g::Route<
-        g::Seq<g::Send<TIMER, TIMER_TX, TimerExpired>, g::Send<TIMER_TX, TIMER, TimerTaken>>,
-        g::Seq<g::Send<TIMER, TIMER_TX, TimerRetired>, g::Send<TIMER_TX, TIMER, TimerAcknowledged>>,
-    >,
->;
 pub type EarlyStart = g::Msg<148, ()>;
 pub type EarlySkip = g::Msg<149, ()>;
 pub type EarlyEnd = g::Msg<150, ()>;
@@ -371,23 +264,7 @@ pub type EarlyPacketDatagram = <EarlyPacket as Publication>::Datagram;
 pub type EarlyPacketAccepted = <EarlyPacket as Publication>::Accepted;
 pub type EarlyPacketRejected = <EarlyPacket as Publication>::Rejected;
 pub type EarlyPacketSettled = <EarlyPacket as Publication>::Settled;
-pub type EarlyFlow = g::Route<
-    g::Seq<
-        g::Send<TLS_TX, TX_WIRE, EarlyStart>,
-        g::Seq<
-            g::Send<TX_WIRE, UDP, EarlyStart>,
-            g::Seq<
-                Publish<EarlyInitial>,
-                g::Seq<
-                    g::Roll<g::Route<Publish<EarlyPacket>, g::Send<TX_WIRE, UDP, EarlyEnd>>>,
-                    g::Send<TX_WIRE, TLS_TX, EarlyDone>,
-                >,
-            >,
-        >,
-    >,
-    g::Seq<g::Send<TLS_TX, TX_WIRE, EarlySkip>, g::Send<TX_WIRE, UDP, EarlySkip>>,
->;
-pub fn early_prefix() -> g::Program<EarlyFlow> {
+pub fn early_prefix() -> impl Projectable {
     g::route(
         g::seq(
             g::send::<TLS_TX, TX_WIRE, EarlyStart>(),
@@ -412,14 +289,8 @@ pub fn early_prefix() -> g::Program<EarlyFlow> {
         ),
     )
 }
-pub type MainFlow =
-    g::Par<ReceiveFlow, g::Par<TransmitFlow, g::Par<TimerFlow, InitialRetirementFlow>>>;
-pub type Flow = g::Seq<
-    crate::quic::retry::global::client::Prefix,
-    g::Seq<EarlyFlow, g::Seq<g::Send<TLS_TX, TX, EarlyContinue>, MainFlow>>,
->;
 
-pub fn choreography() -> g::Program<Flow> {
+pub fn choreography() -> impl Projectable {
     let receive = g::seq(
         hibana_tls::handshake::global::owned::choreography(),
         g::seq(

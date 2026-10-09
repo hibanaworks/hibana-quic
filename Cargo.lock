@@ -9,7 +9,7 @@ version = "0.0.0"
 [[package]]
 name = "hibana"
 version = "0.9.6"
-source = "git+https://github.com/hibanaworks/hibana?rev=6fccdbf81038b00d99ec1bb2b9c43a487521628e#6fccdbf81038b00d99ec1bb2b9c43a487521628e"
+source = "git+https://github.com/hibanaworks/hibana?rev=2eaba16d204a3f33f25ab00087d504380fe7e27f#2eaba16d204a3f33f25ab00087d504380fe7e27f"
 
 [[package]]
 name = "hibana-quic"
@@ -23,7 +23,7 @@ dependencies = [
 [[package]]
 name = "hibana-tls"
 version = "0.1.0"
-source = "git+https://github.com/hibanaworks/hibana-tls?rev=12c978cd618c3eb713a4e8136bf94dbf42159272#12c978cd618c3eb713a4e8136bf94dbf42159272"
+source = "git+https://github.com/hibanaworks/hibana-tls?rev=3b383f397599892d76760cb6902de21a1db3c3bb#3b383f397599892d76760cb6902de21a1db3c3bb"
 dependencies = [
  "hibana",
 ]

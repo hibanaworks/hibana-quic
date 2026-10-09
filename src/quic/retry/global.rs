@@ -1,6 +1,7 @@
 //! Server Retry admission order. Native observations and token-validation
 //! receipts remain separately owned data; unit messages cannot fabricate them.
 //! The output role settles its actual send before another input is admitted.
+use hibana::runtime::program::Projectable;
 use hibana::{
     g,
     runtime::program::{RoleProgram, project},
@@ -24,36 +25,7 @@ pub type NoSend = g::Msg<9, ()>;
 pub type NoSendSeen = g::Msg<10, ()>;
 pub type Joined = g::Msg<11, ()>;
 
-type RetryRound = g::Seq<
-    g::Send<OWNER, OUTPUT, Datagram>,
-    g::Seq<
-        g::Resolve<
-            g::Route<g::Send<OUTPUT, OWNER, Sent>, g::Send<OUTPUT, OWNER, Rejected>>,
-            SEND_RESULT,
-        >,
-        g::Seq<g::Send<OWNER, INPUT, Settled>, g::Send<INPUT, OWNER, Observed>>,
-    >,
->;
-type IgnoreRound = g::Seq<
-    g::Send<OWNER, OUTPUT, NoSend>,
-    g::Seq<
-        g::Send<OUTPUT, OWNER, NoSendSeen>,
-        g::Seq<g::Send<OWNER, INPUT, Ignored>, g::Send<INPUT, OWNER, Observed>>,
-    >,
->;
-type AdmitRound = g::Seq<
-    g::Send<OWNER, INPUT, Admitted>,
-    g::Seq<g::Send<OWNER, OUTPUT, Stop>, g::Send<OUTPUT, OWNER, Stopped>>,
->;
-pub type Flow = g::Seq<
-    g::Send<INPUT, OWNER, Observed>,
-    g::Seq<
-        g::Roll<g::Route<RetryRound, g::Route<IgnoreRound, AdmitRound>>>,
-        g::Send<OWNER, INPUT, Joined>,
-    >,
->;
-
-pub fn choreography() -> g::Program<Flow> {
+pub fn choreography() -> impl Projectable {
     g::seq(
         g::send::<INPUT, OWNER, Observed>(),
         g::seq(

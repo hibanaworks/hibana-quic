@@ -4,6 +4,7 @@ use core::{
     pin::pin,
     task::{Context, Poll, Waker},
 };
+use hibana::runtime::program::Projectable;
 use hibana::{Endpoint, g, runtime::ids::SessionId};
 use hibana_quic::{
     quic::application::{BodyReader, ClientRequests, ServerHandler, StreamSink},
@@ -15,8 +16,7 @@ const CLIENT: u8 = 0;
 const SERVER: u8 = 1;
 type Value = g::Msg<0, u64>;
 type Answer = g::Msg<1, u64>;
-type Exchange = g::Seq<g::Send<CLIENT, SERVER, Value>, g::Send<SERVER, CLIENT, Answer>>;
-fn global() -> g::Program<g::Seq<Exchange, Exchange>> {
+fn global() -> impl Projectable {
     g::seq(
         g::seq(
             g::send::<CLIENT, SERVER, Value>(),

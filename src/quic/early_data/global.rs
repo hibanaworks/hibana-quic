@@ -1,5 +1,6 @@
 //! The early-byte owner has finite holding, verified release, and discard paths.
 use hibana::g;
+use hibana::runtime::program::Projectable;
 pub const INPUT: u8 = 0;
 pub const OWNER: u8 = 1;
 pub const TLS: u8 = 2;
@@ -24,38 +25,7 @@ pub type Controls = g::Msg<17, u64>;
 pub type ControlsApplied = g::Msg<18, u64>;
 pub type Retired = g::Msg<16, u64>;
 
-type PacketExchange = g::Seq<
-    g::Send<INPUT, OWNER, Packet>,
-    g::Route<g::Send<OWNER, INPUT, PacketStored>, g::Send<OWNER, INPUT, PacketDropped>>,
->;
-type Holding = g::Seq<
-    g::Roll<g::Route<PacketExchange, g::Send<INPUT, OWNER, InputEnd>>>,
-    g::Seq<g::Send<OWNER, INPUT, InputEnded>, g::Send<INPUT, TLS, InputRetired>>,
->;
-type Delivery = g::Seq<
-    g::Roll<
-        g::Route<
-            g::Seq<g::Send<OWNER, APPLICATION, Range>, g::Send<APPLICATION, OWNER, RangeApplied>>,
-            g::Route<
-                g::Seq<
-                    g::Send<OWNER, APPLICATION, Controls>,
-                    g::Send<APPLICATION, OWNER, ControlsApplied>,
-                >,
-                g::Send<OWNER, APPLICATION, Released>,
-            >,
-        >,
-    >,
-    g::Send<APPLICATION, OWNER, ReleaseSeen>,
->;
-type Accepted =
-    g::Seq<g::Send<TLS, OWNER, Verified>, g::Seq<g::Send<OWNER, TLS, VerifiedTaken>, Delivery>>;
-type Discard = g::Seq<
-    g::Route<g::Send<TLS, OWNER, Reject>, g::Send<TLS, OWNER, Cancel>>,
-    g::Seq<g::Send<OWNER, APPLICATION, Discarded>, g::Send<APPLICATION, OWNER, DiscardSeen>>,
->;
-pub type Flow = g::Seq<Holding, g::Seq<g::Route<Accepted, Discard>, g::Send<OWNER, TLS, Retired>>>;
-
-pub fn choreography() -> g::Program<Flow> {
+pub fn choreography() -> impl Projectable {
     let holding = g::seq(
         g::route(
             g::seq(
@@ -119,15 +89,7 @@ pub type Skip = g::Msg<19, u64>;
 pub type SkipOwner = g::Msg<20, u64>;
 pub type SkipTls = g::Msg<21, u64>;
 pub type SkipDone = g::Msg<22, u64>;
-pub type SkipFlow = g::Seq<
-    g::Send<INPUT, OWNER, Skip>,
-    g::Seq<
-        g::Send<OWNER, TLS, SkipOwner>,
-        g::Seq<g::Send<TLS, APPLICATION, SkipTls>, g::Send<APPLICATION, INPUT, SkipDone>>,
-    >,
->;
-pub type Bridge = g::Route<Flow, SkipFlow>;
-pub fn bridge() -> g::Program<Bridge> {
+pub fn bridge() -> impl Projectable {
     g::route(
         choreography(),
         g::seq(

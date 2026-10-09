@@ -1,6 +1,7 @@
 //! Path validation is a nested projected continuation. A Pending probe cannot
 //! return to ordinary publication without a resolved or abandoned boundary.
 use hibana::g;
+use hibana::runtime::program::Projectable;
 // Role18 continues after its Initial-retirement prefix in this same session.
 // Reuse the one endpoint; never enter the same role twice.
 pub const OWNER: u8 = crate::quic::global::INITIAL_EVENT;
@@ -22,47 +23,7 @@ pub type ProbePaused = g::Msg<234, ()>;
 pub type Expand = g::Msg<235, ()>;
 pub type Reply = g::Msg<236, ()>;
 pub type ProbeReply = g::Msg<237, ()>;
-type ReplyRound = g::Seq<g::Send<OWNER, TRANSMIT, Reply>, Next>;
-type ProbeReplyRound = g::Seq<g::Send<OWNER, TRANSMIT, ProbeReply>, Next>;
-type ExpandRound = g::Seq<g::Send<OWNER, TRANSMIT, Expand>, Next>;
-type Next = g::Seq<g::Send<TRANSMIT, OWNER, Settled>, g::Send<TRANSMIT, OWNER, Request>>;
-type CurrentRound = g::Seq<g::Send<OWNER, TRANSMIT, Current>, Next>;
-type ProbeRound = g::Seq<g::Send<OWNER, TRANSMIT, Probe>, Next>;
-type HoldRound = g::Seq<g::Send<OWNER, TRANSMIT, Hold>, Next>;
-type Boundary = g::Seq<
-    g::Send<OWNER, TRANSMIT, Pause>,
-    g::Seq<
-        g::Send<TRANSMIT, OWNER, Paused>,
-        g::Seq<g::Send<OWNER, TRANSMIT, End>, g::Send<TRANSMIT, OWNER, Joined>>,
-    >,
->;
-type ProbeBoundary = g::Seq<
-    g::Send<OWNER, TRANSMIT, ProbePause>,
-    g::Seq<
-        g::Send<TRANSMIT, OWNER, ProbePaused>,
-        g::Seq<
-            g::Route<g::Send<OWNER, TRANSMIT, Resolved>, g::Send<OWNER, TRANSMIT, Abandoned>>,
-            Next,
-        >,
-    >,
->;
-type Cycle = g::Seq<
-    g::Send<OWNER, TRANSMIT, Begin>,
-    g::Seq<
-        Next,
-        g::Roll<
-            g::Route<
-                g::Route<g::Route<g::Route<ProbeRound, HoldRound>, ExpandRound>, ProbeReplyRound>,
-                ProbeBoundary,
-            >,
-        >,
-    >,
->;
-pub type Flow = g::Seq<
-    g::Send<TRANSMIT, OWNER, Request>,
-    g::Roll<g::Route<g::Route<g::Route<CurrentRound, Cycle>, ReplyRound>, Boundary>>,
->;
-pub fn choreography() -> g::Program<Flow> {
+pub fn choreography() -> impl Projectable {
     let current = g::seq(
         g::send::<OWNER, TRANSMIT, Current>(),
         g::seq(

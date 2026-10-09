@@ -5,6 +5,7 @@ use core::{
     pin::pin,
     task::{Context, Poll},
 };
+use hibana::runtime::program::Projectable;
 use hibana::{
     g::{self, Message},
     runtime::{
@@ -42,20 +43,7 @@ fn initial_publication_changes_arms_after_a_parked_offer() {
     }
 }
 
-type Publication<P> = g::Seq<
-    g::Send<{ p::TX_WIRE }, { p::UDP }, <P as p::Publication>::Datagram>,
-    g::Seq<
-        g::Resolve<
-            g::Route<
-                g::Send<{ p::UDP }, { p::TX_WIRE }, <P as p::Publication>::Accepted>,
-                g::Send<{ p::UDP }, { p::TX_WIRE }, <P as p::Publication>::Rejected>,
-            >,
-            { p::ADAPTER_RESULT },
-        >,
-        g::Send<{ p::TX_WIRE }, { p::UDP }, <P as p::Publication>::Settled>,
-    >,
->;
-fn publication<P: p::Publication>() -> g::Program<Publication<P>> {
+fn publication<P: p::Publication>() -> impl Projectable {
     g::seq(
         g::send::<{ p::TX_WIRE }, { p::UDP }, P::Datagram>(),
         g::seq(

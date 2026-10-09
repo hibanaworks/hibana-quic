@@ -62,4 +62,8 @@ for relative in ('Cargo.toml', 'host/Cargo.toml', 'tests/tls-reference/Cargo.tom
     assert packages[0]['source'] == f'git+{tls_url}?rev={tls_revision}#{tls_revision}'
 tls_cargo = tomllib.loads((material/'Cargo.toml').read_text())
 assert tls_cargo['dependencies']['hibana']['rev'] == revision
+tls_lock = tomllib.loads((material/'Cargo.lock').read_text())
+tls_core = [p for p in tls_lock['package'] if p['name'] == 'hibana']
+assert len(tls_core) == 1, 'TLS lock must contain one Hibana identity'
+assert tls_core[0].get('source') == f'git+{url}?rev={revision}#{revision}'
 print('Exact TLS Git source and all consumer locks verified:', tls_revision)

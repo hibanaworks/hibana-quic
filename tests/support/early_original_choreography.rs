@@ -8,6 +8,7 @@
 //! Finished result selects active release or rejection. Admission requires the
 //! path simulation result; release requires settlement before either work roll
 //! resumes. This fragment composes under the connection global's `par`.
+use hibana::runtime::program::Projectable;
 use hibana::{
     g,
     runtime::program::{RoleProgram, project},
@@ -58,63 +59,19 @@ pub const RETIRED: u8 = 100;
 pub type Retired = g::Msg<RETIRED, [u8; 16]>;
 pub const RETIREMENT_ACKNOWLEDGED: u8 = 101;
 pub type RetirementAcknowledged = g::Msg<RETIREMENT_ACKNOWLEDGED, [u8; 16]>;
-pub type Reply<const C: u8, const O: u8, M> = g::Seq<g::Send<O, C, M>, g::Send<C, O, ResultTaken>>;
-pub type Operation<const C: u8, const O: u8, M> =
-    g::Seq<g::Send<C, O, M>, g::Route<Reply<C, O, Applied>, Reply<C, O, Rejected>>>;
-pub type Admission<const C: u8, const O: u8> = g::Seq<
-    g::Send<C, O, Receive>,
-    g::Route<
-        g::Seq<Reply<C, O, Check>, Operation<C, O, Checked>>,
-        g::Route<Reply<C, O, Dropped>, Reply<C, O, Rejected>>,
-    >,
->;
-pub type Settlement<const C: u8, const O: u8> =
-    g::Seq<g::Roll<Operation<C, O, Settle>>, g::Send<O, C, Settled>>;
-pub type ReleaseFlow<const C: u8, const O: u8> = g::Seq<
-    g::Send<C, O, Release>,
-    g::Route<
-        g::Seq<g::Route<Reply<C, O, Application>, Reply<C, O, Path>>, Settlement<C, O>>,
-        g::Route<Reply<C, O, Empty>, Reply<C, O, Rejected>>,
-    >,
->;
-pub type Retirement<const C: u8, const O: u8> = g::Seq<
-    g::Send<C, O, RetireRequested>,
-    g::Seq<g::Send<O, C, Retired>, g::Send<C, O, RetirementAcknowledged>>,
->;
-pub type Active<const C: u8, const O: u8> = g::Seq<
-    g::Roll<g::Route<Admission<C, O>, g::Route<Operation<C, O, Inspect>, ReleaseFlow<C, O>>>>,
-    Retirement<C, O>,
->;
-pub type FinishFlow<const C: u8, const O: u8> = g::Seq<
-    g::Send<C, O, Finish>,
-    g::Route<
-        g::Seq<Reply<C, O, Ready>, Active<C, O>>,
-        g::Seq<Reply<C, O, Declined>, Retirement<C, O>>,
-    >,
->;
-pub type EarlyFlow<const C: u8, const O: u8> = g::Seq<
-    g::Send<C, O, Install>,
-    g::Seq<
-        g::Send<O, C, Installed>,
-        g::Seq<
-            g::Roll<g::Route<Admission<C, O>, Operation<C, O, Inspect>>>,
-            g::Route<FinishFlow<C, O>, Retirement<C, O>>,
-        >,
-    >,
->;
 
-fn reply<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]>>() -> g::Program<Reply<C, O, M>>
+fn reply<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]>>() -> impl Projectable
 {
     g::seq(g::send::<O, C, M>(), g::send::<C, O, ResultTaken>())
 }
 fn operation<const C: u8, const O: u8, M: g::Message<Payload = [u8; 16]>>()
--> g::Program<Operation<C, O, M>> {
+-> impl Projectable {
     g::seq(
         g::send::<C, O, M>(),
         g::route(reply::<C, O, Applied>(), reply::<C, O, Rejected>()),
     )
 }
-fn admission<const C: u8, const O: u8>() -> g::Program<Admission<C, O>> {
+fn admission<const C: u8, const O: u8>() -> impl Projectable {
     g::seq(
         g::send::<C, O, Receive>(),
         g::route(
@@ -123,7 +80,7 @@ fn admission<const C: u8, const O: u8>() -> g::Program<Admission<C, O>> {
         ),
     )
 }
-fn retirement<const C: u8, const O: u8>() -> g::Program<Retirement<C, O>> {
+fn retirement<const C: u8, const O: u8>() -> impl Projectable {
     g::seq(
         g::send::<C, O, RetireRequested>(),
         g::seq(
@@ -132,7 +89,7 @@ fn retirement<const C: u8, const O: u8>() -> g::Program<Retirement<C, O>> {
         ),
     )
 }
-fn active<const C: u8, const O: u8>() -> g::Program<Active<C, O>> {
+fn active<const C: u8, const O: u8>() -> impl Projectable {
     let release = g::seq(
         g::send::<C, O, Release>(),
         g::route(
@@ -155,7 +112,7 @@ fn active<const C: u8, const O: u8>() -> g::Program<Active<C, O>> {
         retirement::<C, O>(),
     )
 }
-pub fn early_choreography<const C: u8, const O: u8>() -> g::Program<EarlyFlow<C, O>> {
+pub fn early_choreography<const C: u8, const O: u8>() -> impl Projectable {
     let finish = g::seq(
         g::send::<C, O, Finish>(),
         g::route(

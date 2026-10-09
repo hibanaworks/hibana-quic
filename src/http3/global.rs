@@ -1,6 +1,7 @@
 //! HTTP/3 control progression: the first actual SETTINGS receipt selects the
 //! ready continuation. Subsequent frames cannot re-enter startup.
 use hibana::g;
+use hibana::runtime::program::Projectable;
 pub const OWNER: u8 = crate::quic::global::INITIAL_OWNER;
 pub const SOURCE: u8 = crate::quic::application::global::SOURCE;
 pub const SINK: u8 = crate::quic::application::global::SINK;
@@ -14,31 +15,7 @@ pub type SettingsStored = g::Msg<245, ()>;
 pub type Stored = g::Msg<246, ()>;
 pub type EarlyClosed = g::Msg<247, ()>;
 pub type Closed = g::Msg<248, ()>;
-type PlainFlow = g::Seq<
-    g::Send<SOURCE, OWNER, Plain>,
-    g::Seq<g::Send<OWNER, SINK, PlainSink>, g::Send<OWNER, SOURCE, StartupSettled>>,
->;
-type Frames = g::Roll<
-    g::Seq<
-        g::Send<SINK, OWNER, Input>,
-        g::Route<g::Send<OWNER, SINK, Stored>, g::Send<OWNER, SINK, Closed>>,
-    >,
->;
-type SettingsFlow = g::Seq<
-    g::Send<OWNER, SOURCE, StartupSettled>,
-    g::Seq<g::Send<OWNER, SINK, SettingsStored>, Frames>,
->;
-type AbortedFlow =
-    g::Seq<g::Send<OWNER, SINK, EarlyClosed>, g::Send<OWNER, SOURCE, StartupSettled>>;
-type Http3Flow = g::Seq<
-    g::Send<SOURCE, OWNER, Http3>,
-    g::Seq<
-        g::Send<OWNER, SINK, Http3Sink>,
-        g::Seq<g::Send<SINK, OWNER, Input>, g::Route<SettingsFlow, AbortedFlow>>,
-    >,
->;
-pub type Flow = g::Route<PlainFlow, Http3Flow>;
-pub fn choreography() -> g::Program<Flow> {
+pub fn choreography() -> impl Projectable {
     g::route(
         g::seq(
             g::send::<SOURCE, OWNER, Plain>(),

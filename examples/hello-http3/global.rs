@@ -1,11 +1,10 @@
 use hibana::g;
+use hibana::runtime::program::Projectable;
 pub const CLIENT: u8 = 0;
 pub const SERVER: u8 = 1;
 pub type Number = g::Msg<0, u64>;
 pub type Square = g::Msg<1, u64>;
-pub type Exchange = g::Seq<g::Send<CLIENT, SERVER, Number>, g::Send<SERVER, CLIENT, Square>>;
-pub type Conversation = g::Seq<Exchange, Exchange>;
-pub fn choreography() -> g::Program<Conversation> {
+pub fn choreography() -> impl Projectable {
     g::seq(
         g::seq(
             g::send::<CLIENT, SERVER, Number>(),
