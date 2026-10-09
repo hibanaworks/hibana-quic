@@ -115,7 +115,17 @@ pub async fn files<'scope, const S: usize, const T: usize>(
                 idle_timeout_ms,
             };
             hibana_quic_host::application::server::<S, T>(
-                source, config, receive, transmit, clock, issuer, stop, book, profile, server,
+                source,
+                config,
+                receive,
+                transmit,
+                clock,
+                issuer,
+                stop,
+                book,
+                profile,
+                server,
+                None::<&mut host_files::Downloads>,
                 early,
             )
             .await

@@ -29,14 +29,16 @@ pub struct CryptoBuffer<'a> {
 }
 
 /// Metadata bytes required for a fixed receive window, without overflow.
-pub const fn bitmap_bytes(capacity:usize)->usize{capacity.div_ceil(8)}
+pub const fn bitmap_bytes(capacity: usize) -> usize {
+    capacity.div_ceil(8)
+}
 
 impl<'a> CryptoBuffer<'a> {
     pub fn new(bytes: &'a mut [u8], present: &'a mut [u8]) -> Result<Self, Error> {
         if bytes.is_empty() || present.len() < bitmap_bytes(bytes.len()) {
             return Err(Error::InvalidStorage);
         }
-        let present=&mut present[..bitmap_bytes(bytes.len())];
+        let present = &mut present[..bitmap_bytes(bytes.len())];
         present.fill(0);
         Ok(Self {
             bytes,
@@ -63,9 +65,16 @@ impl<'a> CryptoBuffer<'a> {
         }
     }
 
-    fn is_present(&self,slot:usize)->bool{self.present[slot/8]&(1<<(slot%8))!=0}
-    fn set_present(&mut self,slot:usize,value:bool){
-        let bit=1<<(slot%8);if value{self.present[slot/8]|=bit;}else{self.present[slot/8]&=!bit;}
+    fn is_present(&self, slot: usize) -> bool {
+        self.present[slot / 8] & (1 << (slot % 8)) != 0
+    }
+    fn set_present(&mut self, slot: usize, value: bool) {
+        let bit = 1 << (slot % 8);
+        if value {
+            self.present[slot / 8] |= bit;
+        } else {
+            self.present[slot / 8] &= !bit;
+        }
     }
 
     /// Insert a complete fragment transactionally. Conflicting retained overlap
@@ -96,7 +105,7 @@ impl<'a> CryptoBuffer<'a> {
         for (i, byte) in data[skip..].iter().enumerate() {
             let slot = self.index(relative + i);
             self.bytes[slot] = *byte;
-            self.set_present(slot,true);
+            self.set_present(slot, true);
         }
         Ok(())
     }
@@ -131,7 +140,7 @@ impl<'a> CryptoBuffer<'a> {
         }
         for i in 0..n {
             let slot = self.index(i);
-            self.set_present(slot,false);
+            self.set_present(slot, false);
         }
         // n can equal capacity, in which case head remains unchanged.
         if n < self.bytes.len() {
@@ -183,16 +192,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compact_bitmap_handles_partial_bytes_and_ring_wrap(){
+    fn compact_bitmap_handles_partial_bytes_and_ring_wrap() {
         for capacity in 1..=33 {
-            let mut data=[0;33];let mut bits=[0xaa;5];
-            let mut b=CryptoBuffer::new(&mut data[..capacity],&mut bits[..bitmap_bytes(capacity)]).unwrap();
+            let mut data = [0; 33];
+            let mut bits = [0xaa; 5];
+            let mut b =
+                CryptoBuffer::new(&mut data[..capacity], &mut bits[..bitmap_bytes(capacity)])
+                    .unwrap();
             for offset in 0..257u64 {
-                b.insert(offset,&[offset as u8]).unwrap();assert_eq!(b.ready().0,&[offset as u8]);b.consume(1).unwrap();assert_eq!(b.ready_len(),0);
+                b.insert(offset, &[offset as u8]).unwrap();
+                assert_eq!(b.ready().0, &[offset as u8]);
+                b.consume(1).unwrap();
+                assert_eq!(b.ready_len(), 0);
             }
         }
-        assert!(matches!(CryptoBuffer::new(&mut[0;9],&mut[0;1]),Err(Error::InvalidStorage)));
-        assert_eq!(bitmap_bytes(8192),1024);
+        assert!(matches!(
+            CryptoBuffer::new(&mut [0; 9], &mut [0; 1]),
+            Err(Error::InvalidStorage)
+        ));
+        assert_eq!(bitmap_bytes(8192), 1024);
     }
 
     #[test]

@@ -23,7 +23,7 @@ pub(in crate::http3) async fn read(
         }
         let decoded = fields(file, &mut cursor, frame.length)?;
         let status = decoded.status.ok_or("response has no status")?;
-        if decoded.method_get.is_some()
+        if decoded.method.is_some()
             || decoded.https.is_some()
             || decoded.path_len != 0
             || decoded.authority_len != 0

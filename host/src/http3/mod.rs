@@ -5,8 +5,8 @@
 //! the resulting file; an error must leave that staging file unpublished.
 //! [`decode_request`] validates the bounded GET profile used by `hq`.
 mod global;
-mod local;
 mod imp;
+mod local;
 use global::*;
 use hibana::runtime::{
     SessionKitStorage,
@@ -17,9 +17,9 @@ use hibana_quic::{
     http3::{self, Fields},
     runtime::carrier::CarrierStorage,
 };
+use imp::wire::{fail, unknown};
 use local::Exchange;
 use std::{cell::RefCell, fs::File};
-use imp::wire::{fail, unknown};
 type Result<T> = std::result::Result<T, String>;
 
 /// Decode only a FIN-complete staging file. No destination is published here;
@@ -74,7 +74,7 @@ pub fn decode_request(input: &[u8]) -> Result<Fields> {
         unknown(frame.kind)?;
     };
     if decoded.status.is_some()
-        || decoded.method_get != Some(true)
+        || decoded.method != Some(http3::Method::Get)
         || decoded.https != Some(true)
         || decoded.path_len == 0
         || decoded.authority_len == 0

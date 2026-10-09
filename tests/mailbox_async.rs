@@ -8,8 +8,8 @@ use core::{
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 use hibana_quic::{
-    runtime::mailbox::{AlreadySplit, Closed, InitError, Mailbox, SendError},
     runtime::join2,
+    runtime::mailbox::{AlreadySplit, Closed, InitError, Mailbox, SendError},
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},

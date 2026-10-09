@@ -40,3 +40,10 @@ pub mod application;
 /// Server Retry admission before connection attachment.
 #[cfg(target_os = "linux")]
 pub mod retry;
+
+/// PEM decoding for caller-owned certificate and key files.
+pub mod pem;
+
+/// Execute application localsides over network-backed Hibana sessions.
+#[cfg(target_os = "linux")]
+pub mod session;

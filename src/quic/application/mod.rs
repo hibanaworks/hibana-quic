@@ -6,7 +6,7 @@ pub mod imp;
 pub mod global;
 pub mod local;
 
-pub use local::{client, client_early, server};
+pub use local::{client, client_early, server, server_stream};
 
 use super::{Config, Outcome, parameters, recovery, stream};
 use crate::crypto;
@@ -61,6 +61,15 @@ pub trait ClientRequests {
     }
 
     fn next(&mut self, output: &mut [u8]) -> impl Future<Output = Result<Option<usize>, ()>>;
+    /// Continue the currently opened request stream. Zero ends its send half.
+    /// The default is a prefix-only finite request.
+    fn body(
+        &mut self,
+        _stream_id: u64,
+        _output: &mut [u8],
+    ) -> impl Future<Output = Result<usize, ()>> {
+        async { Ok(0) }
+    }
     fn started(&mut self, stream_id: u64) -> Result<(), ()>;
 }
 pub trait StreamSink {

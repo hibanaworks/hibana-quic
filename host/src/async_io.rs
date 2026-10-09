@@ -17,11 +17,11 @@
 //! here. Always-ready actors must use the core runtime's cooperative yield at a
 //! bounded work boundary; a single Future::poll cannot be preempted.
 
+use crate::os::{self, PollBatch, PollFd};
 use crate::udp::{Codepoint, Received, UdpMetadataSocket};
 use hibana_quic::quic::path::Address;
-use crate::os::{self, PollBatch, PollFd};
+use std::io::{Read, Write};
 use std::os::{fd::AsRawFd, unix::net::UnixStream};
-use std::io::{Read,Write};
 use std::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},
@@ -36,7 +36,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-
 struct Signal {
     reader: UnixStream,
     writer: UnixStream,
@@ -47,9 +46,13 @@ impl Signal {
         loop {
             match (&self.writer).write(&[1]) {
                 Ok(_) => return,
-                Err(error) if error.kind()==io::ErrorKind::WouldBlock => return,
-                Err(error) if error.kind()==io::ErrorKind::Interrupted => continue,
-                Err(error) => { self.error.store(error.raw_os_error().unwrap_or(5),Ordering::Release);return; }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    self.error
+                        .store(error.raw_os_error().unwrap_or(5), Ordering::Release);
+                    return;
+                }
             }
         }
     }
@@ -60,11 +63,18 @@ impl Signal {
         }
         // One read drains the entire non-semaphore counter. Do not loop until
         // EAGAIN: a continuously waking producer must not starve socket work.
-        match (&self.reader).read(&mut [0;256]) {
-            Ok(0)=>Err(io::ErrorKind::BrokenPipe.into()),
-            Ok(_)=>Ok(()),
-            Err(error) if matches!(error.kind(),io::ErrorKind::WouldBlock|io::ErrorKind::Interrupted)=>Ok(()),
-            Err(error)=>Err(error),
+        match (&self.reader).read(&mut [0; 256]) {
+            Ok(0) => Err(io::ErrorKind::BrokenPipe.into()),
+            Ok(_) => Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     }
 }
@@ -152,8 +162,9 @@ impl<const S: usize, const T: usize> Reactor<S, T> {
         if S >= u32::MAX as usize {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let (reader,writer)=UnixStream::pair()?;
-        reader.set_nonblocking(true)?;writer.set_nonblocking(true)?;
+        let (reader, writer) = UnixStream::pair()?;
+        reader.set_nonblocking(true)?;
+        writer.set_nonblocking(true)?;
         Ok(Self {
             signal: Arc::new(Signal {
                 reader,
@@ -295,21 +306,55 @@ impl<const S: usize, const T: usize> Reactor<S, T> {
     }
     fn wait_and_dispatch(&self) -> io::Result<()> {
         let timeout = self.timeout(Instant::now());
-        let mut batch=PollBatch {wake:PollFd {fd:self.signal.reader.as_raw_fd(),events:os::READ,revents:0},sockets:[PollFd::EMPTY;S]};
-        let mut tokens=[0u64;S];
+        let mut batch = PollBatch {
+            wake: PollFd {
+                fd: self.signal.reader.as_raw_fd(),
+                events: os::READ,
+                revents: 0,
+            },
+            sockets: [PollFd::EMPTY; S],
+        };
+        let mut tokens = [0u64; S];
         {
-            let state=self.state.borrow();
-            for (index,slot) in state.sockets.iter().enumerate(){
-                if let Some(entry)=&slot.entry {
-                    let events=(if entry.read.armed {os::READ}else{0}) | (if entry.write.armed {os::WRITE}else{0});
-                    if events!=0 {batch.sockets[index]=PollFd{fd:entry.socket.socket().as_raw_fd(),events,revents:0};tokens[index]=SocketKey{index,generation:slot.generation}.token();}
+            let state = self.state.borrow();
+            for (index, slot) in state.sockets.iter().enumerate() {
+                if let Some(entry) = &slot.entry {
+                    let events = (if entry.read.armed { os::READ } else { 0 })
+                        | (if entry.write.armed { os::WRITE } else { 0 });
+                    if events != 0 {
+                        batch.sockets[index] = PollFd {
+                            fd: entry.socket.socket().as_raw_fd(),
+                            events,
+                            revents: 0,
+                        };
+                        tokens[index] = SocketKey {
+                            index,
+                            generation: slot.generation,
+                        }
+                        .token();
+                    }
                 }
             }
         }
-        self.update_statistics(|s|{s.waits=s.waits.saturating_add(1);if timeout==0{s.zero_timeout_waits=s.zero_timeout_waits.saturating_add(1);}});
-        match os::wait(&mut batch,timeout){Ok(_)=>{},Err(e) if e.kind()==io::ErrorKind::Interrupted=>{},Err(e)=>return Err(e)}
-        if batch.wake.revents!=0 {self.update_statistics(|s|s.wake_events=s.wake_events.saturating_add(1));}
-        for (entry,token) in batch.sockets.iter().zip(tokens){if entry.revents!=0 {self.dispatch_socket(token,entry.revents)?;}}
+        self.update_statistics(|s| {
+            s.waits = s.waits.saturating_add(1);
+            if timeout == 0 {
+                s.zero_timeout_waits = s.zero_timeout_waits.saturating_add(1);
+            }
+        });
+        match os::wait(&mut batch, timeout) {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+        if batch.wake.revents != 0 {
+            self.update_statistics(|s| s.wake_events = s.wake_events.saturating_add(1));
+        }
+        for (entry, token) in batch.sockets.iter().zip(tokens) {
+            if entry.revents != 0 {
+                self.dispatch_socket(token, entry.revents)?;
+            }
+        }
         let now = Instant::now();
         for index in 0..T {
             let waker = {
@@ -344,7 +389,7 @@ impl<const S: usize, const T: usize> Reactor<S, T> {
             .as_mut()
             .ok_or_else(|| io::ErrorKind::NotConnected.into())
     }
-    fn dispatch_socket(&self, token:u64, flags:i16) -> io::Result<()> {
+    fn dispatch_socket(&self, token: u64, flags: i16) -> io::Result<()> {
         let Some(key) = SocketKey::decode(token) else {
             return Ok(());
         };
@@ -693,9 +738,7 @@ mod tests {
         let mut bytes = [0; 16];
         let mut read = pin!(replacement.recv_from(&mut bytes));
         assert!(read.as_mut().poll(&mut cx).is_pending());
-        reactor
-            .dispatch_socket(old_key.token(), os::READ)
-            .unwrap();
+        reactor.dispatch_socket(old_key.token(), os::READ).unwrap();
         assert_eq!(count.0.load(Ordering::Relaxed), 0);
         assert!(
             reactor.state.borrow().sockets[0]
@@ -844,7 +887,8 @@ mod tests {
                 .entry
                 .as_ref()
                 .unwrap()
-                .read.armed
+                .read
+                .armed
         );
     }
 }

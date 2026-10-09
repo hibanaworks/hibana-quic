@@ -869,6 +869,23 @@ def phase(name, client, server, candidate):
             'passed', 'results', 'non_null_case_results', 'unexecuted_case_results',
             'original_json_sha256') if key in record})
         print(name + ': ' + record['status'], flush=True)
+        # Print bounded per-case verdicts and diagnostic counters into workflow logs.
+        for result in record.get('results', []):
+            print(name + ': ' + result['name'] + ': ' + str(result['result']), flush=True)
+        if record['status'] == 'INFRASTRUCTURE_OR_RESULT_FAILURE':
+            print(name + ': error type=' + record.get('error_type', 'unknown'), flush=True)
+            print(name + ': console classes=' + ','.join(record.get('console_error_classes', [])), flush=True)
+        if record['status'] != 'PASSED':
+            print('runner tracebacks: ' + json.dumps(record.get('runner_tracebacks', [])), flush=True)
+            failed = {item['name'] for item in record.get('results', []) if item['result'] != 'succeeded'}
+            for case, evidence in record.get('case_diagnostics', {}).items():
+                if failed and case not in failed:
+                    continue
+                for side in ('runner_output', 'client_log', 'server_log', 'simulator_log'):
+                    details = evidence.get(side, {})
+                    selected = {key: details[key] for key in ('state', 'error_classes', 'runner_classes', 'console_error_classes', 'container_exit_codes', 'case_timeout_seconds', 'latest_connection_frontiers', 'connection_terminals', 'latest_connection_clocks') if key in details}
+                    print(name + ': ' + case + ': ' + side + ': ' + json.dumps(selected), flush=True)
+
     return record
 
 def requested_cases(value):

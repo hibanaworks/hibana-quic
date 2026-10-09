@@ -76,45 +76,306 @@ Miri checks the executions it runs; it does not prove cryptographic strength or
 constant-time machine code. See [Hibana's guarantee boundary](https://github.com/hibanaworks/hibana/blob/6fccdbf81038b00d99ec1bb2b9c43a487521628e/README.md#guarantees)
 for the underlying runtime and carrier assumptions.
 
-## Try a real transfer
+## Write an application with Hibana
 
-You need Linux, Rust 1.95, and a server certificate/key with `DNS:localhost` and
-its trusted CA certificate. From the repository root:
+**Client and server project the same application global.** The library connects
+those projected endpoints over authenticated QUIC streams or HTTP/3 exchanges.
+Application locals use Hibana `send` and `recv`; they do not implement a carrier,
+manage frame queues, encode HTTP/3 envelopes, or drive transport phases.
 
-```sh
-./examples/http3-transfer.sh chain.pem key.pem ca.pem
+The two examples calculate a square across a real network connection:
+
+- [Raw QUIC application](examples/hello-quic/global.rs), using ALPN `hibana/1`.
+- [HTTP/3 application](examples/hello-http3/global.rs), using authenticated
+  HTTP/3 POST request/response bodies on `/hibana`.
+
+Each has one `global.rs`, `local/client.rs`, `local/server.rs`, and small native
+`client.rs` / `server.rs` launchers. The HTTP/3 and raw examples have identical
+application conversations; the launcher's `session::Protocol` selects the carrier.
+
+### Shared global
+
+```rust
+use hibana::g;
+pub const CLIENT: u8 = 0;
+pub const SERVER: u8 = 1;
+pub type Number = g::Msg<0, u64>;
+pub type Square = g::Msg<1, u64>;
+pub type Exchange = g::Seq<g::Send<CLIENT, SERVER, Number>, g::Send<SERVER, CLIENT, Square>>;
+pub type Conversation = g::Seq<Exchange, Exchange>;
+pub fn choreography() -> g::Program<Conversation> {
+    g::seq(
+        g::seq(
+            g::send::<CLIENT, SERVER, Number>(),
+            g::send::<SERVER, CLIENT, Square>(),
+        ),
+        g::seq(
+            g::send::<CLIENT, SERVER, Number>(),
+            g::send::<SERVER, CLIENT, Square>(),
+        ),
+    )
+}
 ```
 
-The example builds the client/server, transfers `hello.txt` over HTTP/3, waits
-for both processes and compares the file contents. Logs and output are kept in
-the temporary directory printed on success. Port 4433 must be free.
-It never disables certificate or hostname verification.
+### Client localside
 
-For separate terminals and CLI options, see [Host usage](host/README.md).
+```rust
+use crate::global::*;
+use hibana::Endpoint;
+#[derive(Debug)]
+pub enum Error {
+    Protocol(hibana::EndpointError),
+    IncorrectSquare,
+}
+pub async fn run(client: &mut Endpoint<'_, CLIENT>) -> Result<(), Error> {
+    for number in [42_u64, 7] {
+        client
+            .send::<Number>(&number)
+            .await
+            .map_err(Error::Protocol)?;
+        let square = client.recv::<Square>().await.map_err(Error::Protocol)?;
+        if square != number * number {
+            return Err(Error::IncorrectSquare);
+        }
+    }
+    Ok(())
+}
 
-## Write an application
-
-Start with [a response handler and borrowed body](examples/response_body.rs):
-
-```sh
-cargo run --locked --example response_body
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Protocol(error) => write!(f, "{error:?}"),
+            Self::IncorrectSquare => f.write_str("incorrect square"),
+        }
+    }
+}
+impl core::error::Error for Error {}
 ```
 
-This small example exercises the application effects without a network. The
-HTTP/3 example above exercises the actual network client/server.
+### Server localside
 
+```rust
+use crate::global::*;
+use hibana::Endpoint;
+#[derive(Debug)]
+pub enum Error {
+    Protocol(hibana::EndpointError),
+    Overflow,
+}
+pub async fn run(server: &mut Endpoint<'_, SERVER>) -> Result<(), Error> {
+    for _ in 0..2 {
+        let number = server.recv::<Number>().await.map_err(Error::Protocol)?;
+        let square = number.checked_mul(number).ok_or(Error::Overflow)?;
+        server
+            .send::<Square>(&square)
+            .await
+            .map_err(Error::Protocol)?;
+    }
+    Ok(())
+}
 
-- [Host application client/server](host/src/application/local/mod.rs) connect
-  caller-owned request, response-body and receive-sink implementations to the
-  actual QUIC application choreography.
-- [Application effects](src/quic/application/mod.rs) define `ClientRequests`,
-  `StreamSink`, `ServerHandler` and `BodyReader`.
-- [Core I/O contracts](src/io/mod.rs) permit other operating systems and bare-metal
-  adapters. Host Linux support is not a core requirement.
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Protocol(error) => write!(f, "{error:?}"),
+            Self::Overflow => f.write_str("square overflow"),
+        }
+    }
+}
+impl core::error::Error for Error {}
+```
 
-The current application profile is bounded request/response transfer. A general
-bidirectional HTTP/3 application framework is not yet available. The in-process
-Hibana carrier is not a QUIC network transport for arbitrary application globals.
+The client launcher projects `CLIENT`; the server launcher projects `SERVER`
+from that same global. `session::client` and `session::server` own the carrier,
+TLS connection, native reactor, bounded buffers and teardown. They join the
+application local with the real network driver, without an application-side
+phase flag or replacement state machine.
+
+### Raw QUIC client launcher
+
+[Complete executable](examples/hello-quic/client.rs); `global` and `local` refer to the files above.
+
+```rust
+fn run() -> Result<(), String> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.len() != 2 {
+        return Err("usage: client REMOTE CA.pem (DNS:localhost)".into());
+    }
+    let config = session::Client {
+        remote: args[0].parse().map_err(|e| format!("{e}"))?,
+        server_name: "localhost".into(),
+        ca: args[1].clone().into(),
+        protocol: session::Protocol::Quic,
+        timeout: Duration::from_secs(30),
+    };
+    session::client(
+        config,
+        global::SERVER,
+        &project::<{ global::CLIENT }, _>(&global::choreography()),
+        local::run,
+    )?;
+    println!("42 squared = 1764\n7 squared = 49");
+    Ok(())
+}
+```
+
+### Raw QUIC server launcher
+
+[Complete executable](examples/hello-quic/server.rs); `global` and `local` refer to the files above.
+
+```rust
+fn run() -> Result<(), String> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.len() != 3 {
+        return Err("usage: server LISTEN CERT.pem KEY.pem".into());
+    }
+    let config = session::Server {
+        listen: args[0].parse().map_err(|e| format!("{e}"))?,
+        certificate: args[1].clone().into(),
+        key: args[2].clone().into(),
+        protocol: session::Protocol::Quic,
+        timeout: Duration::from_secs(30),
+    };
+    session::server(
+        config,
+        global::CLIENT,
+        &project::<{ global::SERVER }, _>(&global::choreography()),
+        local::run,
+    )
+}
+```
+
+### HTTP/3 client launcher
+
+[Complete executable](examples/hello-http3/client.rs); `global` and `local` refer to the files above.
+
+```rust
+fn run() -> Result<(), String> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.len() != 2 {
+        return Err("usage: client REMOTE CA.pem (DNS:localhost)".into());
+    }
+    let config = session::Client {
+        remote: args[0].parse().map_err(|e| format!("{e}"))?,
+        server_name: "localhost".into(),
+        ca: args[1].clone().into(),
+        protocol: session::Protocol::Http3,
+        timeout: Duration::from_secs(30),
+    };
+    session::client(
+        config,
+        global::SERVER,
+        &project::<{ global::CLIENT }, _>(&global::choreography()),
+        local::run,
+    )?;
+    println!("42 squared = 1764\n7 squared = 49");
+    Ok(())
+}
+```
+
+### HTTP/3 server launcher
+
+[Complete executable](examples/hello-http3/server.rs); `global` and `local` refer to the files above.
+
+```rust
+fn run() -> Result<(), String> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.len() != 3 {
+        return Err("usage: server LISTEN CERT.pem KEY.pem".into());
+    }
+    let config = session::Server {
+        listen: args[0].parse().map_err(|e| format!("{e}"))?,
+        certificate: args[1].clone().into(),
+        key: args[2].clone().into(),
+        protocol: session::Protocol::Http3,
+        timeout: Duration::from_secs(30),
+    };
+    session::server(
+        config,
+        global::CLIENT,
+        &project::<{ global::SERVER }, _>(&global::choreography()),
+        local::run,
+    )
+}
+```
+
+### Run both sides
+
+The Host implementation requires Linux and Rust 1.95. Supply a development
+certificate chain/key for `DNS:localhost` and its CA. Verification stays enabled;
+do not use production keys for a demonstration.
+
+```sh
+cargo build --locked --release --manifest-path host/Cargo.toml --examples
+```
+
+Raw QUIC, in separate terminals:
+
+```sh
+host/target/release/examples/quic-server 127.0.0.1:4433 chain.pem key.pem
+host/target/release/examples/quic-client 127.0.0.1:4433 ca.pem
+```
+
+HTTP/3, in separate terminals:
+
+```sh
+host/target/release/examples/http3-server 127.0.0.1:4433 chain.pem key.pem
+host/target/release/examples/http3-client 127.0.0.1:4433 ca.pem
+```
+
+Or verify both exchanges automatically:
+
+```sh
+python3 examples/check-transfers.py host/target/release/examples chain.pem key.pem ca.pem
+```
+
+With `CARGO_TARGET_DIR`, use that directory's `release/examples/` instead.
+The client checks `42 squared = 1764` and `7 squared = 49` on the same stream;
+both launchers require normal transport
+close and native resource retirement. A 30-second deadline bounds each example.
+
+### Carrier scope and guarantees
+
+The session API attaches two projected roles to one ordered bidirectional
+stream. Multiple Hibana messages share that stream; message boundaries do not
+open new QUIC streams or new HTTP requests. The projected endpoint owns the
+application's send/receive order. The transport preserves session, lane, source,
+destination and label, and checks the configured peer before admitting a frame.
+Each message has at most 256 payload bytes and the queue holds four frames.
+
+Raw QUIC uses ALPN `hibana/1`. The HTTP/3 profile opens one streaming POST on
+`/hibana`; its request and 200 response bodies carry the two message directions.
+This profile is a two-role application channel, not a general web router or
+multiparty connection manager.
+
+The shared attachment and stream effects live in the `no_std` core, using
+caller-owned storage and ordinary Rust futures. Native UDP sockets, file-based
+certificate loading and the reactor live in Host. Bare-metal integrations supply
+packet I/O, clock, entropy, connection storage and their executor through the
+core contracts. They can reuse the application global and localsides; the core
+does not supply a board-specific network driver.
+
+Endpoint send completion means the bounded carrier accepted ownership; it does
+not mean the remote application consumed the value. The response in the shared
+global provides application-level causality. The session launcher separately
+waits for actual QUIC termination and resource retirement. Failure cancels the
+joined futures and their owned resources rather than inventing a reply.
+
+Hibana validates local operations against the projected program. Network peers
+are still untrusted inputs, and matching message labels do not establish that a
+peer runs the same source code. TLS, strict frame parsing and the receiver's
+projected endpoint enforce their respective boundaries.
+
+- [Network session entry points](host/src/session/mod.rs) own native resources.
+- [Network session execution](host/src/session/local/mod.rs) joins a caller's
+  localside with the QUIC/HTTP/3 driver.
+- [OS-independent role attachment](src/session/local/mod.rs) joins the localside
+  and its stream driver.
+- [Stream effects](src/session/local/stream.rs) and [framing](src/session/imp/wire.rs)
+  remain below the application interface.
+- [Core I/O contracts](src/io/mod.rs) support OS and bare-metal adapters.
+- [CLI file transfer](host/README.md) and its
+  [single-command script](examples/http3-transfer.sh) are additional examples.
 
 ## Find the protocol and its implementation
 

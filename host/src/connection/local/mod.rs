@@ -81,3 +81,8 @@ pub async fn handshake<'scope, const S: usize, const T: usize>(
     }
     result
 }
+
+mod client;
+mod server;
+pub use client::connect;
+pub use server::accept;

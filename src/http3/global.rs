@@ -149,10 +149,21 @@ mod tests {
         };
         let mut tasks = pin!(async {
             crate::runtime::join::values3(
-                async { source.await; Ok::<(), core::convert::Infallible>(()) },
-                async { sink.await; Ok::<(), core::convert::Infallible>(()) },
-                async { owner.await; Ok::<(), core::convert::Infallible>(()) },
-            ).await.unwrap();
+                async {
+                    source.await;
+                    Ok::<(), core::convert::Infallible>(())
+                },
+                async {
+                    sink.await;
+                    Ok::<(), core::convert::Infallible>(())
+                },
+                async {
+                    owner.await;
+                    Ok::<(), core::convert::Infallible>(())
+                },
+            )
+            .await
+            .unwrap();
         });
         let mut cx = Context::from_waker(Waker::noop());
         for _ in 0..128 {

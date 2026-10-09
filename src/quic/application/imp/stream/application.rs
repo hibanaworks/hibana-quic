@@ -47,6 +47,25 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         })
     }
 
+    pub(in crate::quic) fn take_unissued_production(
+        &mut self,
+        stream: StreamHandle,
+    ) -> Result<Option<Production<'book>>, Error> {
+        let mut numbers = self
+            .core
+            .numbers
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed)?;
+        Ok(numbers
+            .state_mut(stream)?
+            .production
+            .take()
+            .map(|issued| Production {
+                identity: &self.core.identity,
+                stream: issued,
+            }))
+    }
+
     pub(in crate::quic) fn release_production(
         &mut self,
         production: Production<'book>,

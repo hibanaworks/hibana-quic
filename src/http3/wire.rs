@@ -3,6 +3,13 @@
 use super::tables;
 pub const FIELD_LIMIT: usize = 4096;
 pub use hibana_tls::Protocol;
+/// Parsed method metadata, independent of HTTP/3 progress.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Method {
+    Get,
+    Post,
+    Other,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Truncated,
@@ -107,7 +114,7 @@ fn string(
 #[derive(Debug)]
 pub struct Fields {
     pub status: Option<u16>,
-    pub method_get: Option<bool>,
+    pub method: Option<Method>,
     pub https: Option<bool>,
     pub path: [u8; 1024],
     pub path_len: usize,
@@ -120,7 +127,7 @@ impl Fields {
     pub fn empty() -> Self {
         Self {
             status: None,
-            method_get: None,
+            method: None,
             https: None,
             path: [0; 1024],
             path_len: 0,
@@ -132,7 +139,7 @@ impl Fields {
     }
     pub fn has_pseudo(&self) -> bool {
         self.status.is_some()
-            || self.method_get.is_some()
+            || self.method.is_some()
             || self.https.is_some()
             || self.path_len != 0
             || self.authority_len != 0
@@ -181,7 +188,15 @@ impl Fields {
                 );
             }
             b":method" => {
-                if self.method_get.replace(value == b"GET").is_some() {
+                if self
+                    .method
+                    .replace(match value {
+                        b"GET" => Method::Get,
+                        b"POST" => Method::Post,
+                        _ => Method::Other,
+                    })
+                    .is_some()
+                {
                     return Err(Error::Duplicate);
                 }
             }
@@ -406,7 +421,7 @@ mod tests {
         let mut b = [0; 256];
         let n = request_fields(b"localhost:443", b"/hello", &mut b).unwrap();
         let f = decode_fields(&b[..n]).unwrap();
-        assert_eq!(f.method_get, Some(true));
+        assert_eq!(f.method, Some(Method::Get));
         assert_eq!(&f.path[..f.path_len], b"/hello");
         let n = response_fields(&mut b).unwrap();
         assert_eq!(decode_fields(&b[..n]).unwrap().status, Some(200));

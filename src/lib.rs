@@ -30,3 +30,6 @@ pub(crate) mod scoped_tls_fixture;
 #[allow(dead_code)]
 #[path = "../tests/support/tls_actor_fixture.rs"]
 pub(crate) mod tls_fixture;
+
+/// OS-independent application session attachment and stream framing.
+pub mod session;

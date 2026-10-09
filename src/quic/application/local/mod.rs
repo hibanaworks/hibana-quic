@@ -152,7 +152,47 @@ pub fn server<'scope, const N: usize, const P: usize, const RX: usize, const CHU
         book,
         outcomes,
         Source::Server(handler),
-        Sink::Server,
+        Sink::Server(None),
+        None,
+    )
+}
+
+/// Stream request bytes as they arrive; response production can start before request FIN.
+/// `handler.open` obtains the response production grant with an empty prefix.
+#[allow(clippy::too_many_arguments)]
+pub fn server_stream<
+    'scope,
+    const N: usize,
+    const P: usize,
+    const RX: usize,
+    const CHUNK: usize,
+>(
+    roles: &mut Roles<'_>,
+    source: &mut Transcript<'scope, '_, '_>,
+    setup: Setup<'_, RX, CHUNK>,
+    receive: &mut impl DatagramRx,
+    send: &mut impl DatagramTx,
+    clock: &impl Clock,
+    issuer: &mut Issuer<'_, 'scope>,
+    stop: Stop<'_, 'scope>,
+    book: &mut Recovery<'scope, N>,
+    outcomes: &Outcomes,
+    handler: &mut impl ServerHandler,
+    input: &mut impl StreamSink,
+) -> impl core::future::Future<Output = Result<Report, Error>> {
+    connected::<N, P, RX, CHUNK, Unused, _, _>(
+        roles,
+        source,
+        setup,
+        receive,
+        send,
+        clock,
+        issuer,
+        stop,
+        book,
+        outcomes,
+        Source::Server(handler),
+        Sink::Server(Some(input)),
         None,
     )
 }
@@ -165,7 +205,7 @@ enum Source<'a, C, H> {
 }
 enum Sink<'a, S> {
     Client(&'a mut S),
-    Server,
+    Server(Option<&'a mut S>),
 }
 struct Unused;
 impl BodyReader for Unused {
@@ -437,7 +477,7 @@ async fn connected<
         let source = async {
             use crate::http3::{Protocol, global as h3};
             match application_protocol {
-                Protocol::Http09 => roles.source.send::<h3::Plain>(&()).await?,
+                Protocol::Http09 | Protocol::Raw(_) => roles.source.send::<h3::Plain>(&()).await?,
                 Protocol::Http3 => roles.source.send::<h3::Http3>(&()).await?,
             }
             // Both control outcomes settle startup exactly once. This is not
@@ -506,7 +546,7 @@ async fn connected<
         let sink = async {
             use crate::http3::{Protocol, global as h3};
             let auxiliary = match application_protocol {
-                Protocol::Http09 => {
+                Protocol::Http09 | Protocol::Raw(_) => {
                     roles.sink.recv::<h3::PlainSink>().await?;
                     None
                 }
@@ -528,13 +568,14 @@ async fn connected<
                     )
                     .await
                 }
-                Sink::Server => {
+                Sink::Server(input) => {
                     io::server_sink(
                         &mut roles.sink,
                         &control,
                         &state,
                         &app,
                         &mut request_sender,
+                        input,
                         &reclaim_exchange,
                         auxiliary,
                     )

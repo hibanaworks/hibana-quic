@@ -394,10 +394,7 @@ fn explicit_setup_allocations_and_zero_allocation_scheduling() {
             })
             .unwrap()
     });
-    assert_eq!(
-        allocations, 0,
-        "executor/poll/timers allocate nothing"
-    );
+    assert_eq!(allocations, 0, "executor/poll/timers allocate nothing");
     let (_, allocations) = measured(|| {
         reactor
             .block_on(receiver.send_from(

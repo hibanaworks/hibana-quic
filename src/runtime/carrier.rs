@@ -23,12 +23,18 @@ struct PortKey {
     role: u8,
 }
 
-struct Frame<const BYTES: usize> {
+pub struct Frame<const BYTES: usize> {
     header: [u8; 8],
     bytes: [u8; BYTES],
     len: usize,
 }
 impl<const BYTES: usize> Frame<BYTES> {
+    pub fn header(&self) -> [u8; 8] {
+        self.header
+    }
+    pub fn payload(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
     fn matches(&self, key: PortKey) -> bool {
         self.header[..4] == key.session.raw().to_be_bytes()
             && self.header[4] == key.lane
@@ -49,6 +55,10 @@ struct PortState {
 }
 struct State<const QUEUE: usize, const BYTES: usize, const PORTS: usize> {
     generation: u64,
+    peer: Option<(u8, u8)>,
+    peer_waker: Option<Waker>,
+    peer_input_waker: Option<Waker>,
+    outgoing_open: bool,
     bound: bool,
     closed: bool,
     session: SessionId,
@@ -60,6 +70,10 @@ impl<const Q: usize, const B: usize, const P: usize> State<Q, B, P> {
     const fn new() -> Self {
         Self {
             generation: 0,
+            peer: None,
+            peer_waker: None,
+            peer_input_waker: None,
+            outgoing_open: true,
             bound: false,
             closed: true,
             session: SessionId::new(0),
@@ -108,6 +122,10 @@ impl<const Q: usize, const B: usize, const P: usize> CarrierStorage<Q, B, P> {
                 .checked_add(1)
                 .ok_or(TransportError::Failed)?;
             state.generation = next;
+            state.peer = None;
+            state.peer_waker = None;
+            state.peer_input_waker = None;
+            state.outgoing_open = true;
             state.session = session;
             state.bound = true;
             state.closed = false;
@@ -133,6 +151,8 @@ impl<const Q: usize, const B: usize, const P: usize> CarrierStorage<Q, B, P> {
     }
 
     fn close_generation(&self, generation: u64) {
+        let peer;
+        let peer_input;
         let mut readers: [Option<Waker>; P] = [const { None }; P];
         let mut writers: [Option<Waker>; P] = [const { None }; P];
         {
@@ -141,6 +161,8 @@ impl<const Q: usize, const B: usize, const P: usize> CarrierStorage<Q, B, P> {
                 return;
             }
             state.closed = true;
+            peer = state.peer_waker.take();
+            peer_input = state.peer_input_waker.take();
             state.queue = [const { None }; Q];
             state.len = 0;
             for (index, port) in state.ports.iter_mut().enumerate() {
@@ -151,7 +173,12 @@ impl<const Q: usize, const B: usize, const P: usize> CarrierStorage<Q, B, P> {
             }
         }
         // Never invoke executor callbacks while holding the RefCell borrow.
-        for waker in readers.into_iter().chain(writers).flatten() {
+        for waker in readers
+            .into_iter()
+            .chain(writers)
+            .chain([peer, peer_input])
+            .flatten()
+        {
             waker.wake();
         }
     }
@@ -194,10 +221,15 @@ impl<const Q: usize, const B: usize, const P: usize> CarrierStorage<Q, B, P> {
         let mut next_waker = Some(cx.waker().clone());
         let old_waker;
         let mut receiver = None;
+        let mut peer = None;
         let result;
         {
             let mut state = self.state.borrow_mut();
             if !state.valid(token.generation) {
+                return Poll::Ready(Err(TransportError::Offline));
+            }
+            if !state.outgoing_open && state.peer.is_some_and(|(local, _)| local == token.key.role)
+            {
                 return Poll::Ready(Err(TransportError::Offline));
             }
             if lane != token.key.lane || target == token.key.role {
@@ -238,6 +270,7 @@ impl<const Q: usize, const B: usize, const P: usize> CarrierStorage<Q, B, P> {
                 let offset = state.len;
                 state.queue[offset] = Some(frame);
                 state.len += 1;
+                peer = state.peer_waker.take();
                 for port in state.ports.iter_mut().flatten() {
                     if port.key.session == token.key.session
                         && port.key.lane == lane
@@ -252,7 +285,7 @@ impl<const Q: usize, const B: usize, const P: usize> CarrierStorage<Q, B, P> {
         }
         drop(old_waker);
         drop(next_waker);
-        if let Some(waker) = receiver {
+        for waker in [receiver, peer].into_iter().flatten() {
             waker.wake();
         }
         if result.is_pending() && !self.state.borrow().valid(token.generation) {
@@ -435,6 +468,7 @@ impl<const Q: usize, const B: usize, const P: usize> LocalCarrier<'_, Q, B, P> {
         rx.current = None;
         let mut next_waker = Some(cx.waker().clone());
         let old_waker;
+        let mut peer_input = None;
         let mut writers: [Option<Waker>; P] = [const { None }; P];
         {
             let mut state = self.storage.state.borrow_mut();
@@ -451,6 +485,7 @@ impl<const Q: usize, const B: usize, const P: usize> LocalCarrier<'_, Q, B, P> {
                     state.queue[i] = state.queue[i + 1].take();
                 }
                 state.len -= 1;
+                peer_input = state.peer_input_waker.take();
                 old_waker = state.ports[index]
                     .as_mut()
                     .expect("live port")
@@ -471,7 +506,7 @@ impl<const Q: usize, const B: usize, const P: usize> LocalCarrier<'_, Q, B, P> {
         }
         drop(old_waker);
         drop(next_waker);
-        for waker in writers.into_iter().flatten() {
+        for waker in writers.into_iter().chain([peer_input]).flatten() {
             waker.wake();
         }
         if !self.storage.state.borrow().valid(rx.token.generation) {
@@ -494,6 +529,165 @@ impl<const Q: usize, const B: usize, const P: usize> LocalCarrier<'_, Q, B, P> {
             return Err(TransportError::Failed);
         }
         rx.restore = true;
+        Ok(())
+    }
+}
+
+/// A connection-scoped bridge used by network drivers, not application locals.
+/// It admits only the configured remote role and preserves frame metadata.
+pub struct Peer<'a, const Q: usize, const B: usize, const P: usize> {
+    storage: &'a CarrierStorage<Q, B, P>,
+    generation: u64,
+    local: u8,
+    remote: u8,
+}
+impl<const Q: usize, const B: usize, const P: usize> CarrierStorage<Q, B, P> {
+    pub fn peer(&self, local: u8, remote: u8) -> Result<Peer<'_, Q, B, P>, TransportError> {
+        let mut state = self.state.borrow_mut();
+        if state.peer.is_some() || local == remote || !state.bound || state.closed {
+            return Err(TransportError::Failed);
+        }
+        state.peer = Some((local, remote));
+        Ok(Peer {
+            storage: self,
+            generation: state.generation,
+            local,
+            remote,
+        })
+    }
+}
+impl<const Q: usize, const B: usize, const P: usize> Peer<'_, Q, B, P> {
+    /// Seal local publication after the application local completes. Already
+    /// committed frames remain owned by the driver until they have been drained.
+    pub fn finish(&self) {
+        let old = {
+            let mut state = self.storage.state.borrow_mut();
+            if !state.valid(self.generation) {
+                return;
+            }
+            state.outgoing_open = false;
+            state.peer_waker.take()
+        };
+        if let Some(waker) = old {
+            waker.wake();
+        }
+    }
+    pub fn poll_outgoing(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Frame<B>>, TransportError>> {
+        let mut next = Some(cx.waker().clone());
+        let old;
+        let mut peer_input = None;
+        let mut writers: [Option<Waker>; P] = [const { None }; P];
+        let result;
+        {
+            let mut state = self.storage.state.borrow_mut();
+            if !state.valid(self.generation) {
+                return Poll::Ready(Err(TransportError::Offline));
+            }
+            if let Some(index) = state.queue[..state.len]
+                .iter()
+                .position(|f| f.as_ref().is_some_and(|f| f.header[6] == self.remote))
+            {
+                let frame = state.queue[index].take().expect("occupied frame");
+                if frame.header[5] != self.local {
+                    return Poll::Ready(Err(TransportError::Failed));
+                }
+                for i in index..state.len - 1 {
+                    state.queue[i] = state.queue[i + 1].take();
+                }
+                state.len -= 1;
+                peer_input = state.peer_input_waker.take();
+                old = state.peer_waker.take();
+                for (index, port) in state.ports.iter_mut().enumerate() {
+                    if let Some(port) = port {
+                        writers[index] = port.send_waker.take();
+                    }
+                }
+                result = Poll::Ready(Ok(Some(frame)));
+            } else if !state.outgoing_open {
+                old = state.peer_waker.take();
+                result = Poll::Ready(Ok(None));
+            } else {
+                old = state.peer_waker.replace(next.take().expect("new waker"));
+                result = Poll::Pending;
+            }
+        }
+        drop(old);
+        drop(next);
+        for waker in writers.into_iter().chain([peer_input]).flatten() {
+            waker.wake();
+        }
+        result
+    }
+    pub fn poll_incoming(
+        &self,
+        header: [u8; 8],
+        payload: &[u8],
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), TransportError>> {
+        let next = cx.waker().clone();
+        let old;
+        let full;
+        {
+            let mut state = self.storage.state.borrow_mut();
+            if !state.valid(self.generation) {
+                return Poll::Ready(Err(TransportError::Offline));
+            }
+            full = state.len == Q;
+            old = if full {
+                state.peer_input_waker.replace(next)
+            } else {
+                state.peer_input_waker.take()
+            };
+        }
+        drop(old);
+        if full {
+            Poll::Pending
+        } else {
+            Poll::Ready(self.incoming(header, payload))
+        }
+    }
+    /// The caller supplies one authenticated, complete application frame.
+    /// Capacity or identity failures abort the connection; bytes are never truncated.
+    pub fn incoming(&self, header: [u8; 8], payload: &[u8]) -> Result<(), TransportError> {
+        let mut readers: [Option<Waker>; P] = [const { None }; P];
+        {
+            let mut state = self.storage.state.borrow_mut();
+            if !state.valid(self.generation) {
+                return Err(TransportError::Offline);
+            }
+            if header[..4] != state.session.raw().to_be_bytes()
+                || header[5] != self.remote
+                || header[6] != self.local
+            {
+                return Err(TransportError::Failed);
+            }
+            if payload.len() > B || state.len == Q {
+                return Err(TransportError::Capacity);
+            }
+            let mut frame = Frame {
+                header,
+                bytes: [0; B],
+                len: payload.len(),
+            };
+            frame.bytes[..payload.len()].copy_from_slice(payload);
+            let index = state.len;
+            state.queue[index] = Some(frame);
+            state.len += 1;
+            for (index, port) in state.ports.iter_mut().enumerate() {
+                if let Some(port) = port
+                    && port.key.role == self.local
+                    && port.key.lane == header[4]
+                {
+                    readers[index] = port.recv_waker.take();
+                }
+            }
+        }
+        for waker in readers.into_iter().flatten() {
+            waker.wake();
+        }
         Ok(())
     }
 }
@@ -551,6 +745,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn network_peer_preserves_frames_and_seals_without_dropping_committed_data() {
+        let storage = CarrierStorage::<2, 8, 4>::new();
+        let carrier = storage.bind(SessionId::new(7)).unwrap();
+        let tx = token(&carrier, key(0, 0));
+        let peer = storage.peer(0, 1).unwrap();
+        let (count, wake) = waker();
+        let mut cx = Context::from_waker(&wake);
+        assert!(peer.poll_outgoing(&mut cx).is_pending());
+        assert!(matches!(
+            storage.send_bytes(&tx, 0, 1, 4, &[10], &mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(count.0.load(Ordering::Relaxed), 1);
+        peer.finish();
+        let Poll::Ready(Ok(Some(frame))) = peer.poll_outgoing(&mut cx) else {
+            panic!("committed frame lost");
+        };
+        assert_eq!(frame.header(), [0, 0, 0, 7, 0, 0, 1, 4]);
+        assert_eq!(frame.payload(), [10]);
+        assert!(matches!(peer.poll_outgoing(&mut cx), Poll::Ready(Ok(None))));
+        assert!(matches!(
+            storage.send_bytes(&tx, 0, 1, 4, &[20], &mut cx),
+            Poll::Ready(Err(TransportError::Offline))
+        ));
+    }
+    #[test]
+    fn network_peer_rejects_wrong_identity_and_obeys_receive_restore() {
+        let storage = CarrierStorage::<2, 8, 4>::new();
+        let carrier = storage.bind(SessionId::new(7)).unwrap();
+        let mut rx = receiver(&carrier, key(0, 0));
+        let peer = storage.peer(0, 1).unwrap();
+        assert!(storage.peer(0, 1).is_err());
+        assert!(peer.incoming([0, 0, 0, 8, 0, 1, 0, 4], &[9]).is_err());
+        assert!(peer.incoming([0, 0, 0, 7, 0, 2, 0, 4], &[9]).is_err());
+        assert!(peer.incoming([0, 0, 0, 7, 0, 1, 2, 4], &[9]).is_err());
+        assert!(peer.incoming([0, 0, 0, 7, 0, 1, 0, 4], &[9; 9]).is_err());
+        peer.incoming([0, 0, 0, 7, 0, 1, 0, 4], &[9]).unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            carrier.recv_current(&mut rx, &mut cx),
+            Poll::Ready(Ok(_))
+        ));
+        carrier.restore_current(&mut rx).unwrap();
+        let Poll::Ready(Ok(frame)) = carrier.recv_current(&mut rx, &mut cx) else {
+            panic!("restore lost frame");
+        };
+        assert_eq!(frame.payload().as_bytes(), [9]);
+        assert!(carrier.recv_current(&mut rx, &mut cx).is_pending());
+        storage.close();
+        assert!(peer.incoming([0, 0, 0, 7, 0, 1, 0, 4], &[9]).is_err());
+        assert!(matches!(
+            peer.poll_outgoing(&mut cx),
+            Poll::Ready(Err(TransportError::Offline))
+        ));
+    }
     #[test]
     fn requeue_is_same_handle_fifo_and_not_duplicate_commit() {
         let storage = CarrierStorage::<2, 8, 4>::new();

@@ -164,7 +164,7 @@ pub(super) async fn owner<'book, const RX: usize, const CHUNK: usize>(
     match offered.label() {
         238 => {
             offered.recv::<p::Plain>().await?;
-            if protocol != Protocol::Http09 {
+            if !matches!(protocol, Protocol::Http09 | Protocol::Raw(_)) {
                 return Err(Error::Binding);
             }
             endpoint.send::<p::PlainSink>(&()).await?;

@@ -249,11 +249,60 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                     offset += count;
                     crate::runtime::yield_now().await;
                 }
-                Ok::<_, Error>(if offset == len {
-                    Admission::Accepted
-                } else {
-                    Admission::Interrupted
-                })
+                if offset != len {
+                    return Ok(Admission::Interrupted);
+                }
+                loop {
+                    let mut chunk = Chunk {
+                        bytes: [0; CHUNK],
+                        len: 0,
+                    };
+                    let count = match control
+                        .until_stop(0, requests.body(stream.id(), &mut chunk.bytes))
+                        .await
+                    {
+                        Some(result) => result.map_err(|_| Error::Application)?,
+                        None => return Ok(Admission::Interrupted),
+                    };
+                    if count == 0 {
+                        break;
+                    }
+                    if count > CHUNK {
+                        return Err(Error::Capacity);
+                    }
+                    chunk.len = count;
+                    state
+                        .data
+                        .put(Input::Chunk(chunk))
+                        .map_err(|_| Error::Binding)?;
+                    endpoint.send::<p::SourceData>(&()).await?;
+                    let reply = endpoint.offer().await?;
+                    let admitted = match reply.label() {
+                        1 => {
+                            reply.recv::<p::SourceAccepted>().await?;
+                            Admission::Accepted
+                        }
+                        2 => {
+                            reply.recv::<p::SourceRejected>().await?;
+                            Admission::Interrupted
+                        }
+                        187 => {
+                            reply.recv::<p::SourceStopped>().await?;
+                            Admission::Stopped
+                        }
+                        215 => {
+                            reply.recv::<p::SourceDataFailed>().await?;
+                            Admission::Failed
+                        }
+                        label => return Err(Error::UnexpectedLabel(label)),
+                    };
+                    endpoint.send::<p::SourceTaken>(&()).await?;
+                    if admitted != Admission::Accepted {
+                        return Ok(admitted);
+                    }
+                    crate::runtime::yield_now().await;
+                }
+                Ok::<_, Error>(Admission::Accepted)
             }
             .await;
             let finished = async {
@@ -861,12 +910,14 @@ async fn deliver<const RX: usize, const CHUNK: usize, B>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SINK }>,
     control: &Control<'_, '_>,
     state: &State<'book, CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut Sender<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
+    mut streaming: Option<&mut impl StreamSink>,
     reclaim: &super::reclaim::Exchange<'book>,
     auxiliary: Option<&super::http3::Ingress>,
 ) -> Result<(), Error> {
@@ -923,7 +974,31 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                     }
                     .await
                 } else {
-                    receive_request(control, state, app, requests, &mut pending, stream_id).await
+                    if let Some(sink) = streaming.as_deref_mut() {
+                        async {
+                            let stream = ready_handle(app, stream_id)?;
+                            let production = app
+                                .try_borrow_mut()
+                                .map_err(|_| Error::Binding)?
+                                .take_unissued_production(stream)?;
+                            if let Some(production) = production {
+                                let request = OwnedRequest {
+                                    production,
+                                    bytes: [0; REQUEST_BYTES],
+                                    len: 0,
+                                };
+                                match control.until_stop(2, requests.send(request)).await {
+                                    Some(result) => result.map_err(|_| Error::Application)?,
+                                    None => return Ok(Delivery::Interrupted),
+                                }
+                            }
+                            deliver(control, state, app, sink, stream_id).await
+                        }
+                        .await
+                    } else {
+                        receive_request(control, state, app, requests, &mut pending, stream_id)
+                            .await
+                    }
                 };
                 if !matches!(delivery, Ok(Delivery::More)) {
                     let receipt = if state.is_complete(stream_id) {

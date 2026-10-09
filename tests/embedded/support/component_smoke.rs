@@ -1,10 +1,8 @@
 //! Shared no-heap exercised paths for allocation counting and target link smoke.
 //! No TLS handshake, network endpoint, or hardware execution is represented.
-use hibana_quic::{
-    crypto::{
-        CipherSuite, IntegrityBudget, KeyKind, PacketKey, initial_keys, retry_integrity_tag,
-        verify_retry,
-    },
+use hibana_quic::crypto::{
+    CipherSuite, IntegrityBudget, KeyKind, PacketKey, initial_keys, retry_integrity_tag,
+    verify_retry,
 };
 
 #[path = "certificate_smoke.rs"]
@@ -51,5 +49,4 @@ pub fn exercise() {
     let tag = retry_integrity_tag(&[1, 2, 3], &retry[..8], &mut scratch).unwrap();
     retry[8..].copy_from_slice(&tag);
     verify_retry(&[1, 2, 3], &retry, &mut scratch).unwrap();
-
 }

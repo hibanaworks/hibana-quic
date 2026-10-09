@@ -4,6 +4,11 @@ Linux adapters and a command-line client/server for hibana-quic. TLS comes from
 hibana-tls. The normal dependency graph consists of the Hibana projects; PEM
 parsing, certificate import and OS bindings are implemented in this workspace.
 
+## Application examples
+
+See the [raw QUIC and HTTP/3 client/server applications](../README.md#write-an-application-with-hibana).
+Each client/server pair projects the same application global. Carrier construction and framing stay inside the library.
+
 ## Build
 
 From the repository root:
@@ -46,9 +51,11 @@ Never use a production private key for a local demonstration.
 
 ## Library entry points
 
+- [session/](src/session/mod.rs): run a projected application client/server role over raw QUIC or HTTP/3.
+
 - [application/local/](src/application/local/mod.rs): execute the connected
   client/server graph with your request source, body reader and response sink.
-- [connection/local/mod.rs](src/connection/local/mod.rs): attach and execute a handshake.
+- [connection/local/](src/connection/local/mod.rs): authenticated `connect` / `accept` with caller-owned application effects, plus handshake attachment.
 - [retry/local/](src/retry/local/mod.rs): projected server address admission.
 - [io.rs](src/io.rs): asynchronous UDP and clock effects.
 - [storage.rs](src/storage.rs): caller-selected bounded connection storage.
@@ -56,4 +63,7 @@ Never use a production private key for a local demonstration.
 
 Host owns allocation and OS effects. Protocol order and key ownership remain in
 Hibana global/local code. The CLI's file handling is one application of that API.
-The present profile is request/response file transfer, not a general HTTP/3 SDK.
+The session API carries multiple Hibana messages on one bidirectional stream.
+The HTTP/3 channel uses one streaming POST/200 exchange; general web routing is
+outside this profile. Shared role attachment and frame effects are in the no_std
+core, so application globals and localsides can be reused by bare-metal adapters.

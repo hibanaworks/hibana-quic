@@ -53,7 +53,7 @@ tls_url = 'https://github.com/hibanaworks/hibana-tls'
 tls_revision = pins['HIBANA_TLS_REVISION']
 for relative in ('Cargo.toml', 'host/Cargo.toml', 'tests/tls-reference/Cargo.toml'):
     cargo = tomllib.loads((ROOT/relative).read_text())
-    dependency = (cargo['dependencies'] if relative != 'tests/tls-reference/Cargo.toml' else cargo['dev-dependencies'])['hibana-tls']
+    dependency = cargo['dependencies']['hibana-tls']
     assert dependency.get('git') == tls_url and dependency.get('rev') == tls_revision
     assert dependency.get('default-features') is False and 'path' not in dependency
     lock = tomllib.loads((ROOT/relative).with_name('Cargo.lock').read_text())

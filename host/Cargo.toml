@@ -11,7 +11,7 @@ description = "Host adapters for the bounded hibana-quic TLS/transport profile; 
 resolver = "3"
 
 [dependencies]
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "0e2cfc9f2732f03d701bb4901e9580e9503ff4a5", default-features = false, features = ["alloc"] }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "12c978cd618c3eb713a4e8136bf94dbf42159272", default-features = false, features = ["alloc"] }
 hibana-quic = { path = ".." }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "6fccdbf81038b00d99ec1bb2b9c43a487521628e", default-features = false }
 
@@ -36,3 +36,19 @@ path = "../tests/tls-reference/tests/resumption.rs"
 [[test]]
 name = "early_tls"
 path = "../tests/tls-reference/tests/early_tls.rs"
+
+[[example]]
+name = "quic-client"
+path = "../examples/hello-quic/client.rs"
+
+[[example]]
+name = "quic-server"
+path = "../examples/hello-quic/server.rs"
+
+[[example]]
+name = "http3-client"
+path = "../examples/hello-http3/client.rs"
+
+[[example]]
+name = "http3-server"
+path = "../examples/hello-http3/server.rs"

@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 description = "Allocating rustls QUIC TLS reference backend for development; not the no_alloc release backend"
 
 [dependencies]
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "12c978cd618c3eb713a4e8136bf94dbf42159272", default-features = false }
 hibana-quic-host = { path = "../../host" }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["alloc"] }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "6fccdbf81038b00d99ec1bb2b9c43a487521628e", default-features = false }
@@ -15,6 +16,5 @@ hibana-quic = { path = "../.." }
 rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring"] }
 
 [dev-dependencies]
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "0e2cfc9f2732f03d701bb4901e9580e9503ff4a5", default-features = false }
 der = { version = "=0.7.10", default-features = false }
 rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"] }

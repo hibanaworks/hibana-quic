@@ -25,6 +25,7 @@ pub async fn server<'scope, const S: usize, const T: usize>(
     book: &mut Recovery<'scope, DATAGRAM>,
     profile: ServerProfile<'_>,
     handler: &mut impl application::ServerHandler,
+    input: Option<&mut impl application::StreamSink>,
     mut early: Option<storage::EarlyStorage>,
 ) -> Result<application::Report, String> {
     let programs = application::global::programs();
@@ -59,25 +60,51 @@ pub async fn server<'scope, const S: usize, const T: usize>(
         let mut setup = storage.setup(config, profile.idle_timeout_ms)?;
         setup.server_token = profile.server_token;
         setup.early = early.as_mut().map(storage::EarlyStorage::borrow);
-        Box::pin(application::server::<
-            DATAGRAM,
-            PARAMETERS,
-            { storage::RECEIVE_BYTES },
-            { storage::CHUNK_BYTES },
-        >(
-            &mut roles,
-            source,
-            setup,
-            receive,
-            transmit,
-            &observed_clock,
-            issuer,
-            stop,
-            book,
-            &outcomes,
-            handler,
-        ))
-        .await
+        match input {
+            Some(input) => {
+                Box::pin(application::server_stream::<
+                    DATAGRAM,
+                    PARAMETERS,
+                    { storage::RECEIVE_BYTES },
+                    { storage::CHUNK_BYTES },
+                >(
+                    &mut roles,
+                    source,
+                    setup,
+                    receive,
+                    transmit,
+                    &observed_clock,
+                    issuer,
+                    stop,
+                    book,
+                    &outcomes,
+                    handler,
+                    input,
+                ))
+                .await
+            }
+            None => {
+                Box::pin(application::server::<
+                    DATAGRAM,
+                    PARAMETERS,
+                    { storage::RECEIVE_BYTES },
+                    { storage::CHUNK_BYTES },
+                >(
+                    &mut roles,
+                    source,
+                    setup,
+                    receive,
+                    transmit,
+                    &observed_clock,
+                    issuer,
+                    stop,
+                    book,
+                    &outcomes,
+                    handler,
+                ))
+                .await
+            }
+        }
         .map_err(|e| format!("direct application: {e:?}"))
     });
 
