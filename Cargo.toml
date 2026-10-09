@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 publish = false
+autoexamples = false
 license = "MIT OR Apache-2.0"
 description = "Experimental bounded QUIC v1 transport driven by Hibana choreography"
 
