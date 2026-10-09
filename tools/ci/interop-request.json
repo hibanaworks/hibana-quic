@@ -1,6 +1,6 @@
 {
-  "request": "Qualify measured local key-wait RTT and consistent Host idle budget on all 44 candidate cells",
-  "requested_at": "2026-10-09T05:22:00Z",
+  "request": "Qualify retained Finished probe priority with non-starving cross-space PTO service on all 44 cells",
+  "requested_at": "2026-10-09T05:56:00Z",
   "scope": [
     "same source commit across all qualification groups",
     "reference self-tests omitted by user request",

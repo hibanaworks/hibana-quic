@@ -92,3 +92,41 @@ of the fault CI job. It is not one of the independent official 44 interop cells.
 
 The new remote commit still requires its own complete CI qualification; the
 previous source pair's 44/44 result does not qualify these changes.
+
+## Follow-up: retain both probes for unacknowledged Finished
+
+The pushed f04db4b CI did not qualify. Core/Host/reference checks and Miri passed,
+but the independent quiche client direction failed handshakeloss and
+handshakecorruption with 49 of 50 files. Captured metadata shows four successive
+Finished retransmissions absent at the server, while the second PTO credit was
+spent on 1-RTT. The latter cannot finish the server's TLS handshake. The self-peer
+stress also retained a real missing-file failure despite the longer local idle.
+
+The first attempt to keep both credits in Handshake at every PTO was rejected:
+the existing lost-confirmation/lost-request regression failed. A peer may already
+have received Finished while its ACK and HANDSHAKE_DONE are both lost; starving
+1-RTT in that case is incorrect.
+
+The revised selection gives retained Finished both credits on the first and
+alternate PTOs, and also probes the live 1-RTT space on intervening PTOs. Selection
+uses the existing PTO backoff count, without another phase flag, timer, credit,
+capacity, or key owner. Adapter rejection still refunds the exact credit. The
+empty-Handshake-flight anti-deadlock path and server Initial-to-Handshake behavior
+are preserved. The numerical regression checks both priority and later application
+service. The existing end-to-end lost-confirmation test must pass unchanged.
+
+The revised candidate passed all 457 root all-target Rust tests and strict Clippy,
+including the unchanged lost-confirmation/request test, and the thumbv6m check.
+Its finite key-wait fault completed in 4.38 seconds and the slow Finished fault
+in 43.23 seconds. Actual native client-to-quiche handshakeloss and
+handshakecorruption passed on three seeds each (50 connections per case).
+These are native local observations, not a replacement for a new official run.
+
+The same revised binary
+`6589a148b2355e66d850cdfd8025998cd7edb59e84d3632040824c69efbe16a0`
+passed all ten 50-connection loss/corruption cases with 500 matching files and
+strict close on every case (zero observed idle connections in this run). The
+reverse native quiche handshake-corruption case passed as well. Earlier failures
+are retained; repeated success is not a guarantee for every possible loss pattern.
+
+Final Host validation passed all 130 tests and strict Clippy before publication.

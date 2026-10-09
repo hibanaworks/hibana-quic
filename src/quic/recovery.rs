@@ -2104,7 +2104,14 @@ fn settle<const B: usize>(
     {
         let other = match (n.side, packet.space) {
             (Side::Server, PacketNumberSpace::Initial) => Some(PacketNumberSpace::Handshake),
-            (Side::Client, PacketNumberSpace::Handshake) => {
+            // Give retained Finished both credits on the first and alternate
+            // PTOs. On the intervening PTOs also probe 1-RTT: the peer may have
+            // received Finished while every confirmation and request was lost.
+            // Use the existing backoff count, not a second protocol controller.
+            (Side::Client, PacketNumberSpace::Handshake)
+                if n.flights.probe(PacketNumberSpace::Handshake).is_none()
+                    || n.timer.pto_count().is_multiple_of(2) =>
+            {
                 Some(PacketNumberSpace::ApplicationData)
             }
             _ => None,
@@ -3837,6 +3844,42 @@ mod tests {
         assert_eq!(tx.pending_probe(), None);
         assert_eq!(tx.snapshot().probe_credits, 0);
         assert!(tx.reserve_application(&[1], 0, 64, true, at).is_err());
+        retirement.disarm();
+    }
+
+    #[test]
+    fn retained_finished_gets_two_first_probes_without_starving_application() {
+        book!(book, scope, installation, arena, Side::Client, 903);
+        let (mut tx, _, mut clock, mut publication, mut retirement) = book.split().unwrap();
+        let flight = tx.store_crypto(Level::Handshake, 0, b"finished").unwrap();
+        let handshake = tx.reserve(Level::Handshake, 64, Some(flight), true, false, false, 0).unwrap();
+        publication.settle(Completion::from_adapter(handshake, Some(0), crate::quic::ecn::Codepoint::NotEct)).unwrap();
+        let app = tx.reserve_application(&[1], 0, 64, false, 0).unwrap();
+        publication.settle(Completion::from_adapter(app, Some(0), crate::quic::ecn::Codepoint::NotEct)).unwrap();
+        let deadline = clock.update_application(0, [false, true, true]).unwrap().unwrap();
+        let at = deadline.at();
+        clock.expire(deadline, at).unwrap();
+        for credits in [2, 1] {
+            assert_eq!(tx.pending_probe(), Some(Level::Handshake));
+            assert_eq!(tx.next_retransmit(), Some((flight, true)));
+            let cancelled = tx.reserve(Level::Handshake, 64, Some(flight), true, false, true, at).unwrap();
+            publication.cancel(cancelled).unwrap();
+            assert_eq!(tx.snapshot().probe_credits, credits);
+            let probe = tx.reserve(Level::Handshake, 64, Some(flight), true, false, true, at).unwrap();
+            publication.settle(Completion::from_adapter(probe, Some(at), crate::quic::ecn::Codepoint::NotEct)).unwrap();
+        }
+        assert_eq!(tx.pending_probe(), None);
+        assert_eq!(tx.snapshot().probe_credits, 0);
+        assert_eq!(tx.flight_data(flight).unwrap().bytes(), b"finished");
+        let deadline = clock.update_application(at, [false, true, true]).unwrap().unwrap();
+        let second_at = deadline.at();
+        clock.expire(deadline, second_at).unwrap();
+        let probe = tx.reserve(Level::Handshake, 64, Some(flight), true, false, true, second_at).unwrap();
+        publication.settle(Completion::from_adapter(probe, Some(second_at), crate::quic::ecn::Codepoint::NotEct)).unwrap();
+        assert_eq!(tx.pending_probe(), Some(Level::OneRtt));
+        let app = tx.reserve_application(&[1], 0, 64, true, second_at).unwrap();
+        publication.settle(Completion::from_adapter(app, Some(second_at), crate::quic::ecn::Codepoint::NotEct)).unwrap();
+        assert_eq!(tx.snapshot().probe_credits, 0);
         retirement.disarm();
     }
 
