@@ -74,38 +74,6 @@ pub fn version_negotiation(
     Some(len)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::version_negotiation;
-    #[test]
-    fn version_envelope_reverses_ids_and_clears_version() {
-        let mut bytes = [0xff; 51];
-        let len = version_negotiation(&[1, 2], &[3], 5, 0x12, &mut bytes).unwrap();
-        assert_eq!(len, 14);
-        assert_eq!(
-            &bytes[..len],
-            &[0x92, 0, 0, 0, 0, 1, 3, 2, 1, 2, 0, 0, 0, 1]
-        );
-    }
-    #[test]
-    fn version_envelope_rejects_budget_capacity_and_invalid_ids() {
-        assert_eq!(version_negotiation(&[], &[], 3, 0, &mut [0; 51]), None);
-        assert_eq!(version_negotiation(&[], &[], 4, 0, &mut [0; 10]), None);
-        assert_eq!(
-            version_negotiation(&[0; 21], &[], 1200, 0, &mut [0; 51]),
-            None
-        );
-        assert_eq!(
-            version_negotiation(&[], &[0; 21], 1200, 0, &mut [0; 51]),
-            None
-        );
-        assert_eq!(
-            version_negotiation(&[0; 20], &[0; 20], 17, 0xff, &mut [0; 51]),
-            Some(51)
-        );
-    }
-}
-
 /// An owned datagram backed by a compile-time bound, never a heap allocation.
 pub struct Datagram<const N: usize> {
     bytes: [u8; N],
@@ -136,5 +104,37 @@ impl<const N: usize> core::ops::Deref for Datagram<N> {
 impl<const N: usize> core::ops::DerefMut for Datagram<N> {
     fn deref_mut(&mut self) -> &mut [u8] {
         &mut self.bytes[..self.len]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_negotiation;
+    #[test]
+    fn version_envelope_reverses_ids_and_clears_version() {
+        let mut bytes = [0xff; 51];
+        let len = version_negotiation(&[1, 2], &[3], 5, 0x12, &mut bytes).unwrap();
+        assert_eq!(len, 14);
+        assert_eq!(
+            &bytes[..len],
+            &[0x92, 0, 0, 0, 0, 1, 3, 2, 1, 2, 0, 0, 0, 1]
+        );
+    }
+    #[test]
+    fn version_envelope_rejects_budget_capacity_and_invalid_ids() {
+        assert_eq!(version_negotiation(&[], &[], 3, 0, &mut [0; 51]), None);
+        assert_eq!(version_negotiation(&[], &[], 4, 0, &mut [0; 10]), None);
+        assert_eq!(
+            version_negotiation(&[0; 21], &[], 1200, 0, &mut [0; 51]),
+            None
+        );
+        assert_eq!(
+            version_negotiation(&[], &[0; 21], 1200, 0, &mut [0; 51]),
+            None
+        );
+        assert_eq!(
+            version_negotiation(&[0; 20], &[0; 20], 17, 0xff, &mut [0; 51]),
+            Some(51)
+        );
     }
 }
