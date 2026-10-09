@@ -1,6 +1,6 @@
 //! Affine transitions between the projected prefix, ordinary application and
 //! closing continuations. Hibana owns progress; actual affine slots own resources.
-use super::super::{Error, OrdinaryRetired, Roles, global as p, keys, termination};
+use super::{Error, OrdinaryRetired, Roles, global as p, keys, termination};
 use crate::quic::{
     Config, ReceiveContinuation, ReceiveMaterial, Side, TransmitContinuation,
     parameters::{self, ValidatedPeer},

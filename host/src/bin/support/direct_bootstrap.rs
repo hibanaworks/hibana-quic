@@ -4,84 +4,11 @@ use super::{application_storage, host_files};
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
     quic::publication_gate::{Issuer, Stop},
-    quic::{
-        self, Config, Outcome, Roles, Side, Storage, application, global, recovery::Recovery,
-        tls::Transcript,
-    },
+    quic::{Config, Side, application, recovery::Recovery, tls::Transcript},
     runtime::carrier::CarrierStorage,
-    tls::buffer::CryptoBuffer,
 };
-pub const DATAGRAM: usize = hibana_quic_host::io::DATAGRAM;
-pub const PARAMETERS: usize = 2048;
-#[allow(clippy::too_many_arguments)]
-pub async fn handshake<'scope, const S: usize, const T: usize>(
-    source: &mut Transcript<'scope, '_, '_>,
-    config: Config<'_>,
-    receive: &mut Receive<'_, '_, S, T>,
-    transmit: &mut Transmit<'_, '_, S, T>,
-    clock: &HostClock<'_, S, T>,
-    issuer: &mut Issuer<'_, 'scope>,
-    book: &mut Recovery<'scope, DATAGRAM>,
-    generation: u64,
-) -> Result<
-    (
-        quic::ReceiveContinuation<'scope, PARAMETERS>,
-        quic::TransmitContinuation<'scope>,
-    ),
-    String,
-> {
-    let mut initial = vec![0; 8192];
-    let mut handshake = vec![0; 16384];
-    let mut initial_bitmap = vec![0; 1024];
-    let mut handshake_bitmap = vec![0; 2048];
-    let reassembly = [
-        CryptoBuffer::new(&mut initial, &mut initial_bitmap)
-            .map_err(|e| format!("Initial storage: {e:?}"))?,
-        CryptoBuffer::new(&mut handshake, &mut handshake_bitmap)
-            .map_err(|e| format!("Handshake storage: {e:?}"))?,
-    ];
-    let programs = global::programs();
-    let adapter_result = Outcome::new();
-    let queues = Box::new(CarrierStorage::<1, 16, 64>::new());
-    let mut slab = vec![0; 64 * 1024];
-    let mut kit_storage = Box::new(SessionKitStorage::uninit());
-    let kit = kit_storage.init();
-    // One session per kit. Full generation is retained by cryptographic scope.
-    let session = SessionId::new(generation as u32);
-    let rendezvous = kit
-        .rendezvous(
-            &mut slab,
-            queues
-                .bind(session)
-                .map_err(|e| format!("carrier: {e:?}"))?,
-        )
-        .map_err(|e| format!("rendezvous: {e:?}"))?;
-    let mut roles = Roles::attach(&rendezvous, session, &programs, &adapter_result)
-        .map_err(|e| format!("handshake attachment: {e:?}"))?;
-    let mut storage = Box::new(
-        Storage::<DATAGRAM, PARAMETERS>::new(config.peer_connection_id)
-            .map_err(|e| format!("wire storage: {e:?}"))?,
-    );
-    let result = Box::pin(quic::handshake(
-        &mut roles,
-        source,
-        config,
-        reassembly,
-        receive,
-        transmit,
-        clock,
-        issuer,
-        &mut storage,
-        book,
-        &adapter_result,
-    ))
-    .await
-    .map_err(|e| format!("direct connection: {e:?}"));
-    if result.is_ok() && queues.queued() != 0 {
-        return Err("wire roles left queued carrier frames".into());
-    }
-    result
-}
+pub use hibana_quic_host::connection::handshake;
+pub use hibana_quic_host::connection::{DATAGRAM, PARAMETERS};
 
 /// This selects only local file handlers. The library owns the authenticated
 /// prefix, affine handoff, stream work, retirement, closing and draining.

@@ -7,7 +7,7 @@ use crate::quic::ecn::global as ep;
 use crate::quic::path::global as pp;
 use hibana::g::Message;
 
-use super::{CloseKind, Control, Error, assembly::ownership, global as p, keys};
+use super::{CloseKind, Control, Error, ownership, global as p, keys};
 use crate::{
     crypto::directional::{ApplicationKeyScope, ApplicationWriteKeys},
     quic::kernel::accounting::AccountingError,

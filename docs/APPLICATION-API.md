@@ -20,6 +20,9 @@ No graphical dashboard is required to write QUIC/HTTP/3 applications.
   [buffer ownership and remaining copies](ZERO-COPY.md).
 - `hibana_quic::io` supplies executor-neutral clock/datagram contracts.
 - `hibana_quic_host::{io, storage}` supply Linux effects and owned buffers.
+- `hibana_quic_host::connection::handshake` allocates and attaches the canonical
+  handshake roles; the CLI calls this same public entry. It returns owned RX/TX
+  continuations. Application-loop construction is still being extracted.
 - `hibana_quic_host::http3::{decode_request, decode_response}` provide the existing
   bounded GET/file profile outside the CLI. Response decoding requires a
   FIN-complete unpublished staging file. It is not live network streaming.
@@ -33,7 +36,7 @@ No graphical dashboard is required to write QUIC/HTTP/3 applications.
 | Application API | Typed input/output and caller-owned resources | A second connection phase or key owner |
 | `global.rs` | Communication order, branches, parallel composition and retirement | Host-selected next protocol stage |
 | `local/` or `local.rs` | Literal endpoint sends, receives, offers and scoped joins | Wrappers hiding exchanges or manufacturing receipts |
-| Mechanisms (`wire`, recovery, cryptography) | Bounded bytes and numeric transformations | Advancing protocol order |
+| `imp/` (wire encoding, numerical recovery, cryptography) | Bounded bytes and numeric transformations | Advancing protocol order |
 | `runtime/` | Polling, wake registration, fairness, cancellation and local carrier | TLS/QUIC phase decisions |
 | `io/`, Host OS modules | Actual datagram acceptance, clock and readiness observations | Claiming network delivery from a local write |
 | CLI | Arguments, file-service policy, reporting and process exit | The only reusable connection constructor |

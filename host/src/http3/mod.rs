@@ -6,7 +6,7 @@
 //! [`decode_request`] validates the bounded GET profile used by `hq`.
 mod global;
 mod local;
-mod wire;
+mod imp;
 use global::*;
 use hibana::runtime::{
     SessionKitStorage,
@@ -19,7 +19,7 @@ use hibana_quic::{
 };
 use local::Exchange;
 use std::{cell::RefCell, fs::File};
-use wire::{fail, unknown};
+use imp::wire::{fail, unknown};
 type Result<T> = std::result::Result<T, String>;
 
 /// Decode only a FIN-complete staging file. No destination is published here;

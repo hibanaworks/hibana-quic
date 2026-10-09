@@ -11,6 +11,19 @@ The latest verified baseline is **5c58cec**: official Neqo/quiche interoperabili
 reorganization must pass its own checks before inheriting any qualification.
 See [verification and limits](docs/QUALIFICATION.md).
 
+## Read the Hibana program first
+
+- QUIC handshake: [global](src/quic/global.rs) → [local composition](src/quic/local/mod.rs) → [receive](src/quic/local/receive.rs), [transmit](src/quic/local/transmit.rs), [publication](src/quic/local/publication.rs).
+- Connected QUIC application: [global](src/quic/application/global.rs) → [local composition](src/quic/application/local/mod.rs) → [affine handoff](src/quic/application/local/ownership.rs), [source/ingress/sink](src/quic/application/local/io.rs), [three-way reclaim](src/quic/application/local/reclaim.rs).
+- TLS message ordering: [canonical TLS global](https://github.com/hibanaworks/hibana-tls/blob/99e933efbcb7d164b7f6aa9fc598f240a3772661/src/handshake/global.rs) → [direct TLS locals](https://github.com/hibanaworks/hibana-tls/blob/99e933efbcb7d164b7f6aa9fc598f240a3772661/src/handshake/local.rs).
+
+The first two local entry files contain the actual composed operations and joins,
+not a forwarding controller. Follow `send`, `recv`, and `offer` into their role
+files. Stream buffers, flow/retransmission arithmetic and receipt bookkeeping
+live below [stream/imp](src/quic/stream/imp/mod.rs); packet encoding
+and numeric kernels remain below [kernel](src/quic/kernel/mod.rs). The old
+`quic::application_stream` import is a direct re-export, not another implementation.
+
 ## Choose your starting point
 
 - **Run HTTP/3 now:** [build and run the client/server CLI](docs/GETTING-STARTED.md).
@@ -18,7 +31,7 @@ See [verification and limits](docs/QUALIFICATION.md).
   The complete ergonomic Hibana-over-network application API is still unfinished.
 - **Read the implementation:** [global → local → mechanism map](docs/ARCHITECTURE.md).
 - **Review safety:** [guarantees](docs/GUARANTEES.md) and
-  [TLS validation](https://github.com/hibanaworks/hibana-tls/blob/b5cd10fcabb26ed0b121ae9a192b4c254f000426/SECURITY-VALIDATION.md).
+  [TLS validation](https://github.com/hibanaworks/hibana-tls/blob/99e933efbcb7d164b7f6aa9fc598f240a3772661/SECURITY-VALIDATION.md).
 - **Contribute:** [current work](docs/WORKING-STATUS.md), [CI requirements](CI-REQUIRED.md).
 
 ## Crates and ownership

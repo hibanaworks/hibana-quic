@@ -34,3 +34,20 @@ Finite passes do not guarantee delivery for arbitrary loss patterns or complete
 cryptographic safety. Miri, selected formal models and algorithm vectors have
 bounded scopes. New organization/API edits require fresh checks against their
 own source identity; baseline results must not be attributed to them.
+
+## Later source, not a replacement qualification
+
+QUIC `1acbcadc78e15a263f8d4d284bd8064c54a987e2` passed all three
+[runtime jobs](https://github.com/hibanaworks/hibana-quic/actions/runs/37911648433).
+Its [official interop run](https://github.com/hibanaworks/hibana-quic/actions/runs/37911648501)
+failed Neqo-client/Hibana-server `rebind-addr`; this is not a 44/44 pass.
+Captured Initial retransmissions arrive from changed ports while server responses
+retain the original port. Handshake-path filtering is deliberate; RFC 9000
+section 21.12 permits rejecting a changed path during the handshake. A collision
+with the runner's first-rebind=1s setting is under investigation, not a proven
+cause. No path-security or amplification checks were removed to satisfy the test.
+
+Earlier `9c9eabf` stress evidence also includes a 50-connection loss run with all
+file hashes matching but a server deadline failure. A later frozen `1acbcad`
+local replay of that seed passed; a passing replay does not resolve the intermittent
+failure. Final source qualifications must retain these failures in the history.

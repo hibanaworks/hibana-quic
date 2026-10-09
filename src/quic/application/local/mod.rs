@@ -1,15 +1,22 @@
 //! The library owns one projected connection from Initial input through
 //! authenticated application admission, ordinary role retirement and close.
 //! No host callback chooses connection phases or owns a replacement FSM.
+mod acknowledgments;
+mod http3;
+mod io;
+pub(super) mod keys;
+mod receive;
+pub(in crate::quic) mod reclaim;
+mod reset;
+mod termination;
+mod timer;
+mod transmit;
+
 mod early;
 mod early_client;
 pub(super) mod ownership;
 
-use super::{
-    BodyReader, ClientRequests, Control, Error, OrdinaryRetired, Outcomes, Report, Roles,
-    ServerHandler, Setup, StreamSink, http3, io, keys, receive, reset, termination, timer,
-    transmit,
-};
+use super::*;
 use crate::{
     runtime::mailbox::Mailbox,
     quic::publication_gate::{Issuer, Stop},
@@ -375,7 +382,7 @@ async fn connected<
     let http3_input = http3::Ingress::new();
     let terminal = termination::Exchange::new(&control, scope, application_protocol);
     let reset_exchange = reset::Exchange::new();
-    let reclaim_exchange = super::reclaim::Exchange::new();
+    let reclaim_exchange = reclaim::Exchange::new();
     early_client::admit::<N, RX, CHUNK, H::Body>(
         roles,
         client_early.as_deref(),
@@ -408,7 +415,7 @@ async fn connected<
     let publication_state = transmit::State::new(book_publication, publication, ids, paths, peers);
     let ecn_exchange = transmit::ecn::Exchange::new();
 
-    let acknowledgments = super::acknowledgments::Exchange::new();
+    let acknowledgments = acknowledgments::Exchange::new();
     let mut request_slots = [const { None }; io::REQUEST_CAPACITY];
     let requests = Mailbox::<io::OwnedRequest, { io::REQUEST_CAPACITY }>::new(&mut request_slots)
         .map_err(|_| Error::Capacity)?;
@@ -624,11 +631,11 @@ async fn connected<
             Ok::<(), Error>(())
         };
         let source_collector =
-            super::reclaim::source(&mut roles.source_collector, &reclaim_exchange, &control);
+            reclaim::source(&mut roles.source_collector, &reclaim_exchange, &control);
         let input_collector =
-            super::reclaim::input(&mut roles.input_collector, &reclaim_exchange, &control);
+            reclaim::input(&mut roles.input_collector, &reclaim_exchange, &control);
         let delivery_collector =
-            super::reclaim::delivery(&mut roles.delivery_collector, &reclaim_exchange, &control);
+            reclaim::delivery(&mut roles.delivery_collector, &reclaim_exchange, &control);
         // Executor boundary: pin each role in its existing local storage before
         // joining references. Moving all large role futures into MaybeDone adds
         // avoidable transient stack usage in an unoptimized host poll.

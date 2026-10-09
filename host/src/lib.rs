@@ -28,3 +28,7 @@ mod os;
 /// FIN-complete HTTP/3 file-service framing and response decoding.
 #[cfg(target_os = "linux")]
 pub mod http3;
+
+/// Host-owned attachment of the canonical QUIC handshake.
+#[cfg(target_os = "linux")]
+pub mod connection;

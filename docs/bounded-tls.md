@@ -1,6 +1,6 @@
 # Bounded TLS in the current QUIC implementation
 
-The transcript order lives in `hibana-tls/src/owned_global.rs`. Its directly
+The transcript order lives in `hibana-tls/src/handshake/global/owned.rs`. Its directly
 projected owner and input roles live in `hibana-tls/src/handshake/local.rs`. Input
 adapters assemble complete messages; the local continuation authorizes the next
 message and cryptographic operation. `Provider::receive` is not a replacement

@@ -2,20 +2,10 @@
 //! bounded stream IO, ordinary retirement, closing and draining.
 
 mod attach;
-mod acknowledgments;
-mod assembly;
+pub mod local;
 pub mod global;
-mod http3;
-mod io;
-mod keys;
-mod receive;
-pub(super) mod reclaim;
-mod reset;
-mod termination;
-mod timer;
-mod transmit;
 
-pub use assembly::{client, client_early, server};
+pub use local::{client, client_early, server};
 
 use super::{Config, Outcome, application_stream, parameters, recovery};
 use crate::{
@@ -236,15 +226,15 @@ impl From<parameters::Error> for Error {
         Self::Parameters(value)
     }
 }
-impl From<keys::Error> for Error {
-    fn from(value: keys::Error) -> Self {
+impl From<local::keys::Error> for Error {
+    fn from(value: local::keys::Error) -> Self {
         match value {
-            keys::Error::Crypto(error) => Self::Crypto(error),
-            keys::Error::Endpoint(error) => Self::Endpoint(error),
-            keys::Error::Slot(error) => Self::Connection(super::Error::Slot(error)),
-            keys::Error::Binding => Self::KeyControlBinding,
-            keys::Error::Retired => Self::KeyControlRetired,
-            keys::Error::UnexpectedLabel(label) => Self::UnexpectedLabel(label),
+            local::keys::Error::Crypto(error) => Self::Crypto(error),
+            local::keys::Error::Endpoint(error) => Self::Endpoint(error),
+            local::keys::Error::Slot(error) => Self::Connection(super::Error::Slot(error)),
+            local::keys::Error::Binding => Self::KeyControlBinding,
+            local::keys::Error::Retired => Self::KeyControlRetired,
+            local::keys::Error::UnexpectedLabel(label) => Self::UnexpectedLabel(label),
         }
     }
 }

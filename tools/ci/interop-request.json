@@ -7,7 +7,7 @@
     "44 actual candidate client/server verdicts"
   ],
   "approval": "User requested investigating the completed CI failures, fixing them, pushing to the tested branch, and checking CI again.",
-  "local_evidence": "docs/LOCAL-STRUCTURE-20261009.md",
+  "local_evidence": "docs/LOCAL-IMP-20261009.md",
   "candidate_directions": [
     "client",
     "server"

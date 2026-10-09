@@ -1,7 +1,7 @@
 //! Materialize accepted early requests before ordinary RX can consume their ACKs.
 //! The finite projected prefix transfers real production receipts to the same
 //! collector used by ordinary streams. Rejected intents use the ordinary source.
-use super::super::{Error, Roles, global as p, io, reclaim};
+use super::{Error, Roles, global as p, io, reclaim};
 use crate::quic::{
     application_stream::{App, Publication, Tx},
     early_client::Requests,

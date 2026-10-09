@@ -1,5 +1,5 @@
 //! Direct reader/writer locals. Each stored chunk precedes the next read.
-use super::{Result, global::*, wire::*};
+use super::{Result, global::*, imp::wire::*};
 use hibana::Endpoint;
 use hibana_quic::http3::Fields;
 use std::{cell::RefCell, fs::File, os::unix::fs::FileExt};

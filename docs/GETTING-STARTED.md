@@ -46,3 +46,9 @@ constructor remain work in progress: [application API](APPLICATION-API.md).
 
 The TLS modules under `hibana_quic::tls` directly re-export canonical
 `hibana_tls` modules. Their source is in that crate, not a copied QUIC TLS tree.
+
+For the authenticated prefix, use `hibana_quic_host::connection::handshake`.
+Its canonical global is available at `connection::global`; the real allocation,
+attachment and projected execution are in `connection::local`. The CLI re-exports
+this entry directly. This does not yet eliminate the application-loop setup or
+provide a complete high-level HTTP/3 client/server constructor.

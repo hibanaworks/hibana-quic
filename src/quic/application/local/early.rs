@@ -1,5 +1,5 @@
 //! Finished-gated optional early receive bridge in the connected global.
-use super::super::{EarlyServer, Error, Roles};
+use super::{EarlyServer, Error, Roles};
 use crate::{
     crypto::IntegrityBudget,
     quic::early_data::{EarlyStatus, global as p, owner},

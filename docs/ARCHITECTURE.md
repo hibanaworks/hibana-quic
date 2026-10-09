@@ -6,13 +6,13 @@
 |---|---|---|
 | QUIC handshake, parallel roles and retirement | `src/quic/global.rs` | `src/quic/local/{receive,transmit,publication}.rs`, `timer.rs`, `retry_client.rs` |
 | TLS transcript ordering | `hibana-tls/src/handshake/global.rs` | `hibana-tls/src/handshake/local.rs` |
-| Connected stream/application lifecycle | `src/quic/application/global.rs` | `src/quic/application/{io,receive,transmit,keys,termination}.rs` |
-| HTTP/3 control and SETTINGS | `src/http3/global.rs` | `src/quic/application/http3.rs` and explicit IO continuations |
+| Connected stream/application lifecycle | `src/quic/application/global.rs` | `src/quic/application/local/mod.rs` and its adjacent role files |
+| HTTP/3 control and SETTINGS | `src/http3/global.rs` | `src/quic/application/local/http3.rs` and explicit IO continuations |
 | Path, ECN, Retry, early-data subprotocols | each domain's `global.rs` | the adjacent ownership/effect implementation |
 
 Locals contain actual `send`, `recv`, `offer`, route decisions and joins. The
-assembly layer supplies storage, endpoints and task pinning; it is not an
-alternative protocol dispatcher. Helpers may calculate bytes/numbers, not hide
+local composition supplies storage, endpoints and task pinning and runs the actual
+projected continuations; it is not an alternative protocol dispatcher. Helpers may calculate bytes/numbers, not hide
 protocol communication or fabricate its completion.
 
 HTTP/3 locals currently remain next to the QUIC resources they privately own.
@@ -89,3 +89,21 @@ copy of the role/resolver list.
 slots instead of keeping a second remaining-task counter. Its terminal-poll guard
 is executor bookkeeping, not QUIC/TLS phase authority. Do not remove observed
 numeric data or runtime safety guards merely to change the spelling of a bool.
+
+## Stream mechanics below the local programs
+
+`quic/stream/imp/` is the canonical numerical implementation:
+
+- `mod.rs`: bounded storage and affine capability types.
+- `application.rs`: application byte access and numeric stream admission.
+- `receive.rs`: authenticated frame effects.
+- `transmit.rs`: bounded encoding and packet-reference reservations.
+- `ownership.rs`: validate actual reclaim/publication capabilities and apply their effects.
+- `accounting.rs`: credit, loss and acknowledgment arithmetic.
+- `tests.rs`: the unchanged behavioral tests plus borrowed-buffer regressions.
+
+The actual three-receipt join remains in `application/local/reclaim.rs`, reached
+from `application/global.rs` through the local composition. Stream numerical
+operations cannot manufacture this joined capability. Numerical primitives do
+not need meaningless Hibana sends: ordered communication belongs in the visible
+global/local program, and computation stays below it.

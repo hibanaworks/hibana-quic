@@ -1,8 +1,8 @@
 //! File reads and bounded frame decoding; no endpoint progression.
-use super::Result;
+use super::super::Result;
 use hibana_quic::http3::{self, Fields, FrameHeader};
 use std::{fs::File, os::unix::fs::FileExt};
-pub(super) fn fail(e: impl std::fmt::Debug) -> String {
+pub(in crate::http3) fn fail(e: impl std::fmt::Debug) -> String {
     format!("HTTP/3 response: {e:?}")
 }
 fn varint(file: &File, cursor: &mut u64, total: u64) -> Result<u64> {
@@ -24,7 +24,7 @@ fn varint(file: &File, cursor: &mut u64, total: u64) -> Result<u64> {
             .0,
     )
 }
-pub(super) fn next(file: &File, cursor: &mut u64, total: u64) -> Result<Option<FrameHeader>> {
+pub(in crate::http3) fn next(file: &File, cursor: &mut u64, total: u64) -> Result<Option<FrameHeader>> {
     if *cursor == total {
         return Ok(None);
     }
@@ -43,7 +43,7 @@ pub(super) fn next(file: &File, cursor: &mut u64, total: u64) -> Result<Option<F
         encoded_len: (*cursor - start) as usize,
     }))
 }
-pub(super) fn fields(file: &File, cursor: &mut u64, length: u64) -> Result<Fields> {
+pub(in crate::http3) fn fields(file: &File, cursor: &mut u64, length: u64) -> Result<Fields> {
     let length = usize::try_from(length).map_err(fail)?;
     let mut bytes = [0; http3::FIELD_LIMIT];
     let output = bytes
@@ -53,7 +53,7 @@ pub(super) fn fields(file: &File, cursor: &mut u64, length: u64) -> Result<Field
     *cursor += length as u64;
     http3::decode_fields(output).map_err(fail)
 }
-pub(super) fn unknown(kind: u64) -> Result<()> {
+pub(in crate::http3) fn unknown(kind: u64) -> Result<()> {
     if matches!(kind, 0 | 1 | 3 | 4 | 5 | 7 | 13) {
         Err("unexpected HTTP/3 frame on response stream".into())
     } else {

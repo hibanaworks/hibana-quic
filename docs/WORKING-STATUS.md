@@ -7,12 +7,18 @@ See [exact qualification](QUALIFICATION.md), including remaining failures.
 
 ## In progress: application API and organization
 
+Current TLS source pin: `99e933efbcb7d164b7f6aa9fc598f240a3772661`.
+Each choreographed unit presents `global` and `local` first; numerical parts
+are collected under `imp/`. This does not promote the new source to the
+verified baseline above.
+
 - Replace stale landing documentation with one current status and an explicit history.
 - Remove file-only TLS forwarding facades; retain direct canonical module re-exports.
 - Extract reusable HTTP/3 file framing from the CLI into Host, with separate global,
   direct local, and numerical file-decoding modules.
 - Canonical role/resolver attachment now lives in the public role owner, shared
-  by library users and CLI. Full connection construction is still coupled to CLI policy.
+  by library users and CLI. Host handshake construction is now public at `connection::handshake`; the
+  application-loop constructor remains coupled to CLI file policy.
 - Handshake exchange storage is exclusively borrowed by the operation; replace
   the claimed flag with Rust borrowing, returning retained ciphertext with continuations.
 - Expose connection construction independently of CLI file handlers.

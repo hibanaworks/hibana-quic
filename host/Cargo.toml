@@ -11,7 +11,7 @@ description = "Host adapters for the bounded hibana-quic TLS/transport profile; 
 resolver = "3"
 
 [dependencies]
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "b5cd10fcabb26ed0b121ae9a192b4c254f000426", default-features = false, features = ["alloc"] }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "99e933efbcb7d164b7f6aa9fc598f240a3772661", default-features = false, features = ["alloc"] }
 hibana-quic = { path = ".." }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "6fccdbf81038b00d99ec1bb2b9c43a487521628e", default-features = false }
 

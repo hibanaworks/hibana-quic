@@ -15,6 +15,6 @@ hibana-quic = { path = "../.." }
 rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring"] }
 
 [dev-dependencies]
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "b5cd10fcabb26ed0b121ae9a192b4c254f000426", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "99e933efbcb7d164b7f6aa9fc598f240a3772661", default-features = false }
 der = { version = "=0.7.10", default-features = false }
 rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"] }
