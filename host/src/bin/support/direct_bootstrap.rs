@@ -3,13 +3,13 @@ use super::direct_wire::{HostClock, Receive, Transmit};
 use super::{application_storage, host_files};
 use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::{
-    runtime::carrier::CarrierStorage,
-    tls::buffer::CryptoBuffer,
     quic::publication_gate::{Issuer, Stop},
     quic::{
         self, Config, Outcome, Roles, Side, Storage, application, global, recovery::Recovery,
         tls::Transcript,
     },
+    runtime::carrier::CarrierStorage,
+    tls::buffer::CryptoBuffer,
 };
 pub const DATAGRAM: usize = hibana_quic_host::io::DATAGRAM;
 pub const PARAMETERS: usize = 2048;
@@ -165,6 +165,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
     mut early: Option<application_storage::EarlyStorage>,
     key_update_target: u64,
     server_token: Option<&[u8]>,
+    idle_timeout_ms: u64,
 ) -> Result<application::Report, String> {
     let programs = application::global::programs();
     // Resolver states precede the kit so all endpoint borrows expire first.
@@ -266,9 +267,11 @@ pub async fn files<'scope, const S: usize, const T: usize>(
                             application_storage::capacity(client.protocol, client.count),
                             client.protocol,
                         )?;
-                        let mut setup = storage.setup(config)?;
+                        let mut setup = storage.setup(config, idle_timeout_ms)?;
                         setup.key_update_target = key_update_target;
-                        if source.early_status() == hibana_quic::quic::early_data::EarlyStatus::Offered {
+                        if source.early_status()
+                            == hibana_quic::quic::early_data::EarlyStatus::Offered
+                        {
                             let mut early_slots = (0..client.count)
                                 .map(|_| hibana_quic::quic::early_client::RequestSlot::EMPTY)
                                 .collect::<Vec<_>>();
@@ -332,7 +335,7 @@ pub async fn files<'scope, const S: usize, const T: usize>(
                         ),
                         server.protocol,
                     )?;
-                let mut setup = storage.setup(config)?;
+                let mut setup = storage.setup(config, idle_timeout_ms)?;
                 setup.server_token = server_token;
                 setup.early = early
                     .as_mut()

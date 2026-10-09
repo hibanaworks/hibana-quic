@@ -59,6 +59,7 @@ fn parameters(
     original: Option<&[u8]>,
     application_limits: Option<hibana_quic::quic::kernel::streams::Limits>,
     retry_source: Option<&[u8]>,
+    idle_timeout_ms: u64,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     if version == hibana_quic::quic::kernel::version::Version::V2 {
@@ -86,7 +87,7 @@ fn parameters(
     if let Some(limits) = application_limits {
         // Advertise exactly the windows backed by application_storage.
         for (kind, value) in [
-            (1, 30_000),
+            (1, idle_timeout_ms),
             (3, direct_bootstrap::DATAGRAM as u64),
             (4, limits.max_data),
             (5, limits.stream_data_bidi_local),
@@ -325,6 +326,7 @@ async fn connected<const S: usize, const T: usize>(
     key_update_target: u64,
     routed: Option<&mut hibana_quic_host::receive_routes::Receiver<{ direct_bootstrap::DATAGRAM }>>,
     server_token: Option<&[u8]>,
+    idle_timeout_ms: u64,
 ) -> Result<Report> {
     let generation = u64::from_be_bytes(random::<8>()?);
     let mut scope = ApplicationKeyScope::new(generation);
@@ -399,6 +401,7 @@ async fn connected<const S: usize, const T: usize>(
             early,
             key_update_target,
             server_token,
+            idle_timeout_ms,
         ))
         .await
         .map_err(|error| match diagnostics.take() {
@@ -653,6 +656,10 @@ async fn run_async<const S: usize, const T: usize>(
     clock: &HostClock<'_, S, T>,
     options: Options,
 ) -> Result<Report> {
+    // Share the requested whole-operation budget between inactive recovery
+    // and terminal cleanup; do not silently impose the former fixed 30 s.
+    let idle_timeout_ms =
+        u64::try_from(options.timeout().as_millis() / 2).map_err(|_| "idle timeout overflow")?;
     match options {
         Options::Client {
             protocol,
@@ -830,6 +837,7 @@ async fn run_async<const S: usize, const T: usize>(
                     None,
                     files.as_ref().map(direct_bootstrap::Files::local_limits),
                     None,
+                    idle_timeout_ms,
                 )?;
                 let mut buffers = TlsBuffers::new();
                 let now = UnixTime::since_unix_epoch(
@@ -916,6 +924,7 @@ async fn run_async<const S: usize, const T: usize>(
                     key_update_target,
                     None,
                     None,
+                    idle_timeout_ms,
                 ))
                 .await?;
                 if resumption && previous.is_some() && !report.resumed {
@@ -982,6 +991,7 @@ async fn run_async<const S: usize, const T: usize>(
                     cipher,
                     version,
                     connections,
+                    idle_timeout_ms,
                 )
                 .await;
             }
@@ -1118,6 +1128,7 @@ async fn run_async<const S: usize, const T: usize>(
                     Some(&original),
                     files.as_ref().map(direct_bootstrap::Files::local_limits),
                     retry_source,
+                    idle_timeout_ms,
                 )?;
                 let mut buffers = TlsBuffers::new();
                 if let Some(preferred) = local_preferred {
@@ -1211,6 +1222,7 @@ async fn run_async<const S: usize, const T: usize>(
                     0,
                     None,
                     None,
+                    idle_timeout_ms,
                 ))
                 .await?;
                 if resumption && previous.is_some() && !report.resumed {
@@ -1288,6 +1300,47 @@ mod admission_tests {
         task::{Context, Waker},
         time::Duration,
     };
+
+    #[test]
+    fn requested_idle_budget_matches_wire_and_application_setup() {
+        use hibana_quic::quic::kernel::parameters::{Parameters, Peer};
+        for side in [Side::Client, Side::Server] {
+            for idle_timeout_ms in [30_000, 180_000] {
+                let config = Config {
+                    local_preferred: None,
+                    initial_path: None,
+                    version: hibana_quic::quic::kernel::version::Version::V1,
+                    side,
+                    local_connection_id: b"local001",
+                    original_destination_id: b"original",
+                    retry_source_id: None,
+                    initial_token: &[],
+                    peer_connection_id: b"peer0001",
+                };
+                let mut storage =
+                    application_storage::Storage::<1024>::new(1, Default::default()).unwrap();
+                let setup = storage.setup(config, idle_timeout_ms).unwrap();
+                let original = (side == Side::Server).then_some(&b"original"[..]);
+                let bytes = parameters(
+                    config.version,
+                    config.local_connection_id,
+                    original,
+                    Some(setup.local_limits),
+                    None,
+                    idle_timeout_ms,
+                )
+                .unwrap();
+                let peer = if side == Side::Client {
+                    Peer::Client
+                } else {
+                    Peer::Server
+                };
+                let parsed = Parameters::parse(&bytes, peer, &mut [0; 32]).unwrap();
+                assert_eq!(parsed.get_integer(1, 0).unwrap(), idle_timeout_ms);
+                assert_eq!(setup.local_idle_timeout_ms, idle_timeout_ms);
+            }
+        }
+    }
 
     #[test]
     fn damaged_initial_source_id_cannot_become_the_connection_identity() {

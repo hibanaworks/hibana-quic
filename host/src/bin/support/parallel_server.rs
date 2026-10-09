@@ -86,6 +86,7 @@ pub async fn run<const S: usize, const T: usize>(
     cipher: hibana_quic::tls::handshake::CipherPolicy,
     version: hibana_quic::quic::kernel::version::Version,
     count: usize,
+    idle_timeout_ms: u64,
 ) -> Result<Report> {
     if count == 0 || count > MAX {
         return Err("parallel connection capacity".into());
@@ -156,6 +157,7 @@ pub async fn run<const S: usize, const T: usize>(
                     Some(&admission.original),
                     Some(files.local_limits()),
                     None,
+                    idle_timeout_ms,
                 )?;
                 let mut buffers = TlsBuffers::new();
                 let mut tickets = TicketAccess(ticket_owner);
@@ -204,6 +206,7 @@ pub async fn run<const S: usize, const T: usize>(
                     0,
                     Some(&mut admission.receiver),
                     Some(&admission.new_token),
+                    idle_timeout_ms,
                 )
                 .await
             }

@@ -2429,6 +2429,7 @@ fn process_packet<'scope, const B: usize>(
                     delay,
                     ecn,
                     received_epoch,
+                    now - received_at,
                     now,
                     &mut outcome,
                 )?;
@@ -2495,6 +2496,7 @@ fn apply_ack<'scope, const B: usize>(
     delay: u64,
     peer_ecn: Option<packet::EcnCounts>,
     received_epoch: Option<u64>,
+    local_decryption_delay_us: u64,
     now: u64,
     output: &mut ApplicationOutcome<'scope>,
 ) -> Result<(), Error> {
@@ -2634,7 +2636,10 @@ fn apply_ack<'scope, const B: usize>(
             handshake_confirmed: n.handshake_confirmed,
             largest_newly_acknowledged: largest_new,
             any_newly_acknowledged_ack_eliciting: any_ack_eliciting,
-            local_decryption_delay_us: 0,
+            // RFC 9002 5.3: the packet's retained observation measures local
+            // key wait; it is not path RTT. Keep commit/loss time monotonic.
+            // The estimator applies this only before handshake confirmation.
+            local_decryption_delay_us,
         })?;
     }
     let summary = n.ledger.acknowledge(space, ranges)?;
@@ -3993,6 +3998,41 @@ mod tests {
         retirement.retire_all();
         assert_eq!(tx.snapshot().next_packet_number[0], Some(1));
         assert_eq!(tx.snapshot().reserved_bytes, 0);
+    }
+
+    #[test]
+    fn buffered_authenticated_ack_excludes_local_key_wait_from_rtt() {
+        book!(book, scope, installation, arena, Side::Client, 902);
+        let own_scope = book.scope();
+        let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
+        let sent = tx
+            .reserve(Level::Initial, 1200, None, true, true, false, 0)
+            .unwrap();
+        let pn = sent.packet().value;
+        publication
+            .settle(Completion::from_adapter(
+                sent,
+                Some(10_000),
+                crate::quic::ecn::Codepoint::NotEct,
+            ))
+            .unwrap();
+        let mut plaintext = [0; 64];
+        let len = ack(pn, &mut plaintext);
+        let receipt = initial_receipt(
+            own_scope,
+            &mut key(KeyKind::Initial, 7),
+            0,
+            &plaintext[..len],
+        );
+        // Arrival is 40 ms after publication. Processing waits another 16 s.
+        rx.apply_packet(receipt, &plaintext[..len], 50_000, 16_050_000, None)
+            .unwrap();
+        let n = tx.book.numbers.borrow();
+        assert_eq!(n.rtt.latest_us(), 40_000);
+        assert_eq!(n.rtt.smoothed_us(), 40_000);
+        assert_eq!(n.last_now, Some(16_050_000));
+        drop(n);
+        retirement.disarm();
     }
 
     #[test]

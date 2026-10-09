@@ -106,6 +106,7 @@ impl<const RX: usize> Storage<RX> {
     pub fn setup<'a>(
         &'a mut self,
         config: Config<'a>,
+        local_idle_timeout_ms: u64,
     ) -> Result<application::Setup<'a, RX, CHUNK_BYTES>, String> {
         Ok(application::Setup {
             peer_ids: Some(hibana_quic::quic::path::peer_ids::Storage {
@@ -117,7 +118,7 @@ impl<const RX: usize> Storage<RX> {
                 seed: &self.cid_seed,
             }),
             server_token: None,
-            local_idle_timeout_ms: 30_000,
+            local_idle_timeout_ms,
             key_update_target: 0,
             early: None,
             config,

@@ -1,13 +1,13 @@
 {
-  "request": "Qualify the server Initial-to-Handshake second PTO credit selection with all 44 candidate cells",
-  "requested_at": "2026-10-07T22:47:00Z",
+  "request": "Qualify measured local key-wait RTT and consistent Host idle budget on all 44 candidate cells",
+  "requested_at": "2026-10-09T05:22:00Z",
   "scope": [
     "same source commit across all qualification groups",
     "reference self-tests omitted by user request",
     "44 actual candidate client/server verdicts"
   ],
-  "approval": "User requested checking and repairing the remaining interop failures, including latest upstream Hibana, with both local directions checked before CI. Existing authorized publication workflow continues.",
-  "local_evidence": "docs/QUALIFICATION.md",
+  "approval": "User requested investigating the completed CI failures, fixing them, pushing to the tested branch, and checking CI again.",
+  "local_evidence": "docs/LOCAL-KEY-WAIT-20261009.md",
   "candidate_directions": [
     "client",
     "server"
