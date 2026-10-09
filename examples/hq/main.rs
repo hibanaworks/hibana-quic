@@ -556,10 +556,8 @@ async fn run_async<const S: usize, const T: usize>(
     clock: &HostClock<'_, S, T>,
     options: Options,
 ) -> Result<Report> {
-    // Share the requested whole-operation budget between inactive recovery
-    // and terminal cleanup; do not silently impose the former fixed 30 s.
     let idle_timeout_ms =
-        u64::try_from(options.timeout().as_millis() / 2).map_err(|_| "idle timeout overflow")?;
+        u64::try_from(options.idle_timeout().as_millis()).map_err(|_| "idle timeout overflow")?;
     match options {
         Options::Client {
             protocol,
@@ -574,6 +572,7 @@ async fn run_async<const S: usize, const T: usize>(
             ca,
             files,
             timeout,
+            idle_timeout,
         } => {
             // Independent connections own independent projected sessions. Join
             // their real retirement concurrently instead of serializing every
@@ -612,6 +611,7 @@ async fn run_async<const S: usize, const T: usize>(
                                 server_name,
                                 ca,
                                 timeout,
+                                idle_timeout,
                                 cipher,
                                 resumption: false,
                                 connections: 1,

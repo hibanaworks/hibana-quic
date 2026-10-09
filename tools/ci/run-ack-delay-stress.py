@@ -46,7 +46,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--timeout-seconds', type=int, default=300)
+    parser.add_argument('--idle-timeout-seconds', type=int, default=90)
     args = parser.parse_args()
+    if not 1 <= args.timeout_seconds <= 300 or not 0 <= args.idle_timeout_seconds <= 300:
+        parser.error('operation timeout must be 1..300 and idle timeout 0..300 seconds')
     binary = args.binary.resolve(strict=True)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -54,6 +58,8 @@ def main():
     summary = {'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                'scope': 'native self-peer stress; separate from official independent interop',
                'criterion': 'authenticated matching files and retired owners; server idle is reported separately',
+               'operation_timeout_seconds': args.timeout_seconds,
+               'local_idle_timeout_seconds': args.idle_timeout_seconds,
                'cases': []}
     for impairment in ('loss', 'corruption'):
         for seed in range(20261009, 20261014):
@@ -62,7 +68,8 @@ def main():
             result = subprocess.run([sys.executable, str(fixture), '--binary', str(binary),
                                      '--connections', '50', '--impairment', impairment,
                                      '--impairment-model', 'random', '--impairment-seed', str(seed),
-                                     '--loss-scope', 'global', '--timeout-seconds', '180',
+                                     '--loss-scope', 'global', '--timeout-seconds', str(args.timeout_seconds),
+                                     '--idle-timeout-seconds', str(args.idle_timeout_seconds),
                                      '--output', str(path)])
             report = json.loads(path.read_text()) if path.exists() else {}
             summary['cases'].append({'name': name, 'exit_code': result.returncode,

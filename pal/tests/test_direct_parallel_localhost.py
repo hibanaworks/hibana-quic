@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--connections', type=int, default=50)
     parser.add_argument('--impairment', choices=('none','loss','corruption'), default='none')
     parser.add_argument('--timeout-seconds', type=int, default=120)
+    parser.add_argument('--idle-timeout-seconds', type=int)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--private-log-dir', type=Path)
     parser.add_argument('--trace-routes', action='store_true')
@@ -29,12 +30,16 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.connections <= 64: parser.error('connections must be 1..64')
     if args.impairment_model == 'random' and args.loss_scope != 'global': parser.error('random QNS model is global per direction')
+    if args.idle_timeout_seconds is not None and not 0 <= args.idle_timeout_seconds <= 300:
+        parser.error('idle timeout must be 0..300 seconds')
+    idle_arguments = [] if args.idle_timeout_seconds is None else ['--idle-timeout-seconds', str(args.idle_timeout_seconds)]
     binary = args.binary.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix='hibana-parallel-direct-') as tmp:
         root = Path(tmp); HELP.credentials(root); (root/'www').mkdir()
         names = [f'body-{i}.bin' for i in range(args.connections)]
         for i,name in enumerate(names): (root/'www'/name).write_bytes(bytes([i % 251])*1024)
         command = [str(binary),'server','--listen','127.0.0.1:0','--cert',str(root/'server.pem'),'--key',str(root/'server.key'),'--www',str(root/'www'),'--max-requests','1','--session','multi','--connections',str(args.connections),'--timeout-seconds',str(args.timeout_seconds)]
+        command += idle_arguments
         server_log = (root/'server.stderr').open('w+')
         server = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=server_log, text=True)
         try:
@@ -56,6 +61,7 @@ def main():
             with context as proxy:
                 address=proxy.address if proxy else (host,int(port))
                 command=[str(binary),'client','--connect',f'{address[0]}:{address[1]}','--server-name','localhost','--ca',str(root/'ca.pem'),'--downloads',str(root/'downloads'),'--session','multi','--timeout-seconds',str(args.timeout_seconds)]
+                command += idle_arguments
                 for name in names: command += ['--request',f'https://localhost:{address[1]}/{name}']
                 started=time.monotonic()
                 client=subprocess.run(command,capture_output=True,text=True,timeout=args.timeout_seconds+5)
@@ -74,7 +80,7 @@ def main():
             for name in names:
                 source=root/'www'/name;dest=root/'downloads'/name
                 files.append({'bytes':source.stat().st_size,'expected_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'received_sha256':hashlib.sha256(dest.read_bytes()).hexdigest() if dest.exists() else None})
-            report={'scope':'direct-native-independent-connections','official_interop_pass':False,'connections':args.connections,'impairment':args.impairment,'loss_scope':args.loss_scope,'impairment_model':args.impairment_model,'impairment_seed':args.impairment_seed,'client_exit':client.returncode,'server_exit':server.returncode,'client_seconds':client_elapsed,'all_retired_seconds':elapsed,'files':files,'proxy':dict(proxy.stats) if proxy else None}
+            report={'scope':'direct-native-independent-connections','official_interop_pass':False,'connections':args.connections,'impairment':args.impairment,'loss_scope':args.loss_scope,'impairment_model':args.impairment_model,'impairment_seed':args.impairment_seed,'operation_timeout_seconds':args.timeout_seconds,'local_idle_timeout_ms':args.idle_timeout_seconds * 1000 if args.idle_timeout_seconds is not None else args.timeout_seconds * 500,'client_exit':client.returncode,'server_exit':server.returncode,'client_seconds':client_elapsed,'all_retired_seconds':elapsed,'files':files,'proxy':dict(proxy.stats) if proxy else None}
             if proxy is not None and args.trace_routes: report['route_trace'] = proxy.route_trace
             for label,raw in [('client',client.stdout),('server',server_out)]:
                 try: report[label]=json.loads(raw)

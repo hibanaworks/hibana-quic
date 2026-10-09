@@ -1,7 +1,7 @@
 use super::host_files::{MAX_REQUESTS, Request};
 use hibana_tls::handshake::CipherPolicy;
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
-pub const USAGE: &str = "Direct Hibana QUIC v1/v2 / hq-interop or h3\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi]\n\nOne connection, two ticket-resuming connections with --session resume, or one full connection per request with --session multi (server: --connections 1..64); at most 4096 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
+pub const USAGE: &str = "Direct Hibana QUIC v1/v2 / hq-interop or h3\n\n  hq client --connect IP:PORT --server-name HOST --ca ROOTS.pem [--request /FILE ... --downloads DIR] [--timeout-seconds 120] [--idle-timeout-seconds 60] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi] [--early reject|replay-safe]\n  hq server --listen IP:PORT --cert CHAIN.pem --key KEY.pem [--www DIR --max-requests N] [--timeout-seconds 120] [--idle-timeout-seconds 60] [--http hq|3] [--cipher auto|aes128|chacha20] [--session single|resume|multi]\n\nOne connection, two ticket-resuming connections with --session resume, or one full connection per request with --session multi (server: --connections 1..64); at most 4096 file requests, explicit CA/hostname verification and real OS randomness.\nFile requests use bounded chunks and decoded-path-safe, atomic downloads.\nOmitting file options selects authenticated TLS-prefix diagnostics only; those\nreports never claim HTTP transfer, HANDSHAKE_DONE confirmation or completed close.";
 #[derive(Debug)]
 pub struct ClientFiles {
     pub requests: Vec<Request>,
@@ -21,6 +21,7 @@ pub enum Options {
         server_name: String,
         ca: PathBuf,
         timeout: Duration,
+        idle_timeout: Duration,
         cipher: CipherPolicy,
         resumption: bool,
         connections: usize,
@@ -36,6 +37,7 @@ pub enum Options {
         cert: PathBuf,
         key: PathBuf,
         timeout: Duration,
+        idle_timeout: Duration,
         cipher: CipherPolicy,
         resumption: bool,
         connections: usize,
@@ -48,6 +50,11 @@ impl Options {
     pub fn timeout(&self) -> Duration {
         match self {
             Self::Client { timeout, .. } | Self::Server { timeout, .. } => *timeout,
+        }
+    }
+    pub fn idle_timeout(&self) -> Duration {
+        match self {
+            Self::Client { idle_timeout, .. } | Self::Server { idle_timeout, .. } => *idle_timeout,
         }
     }
     #[cfg(test)]
@@ -93,6 +100,16 @@ pub fn options(args: &[String]) -> Result<Options> {
         return Err("timeout must be 1..=300 seconds".into());
     }
     let timeout = Duration::from_secs(seconds);
+    let idle_timeout = match flags.remove("--idle-timeout-seconds") {
+        Some(value) => {
+            let idle = value.parse::<u64>().map_err(|_| "invalid idle timeout")?;
+            if idle > 300 {
+                return Err("idle timeout must be 0..=300 seconds".into());
+            }
+            Duration::from_secs(idle)
+        }
+        None => timeout / 2,
+    };
     let cipher = match flags.remove("--cipher").unwrap_or("auto") {
         "auto" => CipherPolicy::Default,
         "aes128" => CipherPolicy::Aes128Only,
@@ -193,6 +210,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 server_name,
                 ca,
                 timeout,
+                idle_timeout,
                 cipher,
                 resumption,
                 early,
@@ -273,6 +291,7 @@ pub fn options(args: &[String]) -> Result<Options> {
                 cert,
                 key,
                 timeout,
+                idle_timeout,
                 cipher,
                 resumption,
                 connections,
@@ -337,6 +356,30 @@ mod tests {
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(str::to_owned).collect()
     }
+    #[test]
+    fn operation_budget_and_negotiated_idle_are_independent() {
+        for base in [
+            "client --connect 127.0.0.1:443 --server-name localhost --ca ca.pem",
+            "server --listen 127.0.0.1:443 --cert cert.pem --key key.pem",
+        ] {
+            for budget in [180, 300] {
+                let options = options(&args(&format!(
+                    "{base} --timeout-seconds {budget} --idle-timeout-seconds 90"
+                )))
+                .unwrap();
+                assert_eq!(options.timeout(), Duration::from_secs(budget));
+                assert_eq!(options.idle_timeout(), Duration::from_secs(90));
+            }
+            let disabled = options(&args(&format!("{base} --idle-timeout-seconds 0"))).unwrap();
+            assert_eq!(disabled.idle_timeout(), Duration::ZERO);
+            for invalid in ["-1", "301", "18446744073709551616", "later"] {
+                assert!(
+                    options(&args(&format!("{base} --idle-timeout-seconds {invalid}"))).is_err()
+                );
+            }
+        }
+    }
+
     #[test]
     fn cipher_policy_is_explicit_and_unknown_values_are_rejected() {
         for (name, expected) in [

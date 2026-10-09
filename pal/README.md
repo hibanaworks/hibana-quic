@@ -49,6 +49,12 @@ cmp www/hello.txt downloads/hello.txt
 The [single-command example](../examples/http3-transfer.sh) runs these together.
 Never use a production private key for a local demonstration.
 
+`--timeout-seconds` bounds the whole CLI operation (1–300 seconds).
+`--idle-timeout-seconds` independently sets the local QUIC idle timeout
+(0–300 seconds; defaults to half the operation budget). A zero local idle
+timeout still permits the peer to negotiate a nonzero idle timeout.
+Closing and draining retain the protocol’s PTO-based timing.
+
 ## Environment responsibilities
 
 - [udp.rs](src/udp.rs), [async_io.rs](src/async_io.rs): physical datagrams, readiness and executor wakeups.
