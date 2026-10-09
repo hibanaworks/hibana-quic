@@ -1,4 +1,3 @@
-
 use hibana_quic::http3::{self, message::decode_response};
 use hibana_quic_pal::fs::FileStorage;
 type Result<T> = std::result::Result<T, String>;

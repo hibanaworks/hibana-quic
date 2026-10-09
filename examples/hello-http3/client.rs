@@ -2,8 +2,8 @@ mod global;
 #[path = "local/client.rs"]
 mod local;
 use hibana::runtime::program::project;
-use hibana_quic_pal::launch;
 use hibana_quic::session::Protocol;
+use hibana_quic_pal::launch;
 use std::time::Duration;
 fn main() {
     if let Err(error) = run() {

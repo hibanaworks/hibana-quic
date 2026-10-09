@@ -56,12 +56,13 @@ fn open(parent: &File, name: &str, flags: i32) -> io::Result<File> {
     let name = child(name)?;
     // SAFETY: parent is borrowed and live; name is terminated and valid throughout
     // the call. Variadic mode is promoted to unsigned int on both supported ABIs.
+    // Match std file creation: the process umask restricts the requested mode.
     let fd = unsafe {
         openat(
             parent.as_raw_fd(),
             name.as_ptr(),
             flags | abi::NOFOLLOW | abi::CLOEXEC,
-            0o600u32,
+            0o666u32,
         )
     };
     if fd < 0 {
@@ -82,7 +83,7 @@ pub(crate) fn create(parent: &File, name: &str) -> io::Result<File> {
 pub(crate) fn mkdir(parent: &File, name: &str) -> io::Result<()> {
     let name = child(name)?;
     // SAFETY: the descriptor and terminated name remain live; no pointer is retained.
-    checked(unsafe { mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) })
+    checked(unsafe { mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o777) })
 }
 pub(crate) fn exists(parent: &File, name: &str) -> io::Result<bool> {
     let name = child(name)?;
