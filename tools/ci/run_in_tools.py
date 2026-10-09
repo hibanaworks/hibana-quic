@@ -840,6 +840,10 @@ def phase(name, client, server, candidate):
         if raw is not None:
             parse_state, lines = diagnostic_lines(raw)
             record['console_parse_state'] = parse_state
+            if parse_state in ('line-too-large', 'too-many-lines'):
+                # Keep the whole-log rejection. Independently label and inspect
+                # only complete records in the bounded terminal suffix.
+                record['console_tail'] = diagnostic_tail(RAW, (name + '-console.log',))
             # Startup/copy errors can prevent creation of the per-case tree.
             record['console_diagnostics'] = summarize_log(raw)
             text = '\n'.join(lines)

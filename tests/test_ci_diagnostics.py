@@ -642,6 +642,35 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(verdict['status'], result['status'])
         self.assertNotIn('console_tail', verdict)
 
+    def test_phase_oversized_line_keeps_failure_and_independent_safe_tail(self):
+        m = self.module
+        m.SAFE.mkdir()
+        m.RAW.mkdir(parents=True)
+        work = self.root / 'work'
+        work.mkdir()
+        def execute(command, **kwargs):
+            if command[0] != 'docker':
+                kwargs['stdout'].write(b'x' * (m.MAX_LOG_TAIL_BYTES + 1) + b'\n'
+                    b'Traceback (most recent call last):\n'
+                    b'  File "/private/secret.py", line 5, in private_function\n'
+                    b'ValueError: private_token\n')
+            return SimpleNamespace(returncode=1)
+        with patch.object(m, 'setup_workdir', return_value=(work, work / 'overlay')):
+            with patch.object(m.subprocess, 'run', side_effect=execute):
+                result = m.phase('bounded-client', 'hibana-quic', 'neqo', True)
+        self.assertEqual(result['status'], 'INFRASTRUCTURE_OR_RESULT_FAILURE')
+        self.assertEqual(result['console_file']['state'], 'present')
+        self.assertEqual(result['console_parse_state'], 'line-too-large')
+        self.assertEqual(result['console_diagnostics']['parse_state'], 'line-too-large')
+        self.assertEqual(result['runner_tracebacks'], [])
+        self.assertEqual(result['console_tail']['state'], 'partial-tail')
+        self.assertEqual(result['console_tail']['tracebacks'][0]['exception_type'], 'ValueError')
+        self.assertNotIn('private_token', json.dumps(result))
+        self.assertNotIn('secret.py', json.dumps(result))
+        verdict = json.loads((m.SAFE / 'bounded-client-verdict.json').read_text())
+        self.assertEqual(verdict['status'], result['status'])
+        self.assertNotIn('console_tail', verdict)
+
     def test_phase_collects_diagnostics_without_changing_failed_verdict(self):
         m = self.module
         m.SAFE.mkdir()
