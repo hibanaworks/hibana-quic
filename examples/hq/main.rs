@@ -1010,6 +1010,7 @@ async fn run_async<const S: usize, const T: usize>(
                 };
                 let mut first = vec![0; direct_bootstrap::DATAGRAM];
                 let (address, original, peer, len, ecn) = if let Some(admitted) = retried.as_ref() {
+                    eprintln!("Retry admission joined with validated token");
                     first[..admitted.datagram.len()].copy_from_slice(&admitted.datagram);
                     (
                         admitted.address,
