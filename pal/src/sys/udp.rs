@@ -364,9 +364,11 @@ pub(crate) fn receive<'a>(
     let address = decode(&address.0[..header.name_len as usize])?;
     let count = parse(&control.0[..control_len], metadata)?;
     // XNU ip6_savecontrol_v4 reports the real IPv4 TOS as IPV6_TCLASS.
-    // Normalize only when the kernel source address is IPv4-mapped.
+    // Normalize only when the kernel source address identifies IPv4.
     #[cfg(target_os = "macos")]
-    if matches!(address, SocketAddr::V6(a) if a.ip().to_ipv4_mapped().is_some()) {
+    if address.is_ipv4()
+        || matches!(address, SocketAddr::V6(a) if a.ip().to_ipv4_mapped().is_some())
+    {
         for value in &mut metadata[..count] {
             if let Metadata::Ipv6TClass(class) = *value {
                 *value = Metadata::Ipv4Tos(u8::try_from(class).map_err(|_| invalid())?);

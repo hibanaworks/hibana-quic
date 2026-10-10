@@ -148,7 +148,15 @@ fn canonical_source(
     source: SocketAddr,
     dual_stack: bool,
 ) -> io::Result<SocketAddr> {
-    if bound.is_ipv4() != source.is_ipv4() {
+    if bound.is_ipv4() != source.is_ipv4()
+        && !(cfg!(target_os = "macos")
+            && dual_stack
+            && bound.is_ipv6()
+            && source.is_ipv4()
+            && canonical_address(bound).is_some_and(|address| address.is_ipv4()))
+    {
+        // Darwin returns AF_INET for an IPv4-mapped concrete IPv6 binding.
+        // Wildcard, native IPv6, scoped and IPv6-only bindings keep strict checks.
         return Err(invalid("UDP source sockaddr family contradicts binding"));
     }
     let source = canonical_address(source)
@@ -861,6 +869,15 @@ mod tests {
                 io::ErrorKind::InvalidData
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn concrete_mapped_binding_accepts_native_ipv4_source_only_in_dual_stack() {
+        let bound = "[::ffff:127.0.0.1]:9000".parse().unwrap();
+        let source = "127.0.0.1:9001".parse().unwrap();
+        assert_eq!(canonical_source(bound, source, true).unwrap(), source);
+        assert!(canonical_source(bound, source, false).is_err());
     }
 
     #[test]
