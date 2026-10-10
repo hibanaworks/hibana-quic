@@ -41,6 +41,10 @@ impl Bytes {
     }
 }
 pub fn prefix(protocol: Protocol, authority: Option<&str>) -> Result<Bytes, ()> {
+    #[cfg(feature = "hq")]
+    if matches!(protocol, Protocol::Hq) {
+        return Err(());
+    }
     let mut result = Bytes::new();
     if matches!(protocol, Protocol::Quic) {
         result.append(b"HBN1")?;

@@ -83,14 +83,8 @@ pub(crate) fn path_components(target: &str) -> Result<Vec<String>> {
     Ok(components)
 }
 pub(crate) fn parse_get(bytes: &[u8]) -> Result<Vec<String>> {
-    let line = bytes
-        .strip_suffix(b"\r\n")
-        .or_else(|| bytes.strip_suffix(b"\n"))
-        .ok_or("GET request requires line ending and stream FIN")?;
-    let target = line
-        .strip_prefix(b"GET ")
-        .ok_or("only HTTP/0.9 GET is supported")?;
-    path_components(std::str::from_utf8(target).map_err(|_| "GET target is not UTF-8")?)
+    let target = hibana_quic::hq::decode_request(bytes).map_err(|e| format!("{e:?}"))?;
+    path_components(target)
 }
 pub(crate) struct SafeRoot {
     directory: File,

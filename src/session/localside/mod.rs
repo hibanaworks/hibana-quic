@@ -42,5 +42,13 @@ pub async fn run<const ROLE: u8, E>(
 /// Common connection startup using injected datagram, clock and entropy capabilities.
 pub mod network;
 
-/// Application and connection execution borrowing caller-owned storage.
-pub mod owned;
+/// Failures retain the distinction between application, network and incomplete close.
+#[derive(Debug)]
+pub enum RunError<E> {
+    Application(E),
+    Network(crate::quic::application::Error),
+    Prefix,
+    Incomplete,
+}
+mod client;
+mod server;

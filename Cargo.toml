@@ -10,11 +10,12 @@ description = "Experimental bounded QUIC v1 transport driven by Hibana choreogra
 
 [dependencies]
 # The owned TLS repository is pinned to the same source checked out by CI.
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "573d9053dca1d9a73e803ad2569f224420b69c3f", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "d1fa6de16563afaede629159399965fbc7460133", default-features = false }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "6ed1923c9447e48cfd3e4bb0f2d6f12126e2b452", default-features = false }
 
 [features]
 default = []
+hq = ["hibana-tls/hq"]
 target-link-smoke = []
 
 [[example]]
@@ -27,14 +28,12 @@ panic = "abort"
 lto = true
 codegen-units = 1
 
-
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"
-branch = "development/projectable-composition"
+branch = "main"
 revision = "6ed1923c9447e48cfd3e4bb0f2d6f12126e2b452"
 local-patches = false
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 actor-test-allocator = { path = "tests/support/actor-test-allocator" }
-
 

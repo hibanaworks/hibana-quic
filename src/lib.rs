@@ -14,6 +14,8 @@ extern crate self as hibana_quic;
 extern crate std;
 
 pub mod crypto;
+#[cfg(feature = "hq")]
+pub mod hq;
 pub mod http3;
 pub mod io;
 pub mod quic;

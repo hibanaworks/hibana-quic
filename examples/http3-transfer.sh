@@ -7,7 +7,7 @@ if [ "$#" -ne 3 ]; then
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 chain=$(realpath "$1"); key=$(realpath "$2"); ca=$(realpath "$3")
-cargo build --locked --release --manifest-path "$root/examples/Cargo.toml" --bin hq
+cargo build --locked --release --manifest-path "$root/examples/Cargo.toml" --features hq --bin hq
 hq="${CARGO_TARGET_DIR:-$root/examples/target}/release/hq"
 work=$(mktemp -d)
 server_pid=

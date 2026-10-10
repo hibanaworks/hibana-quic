@@ -85,7 +85,8 @@ and application execution use the same types on native and caller-owned paths.
 For a custom connection, `quic::application::{Buffers, Setup}` supplies storage
 and parameters. Use `quic::application::localside::Endpoints` for attachment,
 `Buffers` and `Setup` for caller-owned resources, and the corresponding localside
-to run them. Allocator-backed storage is under `quic::application::storage`.
+to run them. Caller-owned stream arrays and arenas are grouped by `session::ConnectionMemory`;
+`session::Memory` additionally owns the application carrier arena.
 Packet codecs (`quic::packet`), transport parameters (`quic::transport_parameters`),
 recovery receipts (`quic::recovery`) and publication capabilities
 (`quic::publication`) are the low-level public interfaces used by diagnostic tools.
@@ -179,7 +180,12 @@ those projected endpoints over authenticated QUIC streams or HTTP/3 exchanges.
 Application locals use Hibana `send` and `recv`; they do not implement a carrier,
 manage frame queues, encode HTTP/3 envelopes, or drive transport phases.
 
-The two examples calculate a square across a real network connection:
+The two examples calculate a square across a real network connection. Their
+Unix CLI launchers use `std` for argument parsing and credential-file loading;
+these launchers are not the no-allocation boundary. The application and connection
+entry points also compile in the [no_std board example](pal/examples/pico/src/lib.rs).
+
+
 
 - [Raw QUIC application](examples/hello-quic/global.rs), using ALPN `hibana/1`.
 - [HTTP/3 application](examples/hello-http3/global.rs), using authenticated
@@ -292,21 +298,17 @@ fn run() -> Result<(), String> {
         trust_anchors: &anchors,
         protocol,
         idle_timeout_ms: 15_000,
-        stream_capacity: 8,
     };
     let program = project::<{ global::CLIENT }>(&global::choreography());
-    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
-    let mut connection_slab = [0; 256 * 1024];
-    let mut application_slab = [0; 65536];
+    let mut memory = const { session::Memory::<8>::new() };
     let mut entropy = KernelEntropy;
-    let connection = core::pin::pin!(session::localside::owned::client(
-        &mut streams,
-        &mut connection_slab,
-        &mut application_slab,
-        &socket,
-        &clock,
-        &mut entropy,
-        config,
+    let connection = core::pin::pin!(config.run(
+        &mut memory,
+        session::Environment {
+            socket: &socket,
+            clock: &clock,
+            entropy: &mut entropy
+        },
         global::SERVER,
         &program,
         async |client| -> Result<(), ApplicationError> {
@@ -432,25 +434,21 @@ fn run() -> Result<(), String> {
         certificate_chain: chain,
         signing_key: &key,
         idle_timeout_ms: 15_000,
-        stream_capacity: 8,
     };
     eprintln!(
         "listening on {}",
         socket.local_addr().map_err(|e| e.to_string())?
     );
     let program = project::<{ global::SERVER }>(&global::choreography());
-    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
-    let mut connection_slab = [0; 256 * 1024];
-    let mut application_slab = [0; 65536];
+    let mut memory = const { session::Memory::<8>::new() };
     let mut entropy = KernelEntropy;
-    let connection = core::pin::pin!(session::localside::owned::server(
-        &mut streams,
-        &mut connection_slab,
-        &mut application_slab,
-        &socket,
-        &clock,
-        &mut entropy,
-        config,
+    let connection = core::pin::pin!(config.run(
+        &mut memory,
+        session::Environment {
+            socket: &socket,
+            clock: &clock,
+            entropy: &mut entropy
+        },
         global::CLIENT,
         &program,
         async |server| -> Result<(), ApplicationError> {
@@ -559,21 +557,17 @@ fn run() -> Result<(), String> {
         trust_anchors: &anchors,
         protocol,
         idle_timeout_ms: 15_000,
-        stream_capacity: 8,
     };
     let program = project::<{ global::CLIENT }>(&global::choreography());
-    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
-    let mut connection_slab = [0; 256 * 1024];
-    let mut application_slab = [0; 65536];
+    let mut memory = const { session::Memory::<8>::new() };
     let mut entropy = KernelEntropy;
-    let connection = core::pin::pin!(session::localside::owned::client(
-        &mut streams,
-        &mut connection_slab,
-        &mut application_slab,
-        &socket,
-        &clock,
-        &mut entropy,
-        config,
+    let connection = core::pin::pin!(config.run(
+        &mut memory,
+        session::Environment {
+            socket: &socket,
+            clock: &clock,
+            entropy: &mut entropy
+        },
         global::SERVER,
         &program,
         async |client| -> Result<(), ApplicationError> {
@@ -699,25 +693,21 @@ fn run() -> Result<(), String> {
         certificate_chain: chain,
         signing_key: &key,
         idle_timeout_ms: 15_000,
-        stream_capacity: 8,
     };
     eprintln!(
         "listening on {}",
         socket.local_addr().map_err(|e| e.to_string())?
     );
     let program = project::<{ global::SERVER }>(&global::choreography());
-    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
-    let mut connection_slab = [0; 256 * 1024];
-    let mut application_slab = [0; 65536];
+    let mut memory = const { session::Memory::<8>::new() };
     let mut entropy = KernelEntropy;
-    let connection = core::pin::pin!(session::localside::owned::server(
-        &mut streams,
-        &mut connection_slab,
-        &mut application_slab,
-        &socket,
-        &clock,
-        &mut entropy,
-        config,
+    let connection = core::pin::pin!(config.run(
+        &mut memory,
+        session::Environment {
+            socket: &socket,
+            clock: &clock,
+            entropy: &mut entropy
+        },
         global::CLIENT,
         &program,
         async |server| -> Result<(), ApplicationError> {
@@ -824,7 +814,7 @@ peer runs the same source code. TLS, strict frame parsing and the receiver's
 projected endpoint enforce their respective boundaries.
 
 - [Application launchers](examples/hello-quic/client.rs) acquire native resources.
-- [Network session execution](src/session/localside/owned.rs) joins a caller's
+- [Network session execution](src/session/localside/client.rs) joins a caller's
   localside with the QUIC/HTTP/3 driver.
 - [OS-independent role attachment](src/session/localside/mod.rs) joins the localside
   and its stream driver.
@@ -855,6 +845,31 @@ with the [Retry input/owner/output localsides](src/quic/retry/localside/server.r
 contain the actual endpoint operations; `imp/` contains buffers, codecs and
 arithmetic.
 
+## Optional HQ profile
+
+Enable `hq` explicitly to use HTTP/0.9 GET interoperability. It is disabled by
+default in both QUIC and TLS. Enabling it keeps the libraries `no_std` and does
+not link `alloc`. The profile borrows request paths, parses targets in-place,
+and transfers caller-provided response storage through the existing connection
+and stream choreography.
+
+[`hq::Requests`, `hq::Response` and `hq::Service`](src/hq/mod.rs) provide bounded
+wire/storage effects. `session::Client::transfer` and `session::Server::serve`
+own connection execution. `Response` accepts one response on stream 0;
+multi-request clients provide their own `StreamSink` for per-stream storage.
+Path authorization and percent-decoding policies belong to the application.
+The [HQ client](examples/hello-hq/client.rs) and [server](examples/hello-hq/server.rs)
+show a one-file exchange. Their Unix launchers use `std` for CLI/file setup;
+[the board entry points](pal/examples/pico/src/hq.rs) use the same operations
+without `std` or `alloc`. The larger `examples/hq` binary is the interoperability
+runner adapter, with filesystem and test-scenario handling.
+
+```sh
+cargo test --locked --features hq
+cargo check --locked --lib --features hq --target thumbv6m-none-eabi
+cargo build --locked --release --manifest-path examples/Cargo.toml --features hq --bin hq
+```
+
 ## Build
 
 ```sh
@@ -880,10 +895,10 @@ The protocol implementation has one home in `src/`:
 
 [Borrowed connection attachment](src/quic/application/localside/borrowed.rs) consumes
 caller-owned slabs, buffers, keys and physical capabilities without allocating.
-[Owned attachment](src/quic/application/localside/owned/mod.rs), enabled with `alloc`,
-allocates the buffers and calls that same attachment. It does not select phases
-or implement another protocol. `alloc` is a compile-time memory choice, not an
-operating-system or async-runtime requirement.
+[Connection attachment](src/quic/application/localside/owned/mod.rs) borrows the
+caller-owned stream array and arena and calls that same attachment. There is no
+`alloc` feature or allocator-backed alternative. Both OS and bare-metal callers
+supply the same physical capabilities and poll the same Rust futures.
 
 The environment supplies [DatagramRx, DatagramTx, DatagramSocket and Clock](src/io/mod.rs),
 [cryptographic Entropy](https://github.com/hibanaworks/hibana-tls/blob/d1806e9c4a6d6c59294d15b671e72a637165691a/src/entropy.rs),
@@ -892,7 +907,7 @@ minimal environment examples are under [pal/](pal/README.md).
 
 For a board or custom OS, [the Pico integration example](pal/examples/pico/src/lib.rs)
 reuses the exact native example's application global and client/server localsides.
-It accepts real board I/O and initialized TLS/QUIC resource owners. It builds
+It accepts board I/O, credentials and caller-owned connection memory. It builds
 without `std` or `alloc`; it is not a boot image, network driver, or evidence that
 a particular board has enough RAM for a chosen connection profile.
 

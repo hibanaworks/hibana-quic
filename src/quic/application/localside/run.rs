@@ -457,11 +457,10 @@ async fn connected<
     let result = {
         let mut source = core::pin::pin!(async {
             use crate::http3::{Protocol, global as h3};
-            match application_protocol {
-                Protocol::Http09 | Protocol::Raw(_) => {
-                    endpoints.source.send::<h3::Plain>(&()).await?
-                }
-                Protocol::Http3 => endpoints.source.send::<h3::Http3>(&()).await?,
+            if application_protocol == Protocol::Http3 {
+                endpoints.source.send::<h3::Http3>(&()).await?;
+            } else {
+                endpoints.source.send::<h3::Plain>(&()).await?;
             }
             // Both control outcomes settle startup exactly once. This is not
             // a success grant: the actual revocation and SETTINGS receipt below
@@ -541,15 +540,12 @@ async fn connected<
         ));
         let mut sink = core::pin::pin!(async {
             use crate::http3::{Protocol, global as h3};
-            let auxiliary = match application_protocol {
-                Protocol::Http09 | Protocol::Raw(_) => {
-                    endpoints.sink.recv::<h3::PlainSink>().await?;
-                    None
-                }
-                Protocol::Http3 => {
-                    endpoints.sink.recv::<h3::Http3Sink>().await?;
-                    Some(&http3_input)
-                }
+            let auxiliary = if application_protocol == Protocol::Http3 {
+                endpoints.sink.recv::<h3::Http3Sink>().await?;
+                Some(&http3_input)
+            } else {
+                endpoints.sink.recv::<h3::PlainSink>().await?;
+                None
             };
             match sink_io {
                 Sink::Client(sink) => {

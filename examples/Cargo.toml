@@ -13,12 +13,13 @@ resolver = "3"
 [dependencies]
 hibana-quic = { path = "..", default-features = false }
 hibana-quic-pal = { path = "../pal" }
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "573d9053dca1d9a73e803ad2569f224420b69c3f", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "d1fa6de16563afaede629159399965fbc7460133", default-features = false }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "6ed1923c9447e48cfd3e4bb0f2d6f12126e2b452", default-features = false }
 
 [[bin]]
 name = "hq"
 path = "hq/main.rs"
+required-features = ["hq"]
 
 [profile.release]
 codegen-units = 1
@@ -53,4 +54,16 @@ path = "hello-http3/client.rs"
 name = "http3-server"
 path = "hello-http3/server.rs"
 
+[features]
+default = []
+hq = ["hibana-quic/hq", "hibana-tls/hq"]
 
+[[example]]
+name = "hq-client"
+path = "hello-hq/client.rs"
+required-features = ["hq"]
+
+[[example]]
+name = "hq-server"
+path = "hello-hq/server.rs"
+required-features = ["hq"]

@@ -208,6 +208,8 @@ fn framed_input_rejects_truncated_wrong_peer_and_oversized_messages() {
                 let prefix: &[u8] = match protocol {
                     Protocol::Quic => b"HBN1",
                     Protocol::Http3 => &[1, 3, 0, 0, 0xd9],
+                    #[cfg(feature = "hq")]
+                    Protocol::Hq => unreachable!("this test covers only framed Hibana application protocols"),
                 };
                 async {
                     let bytes: &[u8] = prefix;
@@ -243,6 +245,8 @@ fn framed_input_rejects_truncated_wrong_peer_and_oversized_messages() {
                             let bytes: &[u8] = match protocol {
                                 Protocol::Quic => &raw,
                                 Protocol::Http3 => &framed,
+                                #[cfg(feature = "hq")]
+                                Protocol::Hq => unreachable!("this test covers only framed Hibana application protocols"),
                             };
                             let n = poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
                             assert_eq!(n, bytes.len());
@@ -257,6 +261,8 @@ fn framed_input_rejects_truncated_wrong_peer_and_oversized_messages() {
                             let bytes: &[u8] = match protocol {
                                 Protocol::Quic => &raw,
                                 Protocol::Http3 => &framed,
+                                #[cfg(feature = "hq")]
+                                Protocol::Hq => unreachable!("this test covers only framed Hibana application protocols"),
                             };
                             let n = poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
                             assert_eq!(n, bytes.len());

@@ -1,6 +1,5 @@
-mod global;
-use global::{Number, Square};
-use hibana::runtime::program::project;
+#[path = "../unix/file.rs"]
+mod native_files;
 use hibana_quic::session::{self, Protocol};
 use hibana_quic_pal::unix::{
     Instant, UdpSocket,
@@ -8,6 +7,7 @@ use hibana_quic_pal::unix::{
     entropy::KernelEntropy,
     reactor::Reactor,
 };
+use native_files::FileStorage;
 use std::time::Duration;
 fn main() {
     if let Err(error) = run() {
@@ -17,8 +17,8 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 3 {
-        return Err("usage: server LISTEN CERT.pem KEY.pem".into());
+    if args.len() != 4 {
+        return Err("usage: server LISTEN CERT.pem KEY.pem CONTENT".into());
     }
     let reactor = {
         static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
@@ -27,7 +27,7 @@ fn run() -> Result<(), String> {
     }
     .map_err(|e| e.to_string())?;
     let clock = Clock::new(&reactor, Instant::now());
-    let protocol = Protocol::Quic;
+    let protocol = Protocol::Hq;
     let socket = reactor
         .register_udp(
             UdpSocket::bind(args[0].parse().map_err(|e| format!("{e}"))?)
@@ -85,36 +85,26 @@ fn run() -> Result<(), String> {
         "listening on {}",
         socket.local_addr().map_err(|e| e.to_string())?
     );
-    let program = project::<{ global::SERVER }>(&global::choreography());
-    let mut memory = const { session::Memory::<8>::new() };
+    let content = std::fs::File::open(&args[3]).map_err(|e| e.to_string())?;
+    let mut service = hibana_quic::hq::Service::new(|path: &str| {
+        if path == "/hello" {
+            Ok(FileStorage(&content))
+        } else {
+            Err(())
+        }
+    });
+    let mut memory = const { session::ConnectionMemory::<1>::new() };
     let mut entropy = KernelEntropy;
-    let connection = core::pin::pin!(config.run(
+    let connection = core::pin::pin!(config.serve(
         &mut memory,
         session::Environment {
             socket: &socket,
             clock: &clock,
             entropy: &mut entropy
         },
-        global::CLIENT,
-        &program,
-        async |server| -> Result<(), ApplicationError> {
-            for _ in 0..2 {
-                let number = server
-                    .recv::<Number>()
-                    .await
-                    .map_err(ApplicationError::Protocol)?;
-                let square = number
-                    .checked_mul(number)
-                    .ok_or(ApplicationError::Overflow)?;
-                server
-                    .send::<Square>(&square)
-                    .await
-                    .map_err(ApplicationError::Protocol)?;
-            }
-            Ok(())
-        },
+        &mut service,
     ));
-    reactor
+    let report = reactor
         .block_on(before_deadline(
             &clock,
             Instant::now() + Duration::from_secs(30),
@@ -122,12 +112,11 @@ fn run() -> Result<(), String> {
         ))
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("{e:?}"))?;
-    println!("served two requests");
+    if report.termination != hibana_quic::quic::application::Termination::Closed
+        || !report.close_completed
+    {
+        return Err("connection did not complete its close".into());
+    }
+    println!("served response");
     Ok(())
-}
-
-#[derive(Debug)]
-pub enum ApplicationError {
-    Protocol(hibana::EndpointError),
-    Overflow,
 }

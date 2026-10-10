@@ -463,7 +463,7 @@ fn bounded_case(wake: &'static hibana_quic_pal::unix::reactor::WakeStorage, case
             assert!(s.negotiated_alpn().is_some());
             assert_eq!(c.peer_transport_parameters(), Some(SERVER_PARAMS));
             assert_eq!(s.peer_transport_parameters(), Some(CLIENT_PARAMS));
-            assert_eq!(c.negotiated_alpn(), Some(b"hq-interop".as_slice()));
+            assert_eq!(c.negotiated_alpn(), Some(b"hibana/1".as_slice()));
             assert_eq!(
                 c.negotiated_suite(),
                 Some(match case.policy {

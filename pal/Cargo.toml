@@ -13,4 +13,3 @@ resolver = "3"
 [dependencies]
 hibana-quic = { path = "..", default-features = false }
 
-

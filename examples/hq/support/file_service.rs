@@ -341,15 +341,7 @@ impl ClientRequests for Requests {
             files.pending = Some(files.next);
             return Ok(Some(head + count));
         }
-        let len = request.target.len() + 6;
-        if output.len() < len {
-            return files
-                .diagnostics
-                .fail("GET exceeds caller request capacity");
-        }
-        output[..4].copy_from_slice(b"GET ");
-        output[4..len - 2].copy_from_slice(request.target.as_bytes());
-        output[len - 2..len].copy_from_slice(b"\r\n");
+        let len = hibana_quic::hq::encode_request(&request.target, output).map_err(|_| ())?;
         files.pending = Some(files.next);
         Ok(Some(len))
     }

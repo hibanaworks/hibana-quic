@@ -3,14 +3,14 @@
 mod async_fixture;
 use hibana_quic_pal::unix::entropy::KernelEntropy;
 use hibana_tls::certificate::*;
-use hibana_tls::quic::Level;
-use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::ClientConfig;
 use hibana_tls::handshake::Failure;
 use hibana_tls::handshake::ServerConfig;
 use hibana_tls::handshake::SigningKey;
 use hibana_tls::handshake::Storage;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use hibana_tls::wire as tls_wire;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, GeneralSubtree, IsCa, KeyPair, KeyUsagePurpose,
@@ -483,9 +483,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
         assert!(
             matches!(
                 rejected,
-                Err(hibana_tls::handshake::Error::Crypto(
-                    Failure::Capacity
-                ))
+                Err(hibana_tls::handshake::Error::Crypto(Failure::Capacity))
             ),
             "projected capacity rejection: {rejected:?}"
         );
@@ -530,9 +528,9 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
             assert!(
                 matches!(
                     rejected,
-                    Err(hibana_tls::handshake::Error::Crypto(
-                        Failure::Certificate(_)
-                    ))
+                    Err(hibana_tls::handshake::Error::Crypto(Failure::Certificate(
+                        _
+                    )))
                 ),
                 "projected certificate rejection: {rejected:?}"
             );

@@ -10,11 +10,11 @@ use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::runtime::TaskSet;
 use hibana_quic::runtime::carrier::CarrierStorage;
 use hibana_quic_reference_tls::rustls::quic::{Connection, KeyChange, Keys};
-use hibana_tls::quic::Level;
-use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::global;
 use hibana_tls::handshake::localside;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use std::collections::VecDeque;
 pub struct Peer {
     pub connection: Connection,
@@ -54,7 +54,11 @@ impl Peer {
 }
 struct Input<'a>(&'a RefCell<&'a mut Peer>);
 impl hibana_tls::handshake::MessageInput for Input<'_> {
-    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, hibana_tls::handshake::Error> {
+    async fn read_message(
+        &mut self,
+        level: Level,
+        out: &mut [u8],
+    ) -> Result<usize, hibana_tls::handshake::Error> {
         let mut n = 4;
         let mut copied = 0;
         while copied < n {
@@ -99,9 +103,21 @@ pub fn handshake_observe(
         .rendezvous(&mut slab, carrier.bind(id).unwrap())
         .unwrap();
     let projection = if client {
-        { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) }
+        {
+            let graph = global::client();
+            (
+                hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+                hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
+            )
+        }
     } else {
-        { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) }
+        {
+            let graph = global::server();
+            (
+                hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+                hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
+            )
+        }
     };
     let mut verify = rv.enter(id, &projection.1).unwrap();
     let mut wire = rv.enter(id, &projection.0).unwrap();

@@ -63,21 +63,17 @@ fn run() -> Result<(), String> {
         trust_anchors: &anchors,
         protocol,
         idle_timeout_ms: 15_000,
-        stream_capacity: 8,
     };
     let program = project::<{ global::CLIENT }>(&global::choreography());
-    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
-    let mut connection_slab = [0; 256 * 1024];
-    let mut application_slab = [0; 65536];
+    let mut memory = const { session::Memory::<8>::new() };
     let mut entropy = KernelEntropy;
-    let connection = core::pin::pin!(session::localside::owned::client(
-        &mut streams,
-        &mut connection_slab,
-        &mut application_slab,
-        &socket,
-        &clock,
-        &mut entropy,
-        config,
+    let connection = core::pin::pin!(config.run(
+        &mut memory,
+        session::Environment {
+            socket: &socket,
+            clock: &clock,
+            entropy: &mut entropy
+        },
         global::SERVER,
         &program,
         async |client| -> Result<(), ApplicationError> {

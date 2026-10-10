@@ -80,25 +80,21 @@ fn run() -> Result<(), String> {
         certificate_chain: chain,
         signing_key: &key,
         idle_timeout_ms: 15_000,
-        stream_capacity: 8,
     };
     eprintln!(
         "listening on {}",
         socket.local_addr().map_err(|e| e.to_string())?
     );
     let program = project::<{ global::SERVER }>(&global::choreography());
-    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
-    let mut connection_slab = [0; 256 * 1024];
-    let mut application_slab = [0; 65536];
+    let mut memory = const { session::Memory::<8>::new() };
     let mut entropy = KernelEntropy;
-    let connection = core::pin::pin!(session::localside::owned::server(
-        &mut streams,
-        &mut connection_slab,
-        &mut application_slab,
-        &socket,
-        &clock,
-        &mut entropy,
-        config,
+    let connection = core::pin::pin!(config.run(
+        &mut memory,
+        session::Environment {
+            socket: &socket,
+            clock: &clock,
+            entropy: &mut entropy
+        },
         global::CLIENT,
         &program,
         async |server| -> Result<(), ApplicationError> {

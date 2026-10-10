@@ -24,7 +24,7 @@ use rustls::{ClientConfig, RootCertStore, ServerConfig};
 /// types so callers do not need a potentially mismatched second rustls version.
 pub use rustls;
 
-pub const ALPN: &[u8] = b"hq-interop";
+pub const ALPN: &[u8] = b"hibana/1";
 /// Defensive reference-backend message cap; not a no_alloc memory budget.
 pub const MAX_TLS_MESSAGE_LEN: usize = 1 << 20;
 
@@ -163,7 +163,7 @@ impl RustlsProvider {
     }
 
     /// Create a certificate-authenticated server. Client certificates are not
-    /// requested, matching ordinary server-authenticated hq-interop sessions.
+    /// requested, matching ordinary server-authenticated raw QUIC sessions.
     pub fn server(
         chain: Vec<CertificateDer<'static>>,
         key: PrivateKeyDer<'static>,

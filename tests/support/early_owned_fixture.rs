@@ -122,7 +122,7 @@ pub fn admission_and_finished<'scope>(
     let cached = cache
         .take_verified_for_origin(
             1000,
-            &Binding::new("localhost", b"hq-interop", &[]).unwrap(),
+            &Binding::new("localhost", hibana_tls::Protocol::default().alpn(), &[]).unwrap(),
             0x1301,
             VerificationContext::new(&anchors, Limits::default()).unwrap(),
         )

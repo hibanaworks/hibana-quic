@@ -507,7 +507,7 @@ mod close_code_tests {
         for code in (0x101..=0x110).chain(0x200..=0x202) {
             assert!(!Protocol::Http3.peer_application_close_is_clean(code));
         }
-        assert!(Protocol::Http09.peer_application_close_is_clean(0));
-        assert!(!Protocol::Http09.peer_application_close_is_clean(0x100));
+        assert!(Protocol::default().peer_application_close_is_clean(0));
+        assert!(!Protocol::default().peer_application_close_is_clean(0x100));
     }
 }

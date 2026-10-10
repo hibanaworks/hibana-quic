@@ -6,8 +6,6 @@ use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::UnixTime;
 use hibana_tls::certificate::trust_anchor_from_der;
-use hibana_tls::quic::Level;
-use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::ClientConfig;
 use hibana_tls::handshake::ClientResumption;
@@ -15,6 +13,8 @@ use hibana_tls::handshake::ServerConfig;
 use hibana_tls::handshake::ServerResumption;
 use hibana_tls::handshake::SigningKey;
 use hibana_tls::handshake::Storage;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use hibana_tls::ticket;
 use hibana_tls::ticket::Binding;
 use hibana_tls::ticket::ClientCache;
@@ -132,7 +132,7 @@ fn bounded_client_resumes_with_rustls_server() {
             rustls::pki_types::PrivatePkcs8KeyDer::from(id.key.clone()).into(),
         )
         .unwrap();
-    config.alpn_protocols = vec![b"hq-interop".to_vec()];
+    config.alpn_protocols = vec![b"hibana/1".to_vec()];
     config.max_early_data_size = 0;
     config.send_tls13_tickets = 1;
     let config = Arc::new(config);
@@ -143,7 +143,7 @@ fn bounded_client_resumes_with_rustls_server() {
             cache
                 .take_verified_for_origin(
                     1000,
-                    &Binding::new("localhost", b"hq-interop", &[]).unwrap(),
+                    &Binding::new("localhost", b"hibana/1", &[]).unwrap(),
                     0x1301,
                     VerificationContext::new(&anchors, Limits::default()).unwrap(),
                 )
@@ -221,7 +221,7 @@ fn rustls_client_resumes_with_bounded_server_including_real_group_hrr() {
             .unwrap()
             .with_root_certificates(roots)
             .with_no_client_auth();
-        config.alpn_protocols = vec![b"hq-interop".to_vec()];
+        config.alpn_protocols = vec![b"hibana/1".to_vec()];
         config.enable_early_data = false;
         let config = Arc::new(config);
         let mut replay = [];

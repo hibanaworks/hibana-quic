@@ -6,7 +6,7 @@ cargo test --locked
 cargo clippy --locked --lib --tests -- -D warnings
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 tools/ci/check_dependencies.py
-cargo test --locked --release --manifest-path examples/Cargo.toml --bin hq
+cargo test --locked --release --manifest-path examples/Cargo.toml --features hq --bin hq
 cargo test --locked --manifest-path tests/tls-reference/Cargo.toml --test bounded_tls --test certificate_depth
 if [[ -n "${HIBANA_RUNNER_CERTS_DIR:-}" ]]; then
   cargo test --locked --manifest-path tests/tls-reference/Cargo.toml --test certificate_depth -- --include-ignored

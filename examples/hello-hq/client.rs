@@ -1,6 +1,5 @@
-mod global;
-use global::{Number, Square};
-use hibana::runtime::program::project;
+#[path = "../unix/file.rs"]
+mod native_files;
 use hibana_quic::session::{self, Protocol};
 use hibana_quic_pal::unix::{
     Instant, UdpSocket,
@@ -8,6 +7,7 @@ use hibana_quic_pal::unix::{
     entropy::KernelEntropy,
     reactor::Reactor,
 };
+use native_files::FileStorage;
 use std::time::Duration;
 fn main() {
     if let Err(error) = run() {
@@ -17,8 +17,8 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 2 {
-        return Err("usage: client REMOTE CA.pem (DNS:localhost)".into());
+    if args.len() != 3 {
+        return Err("usage: client REMOTE CA.pem OUTPUT (DNS:localhost)".into());
     }
     let reactor = {
         static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
@@ -27,7 +27,7 @@ fn run() -> Result<(), String> {
     }
     .map_err(|e| e.to_string())?;
     let clock = Clock::new(&reactor, Instant::now());
-    let protocol = Protocol::Http3;
+    let protocol = Protocol::Hq;
     let remote = args[0].parse().map_err(|e| format!("{e}"))?;
     let socket = reactor
         .register_udp(UdpSocket::bind_for_peer(remote).map_err(|e| e.to_string())?)
@@ -64,36 +64,28 @@ fn run() -> Result<(), String> {
         protocol,
         idle_timeout_ms: 15_000,
     };
-    let program = project::<{ global::CLIENT }>(&global::choreography());
-    let mut memory = const { session::Memory::<8>::new() };
+    let output = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&args[2])
+        .map_err(|e| e.to_string())?;
+    let store = FileStorage(&output);
+    let mut response = hibana_quic::hq::Response::new(&store).map_err(|e| format!("{e:?}"))?;
+    let mut requests = hibana_quic::hq::Requests::new(&["/hello"]);
+    let mut memory = const { session::ConnectionMemory::<1>::new() };
     let mut entropy = KernelEntropy;
-    let connection = core::pin::pin!(config.run(
+    let connection = core::pin::pin!(config.transfer(
         &mut memory,
         session::Environment {
             socket: &socket,
             clock: &clock,
             entropy: &mut entropy
         },
-        global::SERVER,
-        &program,
-        async |client| -> Result<(), ApplicationError> {
-            for number in [42_u64, 7] {
-                client
-                    .send::<Number>(&number)
-                    .await
-                    .map_err(ApplicationError::Protocol)?;
-                let square = client
-                    .recv::<Square>()
-                    .await
-                    .map_err(ApplicationError::Protocol)?;
-                if square != number * number {
-                    return Err(ApplicationError::IncorrectSquare);
-                }
-            }
-            Ok(())
-        },
+        &mut requests,
+        &mut response,
     ));
-    reactor
+    let report = reactor
         .block_on(before_deadline(
             &clock,
             Instant::now() + Duration::from_secs(30),
@@ -101,12 +93,11 @@ fn run() -> Result<(), String> {
         ))
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("{e:?}"))?;
-    println!("42 squared = 1764\n7 squared = 49");
+    if report.termination != hibana_quic::quic::application::Termination::Closed
+        || !report.close_completed
+    {
+        return Err("connection did not complete its close".into());
+    }
+    println!("received response");
     Ok(())
-}
-
-#[derive(Debug)]
-pub enum ApplicationError {
-    Protocol(hibana::EndpointError),
-    IncorrectSquare,
 }

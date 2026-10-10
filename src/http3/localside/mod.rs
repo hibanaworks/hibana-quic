@@ -22,7 +22,7 @@ pub(crate) async fn owner<'book, const RX: usize, const CHUNK: usize>(
     match offered.label() {
         238 => {
             offered.recv::<p::Plain>().await?;
-            if !matches!(protocol, Protocol::Http09 | Protocol::Raw(_)) {
+            if protocol == Protocol::Http3 {
                 return Err(Error::Binding);
             }
             endpoint.send::<p::PlainSink>(&()).await?;

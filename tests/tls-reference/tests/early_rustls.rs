@@ -11,8 +11,6 @@ use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::UnixTime;
 use hibana_tls::certificate::trust_anchor_from_der;
-use hibana_tls::quic::Level;
-use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::ClientConfig;
 use hibana_tls::handshake::ClientEarlyData;
@@ -22,6 +20,8 @@ use hibana_tls::handshake::ServerEarlyData;
 use hibana_tls::handshake::ServerResumption;
 use hibana_tls::handshake::SigningKey;
 use hibana_tls::handshake::Storage;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use hibana_tls::ticket;
 use hibana_tls::ticket::Binding;
 use hibana_tls::ticket::ClientCache;
@@ -145,7 +145,7 @@ fn bounded_client_early_keys_interoperate_with_rustls_and_explicit_rejection() {
             rustls::pki_types::PrivatePkcs8KeyDer::from(id.key.clone()).into(),
         )
         .unwrap();
-        config.alpn_protocols = vec![b"hq-interop".to_vec()];
+        config.alpn_protocols = vec![b"hibana/1".to_vec()];
         config.max_early_data_size = u32::MAX;
         config.send_tls13_tickets = 1;
         let config = Arc::new(config);
@@ -157,7 +157,7 @@ fn bounded_client_early_keys_interoperate_with_rustls_and_explicit_rejection() {
                     cache
                         .take_verified_for_origin(
                             1000,
-                            &Binding::new("localhost", b"hq-interop", &[]).unwrap(),
+                            &Binding::new("localhost", b"hibana/1", &[]).unwrap(),
                             0x1301,
                             VerificationContext::new(&anchors, Limits::default()).unwrap(),
                         )
@@ -267,7 +267,7 @@ fn rustls_client_early_keys_interoperate_and_real_hrr_rejects_early_only() {
         .unwrap()
         .with_root_certificates(roots)
         .with_no_client_auth();
-        config.alpn_protocols = vec![b"hq-interop".to_vec()];
+        config.alpn_protocols = vec![b"hibana/1".to_vec()];
         config.enable_early_data = true;
         let config = Arc::new(config);
         let mut ordinary = [];

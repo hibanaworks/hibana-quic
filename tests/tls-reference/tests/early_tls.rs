@@ -216,7 +216,7 @@ fn offer(
     let offer = cache
         .take_verified_for_origin(
             1000,
-            &Binding::new("localhost", b"hq-interop", &[]).unwrap(),
+            &Binding::new("localhost", b"hibana/1", &[]).unwrap(),
             suite,
             VerificationContext::new(anchors, Limits::default()).unwrap(),
         )

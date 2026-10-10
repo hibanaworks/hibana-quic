@@ -275,7 +275,7 @@ fn take(
     cache
         .take_verified_for_origin(
             clock.0.get(),
-            &Binding::new("localhost", b"hq-interop", &[]).unwrap(),
+            &Binding::new("localhost", b"hibana/1", &[]).unwrap(),
             0x1301,
             context(anchors),
         )
@@ -428,7 +428,7 @@ fn changed_trust_anchor_or_verification_limits_cannot_reuse_old_offer() {
             limits.max_chain_bytes += 1;
         }
         let changed_context = VerificationContext::new(changed, limits).unwrap();
-        let origin = Binding::new("localhost", b"hq-interop", &[]).unwrap();
+        let origin = Binding::new("localhost", b"hibana/1", &[]).unwrap();
         assert!(
             cache
                 .take_verified_for_origin(1000, &origin, 0x1301, changed_context)
@@ -687,7 +687,7 @@ fn strict_chacha_ticket_roundtrip_and_policy_mismatch_before_output() {
             CipherPolicy::ChaCha20Only,
         );
         assert!(!first.resumed);
-        let origin = Binding::new("localhost", b"hq-interop", &[]).unwrap();
+        let origin = Binding::new("localhost", b"hibana/1", &[]).unwrap();
         clock.0.set(1100);
         let offer = cache
             .take_verified_for_origin(clock.0.get(), &origin, 0x1303, context(&anchors))
