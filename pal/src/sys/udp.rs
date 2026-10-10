@@ -46,6 +46,7 @@ mod abi {
     pub const PKT4: i32 = 8;
     pub const TOS: i32 = 1;
     pub const RECVTOS: i32 = 13;
+    pub const TOS_MESSAGE: i32 = TOS;
     pub const ONLY6: i32 = 26;
     pub const RECVPKT6: i32 = 49;
     pub const PKT6: i32 = 50;
@@ -60,6 +61,8 @@ mod abi {
     pub const PKT4: i32 = 26;
     pub const TOS: i32 = 3;
     pub const RECVTOS: i32 = 27;
+    // XNU ip_savecontrol emits IP_RECVTOS, not the IP_TOS socket option.
+    pub const TOS_MESSAGE: i32 = RECVTOS;
     pub const ONLY6: i32 = 27;
     pub const RECVPKT6: i32 = 61;
     pub const PKT6: i32 = 46;
@@ -118,7 +121,9 @@ pub(crate) fn ipv6_only(socket: &impl AsRawFd) -> io::Result<bool> {
     Ok(value != 0)
 }
 pub(crate) fn enable(socket: &impl AsRawFd, ipv4: bool, dual: bool) -> io::Result<()> {
-    if ipv4 || dual {
+    // Darwin exposes mapped IPv4 reception through IPv6 ancillary options.
+    // Its IPv6 sockets reject the IPv4-level receive options.
+    if ipv4 || (cfg!(target_os = "linux") && dual) {
         option(socket, 0, abi::RECVTOS, 1)?;
         option(socket, 0, abi::PKT4, 1)?;
     }
@@ -288,7 +293,7 @@ fn parse(bytes: &[u8], out: &mut [Metadata; 8]) -> io::Result<usize> {
                     ipi6_ifindex: u32_at(payload, 16)?,
                 }))
             }
-            (0, k) if k == abi::TOS => {
+            (0, k) if k == abi::TOS_MESSAGE => {
                 if payload.len() != 1 {
                     return Err(invalid());
                 }
@@ -326,7 +331,7 @@ pub(crate) fn receive<'a>(
     let address = &mut storage.address;
     let control = &mut storage.control;
     let metadata = &mut storage.metadata;
-    if capacity > control.0.len() {
+    if capacity == 0 || capacity > control.0.len() {
         return Err(invalid());
     }
     let mut iov = IoVector {
@@ -358,6 +363,16 @@ pub(crate) fn receive<'a>(
     }
     let address = decode(&address.0[..header.name_len as usize])?;
     let count = parse(&control.0[..control_len], metadata)?;
+    // XNU ip6_savecontrol_v4 reports the real IPv4 TOS as IPV6_TCLASS.
+    // Normalize only when the kernel source address is IPv4-mapped.
+    #[cfg(target_os = "macos")]
+    if matches!(address, SocketAddr::V6(a) if a.ip().to_ipv4_mapped().is_some()) {
+        for value in &mut metadata[..count] {
+            if let Metadata::Ipv6TClass(class) = *value {
+                *value = Metadata::Ipv4Tos(u8::try_from(class).map_err(|_| invalid())?);
+            }
+        }
+    }
     Ok(Received {
         bytes: len,
         address,
@@ -538,7 +553,7 @@ mod tests {
     fn ancillary_lengths_are_checked_before_payload_access() {
         let mut bytes = [0; 64];
         let mut used = 0;
-        append(&mut bytes, &mut used, 0, abi::TOS, &[2]).unwrap();
+        append(&mut bytes, &mut used, 0, abi::TOS_MESSAGE, &[2]).unwrap();
         let metadata = parse(&bytes[..used]).unwrap();
         assert!(matches!(metadata[0], Some(Metadata::Ipv4Tos(2))));
         for n in 1..HEADER + 1 {
@@ -561,12 +576,12 @@ mod tests {
     fn shorter_metadata_does_not_expose_previous_receive_entries() {
         let mut bytes = [0; 128];
         let mut used = 0;
-        append(&mut bytes, &mut used, 0, abi::TOS, &[1]).unwrap();
+        append(&mut bytes, &mut used, 0, abi::TOS_MESSAGE, &[1]).unwrap();
         append(&mut bytes, &mut used, 41, abi::CLASS, &2i32.to_ne_bytes()).unwrap();
         let mut storage = [Metadata::Ipv4Tos(0); 8];
         assert_eq!(super::parse(&bytes[..used], &mut storage).unwrap(), 2);
         used = 0;
-        append(&mut bytes, &mut used, 0, abi::TOS, &[3]).unwrap();
+        append(&mut bytes, &mut used, 0, abi::TOS_MESSAGE, &[3]).unwrap();
         let count = super::parse(&bytes[..used], &mut storage).unwrap();
         assert_eq!(count, 1);
         assert!(matches!(&storage[..count], [Metadata::Ipv4Tos(3)]));
@@ -581,11 +596,11 @@ mod tests {
         append(&mut bytes, &mut used, 255, 255, &[7; 9]).unwrap();
         assert!(parse(&bytes[..used]).unwrap().iter().all(Option::is_none));
         for _ in 0..8 {
-            append(&mut bytes, &mut used, 0, abi::TOS, &[0]).unwrap();
+            append(&mut bytes, &mut used, 0, abi::TOS_MESSAGE, &[0]).unwrap();
         }
         assert!(parse(&bytes[..used]).is_ok());
-        append(&mut bytes, &mut used, 0, abi::TOS, &[0]).unwrap();
+        append(&mut bytes, &mut used, 0, abi::TOS_MESSAGE, &[0]).unwrap();
         assert!(parse(&bytes[..used]).is_err());
-        assert!(append(&mut [0; 4], &mut 0, 0, abi::TOS, &[0]).is_err());
+        assert!(append(&mut [0; 4], &mut 0, 0, abi::TOS_MESSAGE, &[0]).is_err());
     }
 }
