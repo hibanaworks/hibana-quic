@@ -12,10 +12,10 @@ use std::{collections::VecDeque, sync::Arc};
 use hibana_quic::crypto::{
     AuthenticationError, IntegrityBudget, MAX_PACKET_NUMBER, MAX_PROTECTED_PACKET_LEN,
 };
-use hibana_tls::endpoint::Error;
-use hibana_tls::endpoint::Level;
-use hibana_tls::endpoint::Output;
-use hibana_tls::endpoint::Provider;
+use hibana_tls::quic::Error;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Output;
+use hibana_tls::quic::Provider;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::quic::{Connection, KeyChange, Keys, Version};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
@@ -317,8 +317,8 @@ impl Provider for RustlsProvider {
     fn integrity_budget(&mut self) -> Option<&mut IntegrityBudget> {
         Some(&mut self.integrity)
     }
-    fn observations(&self) -> hibana_tls::endpoint::Observations {
-        hibana_tls::endpoint::Observations {
+    fn observations(&self) -> hibana_tls::quic::Observations {
+        hibana_tls::quic::Observations {
             resumed: self
                 .connection
                 .handshake_kind()

@@ -1,4 +1,3 @@
-//! Reconstructed integration tests; not executed after environment replacement.
 use hibana_quic::crypto::CipherSuite;
 use hibana_quic::crypto::IntegrityBudget;
 use hibana_quic::crypto::KeyKind;
@@ -6,10 +5,10 @@ use hibana_quic::crypto::PacketKey;
 use hibana_quic::crypto::directional::ApplicationKeyScope;
 use hibana_quic::crypto::directional::AuthenticatedRead;
 use hibana_quic::quic::Error;
-use hibana_quic::quic::imp::application_wire::open;
-use hibana_quic::quic::imp::application_wire::seal;
-use hibana_quic::quic::imp::kernel::packet;
-use hibana_quic::quic::imp::kernel::packet::ShortHeader;
+use hibana_quic::quic::application_wire::open;
+use hibana_quic::quic::application_wire::seal;
+use hibana_quic::quic::packet;
+use hibana_quic::quic::packet::ShortHeader;
 fn key(suite: CipherSuite, byte: u8) -> PacketKey {
     PacketKey::from_secret(suite, KeyKind::OneRtt, &[byte; 32]).unwrap()
 }
@@ -49,6 +48,8 @@ fn protected(
 }
 #[test]
 fn short_packet_retains_actual_affine_authentication_for_both_suites_and_zero_cid() {
+    let mut scratch_0 = [0; 128];
+
     let guard = actor_test_allocator::NoAlloc::start();
     for suite in [
         CipherSuite::Aes128GcmSha256,
@@ -63,10 +64,16 @@ fn short_packet_retains_actual_affine_authentication_for_both_suites_and_zero_ci
             )
             .unwrap();
             let (bytes, len) = protected(suite, cid, 0x1_0000_0001, &[1], false, false);
-            let mut opened = open::<128>(
+            let expected_plaintext = scratch_0.as_ptr().wrapping_add(1 + cid.len() + 4);
+            let opened = open::<128>(
                 &mut rx,
                 &mut IntegrityBudget::new(),
-                &bytes[..len],
+                {
+                    let bytes = &bytes[..len];
+                    let len = bytes.len();
+                    scratch_0[..len].copy_from_slice(bytes);
+                    &mut scratch_0[..len]
+                },
                 cid,
                 Some(0x1_0000_0000),
                 0,
@@ -75,20 +82,28 @@ fn short_packet_retains_actual_affine_authentication_for_both_suites_and_zero_ci
             .unwrap();
             assert_eq!(opened.packet_number(), 0x1_0000_0001);
             assert_eq!(opened.plaintext(), &[1]);
-            match opened.take_receipt().unwrap() {
+            assert_eq!(opened.plaintext().as_ptr(), expected_plaintext);
+            match opened {
                 AuthenticatedRead::Ready(r) => {
-                    assert!(r.authenticates_plaintext(opened.plaintext()));
-                    assert!(!r.authenticates_plaintext(&[0]));
+                    assert_eq!(r.plaintext(), &[1]);
+                    assert_ne!(r.plaintext(), &[0]);
                 }
                 _ => panic!("unexpected epoch"),
             }
-            assert!(opened.take_receipt().is_none());
         }
     }
     guard.finish();
 }
 #[test]
 fn bad_tag_wrong_cid_capacity_and_authenticated_empty_or_reserved_are_rejected() {
+    let mut scratch_1 = [0; 128];
+
+    let mut scratch_2 = [0; 128];
+
+    let mut scratch_3 = [0; 128];
+
+    let mut scratch_4 = [0; 128];
+
     let suite = CipherSuite::Aes128GcmSha256;
     let mut scope = ApplicationKeyScope::new(92);
     let (mut rx, _tx) = hibana_quic::crypto::directional::ApplicationReadKeys::install(
@@ -102,7 +117,12 @@ fn bad_tag_wrong_cid_capacity_and_authenticated_empty_or_reserved_are_rejected()
         open::<128>(
             &mut rx,
             &mut IntegrityBudget::new(),
-            &bytes[..len],
+            {
+                let bytes = &bytes[..len];
+                let len = bytes.len();
+                scratch_1[..len].copy_from_slice(bytes);
+                &mut scratch_1[..len]
+            },
             b"bad",
             None,
             0,
@@ -114,7 +134,12 @@ fn bad_tag_wrong_cid_capacity_and_authenticated_empty_or_reserved_are_rejected()
         open::<8>(
             &mut rx,
             &mut IntegrityBudget::new(),
-            &bytes[..len],
+            {
+                let bytes = &bytes[..len];
+                let len = bytes.len();
+                scratch_2[..len].copy_from_slice(bytes);
+                &mut scratch_2[..len]
+            },
             b"cid",
             None,
             0,
@@ -127,7 +152,12 @@ fn bad_tag_wrong_cid_capacity_and_authenticated_empty_or_reserved_are_rejected()
         open::<128>(
             &mut rx,
             &mut IntegrityBudget::new(),
-            &bytes[..len],
+            {
+                let bytes = &bytes[..len];
+                let len = bytes.len();
+                scratch_3[..len].copy_from_slice(bytes);
+                &mut scratch_3[..len]
+            },
             b"cid",
             None,
             0,
@@ -142,13 +172,21 @@ fn bad_tag_wrong_cid_capacity_and_authenticated_empty_or_reserved_are_rejected()
         ([1].as_slice(), true, packet::Error::ReservedBits),
     ] {
         let (bytes, len) = protected(suite, b"cid", 2, plain, reserved, false);
-        assert!(
-            matches!(open::<128>(&mut rx,&mut IntegrityBudget::new(),&bytes[..len],b"cid",None,0,1000),Err(Error::Packet(e))if e==expected)
-        );
+        assert!(matches!(open::<128>(&mut rx,
+&mut IntegrityBudget::new(),
+{ let bytes = &bytes[..len]; let len = bytes.len(); scratch_4[..len].copy_from_slice(bytes); &mut scratch_4[..len] },
+b"cid",
+None,
+0,
+1000),Err(Error::Packet(e))if e==expected));
     }
 }
 #[test]
 fn authenticated_peer_epoch_waits_for_actual_tx_install_before_ack_authority() {
+    let mut scratch_5 = [0; 128];
+
+    let mut scratch_6 = [0; 128];
+
     let suite = CipherSuite::Aes128GcmSha256;
     let mut scope = ApplicationKeyScope::new(93);
     let (mut rx, mut tx) = hibana_quic::crypto::directional::ApplicationReadKeys::install(
@@ -159,25 +197,35 @@ fn authenticated_peer_epoch_waits_for_actual_tx_install_before_ack_authority() {
     .unwrap();
     rx.maintain(0, 1000).unwrap();
     let (bytes, len) = protected(suite, b"cid", 1, &[1], false, true);
-    let mut opened = open::<128>(
+    let opened = open::<128>(
         &mut rx,
         &mut IntegrityBudget::new(),
-        &bytes[..len],
+        {
+            let bytes = &bytes[..len];
+            let len = bytes.len();
+            scratch_5[..len].copy_from_slice(bytes);
+            &mut scratch_5[..len]
+        },
         b"cid",
         None,
         0,
         1000,
     )
     .unwrap();
-    let peer = match opened.take_receipt().unwrap() {
-        AuthenticatedRead::PeerUpdate(p) => p,
+    let (peer, plaintext) = match opened {
+        AuthenticatedRead::PeerUpdate(p, plaintext) => (p, plaintext),
         _ => panic!("premature ACK authority"),
     };
     assert!(
         open::<128>(
             &mut rx,
             &mut IntegrityBudget::new(),
-            &bytes[..len],
+            {
+                let bytes = &bytes[..len];
+                let len = bytes.len();
+                scratch_6[..len].copy_from_slice(bytes);
+                &mut scratch_6[..len]
+            },
             b"cid",
             None,
             0,
@@ -186,14 +234,16 @@ fn authenticated_peer_epoch_waits_for_actual_tx_install_before_ack_authority() {
         .is_err()
     );
     let installed = tx.install_peer_update(peer).unwrap();
-    let ready = rx.accept_write_epoch(installed).unwrap();
-    assert!(ready.authenticates_plaintext(opened.plaintext()));
+    let ready = rx.accept_write_epoch(installed, plaintext).unwrap();
+    assert_eq!(ready.plaintext(), plaintext);
     assert_eq!(tx.generation(), 1);
 }
 #[test]
 fn seal_retains_reservation_and_rejects_changed_plaintext_scope_epoch_or_length() {
+    let mut scratch_7 = [0; 128];
+
     use hibana_quic::quic::Side;
-    use hibana_quic::quic::imp::recovery::Recovery;
+    use hibana_quic::quic::recovery::Recovery;
     let guard = actor_test_allocator::NoAlloc::start();
     let suite = CipherSuite::Aes128GcmSha256;
     let mut scope = ApplicationKeyScope::new(94);
@@ -257,7 +307,12 @@ fn seal_retains_reservation_and_rejects_changed_plaintext_scope_epoch_or_length(
     let opened = open::<128>(
         &mut rx,
         &mut IntegrityBudget::new(),
-        sealed.bytes(),
+        {
+            let bytes = sealed.bytes();
+            let len = bytes.len();
+            scratch_7[..len].copy_from_slice(bytes);
+            &mut scratch_7[..len]
+        },
         cid,
         None,
         0,

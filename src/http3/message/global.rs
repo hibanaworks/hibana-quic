@@ -1,8 +1,8 @@
 //! FIN-complete file response: headers, body, trailers, completion.
 //!
-//! READER and WRITER execute [`crate::http3::message::local::read`] and
-//! [`crate::http3::message::local::write`]. Their real endpoints are attached and
-//! joined in [`crate::http3::message::local::run::decode_response`].
+//! READER and WRITER execute [`crate::http3::message::localside::reader::run`] and
+//! [`crate::http3::message::localside::writer::run`]. Their real endpoints are attached and
+//! joined in [`crate::http3::message::localside::run::decode_response`].
 use hibana::g;
 use hibana::runtime::program::Projectable;
 pub const READER: u8 = 0;

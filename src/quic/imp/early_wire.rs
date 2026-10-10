@@ -9,9 +9,9 @@ use crate::quic::imp::kernel::packet::Header;
 use crate::quic::imp::kernel::packet::LongHeader;
 use crate::quic::imp::kernel::packet::LongType;
 use crate::quic::imp::kernel::packet::PacketIter;
-use hibana_tls::handshake::local::keys::AuthenticatedEarlyRead;
-use hibana_tls::handshake::local::keys::ReceivePacketKey;
-use hibana_tls::handshake::local::keys::TransmitPacketKey;
+use hibana_tls::handshake::keys::AuthenticatedEarlyRead;
+use hibana_tls::handshake::keys::ReceivePacketKey;
+use hibana_tls::handshake::keys::TransmitPacketKey;
 use hibana_tls::secret::Erase;
 
 pub fn encoded_len(
@@ -191,7 +191,7 @@ pub fn open<'scope, const N: usize>(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PacketEnd {
     end: usize,
-    ecn: Option<crate::quic::ecn::imp::Codepoint>,
+    ecn: Option<crate::io::Codepoint>,
 }
 impl PacketEnd {
     pub const EMPTY: Self = Self { end: 0, ecn: None };
@@ -230,7 +230,7 @@ impl<'a> PendingPackets<'a> {
         };
         Some(&self.bytes[start..self.ends[index].end])
     }
-    pub fn ecn(&self, index: usize) -> Option<crate::quic::ecn::imp::Codepoint> {
+    pub fn ecn(&self, index: usize) -> Option<crate::io::Codepoint> {
         self.ends
             .get(index)
             .filter(|_| index < self.count)
@@ -239,7 +239,7 @@ impl<'a> PendingPackets<'a> {
     pub(in crate::quic) fn retain(
         &mut self,
         packet: &[u8],
-        ecn: Option<crate::quic::ecn::imp::Codepoint>,
+        ecn: Option<crate::io::Codepoint>,
     ) -> bool {
         if packet.is_empty()
             || self.count == self.ends.len()
@@ -263,18 +263,10 @@ impl Drop for PendingPackets<'_> {
 }
 
 pub(in crate::quic) trait RetainPackets {
-    fn retain_packet(
-        &mut self,
-        packet: &[u8],
-        ecn: Option<crate::quic::ecn::imp::Codepoint>,
-    ) -> bool;
+    fn retain_packet(&mut self, packet: &[u8], ecn: Option<crate::io::Codepoint>) -> bool;
 }
 impl RetainPackets for PendingPackets<'_> {
-    fn retain_packet(
-        &mut self,
-        packet: &[u8],
-        ecn: Option<crate::quic::ecn::imp::Codepoint>,
-    ) -> bool {
+    fn retain_packet(&mut self, packet: &[u8], ecn: Option<crate::io::Codepoint>) -> bool {
         self.retain(packet, ecn)
     }
 }
@@ -287,14 +279,14 @@ mod tests {
         let mut ends = [PacketEnd::EMPTY; 2];
         {
             let mut pending = PendingPackets::new(&mut bytes, &mut ends);
-            assert!(pending.retain(b"first", Some(crate::quic::ecn::imp::Codepoint::Ect0)));
-            assert!(!pending.retain(b"second", Some(crate::quic::ecn::imp::Codepoint::Ce)));
+            assert!(pending.retain(b"first", Some(crate::io::Codepoint::Ect0)));
+            assert!(!pending.retain(b"second", Some(crate::io::Codepoint::Ce)));
             assert!(pending.retain(b"next", None));
-            assert!(!pending.retain(b"x", Some(crate::quic::ecn::imp::Codepoint::Ce)));
+            assert!(!pending.retain(b"x", Some(crate::io::Codepoint::Ce)));
             assert_eq!(pending.packet(0), Some(&b"first"[..]));
             assert_eq!(pending.packet(1), Some(&b"next"[..]));
             assert_eq!(pending.packet(2), None);
-            assert_eq!(pending.ecn(0), Some(crate::quic::ecn::imp::Codepoint::Ect0));
+            assert_eq!(pending.ecn(0), Some(crate::io::Codepoint::Ect0));
             assert_eq!(pending.ecn(1), None);
             assert_eq!(pending.ecn(2), None);
         }

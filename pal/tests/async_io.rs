@@ -1,16 +1,16 @@
 #![cfg(target_os = "linux")]
 
+use hibana_quic::io::Codepoint;
 use hibana_quic::{
-    quic::path::Address,
+    io::Address,
     runtime::{join2, yield_now},
 };
-use hibana_quic_pal::{async_io::Reactor, udp::Codepoint};
+use hibana_quic_pal::unix::reactor::Reactor;
+use hibana_quic_pal::unix::{Instant, UdpSocket, error as io};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     future::{Future, poll_fn},
-    io,
-    net::UdpSocket,
     pin::pin,
     sync::{
         Arc, Barrier,
@@ -19,7 +19,7 @@ use std::{
     },
     task::{Context, Poll, Waker},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 // Unsafe exists only in this test's conventional allocator instrumentation;
@@ -70,7 +70,12 @@ fn measured<T>(run: impl FnOnce() -> T) -> (T, usize) {
     (result, ALLOCS.with(Cell::get))
 }
 fn bind(v6: bool) -> UdpSocket {
-    UdpSocket::bind(if v6 { "[::1]:0" } else { "127.0.0.1:0" }).unwrap()
+    UdpSocket::bind(
+        (if v6 { "[::1]:0" } else { "127.0.0.1:0" })
+            .parse()
+            .unwrap(),
+    )
+    .unwrap()
 }
 async fn watchdog<F: Future>(reactor: &Reactor<2, 4>, future: F) -> F::Output {
     let mut future = pin!(future);
@@ -236,7 +241,7 @@ fn wake_between_condition_check_and_pending_is_not_lost() {
 fn cancelled_receive_releases_interest_and_allows_reuse() {
     let reactor = Reactor::<2, 4>::new().unwrap();
     let socket = reactor.register_udp(bind(false)).unwrap();
-    let sender = bind(false);
+    let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let mut first_bytes = [0; 8];
     let mut second_bytes = [0; 8];
     {
@@ -325,7 +330,10 @@ fn self_waking_actor_does_not_starve_socket_readiness() {
     let local = socket.local_addr().unwrap();
     let worker = thread::spawn(move || {
         thread::sleep(Duration::from_millis(15));
-        bind(false).send_to(b"event", local).unwrap();
+        std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .send_to(b"event", local)
+            .unwrap();
     });
     let done = Cell::new(false);
     let sweeps = Cell::new(0_u64);
@@ -368,7 +376,7 @@ fn explicit_setup_allocations_and_zero_allocation_scheduling() {
     let receiver = bind(false);
     let (receiver, allocations) = measured(|| reactor.register_udp(receiver).unwrap());
     assert_eq!(allocations, 1, "one existing UDP ancillary receive buffer");
-    let sender = bind(false);
+    let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     sender
         .send_to(b"allocation", receiver.local_addr().unwrap())
         .unwrap();

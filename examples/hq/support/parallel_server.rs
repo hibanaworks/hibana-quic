@@ -2,7 +2,7 @@
 //! The scheduler joins futures; it does not implement QUIC protocol phases.
 use super::*;
 use hibana_quic::quic::Clock as _;
-use hibana_quic::quic::imp::receive_routes::{Delivery, Dispatcher, Receiver};
+use hibana_quic::quic::routing::{Delivery, Dispatcher, Receiver};
 use hibana_quic::{
     runtime::mailbox::Mailbox,
     runtime::{Task, TaskSet},
@@ -14,7 +14,7 @@ use std::{
     task::Poll,
 };
 const MAX: usize = 64;
-const BYTES: usize = direct_bootstrap::DATAGRAM;
+const BYTES: usize = hibana_quic::session::DATAGRAM;
 // Only synchronous ticket operations borrow the root-owned key. No worker can
 // extract it, clone its nonce counter, or hold a mutable borrow across an await.
 struct TicketAccess<'a, 'key>(&'a RefCell<ticket::TicketKey<'key>>);
@@ -70,8 +70,8 @@ struct Admission {
     peer: Vec<u8>,
     local: [u8; 8],
     first: Vec<u8>,
-    ecn: Option<hibana_quic::quic::ecn::imp::Codepoint>,
-    new_token: [u8; hibana_quic::quic::imp::kernel::new_token::TOKEN_LEN],
+    ecn: Option<hibana_quic::io::Codepoint>,
+    new_token: [u8; hibana_quic::quic::new_token::TOKEN_LEN],
     receiver: Receiver<BYTES>,
 }
 
@@ -84,7 +84,7 @@ pub async fn run<const S: usize, const T: usize>(
     credentials: (&std::path::Path, &std::path::Path),
     files: &cli::ServerFiles,
     cipher: hibana_tls::handshake::CipherPolicy,
-    version: hibana_quic::quic::imp::kernel::version::Version,
+    version: hibana_quic::quic::version::Version,
     count: usize,
     idle_timeout_ms: u64,
 ) -> Result<Report> {
@@ -150,21 +150,19 @@ pub async fn run<const S: usize, const T: usize>(
                     files.max_requests.unwrap_or(host_files::MAX_REQUESTS),
                 )?;
                 server.completion_limit = core::num::NonZeroUsize::new(1);
-                let files = direct_bootstrap::Files::Server(server);
+                let files = host_files::Files::Server(server);
                 let mut parameter_storage = [0; 2048];
-                let parameter_len =
-                    hibana_quic::quic::imp::parameters::advertisement::Advertisement {
-                        version,
-                        local: &admission.local,
-                        original: Some(&admission.original),
-                        application_limits: Some(files.local_limits()),
-                        retry_source: None,
-                        idle_timeout_ms,
-                        max_datagram_size: hibana_quic::quic::application::imp::owned::DATAGRAM
-                            as u64,
-                    }
-                    .encode(&mut parameter_storage)
-                    .map_err(|e| format!("parameters: {e:?}"))?;
+                let parameter_len = hibana_quic::quic::parameters::advertisement::Advertisement {
+                    version,
+                    local: &admission.local,
+                    original: Some(&admission.original),
+                    application_limits: Some(files.local_limits()),
+                    retry_source: None,
+                    idle_timeout_ms,
+                    max_datagram_size: hibana_quic::quic::application::storage::DATAGRAM as u64,
+                }
+                .encode(&mut parameter_storage)
+                .map_err(|e| format!("parameters: {e:?}"))?;
                 let parameters = &parameter_storage[..parameter_len];
                 let mut buffers = TlsBuffers::new();
                 let mut tickets = TicketAccess(ticket_owner);
@@ -253,13 +251,15 @@ pub async fn run<const S: usize, const T: usize>(
         let mut routes =
             Dispatcher::<BYTES>::new(count, 8).map_err(|e| format!("routes: {e:?}"))?;
         let mut seen: Vec<(Address, Vec<u8>)> = Vec::with_capacity(count);
-        let mut tokens = hibana_quic::quic::imp::kernel::new_token::Issuer::<MAX>::new();
+        let mut tokens = hibana_quic::quic::new_token::Issuer::<MAX>::new();
         let mut bytes = [0; BYTES];
         loop {
             hibana_quic::runtime::yield_now().await;
             let metadata = match socket.recv_from(&mut bytes).await {
                 Ok(value) => value,
-                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                Err(e) if e.kind() == hibana_quic_pal::unix::error::ErrorKind::InvalidData => {
+                    continue;
+                }
                 Err(e) => return Err::<(), String>(format!("UDP receive: {e}")),
             };
             let address = Address {
@@ -308,7 +308,7 @@ pub async fn run<const S: usize, const T: usize>(
             }
             // Do not pin a damaged plaintext source CID or spend an admission
             // slot before checking the Initial's authenticated associated data.
-            if initial_integrity(&packet, &mut [0; direct_bootstrap::DATAGRAM]).is_none() {
+            if initial_integrity(&packet, &mut [0; hibana_quic::session::DATAGRAM]).is_none() {
                 continue;
             }
             // A previous NEW_TOKEN is checked only for a new admission. Routing

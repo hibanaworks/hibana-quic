@@ -1,0 +1,54 @@
+[package]
+name = "hibana-quic-examples"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+autoexamples = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+hibana-quic = { path = "..", default-features = false, features = ["alloc"] }
+hibana-quic-pal = { path = "../pal" }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "b938af7d4490e9898d869b3bf38c1ce237c4d62c", default-features = false, features = ["alloc"] }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "5aa9ac1ad7b28ca05896dbed9270641b865d8b9d", default-features = false }
+
+[[bin]]
+name = "hq"
+path = "hq/main.rs"
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+
+[[test]]
+name = "rsa_vectors"
+path = "../tests/tls-reference/tests/rsa_vectors.rs"
+
+[[test]]
+name = "resumption"
+path = "../tests/tls-reference/tests/resumption.rs"
+
+[[test]]
+name = "early_tls"
+path = "../tests/tls-reference/tests/early_tls.rs"
+
+[[example]]
+name = "quic-client"
+path = "hello-quic/client.rs"
+
+[[example]]
+name = "quic-server"
+path = "hello-quic/server.rs"
+
+[[example]]
+name = "http3-client"
+path = "hello-http3/client.rs"
+
+[[example]]
+name = "http3-server"
+path = "hello-http3/server.rs"

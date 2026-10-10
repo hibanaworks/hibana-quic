@@ -1,7 +1,7 @@
 //! Descriptor-relative HTTP file access and atomic download publication.
 #![allow(dead_code)]
+use super::native_files as native;
 use super::random;
-use hibana_quic_pal::fs as native;
 use std::{
     fs::{self, File},
     io,

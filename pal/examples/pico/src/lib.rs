@@ -2,22 +2,64 @@
 //! Supply initialized TLS/QUIC resources plus real UDP and monotonic-clock capabilities.
 //! This library is an integration surface, not a boot image or a network-device driver.
 #![no_std]
-#[path = "../../../../examples/hello-quic/local/client.rs"]
-mod client_local;
+mod client_local {
+    //! The client application localside. Its Endpoint follows the shared global.
+    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
+    use crate::global::*;
+    use hibana::Endpoint;
+    #[derive(Debug)]
+    pub enum Error {
+        Protocol(hibana::EndpointError),
+        IncorrectSquare,
+    }
+    pub async fn run(client: &mut Endpoint<'_, CLIENT>) -> Result<(), Error> {
+        for number in [42_u64, 7] {
+            client
+                .send::<Number>(&number)
+                .await
+                .map_err(Error::Protocol)?;
+            let square = client.recv::<Square>().await.map_err(Error::Protocol)?;
+            if square != number * number {
+                return Err(Error::IncorrectSquare);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[path = "../../../../examples/hello-quic/global.rs"]
 pub mod global;
-#[path = "../../../../examples/hello-quic/local/server.rs"]
-mod server_local;
+mod server_local {
+    //! The server application localside. Its Endpoint follows the shared global.
+    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
+    use crate::global::*;
+    use hibana::Endpoint;
+    #[derive(Debug)]
+    pub enum Error {
+        Protocol(hibana::EndpointError),
+        Overflow,
+    }
+    pub async fn run(server: &mut Endpoint<'_, SERVER>) -> Result<(), Error> {
+        for _ in 0..2 {
+            let number = server.recv::<Number>().await.map_err(Error::Protocol)?;
+            let square = number.checked_mul(number).ok_or(Error::Overflow)?;
+            server
+                .send::<Square>(&square)
+                .await
+                .map_err(Error::Protocol)?;
+        }
+        Ok(())
+    }
+}
+
 use hibana::runtime::{ids::SessionId, program::project};
 use hibana_quic::{
     io::{Clock, DatagramRx, DatagramTx},
     quic::{
         application,
-        imp::{
-            publication_gate::{Issuer, Stop},
-            recovery::Recovery,
-            tls::Transcript,
-        },
+        publication::{Issuer, Stop},
+        recovery::Recovery,
+        transcript::Transcript,
     },
     session,
 };
@@ -44,20 +86,21 @@ pub async fn client<'scope, const N: usize, const P: usize, const RX: usize, con
     connection_slab: &mut [u8],
     protocol: session::Protocol,
 ) -> Result<(), session::Error<Error>> {
-    let program = project::<{ global::CLIENT }, _>(&global::choreography());
+    let program = project(&global::choreography());
     let mut storage = session::Storage::new();
-    session::local::run(
+    session::localside::run(
         &mut storage,
         application_slab,
         SessionId::new(1),
         global::SERVER,
         &program,
         async |endpoint| client_local::run(endpoint).await.map_err(Error::Client),
-        async |bridge: &session::local::StreamPeer<'_>| {
-            let mut requests = session::local::stream::Requests::new(bridge, protocol, "device")
+        async |bridge: &session::StreamPeer<'_>| {
+            let mut requests = session::stream::Requests::new(bridge, protocol, "device")
                 .map_err(|_| Error::Framing)?;
-            let mut responses = session::local::stream::Input::new(bridge, protocol, false);
-            let report = application::local::borrowed::client::<N, P, RX, CHUNK>(
+            let mut responses =
+                session::stream::Input::new(bridge, protocol, hibana_quic::quic::Side::Client);
+            let report = application::localside::borrowed::client::<N, P, RX, CHUNK>(
                 source,
                 setup,
                 receive,
@@ -97,22 +140,23 @@ pub async fn server<'scope, const N: usize, const P: usize, const RX: usize, con
     connection_slab: &mut [u8],
     protocol: session::Protocol,
 ) -> Result<(), session::Error<Error>> {
-    let program = project::<{ global::SERVER }, _>(&global::choreography());
+    let program = project(&global::choreography());
     let mut storage = session::Storage::new();
-    session::local::run(
+    session::localside::run(
         &mut storage,
         application_slab,
         SessionId::new(1),
         global::CLIENT,
         &program,
         async |endpoint| server_local::run(endpoint).await.map_err(Error::Server),
-        async |bridge: &session::local::StreamPeer<'_>| {
-            let mut service = session::local::stream::Service {
+        async |bridge: &session::StreamPeer<'_>| {
+            let mut service = session::stream::Service {
                 peer: bridge,
                 protocol,
             };
-            let mut input = session::local::stream::Input::new(bridge, protocol, true);
-            let report = application::local::borrowed::server::<N, P, RX, CHUNK>(
+            let mut input =
+                session::stream::Input::new(bridge, protocol, hibana_quic::quic::Side::Server);
+            let report = application::localside::borrowed::server::<N, P, RX, CHUNK>(
                 source,
                 setup,
                 receive,

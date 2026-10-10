@@ -1506,7 +1506,9 @@ mod tests {
     fn newreno_uses_once_only_ledger_bytes_without_double_subtraction() {
         let mut ledger = SentLedger::<1>::new(1);
         let mut cc = NewReno::new(1200).unwrap();
-        let packet = ledger.reserve(PacketKind::OneRtt, 1200, true).unwrap();
+        let packet = ledger
+            .reserve(PacketKind::OneRtt, 1200, true, true)
+            .unwrap();
         ledger.adapter_accepted(packet, 0).unwrap();
         let range = [AckRange { start: 0, end: 0 }];
         for now in [10, 11] {

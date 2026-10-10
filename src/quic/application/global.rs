@@ -1,17 +1,14 @@
-//! The connected global: actual affine startup, concurrent ordinary roles,
+//! The connected global: actual affine startup, concurrent ordinary endpoints,
 //! complete ordinary retirement, then closing or draining.
 //!
-//! Role identifiers below index the projected programs. Their attached affine
-//! endpoints are defined and created in [`crate::quic::application::local::Endpoints`].
-//! [`crate::quic::application::local::run`] shows which actual futures own or borrow each endpoint
+//! Role identifiers below index the role projections. Their attached affine
+//! endpoints are defined and created in [`crate::quic::application::localside::Endpoints`].
+//! [`crate::quic::application::localside::run`] shows which actual futures own or borrow each endpoint
 //! and how those futures are polled together.
 use crate::quic::ecn::global as e;
 use crate::quic::global::{RX as PREFIX_RX, TLS_RX as PREFIX_TLS_RX, TX as PREFIX_TX};
+use hibana::g;
 use hibana::runtime::program::Projectable;
-use hibana::{
-    g,
-    runtime::program::{RoleProgram, project},
-};
 
 pub const SOURCE: u8 = 8;
 pub const INGRESS: u8 = 9;
@@ -427,7 +424,7 @@ pub fn key_choreography() -> impl Projectable {
     g::seq(key_work, g::send::<TX_KEYS, RX_KEYS, KeysRetired>())
 }
 
-pub fn choreography() -> impl Projectable {
+fn ordinary() -> impl Projectable {
     let source = source_choreography();
     let receive = receive_choreography();
 
@@ -573,79 +570,16 @@ fn early_admission() -> impl Projectable {
     .roll()
 }
 
-pub struct Programs {
-    pub ecn_owner: RoleProgram<{ e::OWNER }>,
-    pub handshake: crate::quic::global::Programs,
-    pub source: RoleProgram<SOURCE>,
-    pub source_join: RoleProgram<SOURCE_JOIN>,
-    pub ingress: RoleProgram<INGRESS>,
-    pub receive: RoleProgram<RECEIVE>,
-    pub sink: RoleProgram<SINK>,
-    pub rx_keys: RoleProgram<RX_KEYS>,
-    pub tx_keys: RoleProgram<TX_KEYS>,
-    pub clock: RoleProgram<CLOCK>,
-    pub tx_clock: RoleProgram<TX_CLOCK>,
-    pub transmit: RoleProgram<TRANSMIT>,
-    pub adapter: RoleProgram<ADAPTER>,
-    pub peer_event: RoleProgram<PEER_EVENT>,
-    pub peer_close: RoleProgram<PEER_CLOSE>,
-    pub files_event: RoleProgram<FILES_EVENT>,
-    pub files_close: RoleProgram<FILES_CLOSE>,
-    pub close_join: RoleProgram<CLOSE_JOIN>,
-    pub source_collector: RoleProgram<SOURCE_COLLECTOR>,
-    pub input_collector: RoleProgram<INPUT_COLLECTOR>,
-    pub delivery_collector: RoleProgram<DELIVERY_COLLECTOR>,
-}
-
-/// One projected session includes the actual TLS prefix and every subsequent
-/// local continuation. The host creates endpoints once and never selects phases.
-pub fn programs() -> Programs {
-    let global = g::seq(
+/// The complete connected protocol, including its authenticated handshake prefix.
+pub fn choreography() -> impl Projectable {
+    g::seq(
         crate::quic::global::choreography(),
         g::seq(
             startup(),
             g::seq(
                 crate::quic::early_data::global::bridge(),
-                g::seq(early_admission(), choreography()),
+                g::seq(early_admission(), ordinary()),
             ),
         ),
-    );
-    Programs {
-        ecn_owner: project(&global),
-        handshake: crate::quic::global::Programs {
-            rx: project(&global),
-            tls_rx: project(&global),
-            tx: project(&global),
-            tls_tx: project(&global),
-            tls_complete: project(&global),
-            tls_handoff: project(&global),
-            udp: project(&global),
-            timer: project(&global),
-            timer_tx: project(&global),
-            tx_wire: project(&global),
-            initial_event: project(&global),
-            initial_owner: project(&global),
-            timer_stop: project(&global),
-            receive_stop: project(&global),
-        },
-        source: project(&global),
-        source_join: project(&global),
-        ingress: project(&global),
-        receive: project(&global),
-        sink: project(&global),
-        rx_keys: project(&global),
-        tx_keys: project(&global),
-        clock: project(&global),
-        tx_clock: project(&global),
-        transmit: project(&global),
-        adapter: project(&global),
-        peer_event: project(&global),
-        peer_close: project(&global),
-        files_event: project(&global),
-        files_close: project(&global),
-        close_join: project(&global),
-        source_collector: project(&global),
-        input_collector: project(&global),
-        delivery_collector: project(&global),
-    }
+    )
 }

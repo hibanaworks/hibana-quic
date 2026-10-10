@@ -1,11 +1,11 @@
 //! Allocation measurement of the remaining numeric CID history kernel.
 //! PKT authentication is outside this fixture; this is not a QUIC wire test.
-use hibana_quic::quic::imp::kernel::connection_id::Cid;
-use hibana_quic::quic::imp::kernel::connection_id::LocalCidSlot;
-use hibana_quic::quic::imp::kernel::connection_id::LocalCidTable;
-use hibana_quic::quic::imp::kernel::connection_id::PeerCidSlot;
-use hibana_quic::quic::imp::kernel::connection_id::PeerCidTable;
-use hibana_quic::quic::imp::kernel::connection_id::ResetToken;
+use hibana_quic::quic::connection_id::Cid;
+use hibana_quic::quic::connection_id::LocalCidSlot;
+use hibana_quic::quic::connection_id::LocalCidTable;
+use hibana_quic::quic::connection_id::PeerCidSlot;
+use hibana_quic::quic::connection_id::PeerCidTable;
+use hibana_quic::quic::connection_id::ResetToken;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

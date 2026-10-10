@@ -18,7 +18,10 @@ use hibana_quic::{quic::retry::global as p, runtime::carrier::CarrierStorage, ru
 
 fn run(outcomes: &[Option<bool>], wrong_reply: bool) {
     let verdict = Cell::new(None);
-    let programs = p::programs();
+    let graph = p::choreography();
+    let input_program = hibana::runtime::program::project::<{ p::INPUT }, _>(&graph);
+    let owner_program = hibana::runtime::program::project::<{ p::OWNER }, _>(&graph);
+    let output_program = hibana::runtime::program::project::<{ p::OUTPUT }, _>(&graph);
     let carrier = CarrierStorage::<1, 16, 8>::new();
     let mut slab = [0; 65536];
     let mut kit = SessionKitStorage::uninit();
@@ -29,15 +32,15 @@ fn run(outcomes: &[Option<bool>], wrong_reply: bool) {
         .unwrap();
     session
         .set_resolver(
-            &programs.output,
+            &output_program,
             ResolverRef::<{ p::SEND_RESULT }>::decision_state(&verdict, |value| {
                 value.get().ok_or_else(ResolverError::reject)
             }),
         )
         .unwrap();
-    let mut input = session.enter(sid, &programs.input).unwrap();
-    let mut owner = session.enter(sid, &programs.owner).unwrap();
-    let mut output = session.enter(sid, &programs.output).unwrap();
+    let mut input = session.enter(sid, &input_program).unwrap();
+    let mut owner = session.enter(sid, &owner_program).unwrap();
+    let mut output = session.enter(sid, &output_program).unwrap();
     let rejected = Cell::new(false);
     let settled = Cell::new(0usize);
     let observed = Cell::new(0usize);

@@ -3,11 +3,11 @@
 //! Test credentials are public; no production receipt constructor is exposed.
 use crate::{scoped_tls_fixture as driver, tls_fixture as fixture};
 use hibana_quic::crypto::directional::ApplicationKeyScope;
-use hibana_quic::quic::early_data::imp::EarlyFreshness;
-use hibana_quic::quic::early_data::imp::EarlyStatus;
-use hibana_quic::quic::early_data::imp::ReplayStorage;
-use hibana_quic::quic::early_data::imp::ServerPolicy;
-use hibana_quic::quic::imp::kernel::version::Version;
+use hibana_quic::quic::early_data::EarlyFreshness;
+use hibana_quic::quic::early_data::EarlyStatus;
+use hibana_quic::quic::early_data::ReplayStorage;
+use hibana_quic::quic::early_data::ServerPolicy;
+use hibana_quic::quic::version::Version;
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::trust_anchor_from_der;
@@ -19,8 +19,8 @@ use hibana_tls::handshake::ClientResumption;
 use hibana_tls::handshake::ServerConfig;
 use hibana_tls::handshake::ServerEarlyData;
 use hibana_tls::handshake::ServerResumption;
-use hibana_tls::handshake::local::keys::Admission;
-use hibana_tls::handshake::local::keys::FinishedAuthenticated;
+use hibana_tls::handshake::keys::Admission;
+use hibana_tls::handshake::keys::FinishedAuthenticated;
 use hibana_tls::ticket;
 use hibana_tls::ticket::Binding;
 use hibana_tls::ticket::ClientCache;

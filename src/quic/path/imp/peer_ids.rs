@@ -1,5 +1,6 @@
 //! Authenticated peer CID facts and unique reliable retirement-frame ownership.
 use crate::crypto::directional::ApplicationKeyScope;
+use crate::io::Address;
 use crate::quic::imp::kernel::connection_id::Cid;
 use crate::quic::imp::kernel::connection_id::CidError;
 use crate::quic::imp::kernel::connection_id::PeerCid;
@@ -7,7 +8,6 @@ use crate::quic::imp::kernel::connection_id::PeerCidSlot;
 use crate::quic::imp::kernel::connection_id::PeerCidTable;
 use crate::quic::imp::kernel::connection_id::ResetToken;
 use crate::quic::imp::kernel::connection_id::Retirement;
-use crate::quic::path::Address;
 pub struct Storage<'a> {
     pub slots: &'a mut [PeerCidSlot<4>],
     pub active_limit: u64,

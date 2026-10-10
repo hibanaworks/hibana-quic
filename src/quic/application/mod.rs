@@ -1,14 +1,17 @@
 //! A single projected connection from authenticated application admission to
 //! bounded stream IO, ordinary retirement, closing and draining.
 
-pub mod imp;
+pub(crate) mod imp;
+#[cfg(feature = "alloc")]
+pub use imp::owned as storage;
+pub use imp::stream;
 
 pub mod global;
-pub mod local;
+pub mod localside;
 
-pub use local::{client, client_early, server, server_stream};
+pub use localside::{client, client_early, server, server_stream};
 
-use super::{Config, Outcome, parameters, recovery, stream};
+use super::{Config, Outcome, parameters, recovery};
 use crate::crypto;
 use crate::quic::imp::crypto_buffer::CryptoBuffer;
 use crate::quic::imp::kernel::packet;
@@ -178,7 +181,7 @@ pub enum Error {
     Incomplete,
     KeyControlBinding,
     KeyControlRetired,
-    Early(crate::quic::early_data::local::Failure),
+    Early(crate::quic::early_data::Failure),
     UnexpectedLabel(u8),
 }
 impl From<super::Error> for Error {
@@ -216,15 +219,15 @@ impl From<parameters::Error> for Error {
         Self::Parameters(value)
     }
 }
-impl From<local::keys::Error> for Error {
-    fn from(value: local::keys::Error) -> Self {
+impl From<imp::keys::Error> for Error {
+    fn from(value: imp::keys::Error) -> Self {
         match value {
-            local::keys::Error::Crypto(error) => Self::Crypto(error),
-            local::keys::Error::Endpoint(error) => Self::Endpoint(error),
-            local::keys::Error::Slot(error) => Self::Connection(super::Error::Slot(error)),
-            local::keys::Error::Binding => Self::KeyControlBinding,
-            local::keys::Error::Retired => Self::KeyControlRetired,
-            local::keys::Error::UnexpectedLabel(label) => Self::UnexpectedLabel(label),
+            imp::keys::Error::Crypto(error) => Self::Crypto(error),
+            imp::keys::Error::Endpoint(error) => Self::Endpoint(error),
+            imp::keys::Error::Slot(error) => Self::Connection(super::Error::Slot(error)),
+            imp::keys::Error::Binding => Self::KeyControlBinding,
+            imp::keys::Error::Retired => Self::KeyControlRetired,
+            imp::keys::Error::UnexpectedLabel(label) => Self::UnexpectedLabel(label),
         }
     }
 }
@@ -300,15 +303,18 @@ impl<'gate, 'scope> Control<'gate, 'scope> {
         })
         .await
     }
-    pub(crate) async fn until_stop<F: Future>(&self, lane: usize, future: F) -> Option<F::Output> {
-        crate::runtime::until_cancelled(future, |cx| {
+    pub(crate) fn until_stop<F: Future>(
+        &self,
+        lane: usize,
+        future: F,
+    ) -> impl Future<Output = Option<F::Output>> {
+        crate::runtime::until_cancelled(future, move |cx| {
             if self.stopping() {
                 return true;
             }
             self.register(lane, cx.waker());
             self.stopping()
         })
-        .await
     }
 
     pub(crate) fn revoke(&self) -> Result<(), Error> {
@@ -330,8 +336,11 @@ impl<'scope> OrdinaryRetired<'scope> {
     }
 }
 
-impl From<crate::quic::early_data::local::Failure> for Error {
-    fn from(value: crate::quic::early_data::local::Failure) -> Self {
+impl From<crate::quic::early_data::Failure> for Error {
+    fn from(value: crate::quic::early_data::Failure) -> Self {
         Self::Early(value)
     }
 }
+
+#[cfg(feature = "alloc")]
+pub use imp::profile::{ClientProfile, ServerProfile};

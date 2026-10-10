@@ -1,17 +1,17 @@
 //! Path validation is a nested projected continuation. A Pending probe cannot
 //! return to ordinary publication without a resolved or abandoned boundary.
 //!
-//! OWNER executes the path-validation continuation in [`crate::quic::path::local`].
+//! OWNER executes the path-validation continuation in [`crate::quic::path::localside`].
 //! TRANSMIT requests and settles each probe from the application transmit local.
-//! Their endpoints belong to [`crate::quic::application::local::Endpoints`];
-//! [`crate::quic::application::local::run`] polls both futures. Observed addresses,
-//! probe receipts and bounded arithmetic live in [`crate::quic::path::imp`].
+//! Their endpoints belong to [`crate::quic::application::localside::Endpoints`];
+//! [`crate::quic::application::localside::run`] polls both futures. Observed addresses,
+//! probe receipts and bounded arithmetic live in the private `imp` storage.
 use hibana::g;
 use hibana::runtime::program::Projectable;
-// Role18 continues after its Initial-retirement prefix in this same session.
-// Reuse the one endpoint; never enter the same role twice.
-pub const OWNER: u8 = crate::quic::global::INITIAL_EVENT;
-pub const TRANSMIT: u8 = 16;
+// The connected path owner has its own role in the application session.
+// Endpoints::attach enters it once; the path localside owns its continuation.
+pub const OWNER: u8 = 34;
+pub const TRANSMIT: u8 = crate::quic::application::global::TRANSMIT;
 pub type Request = g::Msg<221, ()>;
 pub type Current = g::Msg<222, ()>;
 pub type Settled = g::Msg<223, ()>;

@@ -1,4 +1,4 @@
-//! Reconstructed bounded long-packet protection; fresh validation required.
+//! Bounded long-packet protection.
 use super::*;
 use crate::crypto::PacketKey;
 use crate::quic::imp::kernel::packet;
@@ -132,6 +132,36 @@ impl<const N: usize> PlainPacket<N> {
         frame: Frame<'_>,
     ) -> Result<Self, Error> {
         Self::with_extra(config, peer, level, frame, None)
+    }
+    /// Carry authenticated receive ranges on an existing ack-eliciting packet.
+    /// The returned snapshot belongs to this packet's actual publication; a
+    /// capacity fallback cannot acknowledge ranges that were not encoded.
+    pub(in crate::quic) fn with_received_ack<'book>(
+        config: Config<'_>,
+        peer: &ConnectionId,
+        level: Level,
+        frame: Frame<'_>,
+        received: Option<recovery::AckSnapshot<'book>>,
+        now: u64,
+    ) -> Result<(Self, Option<recovery::AckSnapshot<'book>>), Error> {
+        if frame.ack_eliciting()
+            && let Some(snapshot) = received
+        {
+            if snapshot.level() != level {
+                return Err(Error::Binding);
+            }
+            let extra = Frame::Ack {
+                delay: snapshot.encoded_delay(now)?,
+                ranges: packet::AckRanges::new(snapshot.ranges())?,
+                ecn: snapshot.ecn(),
+            };
+            match Self::with_extra(config, peer, level, frame, Some(extra)) {
+                Ok(plain) => return Ok((plain, Some(snapshot))),
+                Err(Error::Capacity | Error::Packet(packet::Error::BufferTooShort)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok((Self::new(config, peer, level, frame)?, None))
     }
     pub(in crate::quic) fn with_extra(
         config: Config<'_>,

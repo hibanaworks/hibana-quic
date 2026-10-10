@@ -6,9 +6,9 @@
 //! [`crate::http3::message::decode_request`] validates the bounded GET profile used by `hq`.
 pub mod global;
 mod imp;
-pub mod local;
+pub mod localside;
 pub use imp::request::decode_request;
-pub use local::run::decode_response;
+pub use localside::run::decode_response;
 pub type Result<T> = core::result::Result<T, Error>;
 
 /// Failure evidence for bounded message decoding and projected role progress.
@@ -63,3 +63,5 @@ impl From<core::num::TryFromIntError> for Error {
         Self::Length(value)
     }
 }
+
+pub use imp::buffer::Exchange;

@@ -8,7 +8,7 @@ import argparse,hashlib,json,os,signal,subprocess,sys,time
 from pathlib import Path
 p=argparse.ArgumentParser()
 for name in ['hq','neqo-client','neqo-server','nss','quiche-client','quiche-server','runner','output']:p.add_argument('--'+name,type=Path,required=True)
-a=p.parse_args();root=Path(__file__).resolve().parents[2];tests=root/'pal/tests';out=a.output.resolve()
+a=p.parse_args();root=Path(__file__).resolve().parents[2];tests=root/'tests/interop/native';out=a.output.resolve()
 if out.exists() and any(out.iterdir()):p.error('--output must be a new or empty attempt directory')
 out.mkdir(parents=True,exist_ok=True)
 files={k:getattr(a,k.replace('-','_')).resolve(strict=True) for k in ['hq','neqo-client','neqo-server','nss','quiche-client','quiche-server','runner']}
@@ -26,7 +26,9 @@ for group in catalog['groups']:
     if case=='ecn':cmd+=['--require-ecn']
    else:
     cmd=[sys.executable,str(tests/'test_native_quiche_transfer.py'),'--hq',str(files['hq']),'--quiche-client',str(files['quiche-client']),'--quiche-server',str(files['quiche-server']),'--runner',str(files['runner']),'--scenario',case,'--direction',direction,'--private-log-dir',str(logs),'--output',str(dest)]
-   started=time.monotonic();process=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
+    if case in ('handshakeloss','handshakecorruption'):cmd+=['--capture-datagrams']
+   environment={**os.environ,'HIBANA_QUIC_DIAGNOSTICS':'1'}
+   started=time.monotonic();process=subprocess.Popen(cmd,env=environment,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
    try:stdout,_=process.communicate(timeout=650);code=process.returncode
    except subprocess.TimeoutExpired:
     os.killpg(process.pid,signal.SIGTERM)

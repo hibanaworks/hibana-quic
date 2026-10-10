@@ -1,4 +1,4 @@
-//! Affine Finished-to-application parameter boundary; reconstructed, not revalidated.
+//! Affine Finished-to-application parameter boundary.
 use super::{
     Side,
     tls::{Finished, PeerParameters},
@@ -8,7 +8,7 @@ use crate::quic::imp::kernel::parameters;
 use crate::quic::imp::kernel::parameters::Parameters;
 use crate::quic::imp::kernel::parameters::Peer;
 use crate::quic::imp::kernel::streams::Limits;
-use hibana_tls::handshake::local::keys::FinishedAuthenticated;
+use hibana_tls::handshake::keys::FinishedAuthenticated;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Binding,

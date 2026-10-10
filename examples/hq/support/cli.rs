@@ -16,7 +16,7 @@ pub struct ServerFiles {
 pub enum Options {
     Client {
         protocol: hibana_quic::http3::Protocol,
-        version: hibana_quic::quic::imp::kernel::version::Version,
+        version: hibana_quic::quic::version::Version,
         connect: SocketAddr,
         server_name: String,
         ca: PathBuf,
@@ -32,7 +32,7 @@ pub enum Options {
     Server {
         preferred_port: Option<u16>,
         protocol: hibana_quic::http3::Protocol,
-        version: hibana_quic::quic::imp::kernel::version::Version,
+        version: hibana_quic::quic::version::Version,
         listen: SocketAddr,
         cert: PathBuf,
         key: PathBuf,
@@ -122,8 +122,8 @@ pub fn options(args: &[String]) -> Result<Options> {
         _ => return Err("--http must be hq or 3; HTTP/3 requires file mode".into()),
     };
     let version = match flags.remove("--version").unwrap_or("1") {
-        "1" => hibana_quic::quic::imp::kernel::version::Version::V1,
-        "2" => hibana_quic::quic::imp::kernel::version::Version::V2,
+        "1" => hibana_quic::quic::version::Version::V1,
+        "2" => hibana_quic::quic::version::Version::V2,
         _ => return Err("--version must be 1 or 2".into()),
     };
     let session = flags.remove("--session").unwrap_or("single");
@@ -300,7 +300,7 @@ pub fn options(args: &[String]) -> Result<Options> {
         }
         _ => return Err(USAGE.into()),
     };
-    if version == hibana_quic::quic::imp::kernel::version::Version::V2
+    if version == hibana_quic::quic::version::Version::V2
         && matches!(
             &result,
             Options::Client { early: true, .. }

@@ -46,7 +46,7 @@ fn count(counter: &WakeCount) -> usize {
 }
 
 fn with_pair<R>(
-    programs: (RoleProgram<0>, RoleProgram<1>),
+    projection: (RoleProgram<0>, RoleProgram<1>),
     body: impl for<'r> FnOnce(Endpoint<'r, 0>, Endpoint<'r, 1>, &CarrierStorage<1, 16, 8>) -> R,
 ) -> R {
     let carrier = CarrierStorage::<1, 16, 8>::new();
@@ -58,8 +58,8 @@ fn with_pair<R>(
         .rendezvous(&mut slab, carrier.bind(sid).unwrap())
         .unwrap();
     body(
-        rv.enter(sid, &programs.0).unwrap(),
-        rv.enter(sid, &programs.1).unwrap(),
+        rv.enter(sid, &projection.0).unwrap(),
+        rv.enter(sid, &projection.1).unwrap(),
         &carrier,
     )
 }

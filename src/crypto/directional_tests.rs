@@ -27,28 +27,30 @@ fn packet(tx: &mut ApplicationWriteKeys<'_>, pn: u64) -> Packet {
     assert_eq!(tx.seal(pn, &header, &mut body, 4), Ok(20));
     (header, body)
 }
-fn open<'a>(
+fn open<'a, 'packet>(
+    scratch: &'packet mut [u8; 20],
     rx: &mut ApplicationReadKeys<'a>,
     pn: u64,
     packet: Packet,
     budget: &mut IntegrityBudget,
     now: u64,
-) -> Result<AuthenticatedRead<'a>, Error> {
-    let (header, mut body) = packet;
-    let outcome = rx.open(pn, header[0] & 4 != 0, &header, &mut body, budget, now, 10)?;
-    assert_eq!(&body[..4], b"test");
+) -> Result<AuthenticatedRead<'a, 'packet>, Error> {
+    let (header, body) = packet;
+    *scratch = body;
+    let outcome = rx.open(pn, header[0] & 4 != 0, &header, scratch, budget, now, 10)?;
+    assert_eq!(outcome.plaintext(), b"test");
     Ok(outcome)
 }
-fn settle<'a>(
+fn settle<'a, 'packet>(
     rx: &mut ApplicationReadKeys<'a>,
     tx: &mut ApplicationWriteKeys<'a>,
-    outcome: AuthenticatedRead<'a>,
-) -> AckEligible<'a> {
+    outcome: AuthenticatedRead<'a, 'packet>,
+) -> AckEligible<'a, 'packet> {
     match outcome {
         AuthenticatedRead::Ready(ready) => ready,
-        AuthenticatedRead::PeerUpdate(peer) => {
+        AuthenticatedRead::PeerUpdate(peer, plaintext) => {
             let installed = tx.install_peer_update(peer).unwrap();
-            rx.accept_write_epoch(installed).unwrap()
+            rx.accept_write_epoch(installed, plaintext).unwrap()
         }
     }
 }
@@ -72,6 +74,8 @@ fn initiate<'a>(rx: &mut ApplicationReadKeys<'a>, tx: &mut ApplicationWriteKeys<
 }
 #[test]
 fn directional_epochs_preserve_ciphertext_masks_and_nonce_limits_without_allocation() {
+    let mut opened_body = [0; 20];
+
     let guard = NoAlloc::start();
     for suite in [
         CipherSuite::Aes128GcmSha256,
@@ -104,14 +108,22 @@ fn directional_epochs_preserve_ciphertext_masks_and_nonce_limits_without_allocat
                 .seal(generation, &apacket.0, &mut expected, 4)
                 .unwrap();
             assert_eq!(apacket.1, expected);
-            let bout = open(&mut brx, generation, apacket, &mut bb, now).unwrap();
+            let bout = open(
+                &mut opened_body,
+                &mut brx,
+                generation,
+                apacket,
+                &mut bb,
+                now,
+            )
+            .unwrap();
             if generation > 0 {
                 assert_eq!(btx.generation(), generation - 1);
             }
             let back = settle(&mut brx, &mut btx, bout);
             assert_eq!(back.opened().generation, generation);
-            assert!(back.authenticates_plaintext(b"test"));
-            assert!(!back.authenticates_plaintext(b"best"));
+            assert_eq!(back.plaintext(), b"test");
+            assert_ne!(back.plaintext(), b"best");
             assert_eq!(back.packet_number(), generation);
             assert_eq!(btx.generation(), generation);
             let bpacket = packet(&mut btx, generation);
@@ -120,7 +132,15 @@ fn directional_epochs_preserve_ciphertext_masks_and_nonce_limits_without_allocat
                 .seal(generation, &bpacket.0, &mut expected, 4)
                 .unwrap();
             assert_eq!(bpacket.1, expected);
-            let aout = open(&mut arx, generation, bpacket, &mut ab, now).unwrap();
+            let aout = open(
+                &mut opened_body,
+                &mut arx,
+                generation,
+                bpacket,
+                &mut ab,
+                now,
+            )
+            .unwrap();
             assert_eq!(
                 settle(&mut arx, &mut atx, aout).opened().generation,
                 generation
@@ -151,6 +171,8 @@ fn directional_epochs_preserve_ciphertext_masks_and_nonce_limits_without_allocat
 
 #[test]
 fn dropped_peer_or_install_receipt_never_releases_new_epoch_ack_authority() {
+    let mut opened_body = [0; 20];
+
     for drop_after_install in [false, true] {
         let mut scope = ApplicationKeyScope::new(1);
         let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
@@ -160,9 +182,15 @@ fn dropped_peer_or_install_receipt_never_releases_new_epoch_ack_authority() {
         let mut body = [0; 20];
         body[..4].copy_from_slice(b"test");
         peer.seal(10, &[0x44], &mut body, 4).unwrap();
-        let AuthenticatedRead::PeerUpdate(receipt) =
-            open(&mut rx, 10, ([0x44], body), &mut budget, 0).unwrap()
-        else {
+        let AuthenticatedRead::PeerUpdate(receipt, _plaintext) = open(
+            &mut opened_body,
+            &mut rx,
+            10,
+            ([0x44], body),
+            &mut budget,
+            0,
+        )
+        .unwrap() else {
             panic!()
         };
         assert_eq!(tx.generation(), 0);
@@ -189,6 +217,8 @@ fn dropped_peer_or_install_receipt_never_releases_new_epoch_ack_authority() {
 
 #[test]
 fn cross_scope_peer_installation_is_rejected_even_with_same_numeric_connection_generation() {
+    let mut opened_body = [0; 20];
+
     let mut scope = ApplicationKeyScope::new(1);
     let mut other = ApplicationKeyScope::new(1);
     let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
@@ -199,9 +229,15 @@ fn cross_scope_peer_installation_is_rejected_even_with_same_numeric_connection_g
     body[..4].copy_from_slice(b"test");
     peer.seal(10, &[0x44], &mut body, 4).unwrap();
     let mut budget = IntegrityBudget::new();
-    let AuthenticatedRead::PeerUpdate(receipt) =
-        open(&mut rx, 10, ([0x44], body), &mut budget, 0).unwrap()
-    else {
+    let AuthenticatedRead::PeerUpdate(receipt, _plaintext) = open(
+        &mut opened_body,
+        &mut rx,
+        10,
+        ([0x44], body),
+        &mut budget,
+        0,
+    )
+    .unwrap() else {
         panic!()
     };
     assert!(matches!(
@@ -246,6 +282,8 @@ fn forged_phase_and_missing_prepared_key_debit_one_attempt_and_never_promote() {
 
 #[test]
 fn retained_old_key_expires_only_three_pto_after_authenticated_peer_response() {
+    let mut opened_body = [0; 20];
+
     let mut ascope = ApplicationKeyScope::new(1);
     let mut bscope = ApplicationKeyScope::new(2);
     let (mut arx, mut atx) = install(&mut ascope, CipherSuite::Aes128GcmSha256, false);
@@ -253,34 +291,58 @@ fn retained_old_key_expires_only_three_pto_after_authenticated_peer_response() {
     let (mut ab, mut bb) = (IntegrityBudget::new(), IntegrityBudget::new());
     let old0 = packet(&mut btx, 0);
     let old1 = packet(&mut btx, 1);
-    let outcome = open(&mut brx, 0, packet(&mut atx, 0), &mut bb, 0).unwrap();
+    let outcome = open(
+        &mut opened_body,
+        &mut brx,
+        0,
+        packet(&mut atx, 0),
+        &mut bb,
+        0,
+    )
+    .unwrap();
     let _eligible = settle(&mut brx, &mut btx, outcome);
     authorize(&mut atx, 0);
     initiate(&mut arx, &mut atx, 0);
     arx.maintain(1000, 10).unwrap();
     atx.maintain(1000, 10).unwrap();
     assert_eq!(
-        open(&mut arx, 0, old0, &mut ab, 1000)
+        open(&mut opened_body, &mut arx, 0, old0, &mut ab, 1000)
             .unwrap()
             .opened()
             .generation,
         0
     );
     assert_eq!(arx.previous_key_deadline(), None);
-    let outcome = open(&mut brx, 1, packet(&mut atx, 1), &mut bb, 1000).unwrap();
+    let outcome = open(
+        &mut opened_body,
+        &mut brx,
+        1,
+        packet(&mut atx, 1),
+        &mut bb,
+        1000,
+    )
+    .unwrap();
     let _eligible = settle(&mut brx, &mut btx, outcome);
-    let outcome = open(&mut arx, 2, packet(&mut btx, 2), &mut ab, 1000).unwrap();
+    let outcome = open(
+        &mut opened_body,
+        &mut arx,
+        2,
+        packet(&mut btx, 2),
+        &mut ab,
+        1000,
+    )
+    .unwrap();
     let _eligible = settle(&mut arx, &mut atx, outcome);
     assert_eq!(arx.previous_key_deadline(), Some(1030));
     assert_eq!(
-        open(&mut arx, 1, old1, &mut ab, 1029)
+        open(&mut opened_body, &mut arx, 1, old1, &mut ab, 1029)
             .unwrap()
             .opened()
             .generation,
         0
     );
     assert!(matches!(
-        open(&mut arx, 1, old1, &mut ab, 1030),
+        open(&mut opened_body, &mut arx, 1, old1, &mut ab, 1030),
         Err(Error::AuthenticationFailed)
     ));
     assert_eq!(ab.failed_packets(), 1);
@@ -343,6 +405,8 @@ fn dropped_local_readiness_blocks_rx_and_cannot_be_recreated_from_snapshot() {
 
 #[test]
 fn authenticated_generation_pn_violation_is_terminal_and_wipes_plaintext() {
+    let mut opened_body = [0; 20];
+
     let mut scope = ApplicationKeyScope::new(1);
     let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
     let mut budget = IntegrityBudget::new();
@@ -350,11 +414,27 @@ fn authenticated_generation_pn_violation_is_terminal_and_wipes_plaintext() {
     let mut body = [0; 20];
     body[..4].copy_from_slice(b"test");
     peer.seal(20, &[0x40], &mut body, 4).unwrap();
-    open(&mut rx, 20, ([0x40], body), &mut budget, 0).unwrap();
+    open(
+        &mut opened_body,
+        &mut rx,
+        20,
+        ([0x40], body),
+        &mut budget,
+        0,
+    )
+    .unwrap();
     peer.update_key().unwrap();
     body[..4].copy_from_slice(b"test");
     peer.seal(30, &[0x44], &mut body, 4).unwrap();
-    let outcome = open(&mut rx, 30, ([0x44], body), &mut budget, 0).unwrap();
+    let outcome = open(
+        &mut opened_body,
+        &mut rx,
+        30,
+        ([0x44], body),
+        &mut budget,
+        0,
+    )
+    .unwrap();
     let _eligible = settle(&mut rx, &mut tx, outcome);
     let mut stale = key(CipherSuite::Aes128GcmSha256, 1);
     stale.update_key().unwrap();
@@ -386,6 +466,8 @@ fn both_directions_keep_monotonic_time_and_discard_is_terminal() {
 
 #[test]
 fn installed_receipt_cannot_complete_another_receivers_pending_transition() {
+    let mut opened_body = [0; 20];
+
     let mut first = ApplicationKeyScope::new(7);
     let mut second = ApplicationKeyScope::new(7);
     let (mut arx, mut atx) = install(&mut first, CipherSuite::Aes128GcmSha256, true);
@@ -396,20 +478,22 @@ fn installed_receipt_cannot_complete_another_receivers_pending_transition() {
     body[..4].copy_from_slice(b"test");
     peer.seal(20, &[0x44], &mut body, 4).unwrap();
     let (mut ab, mut bb) = (IntegrityBudget::new(), IntegrityBudget::new());
-    let AuthenticatedRead::PeerUpdate(a) = open(&mut arx, 20, ([0x44], body), &mut ab, 0).unwrap()
+    let AuthenticatedRead::PeerUpdate(a, _plaintext) =
+        open(&mut opened_body, &mut arx, 20, ([0x44], body), &mut ab, 0).unwrap()
     else {
         panic!()
     };
-    let AuthenticatedRead::PeerUpdate(b) = open(&mut brx, 20, ([0x44], body), &mut bb, 0).unwrap()
+    let AuthenticatedRead::PeerUpdate(b, plaintext) =
+        open(&mut opened_body, &mut brx, 20, ([0x44], body), &mut bb, 0).unwrap()
     else {
         panic!()
     };
     assert!(matches!(
-        brx.accept_write_epoch(atx.install_peer_update(a).unwrap()),
+        brx.accept_write_epoch(atx.install_peer_update(a).unwrap(), plaintext),
         Err(Error::KeyUpdateError)
     ));
     let receipt = brx
-        .accept_write_epoch(btx.install_peer_update(b).unwrap())
+        .accept_write_epoch(btx.install_peer_update(b).unwrap(), plaintext)
         .unwrap();
     assert_eq!(receipt.opened().generation, 1);
     assert!(brx.material.as_ref().unwrap().current.is_some());
@@ -418,6 +502,8 @@ fn installed_receipt_cannot_complete_another_receivers_pending_transition() {
 
 #[test]
 fn installed_transition_carries_monotonic_clock_forward_between_directions() {
+    let mut opened_body = [0; 20];
+
     let mut first = ApplicationKeyScope::new(7);
     let (mut rx, mut tx) = install(&mut first, CipherSuite::Aes128GcmSha256, false);
     packet(&mut tx, 0);
@@ -430,19 +516,27 @@ fn installed_transition_carries_monotonic_clock_forward_between_directions() {
     body[..4].copy_from_slice(b"test");
     peer.seal(20, &[0x44], &mut body, 4).unwrap();
     let mut budget = IntegrityBudget::new();
-    let AuthenticatedRead::PeerUpdate(peer) =
-        open(&mut rx, 20, ([0x44], body), &mut budget, 1100).unwrap()
-    else {
+    let AuthenticatedRead::PeerUpdate(peer, plaintext) = open(
+        &mut opened_body,
+        &mut rx,
+        20,
+        ([0x44], body),
+        &mut budget,
+        1100,
+    )
+    .unwrap() else {
         panic!()
     };
     let installed = tx.install_peer_update(peer).unwrap();
     assert_eq!(installed.generation(), 1);
     assert_eq!(tx.maintain(1099, 10), Err(Error::InvalidTime));
-    let _eligible = rx.accept_write_epoch(installed).unwrap();
+    let _eligible = rx.accept_write_epoch(installed, plaintext).unwrap();
 }
 
 #[test]
 fn shared_integrity_exhaustion_survives_both_directional_maintenance_and_updates() {
+    let mut opened_body = [0; 20];
+
     let mut scope = ApplicationKeyScope::new(7);
     let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
     let mut budget = IntegrityBudget::new();
@@ -458,7 +552,7 @@ fn shared_integrity_exhaustion_survives_both_directional_maintenance_and_updates
     peer.update_key().unwrap();
     body[..4].copy_from_slice(b"test");
     peer.seal(1, &[0x44], &mut body, 4).unwrap();
-    let opened = open(&mut rx, 1, ([0x44], body), &mut budget, 0).unwrap();
+    let opened = open(&mut opened_body, &mut rx, 1, ([0x44], body), &mut budget, 0).unwrap();
     let _eligible = settle(&mut rx, &mut tx, opened);
     rx.maintain(0, 10).unwrap();
     tx.maintain(0, 10).unwrap();
@@ -587,13 +681,15 @@ fn install_peer_epoch_one<'a>(
     tx: &mut ApplicationWriteKeys<'a>,
     suite: CipherSuite,
 ) {
+    let mut opened_body = [0; 20];
+
     let mut peer = key(suite, 1);
     peer.update_key().unwrap();
     let mut body = [0; 20];
     body[..4].copy_from_slice(b"test");
     peer.seal(10, &[0x44], &mut body, 4).unwrap();
     let mut budget = IntegrityBudget::new();
-    let authenticated = open(rx, 10, ([0x44], body), &mut budget, 10).unwrap();
+    let authenticated = open(&mut opened_body, rx, 10, ([0x44], body), &mut budget, 10).unwrap();
     let eligible = settle(rx, tx, authenticated);
     assert_eq!(eligible.opened().generation, 1);
     assert_eq!(tx.generation(), 1);
@@ -777,6 +873,8 @@ fn retired_read_collection_rejects_a_late_local_key_return() {
 
 #[test]
 fn retired_read_collection_rejects_a_late_peer_epoch_receipt() {
+    let mut opened_body = [0; 20];
+
     let mut scope = ApplicationKeyScope::new(902);
     let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
     let mut peer = key(CipherSuite::Aes128GcmSha256, 1);
@@ -784,15 +882,21 @@ fn retired_read_collection_rejects_a_late_peer_epoch_receipt() {
     let mut body = [0; 20];
     body[..4].copy_from_slice(b"test");
     peer.seal(20, &[0x44], &mut body, 4).unwrap();
-    let AuthenticatedRead::PeerUpdate(update) =
-        open(&mut rx, 20, ([0x44], body), &mut IntegrityBudget::new(), 0).unwrap()
-    else {
+    let AuthenticatedRead::PeerUpdate(update, plaintext) = open(
+        &mut opened_body,
+        &mut rx,
+        20,
+        ([0x44], body),
+        &mut IntegrityBudget::new(),
+        0,
+    )
+    .unwrap() else {
         panic!()
     };
     let installed = tx.install_peer_update(update).unwrap();
     rx.discard();
     assert!(matches!(
-        rx.accept_write_epoch(installed),
+        rx.accept_write_epoch(installed, plaintext),
         Err(Error::KeyDiscarded)
     ));
     assert!(rx.material.is_none());
@@ -893,4 +997,34 @@ fn actual_tls_finished_and_packet_ownership_do_not_fabricate_quic_update_permiss
             guard.finish();
         }
     }
+}
+
+#[test]
+fn installed_epoch_rejects_substituted_plaintext_and_keeps_receive_closed() {
+    let mut scope = ApplicationKeyScope::new(101);
+    let (mut rx, mut tx) = install(&mut scope, CipherSuite::Aes128GcmSha256, true);
+    let mut peer = key(CipherSuite::Aes128GcmSha256, 1);
+    peer.update_key().unwrap();
+    let mut body = [0; 20];
+    body[..4].copy_from_slice(b"test");
+    peer.seal(10, &[0x44], &mut body, 4).unwrap();
+    let mut scratch = [0; 20];
+    let AuthenticatedRead::PeerUpdate(receipt, plaintext) = open(
+        &mut scratch,
+        &mut rx,
+        10,
+        ([0x44], body),
+        &mut IntegrityBudget::new(),
+        0,
+    )
+    .unwrap() else {
+        panic!("expected peer update")
+    };
+    assert_eq!(plaintext, b"test");
+    let installed = tx.install_peer_update(receipt).unwrap();
+    assert!(matches!(
+        rx.accept_write_epoch(installed, b"best"),
+        Err(Error::KeyUpdateError)
+    ));
+    assert!(rx.material.as_ref().unwrap().current.is_none());
 }

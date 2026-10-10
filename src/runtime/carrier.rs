@@ -174,10 +174,10 @@ impl<const Q: usize, const B: usize, const P: usize> CarrierStorage<Q, B, P> {
         }
         // Never invoke executor callbacks while holding the RefCell borrow.
         for waker in readers
-            .into_iter()
-            .chain(writers)
-            .chain([peer, peer_input])
-            .flatten()
+            .iter_mut()
+            .chain(writers.iter_mut())
+            .filter_map(Option::take)
+            .chain([peer, peer_input].into_iter().flatten())
         {
             waker.wake();
         }
@@ -506,7 +506,11 @@ impl<const Q: usize, const B: usize, const P: usize> LocalCarrier<'_, Q, B, P> {
         }
         drop(old_waker);
         drop(next_waker);
-        for waker in writers.into_iter().chain([peer_input]).flatten() {
+        for waker in writers
+            .iter_mut()
+            .filter_map(Option::take)
+            .chain(peer_input)
+        {
             waker.wake();
         }
         if !self.storage.state.borrow().valid(rx.token.generation) {
@@ -616,7 +620,11 @@ impl<const Q: usize, const B: usize, const P: usize> Peer<'_, Q, B, P> {
         }
         drop(old);
         drop(next);
-        for waker in writers.into_iter().chain([peer_input]).flatten() {
+        for waker in writers
+            .iter_mut()
+            .filter_map(Option::take)
+            .chain(peer_input)
+        {
             waker.wake();
         }
         result
@@ -685,7 +693,7 @@ impl<const Q: usize, const B: usize, const P: usize> Peer<'_, Q, B, P> {
                 }
             }
         }
-        for waker in readers.into_iter().flatten() {
+        for waker in readers.iter_mut().filter_map(Option::take) {
             waker.wake();
         }
         Ok(())

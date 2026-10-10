@@ -107,6 +107,25 @@ impl<const N: usize> core::ops::DerefMut for Datagram<N> {
     }
 }
 
+pub(in crate::quic::retry) struct Observation<const D: usize> {
+    pub(in crate::quic::retry) address: Address,
+    pub(in crate::quic::retry) ecn: Option<Codepoint>,
+    pub(in crate::quic::retry) datagram: Datagram<D>,
+}
+pub(in crate::quic::retry) struct Reply<const D: usize> {
+    pub(in crate::quic::retry) address: Address,
+    pub(in crate::quic::retry) bytes: Datagram<D>,
+}
+
+use super::ValidatedToken;
+use crate::io::{Address, Codepoint};
+pub struct AdmittedInitial<const D: usize> {
+    pub address: Address,
+    pub datagram: Datagram<D>,
+    pub ecn: Option<Codepoint>,
+    pub token: ValidatedToken,
+}
+
 #[cfg(test)]
 mod tests {
     use super::version_negotiation;

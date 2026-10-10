@@ -1,5 +1,5 @@
 //! One application choreography projected by both client and server.
-//! Each launcher attaches its own projected Endpoint and runs local::run.
+//! Each launcher attaches its own projected Endpoint and runs localside::run.
 use hibana::g;
 use hibana::runtime::program::Projectable;
 pub const CLIENT: u8 = 0;

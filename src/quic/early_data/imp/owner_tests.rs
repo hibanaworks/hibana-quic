@@ -1,6 +1,7 @@
 use super::*;
 use crate::crypto::directional::ApplicationKeyScope;
-use crate::quic::early_data::{global as p, local::*};
+use crate::quic::early_data::Failure;
+use crate::quic::early_data::{AuthenticatedInput, Exchange, global as p, localside::*};
 use crate::{runtime::TaskSet, runtime::carrier::CarrierStorage};
 use core::{
     future::Future,
@@ -72,14 +73,14 @@ fn run_discard(cancel: bool, missing_finished: bool, release: bool, controls: bo
                     packet: 0,
                     bytes,
                     len,
-                    ecn: Some(crate::quic::ecn::imp::Codepoint::Ce),
+                    ecn: Some(crate::io::Codepoint::Ce),
                 })
                 .unwrap();
             input.send::<p::Packet>(&0).await?;
             assert_eq!(input.offer().await?.recv::<p::PacketStored>().await?, 0);
             let stored = exchange.take_stored()?;
             assert_eq!(stored.packet_number(), 0);
-            assert_eq!(stored.ecn(), Some(crate::quic::ecn::imp::Codepoint::Ce));
+            assert_eq!(stored.ecn(), Some(crate::io::Codepoint::Ce));
             input.send::<p::InputEnd>(&7).await?;
             assert_eq!(input.recv::<p::InputEnded>().await?, 7);
             input.send::<p::InputRetired>(&7).await?;

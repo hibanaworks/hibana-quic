@@ -4,7 +4,7 @@ use super::*;
 impl<'book, const RX: usize, const CHUNK: usize> FrameEffects<'book, '_, '_, RX, CHUNK> {
     pub(in crate::quic) fn reclaim(
         &mut self,
-        joined: crate::quic::application::local::reclaim::Joined<'book>,
+        joined: crate::quic::application::imp::reclaim::Joined<'book>,
     ) -> Result<(), Error> {
         let (source, input, delivery) = joined.into_parts();
         let origin = source.origin();

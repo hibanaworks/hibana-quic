@@ -1,39 +1,43 @@
 //! Primary direct Hibana host attachment. File mode enters the library's one
 //! connected global from Initial through authenticated file IO and clean close.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![allow(long_running_const_eval)]
-use hibana_quic::quic::application::imp::owned as application_storage;
+use hibana_quic::quic::application::storage as application_storage;
 #[path = "support/cli.rs"]
 mod cli;
-#[path = "support/direct_bootstrap.rs"]
-mod direct_bootstrap;
-use hibana_quic_pal::io as direct_wire;
 #[path = "support/files.rs"]
 mod files;
 #[path = "support/file_service.rs"]
 mod host_files;
+#[path = "support/native_files.rs"]
+#[allow(unsafe_code)]
+mod native_files;
 use hibana_quic::http3::message as http3_files;
 #[path = "support/parallel_server.rs"]
 mod parallel_server;
 use cli::{Options, USAGE, options};
-use direct_wire::{
-    HostClock, HostReactor, HostSocket, Receive, Statistics, Transmit, before_deadline,
-};
 use hibana_quic::crypto::directional::ApplicationKeyScope;
 use hibana_quic::entropy::Entropy;
+use hibana_quic::io::Address;
 use hibana_quic::quic::Config;
 use hibana_quic::quic::Side;
 use hibana_quic::quic::application;
-use hibana_quic::quic::imp::kernel::packet::Header;
-use hibana_quic::quic::imp::kernel::packet::LongType;
-use hibana_quic::quic::imp::kernel::packet::PacketIter;
-use hibana_quic::quic::imp::publication_gate::PublicationGate;
-use hibana_quic::quic::imp::recovery::Recovery;
-use hibana_quic::quic::imp::tls::Transcript;
-use hibana_quic::quic::path::Address;
-use hibana_quic::quic::retry::local::server as retry_admission;
-use hibana_quic_pal::entropy::KernelEntropy;
-use hibana_quic_pal::pem;
+use hibana_quic::quic::datagram::{Receive, Statistics, Transmit};
+use hibana_quic::quic::packet::Header;
+use hibana_quic::quic::packet::LongType;
+use hibana_quic::quic::packet::PacketIter;
+use hibana_quic::quic::publication::PublicationGate;
+use hibana_quic::quic::recovery::Recovery;
+use hibana_quic::quic::retry::localside::server as retry_admission;
+use hibana_quic::quic::transcript::Transcript;
+use hibana_quic_pal::unix::entropy::KernelEntropy;
+use hibana_quic_pal::unix::{
+    clock::{Clock as HostClock, before_deadline},
+    reactor::{AsyncUdp as HostSocket, Reactor as HostReactor},
+};
+#[path = "../support/pem.rs"]
+mod pem;
+use hibana_quic_pal::unix::{Instant, UdpSocket};
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::UnixTime;
 use hibana_tls::certificate::trust_anchor_from_der;
@@ -49,9 +53,9 @@ use hibana_tls::ticket;
 use hibana_tls::ticket::TicketClock;
 use pem::PrivateKeyDer;
 use std::{
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
     process::ExitCode,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 type Result<T> = std::result::Result<T, String>;
 fn random<const N: usize>() -> Result<[u8; N]> {
@@ -73,7 +77,7 @@ impl TlsBuffers {
             rx: vec![0; 16384],
             tx: vec![0; 16384],
             certificates: vec![0; 16384],
-            parameters: vec![0; direct_bootstrap::PARAMETERS],
+            parameters: vec![0; hibana_quic::session::PARAMETERS],
         }
     }
     fn storage(&mut self) -> TlsStorage<'_> {
@@ -271,13 +275,11 @@ async fn connected<const S: usize, const T: usize>(
     address: Address,
     config: Config<'_>,
     tls: BoundedTls<'_, '_>,
-    first: Option<(&[u8], Option<hibana_quic::quic::ecn::imp::Codepoint>)>,
-    mut files: Option<direct_bootstrap::Files>,
+    first: Option<(&[u8], Option<hibana_quic::io::Codepoint>)>,
+    mut files: Option<host_files::Files>,
     early: Option<application_storage::EarlyStorage>,
     key_update_target: u64,
-    routed: Option<
-        &mut hibana_quic::quic::imp::receive_routes::Receiver<{ direct_bootstrap::DATAGRAM }>,
-    >,
+    routed: Option<&mut hibana_quic::quic::routing::Receiver<{ hibana_quic::session::DATAGRAM }>>,
     server_token: Option<&[u8]>,
     idle_timeout_ms: u64,
 ) -> Result<Report> {
@@ -299,22 +301,21 @@ async fn connected<const S: usize, const T: usize>(
         tls.into_key_source(identity)
             .map_err(|e| format!("TLS source: {e:?}"))?,
     );
-    let mut book = Recovery::<{ direct_bootstrap::DATAGRAM }>::new(
+    let mut book = Recovery::<{ hibana_quic::session::DATAGRAM }>::new(
         recovery,
         config.side,
         333_000,
-        direct_bootstrap::DATAGRAM as u64,
+        hibana_quic::session::DATAGRAM as u64,
         3,
     )
     .map_err(|e| format!("recovery: {e:?}"))?;
     let statistics = Statistics::default();
-    let mut receive = Receive {
-        alternate: alternate.map(|socket| (socket, vec![0; direct_bootstrap::DATAGRAM])),
+    let mut receive = Receive::<_, { hibana_quic::session::DATAGRAM }> {
+        alternate: alternate.map(|socket| (socket, vec![0; hibana_quic::session::DATAGRAM])),
         routed,
         socket,
         address,
         first,
-        clock,
         statistics: &statistics,
     };
     let mut transmit = Transmit {
@@ -327,12 +328,12 @@ async fn connected<const S: usize, const T: usize>(
     let mut body_bytes = 0;
     let (application, resumed) = if let Some(files) = &mut files {
         let (observations, diagnostics, expected) = match files {
-            direct_bootstrap::Files::Client(client) => (
+            host_files::Files::Client(client) => (
                 client.observations.clone(),
                 client.diagnostics.clone(),
                 Some(client.count),
             ),
-            direct_bootstrap::Files::Server(server) => (
+            host_files::Files::Server(server) => (
                 server.observations.clone(),
                 server.diagnostics.clone(),
                 None,
@@ -340,22 +341,88 @@ async fn connected<const S: usize, const T: usize>(
         };
         // One combined projection and one library invocation own every phase.
         // A failed transfer cannot fall back to a successful prefix report.
-        let report = Box::pin(direct_bootstrap::files(
-            &mut source,
-            config,
-            &mut receive,
-            &mut transmit,
-            clock,
-            &mut issuer,
-            stop,
-            &mut book,
-            generation,
-            files,
-            early,
-            key_update_target,
-            server_token,
-            idle_timeout_ms,
-        ))
+        let report = Box::pin(async {
+            match files {
+                host_files::Files::Client(client) => {
+                    let profile = hibana_quic::quic::application::ClientProfile {
+                        generation,
+                        protocol: client.protocol,
+                        stream_capacity: application_storage::capacity(
+                            client.protocol,
+                            client.count,
+                        ),
+                        early_request_capacity: client.count,
+                        key_update_target,
+                        idle_timeout_ms,
+                    };
+                    if application_storage::client_uses_large_window(client.count) {
+                        hibana_quic::quic::application::localside::owned::client::<
+                            { application_storage::CLIENT_RECEIVE_BYTES },
+                        >(
+                            &mut hibana_quic_pal::unix::entropy::KernelEntropy,
+                            &mut source,
+                            config,
+                            &mut receive,
+                            &mut transmit,
+                            clock,
+                            &mut issuer,
+                            stop,
+                            &mut book,
+                            profile,
+                            &mut client.requests,
+                            &mut client.downloads,
+                        )
+                        .await
+                    } else {
+                        hibana_quic::quic::application::localside::owned::client::<
+                            { application_storage::RECEIVE_BYTES },
+                        >(
+                            &mut hibana_quic_pal::unix::entropy::KernelEntropy,
+                            &mut source,
+                            config,
+                            &mut receive,
+                            &mut transmit,
+                            clock,
+                            &mut issuer,
+                            stop,
+                            &mut book,
+                            profile,
+                            &mut client.requests,
+                            &mut client.downloads,
+                        )
+                        .await
+                    }
+                }
+                host_files::Files::Server(server) => {
+                    let profile = hibana_quic::quic::application::ServerProfile {
+                        generation,
+                        protocol: server.protocol,
+                        stream_capacity: application_storage::capacity(
+                            server.protocol,
+                            application_storage::server_capacity(server.completion_limit),
+                        ),
+                        server_token,
+                        idle_timeout_ms,
+                    };
+                    hibana_quic::quic::application::localside::owned::server(
+                        &mut hibana_quic_pal::unix::entropy::KernelEntropy,
+                        &mut source,
+                        config,
+                        &mut receive,
+                        &mut transmit,
+                        clock,
+                        &mut issuer,
+                        stop,
+                        &mut book,
+                        profile,
+                        server,
+                        None::<&mut host_files::Downloads>,
+                        early,
+                    )
+                    .await
+                }
+            }
+        })
         .await
         .map_err(|error| match diagnostics.take() {
             Some(detail) => format!("{error}: {detail}"),
@@ -381,7 +448,7 @@ async fn connected<const S: usize, const T: usize>(
         body_bytes = observations.body_bytes.get();
         (Some(report), report.resumed)
     } else {
-        let continuations = Box::pin(direct_bootstrap::handshake(
+        let continuations = Box::pin(hibana_quic::quic::localside::owned::handshake(
             &mut source,
             config,
             &mut receive,
@@ -458,7 +525,7 @@ async fn respond_unsupported_version<const S: usize, const T: usize>(
     };
     if destination_id.len() <= 20 && source_id.len() <= 20 {
         let mut reply = [0; 51];
-        if let Some(end) = hibana_quic::quic::retry::imp::admission::version_negotiation(
+        if let Some(end) = hibana_quic::quic::retry::admission::version_negotiation(
             destination_id,
             source_id,
             received_len,
@@ -466,18 +533,14 @@ async fn respond_unsupported_version<const S: usize, const T: usize>(
             &mut reply,
         ) {
             socket
-                .send_to(
-                    &reply[..end],
-                    source,
-                    hibana_quic::quic::ecn::imp::Codepoint::NotEct,
-                )
+                .send_to(&reply[..end], source, hibana_quic::io::Codepoint::NotEct)
                 .await
                 .map_err(|error| format!("Version Negotiation: {error}"))?;
         }
     }
     Ok(true)
 }
-use hibana_quic::quic::retry::imp::admission::initial_integrity;
+use hibana_quic::quic::retry::admission::initial_integrity;
 
 async fn admit_initial<const S: usize, const T: usize>(
     socket: &HostSocket<'_, S, T>,
@@ -487,7 +550,7 @@ async fn admit_initial<const S: usize, const T: usize>(
     Vec<u8>,
     Vec<u8>,
     usize,
-    Option<hibana_quic::quic::ecn::imp::Codepoint>,
+    Option<hibana_quic::io::Codepoint>,
 )> {
     loop {
         // Every rejection returns through this guaranteed Pending yield,
@@ -496,7 +559,9 @@ async fn admit_initial<const S: usize, const T: usize>(
         hibana_quic::runtime::yield_now().await;
         let metadata = match socket.recv_from(first).await {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => continue,
+            Err(error) if error.kind() == hibana_quic_pal::unix::error::ErrorKind::InvalidData => {
+                continue;
+            }
             Err(error) => return Err(format!("Initial admission: {error}")),
         };
         let packet = PacketIter::new(&first[..metadata.len], 8, 8)
@@ -522,7 +587,7 @@ async fn admit_initial<const S: usize, const T: usize>(
             } = packet.header
             && destination_id.len() >= 8
             && token.is_empty()
-            && initial_integrity(&packet, &mut [0; direct_bootstrap::DATAGRAM]).is_some()
+            && initial_integrity(&packet, &mut [0; hibana_quic::session::DATAGRAM]).is_some()
         {
             // Routing bytes have passed packet integrity. The direct core still
             // authenticates the preserved Initial within its own scoped keys.
@@ -702,26 +767,13 @@ async fn run_async<const S: usize, const T: usize>(
                 let files = files
                     .map(|files| {
                         host_files::Client::new(protocol, &files.downloads, files.requests)
-                            .map(direct_bootstrap::Files::Client)
+                            .map(host_files::Files::Client)
                     })
                     .transpose()?;
-                // Routing-only connect chooses a source IP without transmitting.
-                let route = UdpSocket::bind(if connect.is_ipv4() {
-                    "0.0.0.0:0"
-                } else {
-                    "[::]:0"
-                })
-                .map_err(|e| format!("route socket: {e}"))?;
-                route
-                    .connect(connect)
-                    .map_err(|e| format!("route selection: {e}"))?;
-                let mut bind = route
-                    .local_addr()
-                    .map_err(|e| format!("route address: {e}"))?;
-                bind.set_port(0);
-                drop(route);
                 let socket = reactor
-                    .register_udp(UdpSocket::bind(bind).map_err(|e| format!("UDP bind: {e}"))?)
+                    .register_udp(
+                        UdpSocket::bind_for_peer(connect).map_err(|e| format!("UDP bind: {e}"))?,
+                    )
                     .map_err(|e| format!("UDP registration: {e}"))?;
                 let address = Address {
                     local: socket
@@ -732,21 +784,17 @@ async fn run_async<const S: usize, const T: usize>(
                 let local = random::<8>()?;
                 let original = random::<8>()?;
                 let mut parameter_storage = [0; 2048];
-                let parameter_len =
-                    hibana_quic::quic::imp::parameters::advertisement::Advertisement {
-                        version,
-                        local: &local,
-                        original: None,
-                        application_limits: files
-                            .as_ref()
-                            .map(direct_bootstrap::Files::local_limits),
-                        retry_source: None,
-                        idle_timeout_ms,
-                        max_datagram_size: hibana_quic::quic::application::imp::owned::DATAGRAM
-                            as u64,
-                    }
-                    .encode(&mut parameter_storage)
-                    .map_err(|e| format!("parameters: {e:?}"))?;
+                let parameter_len = hibana_quic::quic::parameters::advertisement::Advertisement {
+                    version,
+                    local: &local,
+                    original: None,
+                    application_limits: files.as_ref().map(host_files::Files::local_limits),
+                    retry_source: None,
+                    idle_timeout_ms,
+                    max_datagram_size: hibana_quic::quic::application::storage::DATAGRAM as u64,
+                }
+                .encode(&mut parameter_storage)
+                .map_err(|e| format!("parameters: {e:?}"))?;
                 let parameters = parameter_storage[..parameter_len].to_vec();
                 let mut buffers = TlsBuffers::new();
                 let now = UnixTime::since_unix_epoch(
@@ -932,7 +980,7 @@ async fn run_async<const S: usize, const T: usize>(
                     .map_err(|e| format!("listen address: {e}"))?
             );
             let mut replay = [const { ticket::ReplaySlot::empty() }; 8];
-            let mut early_replay = hibana_quic::quic::early_data::imp::ReplayStorage::<64>::new();
+            let mut early_replay = hibana_quic::quic::early_data::ReplayStorage::<64>::new();
             let mut tickets = if early {
                 ticket::TicketKey::generate_with_early_replay(
                     &mut KernelEntropy,
@@ -952,10 +1000,10 @@ async fn run_async<const S: usize, const T: usize>(
             let mut entropy = KernelEntropy;
             let mut retry_tokens = if require_retry {
                 Some(
-                    hibana_quic::quic::retry::imp::RetryTokens::<64>::generate(
+                    hibana_quic::quic::retry::RetryTokens::<64>::generate(
                         &mut entropy,
                         u32::from_be_bytes(random::<4>()?),
-                        hibana_quic::quic::retry::imp::DEFAULT_TOKEN_LIFETIME_US,
+                        hibana_quic::quic::retry::DEFAULT_TOKEN_LIFETIME_US,
                     )
                     .map_err(|e| format!("Retry issuer: {e:?}"))?,
                 )
@@ -983,15 +1031,15 @@ async fn run_async<const S: usize, const T: usize>(
                             if !resumption && connections > 1 {
                                 server.completion_limit = core::num::NonZeroUsize::new(1);
                             }
-                            direct_bootstrap::Files::Server(server)
+                            host_files::Files::Server(server)
                         })
                     })
                     .transpose()?;
                 let retried = if let Some(tokens) = retry_tokens.as_mut() {
                     let mut slab = vec![0; 65536];
-                    let mut scratch = vec![0; direct_bootstrap::DATAGRAM + 21];
+                    let mut scratch = vec![0; hibana_quic::session::DATAGRAM + 21];
                     Some(
-                        retry_admission::receive::<{ direct_bootstrap::DATAGRAM }>(
+                        retry_admission::receive::<{ hibana_quic::session::DATAGRAM }>(
                             &socket,
                             clock,
                             tokens,
@@ -1008,7 +1056,7 @@ async fn run_async<const S: usize, const T: usize>(
                 } else {
                     None
                 };
-                let mut first = vec![0; direct_bootstrap::DATAGRAM];
+                let mut first = vec![0; hibana_quic::session::DATAGRAM];
                 let (address, original, peer, len, ecn) = if let Some(admitted) = retried.as_ref() {
                     eprintln!("Retry admission joined with validated token");
                     first[..admitted.datagram.len()].copy_from_slice(&admitted.datagram);
@@ -1030,7 +1078,7 @@ async fn run_async<const S: usize, const T: usize>(
                     .map(|port| -> Result<_> {
                         let mut target = address.local;
                         target.set_port(port);
-                        Ok(hibana_quic::quic::path::imp::preferred::Preferred {
+                        Ok(hibana_quic::quic::path::preferred::Preferred {
                             ipv4: match target {
                                 SocketAddr::V4(a) => Some(a),
                                 _ => None,
@@ -1039,32 +1087,26 @@ async fn run_async<const S: usize, const T: usize>(
                                 SocketAddr::V6(a) => Some(a),
                                 _ => None,
                             },
-                            cid: hibana_quic::quic::imp::kernel::connection_id::Cid::new(
-                                &random::<8>()?,
-                            )
-                            .map_err(|e| format!("preferred CID: {e:?}"))?,
-                            token: hibana_quic::quic::imp::kernel::connection_id::ResetToken::new(
-                                random::<16>()?,
+                            cid: hibana_quic::quic::connection_id::Cid::new(&random::<8>()?)
+                                .map_err(|e| format!("preferred CID: {e:?}"))?,
+                            token: hibana_quic::quic::connection_id::ResetToken::new(
+                                random::<16>()?
                             ),
                         })
                     })
                     .transpose()?;
                 let mut parameter_storage = [0; 2048];
-                let parameter_len =
-                    hibana_quic::quic::imp::parameters::advertisement::Advertisement {
-                        version,
-                        local: &local,
-                        original: Some(&original),
-                        application_limits: files
-                            .as_ref()
-                            .map(direct_bootstrap::Files::local_limits),
-                        retry_source,
-                        idle_timeout_ms,
-                        max_datagram_size: hibana_quic::quic::application::imp::owned::DATAGRAM
-                            as u64,
-                    }
-                    .encode(&mut parameter_storage)
-                    .map_err(|e| format!("parameters: {e:?}"))?;
+                let parameter_len = hibana_quic::quic::parameters::advertisement::Advertisement {
+                    version,
+                    local: &local,
+                    original: Some(&original),
+                    application_limits: files.as_ref().map(host_files::Files::local_limits),
+                    retry_source,
+                    idle_timeout_ms,
+                    max_datagram_size: hibana_quic::quic::application::storage::DATAGRAM as u64,
+                }
+                .encode(&mut parameter_storage)
+                .map_err(|e| format!("parameters: {e:?}"))?;
                 let mut parameters = parameter_storage[..parameter_len].to_vec();
                 let mut buffers = TlsBuffers::new();
                 if let Some(preferred) = local_preferred {
@@ -1092,7 +1134,7 @@ async fn run_async<const S: usize, const T: usize>(
                         application_storage::EarlyStorage::policy(),
                         &parameters,
                         storage.slots.len(),
-                        hibana_quic::quic::early_data::imp::EarlyFreshness::new(10000)
+                        hibana_quic::quic::early_data::EarlyFreshness::new(10000)
                             .map_err(|e| format!("early freshness: {e:?}"))?,
                     )
                     .map_err(|e| format!("early capacity: {e:?}"))?;
@@ -1201,7 +1243,7 @@ fn run_sized<const S: usize, const T: usize>(options: Options) -> Result<String>
     if reactor.active_resources() != (0, 0) {
         return Err("root returned with live native socket or timer owners".into());
     }
-    let report = result?;
+    let report = result.map_err(|e| e.to_string())?;
     if require_clean_client && report.idle_expired_connections != 0 {
         return Err("connection idle-expired after resource retirement".into());
     }
@@ -1239,14 +1281,14 @@ mod admission_tests {
 
     #[test]
     fn requested_idle_budget_matches_wire_and_application_setup() {
-        use hibana_quic::quic::imp::kernel::parameters::Parameters;
-        use hibana_quic::quic::imp::kernel::parameters::Peer;
+        use hibana_quic::quic::transport_parameters::Parameters;
+        use hibana_quic::quic::transport_parameters::Peer;
         for side in [Side::Client, Side::Server] {
             for idle_timeout_ms in [30_000, 180_000] {
                 let config = Config {
                     local_preferred: None,
                     initial_path: None,
-                    version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                    version: hibana_quic::quic::version::Version::V1,
                     side,
                     local_connection_id: b"local001",
                     original_destination_id: b"original",
@@ -1263,19 +1305,17 @@ mod admission_tests {
                 let setup = storage.setup(config, idle_timeout_ms).unwrap();
                 let original = (side == Side::Server).then_some(&b"original"[..]);
                 let mut parameter_storage = [0; 2048];
-                let parameter_len =
-                    hibana_quic::quic::imp::parameters::advertisement::Advertisement {
-                        version: config.version,
-                        local: config.local_connection_id,
-                        original,
-                        application_limits: Some(setup.local_limits),
-                        retry_source: None,
-                        idle_timeout_ms,
-                        max_datagram_size: hibana_quic::quic::application::imp::owned::DATAGRAM
-                            as u64,
-                    }
-                    .encode(&mut parameter_storage)
-                    .unwrap();
+                let parameter_len = hibana_quic::quic::parameters::advertisement::Advertisement {
+                    version: config.version,
+                    local: config.local_connection_id,
+                    original,
+                    application_limits: Some(setup.local_limits),
+                    retry_source: None,
+                    idle_timeout_ms,
+                    max_datagram_size: hibana_quic::quic::application::storage::DATAGRAM as u64,
+                }
+                .encode(&mut parameter_storage)
+                .unwrap();
                 let bytes = parameter_storage[..parameter_len].to_vec();
                 let peer = if side == Side::Client {
                     Peer::Client
@@ -1291,8 +1331,8 @@ mod admission_tests {
 
     #[test]
     fn damaged_initial_source_id_cannot_become_the_connection_identity() {
-        let mut bytes = [0; direct_bootstrap::DATAGRAM];
-        let header = hibana_quic::quic::imp::kernel::packet::LongHeader {
+        let mut bytes = [0; hibana_quic::session::DATAGRAM];
+        let header = hibana_quic::quic::packet::LongHeader {
             kind: LongType::Initial,
             destination_id: b"original",
             source_id: b"client01",
@@ -1301,8 +1341,7 @@ mod admission_tests {
             packet_number_len: 4,
         };
         let hlen =
-            hibana_quic::quic::imp::kernel::packet::encode_long_header(&header, 1176, &mut bytes)
-                .unwrap();
+            hibana_quic::quic::packet::encode_long_header(&header, 1176, &mut bytes).unwrap();
         let mut key = hibana_quic::crypto::initial_keys(b"original")
             .unwrap()
             .client;
@@ -1314,12 +1353,12 @@ mod admission_tests {
         bytes[15] ^= 1;
         let reactor = HostReactor::<4, 8>::new().unwrap();
         let socket = reactor
-            .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
+            .register_udp(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap())
             .unwrap();
-        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         peer.send_to(&bytes[..hlen + 1176], socket.local_addr().unwrap())
             .unwrap();
-        let mut first = vec![0; direct_bootstrap::DATAGRAM];
+        let mut first = vec![0; hibana_quic::session::DATAGRAM];
         let mut admission = Box::pin(admit_initial(&socket, &mut first));
         let mut context = Context::from_waker(Waker::noop());
         assert!(admission.as_mut().poll(&mut context).is_pending());
@@ -1335,7 +1374,7 @@ mod admission_tests {
         else {
             panic!("the following intact Initial was not admitted");
         };
-        assert_eq!(ecn, Some(hibana_quic::quic::ecn::imp::Codepoint::NotEct));
+        assert_eq!(ecn, Some(hibana_quic::io::Codepoint::NotEct));
         assert_eq!(original, b"original");
         assert_eq!(source, b"client01");
         assert_eq!(len, hlen + 1176);
@@ -1345,14 +1384,14 @@ mod admission_tests {
     fn unknown_version_probe_gets_reversed_cids_and_v1_without_initial_admission() {
         let reactor = HostReactor::<4, 8>::new().unwrap();
         let socket = reactor
-            .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
+            .register_udp(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap())
             .unwrap();
-        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
         // The simulator's WAIT version is deliberately not a v1 Initial.
         let probe = b"\xc0WAIT\x04dest\x03src";
         peer.send_to(probe, socket.local_addr().unwrap()).unwrap();
-        let mut first = vec![0; direct_bootstrap::DATAGRAM];
+        let mut first = vec![0; hibana_quic::session::DATAGRAM];
         {
             let mut admission = Box::pin(admit_initial(&socket, &mut first));
             let mut context = Context::from_waker(Waker::noop());
@@ -1378,7 +1417,7 @@ mod admission_tests {
                 assert_eq!(source_id, b"dest");
                 assert_eq!(
                     versions.iter().collect::<Vec<_>>(),
-                    [hibana_quic::quic::imp::kernel::packet::QUIC_V1]
+                    [hibana_quic::quic::packet::QUIC_V1]
                 );
             }
             other => panic!("unexpected version selection reply: {other:?}"),
@@ -1390,18 +1429,18 @@ mod admission_tests {
         for rejected in [
             vec![0; 64],
             vec![0; 1200],
-            vec![0; direct_bootstrap::DATAGRAM + 1],
+            vec![0; hibana_quic::session::DATAGRAM + 1],
         ] {
             let reactor = HostReactor::<4, 8>::new().unwrap();
             let socket = reactor
-                .register_udp(UdpSocket::bind("127.0.0.1:0").unwrap())
+                .register_udp(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap())
                 .unwrap();
-            let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
             let address = socket.local_addr().unwrap();
             peer.send_to(&rejected, address).unwrap();
             peer.send_to(b"next datagram remains queued", address)
                 .unwrap();
-            let mut first = vec![0; direct_bootstrap::DATAGRAM];
+            let mut first = vec![0; hibana_quic::session::DATAGRAM];
             {
                 let mut admission = Box::pin(admit_initial(&socket, &mut first));
                 let mut context = Context::from_waker(Waker::noop());

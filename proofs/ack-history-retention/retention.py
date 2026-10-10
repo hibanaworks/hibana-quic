@@ -22,7 +22,7 @@ lo, hi = If(a < c, a, c), If(b > d, b, d)
 prove('merge never fabricates receipt', [0 <= a, a <= b, 0 <= c, c <= d,
        a <= d + 1, c <= b + 1, lo <= x, x <= hi],
       Or(And(a <= x, x <= b), And(c <= x, x <= d)))
-# Fixed bound remains 32; the extra scratch entry is the incoming packet only.
+# The retained range bound is fixed, including a newly inserted disjoint packet.
 count = Int('count')
 kept = If(count > 32, 32, count)
 prove('range count bounded', [count >= 0, count <= 33], And(kept >= 0, kept <= 32))
@@ -30,3 +30,13 @@ s = Solver()
 s.add(floor == 0, dropped == 62, pn == dropped, pn >= floor)
 assert s.check() == sat
 print('prune without raising cutoff permits replay: SAT', s.model())
+
+# In-place insertion shifts only retained rows; a full array first retires one.
+n, position, capacity = [Int(v) for v in ('n', 'position', 'capacity')]
+prove('in-place insertion destination is bounded',
+      [capacity > 0, 0 <= n, n < capacity, 0 <= position, position <= n],
+      And(position + 1 + (n - position) <= capacity, n - position >= 0))
+prove('bridge merge shift is bounded',
+      [capacity > 0, 2 <= n, n <= capacity, 1 <= position, position < n],
+      And(position + (n - position - 1) < capacity, n - position - 1 >= 0))
+prove('packet successor fits u64', [pn >= 0, pn <= 2**62 - 1], pn + 1 < 2**64)

@@ -2,19 +2,17 @@
 //! congestion/rollback or the external runner; those are engine/host gates.
 #[path = "../../support/async_tls_fixture.rs"]
 mod async_fixture;
-use hibana_quic::quic::early_data::imp::EarlyFreshness;
-use hibana_quic::quic::early_data::imp::EarlyStatus;
-use hibana_quic::quic::early_data::imp::QuarantineSlot;
-use hibana_quic::quic::early_data::imp::ReplayStorage;
-use hibana_quic::quic::early_data::imp::ServerPolicy;
-use hibana_quic_pal::entropy::KernelEntropy;
+use hibana_quic::quic::early_data::EarlyFreshness;
+use hibana_quic::quic::early_data::EarlyStatus;
+use hibana_quic::quic::early_data::QuarantineSlot;
+use hibana_quic::quic::early_data::ReplayStorage;
+use hibana_quic::quic::early_data::ServerPolicy;
+use hibana_quic_pal::unix::entropy::KernelEntropy;
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::TrustAnchor;
 use hibana_tls::certificate::UnixTime;
 use hibana_tls::certificate::trust_anchor_from_der;
-use hibana_tls::endpoint::Level;
-use hibana_tls::endpoint::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::CipherPolicy;
 use hibana_tls::handshake::ClientConfig;
@@ -25,6 +23,8 @@ use hibana_tls::handshake::ServerEarlyData;
 use hibana_tls::handshake::ServerResumption;
 use hibana_tls::handshake::SigningKey;
 use hibana_tls::handshake::Storage;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use hibana_tls::ticket;
 use hibana_tls::ticket::Binding;
 use hibana_tls::ticket::ClientCache;
@@ -141,7 +141,7 @@ fn pump(client: &mut BoundedTls<'_, '_>, server: &mut BoundedTls<'_, '_>) {
 fn client_config<'a>(anchors: &'a [TrustAnchor<'a>]) -> ClientConfig<'a> {
     ClientConfig {
         protocol: Default::default(),
-        version: hibana_quic::quic::imp::kernel::version::Version::V1,
+        version: hibana_quic::quic::version::Version::V1,
         server_name: "localhost",
         trust_anchors: anchors,
         now: now(),
@@ -184,7 +184,7 @@ fn issue_ticket(
     let mut server = BoundedTls::server_with_early_data_and_policy(
         ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::imp::kernel::version::Version::V1,
+            version: hibana_quic::quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: SERVER_PARAMS,
@@ -277,7 +277,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             let server = BoundedTls::server_with_early_data_and_policy(
                 ServerConfig {
                     protocol: Default::default(),
-                    version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                    version: hibana_quic::quic::version::Version::V1,
                     certificate_chain: &chain,
                     signing_key: &id.signing,
                     transport_parameters: SERVER_PARAMS,
@@ -300,7 +300,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             let mut client_scope = hibana_quic::crypto::directional::ApplicationKeyScope::new(2300);
             let mut server_scope = hibana_quic::crypto::directional::ApplicationKeyScope::new(2301);
             let mut installation = client_scope.claim().unwrap();
-            let mut recovery = hibana_quic::quic::imp::recovery::Recovery::<256>::new(
+            let mut recovery = hibana_quic::quic::recovery::Recovery::<256>::new(
                 installation.take_recovery().unwrap(),
                 hibana_quic::quic::Side::Client,
                 333_000,
@@ -326,13 +326,13 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                         return;
                     }
                     observed = true;
-                    let hibana_tls::handshake::local::keys::EarlyKeyMaterial::Transmit(mut tx) =
+                    let hibana_tls::handshake::keys::EarlyKeyMaterial::Transmit(mut tx) =
                         client.take_early_key().unwrap()
                     else {
                         panic!("client early key must transmit")
                     };
-                    let plain_n = hibana_quic::quic::imp::kernel::packet::encode_frame(
-                        &hibana_quic::quic::imp::kernel::packet::Frame::Stream {
+                    let plain_n = hibana_quic::quic::packet::encode_frame(
+                        &hibana_quic::quic::packet::Frame::Stream {
                             id: 0,
                             offset: 0,
                             fin: true,
@@ -341,7 +341,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                         &mut plaintext,
                     )
                     .unwrap();
-                    let size = hibana_quic::quic::imp::early_wire::encoded_len(
+                    let size = hibana_quic::quic::early_wire::encoded_len(
                         b"server01",
                         b"client01",
                         plain_n,
@@ -350,7 +350,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                     let reservation = book
                         .reserve_early(&tx, &plaintext[..plain_n], size as u64, 0)
                         .unwrap();
-                    let sealed = hibana_quic::quic::imp::early_wire::seal::<256>(
+                    let sealed = hibana_quic::quic::early_wire::seal::<256>(
                         &mut tx,
                         reservation,
                         b"server01",
@@ -376,7 +376,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             let finished = sm.finished.take().unwrap().into_receipt();
             assert!(finished.resumed());
             let mut budget = server.take_integrity_budget().unwrap();
-            let hibana_tls::handshake::local::keys::EarlyKeyMaterial::Receive(mut key) =
+            let hibana_tls::handshake::keys::EarlyKeyMaterial::Receive(mut key) =
                 server.take_early_key().unwrap()
             else {
                 panic!("server early key must receive")
@@ -384,7 +384,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             let mut bad = late;
             bad[late_n - 1] ^= 1;
             assert!(
-                hibana_quic::quic::imp::early_wire::open::<256>(
+                hibana_quic::quic::early_wire::open::<256>(
                     &key,
                     &mut budget,
                     &bad[..late_n],
@@ -394,7 +394,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                 .is_err()
             );
             assert!(
-                hibana_quic::quic::imp::early_wire::open::<256>(
+                hibana_quic::quic::early_wire::open::<256>(
                     &key,
                     &mut budget,
                     &late[..late_n],
@@ -403,7 +403,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
                 )
                 .is_err()
             );
-            let mut opened = hibana_quic::quic::imp::early_wire::open::<256>(
+            let mut opened = hibana_quic::quic::early_wire::open::<256>(
                 &key,
                 &mut budget,
                 &late[..late_n],
@@ -414,7 +414,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             let authenticated = opened.take_receipt().unwrap();
             assert!(opened.take_receipt().is_none());
             let input =
-                hibana_quic::quic::early_data::local::AuthenticatedInput::<64>::from_authentication(
+                hibana_quic::quic::early_data::AuthenticatedInput::<64>::from_authentication(
                     authenticated,
                     2,
                     opened.plaintext(),
@@ -424,7 +424,7 @@ fn real_early_packet_keys_and_projected_finished_release_allocate_zero_both_suit
             projected_early_release(admission, finished, input, &mut held, request);
             key.discard();
             assert!(
-                hibana_quic::quic::imp::early_wire::open::<256>(
+                hibana_quic::quic::early_wire::open::<256>(
                     &key,
                     &mut budget,
                     &late[..late_n],
@@ -481,7 +481,7 @@ fn explicit_server_decline_keeps_real_one_rtt_resumption() {
     let mut server = BoundedTls::server_with_tickets(
         ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::imp::kernel::version::Version::V1,
+            version: hibana_quic::quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: SERVER_PARAMS,
@@ -561,7 +561,7 @@ fn replayed_clienthello_cannot_admit_early_after_first_owner_aborts() {
         let mut server = BoundedTls::server_with_early_data(
             ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
                 transport_parameters: SERVER_PARAMS,
@@ -659,7 +659,7 @@ fn broad_one_rtt_tolerance_cannot_silently_authorize_stale_early_data() {
         let mut server = BoundedTls::server_with_early_data(
             ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
                 transport_parameters: SERVER_PARAMS,
@@ -693,9 +693,9 @@ fn broad_one_rtt_tolerance_cannot_silently_authorize_stale_early_data() {
 }
 
 fn projected_early_release<'scope>(
-    admission: hibana_quic::quic::early_data::local::Admission<'scope>,
-    finished: hibana_tls::handshake::local::keys::FinishedAuthenticated<'scope>,
-    input: hibana_quic::quic::early_data::local::AuthenticatedInput<'scope, 64>,
+    admission: hibana_quic::quic::early_data::Admission<'scope>,
+    finished: hibana_tls::handshake::keys::FinishedAuthenticated<'scope>,
+    input: hibana_quic::quic::early_data::AuthenticatedInput<'scope, 64>,
     slots: &mut [QuarantineSlot<1024>],
     expected: &[u8],
 ) {
@@ -710,7 +710,7 @@ fn projected_early_release<'scope>(
         program::{RoleProgram, project},
     };
     use hibana_quic::quic::early_data::global as p;
-    use hibana_quic::quic::early_data::local;
+    use hibana_quic::quic::early_data::localside;
     use hibana_quic::runtime::TaskSet;
     use hibana_quic::runtime::carrier::CarrierStorage;
     let global = p::choreography();
@@ -730,7 +730,7 @@ fn projected_early_release<'scope>(
     let mut owner_ep = rv.enter(sid, &op).unwrap();
     let mut tls = rv.enter(sid, &tp).unwrap();
     let mut app = rv.enter(sid, &ap).unwrap();
-    let exchange = local::Exchange::<64>::new();
+    let exchange = hibana_quic::quic::early_data::Exchange::<64>::new();
     let generation = admission.generation();
     let packet_number = input.packet_number();
     {
@@ -745,9 +745,9 @@ fn projected_early_release<'scope>(
             source.send::<p::InputEnd>(&generation).await?;
             assert_eq!(source.recv::<p::InputEnded>().await?, generation);
             source.send::<p::InputRetired>(&generation).await?;
-            Ok::<_, local::Failure>(())
+            Ok::<_, hibana_quic::quic::early_data::Failure>(())
         });
-        let mut owner_task = pin!(local::run(
+        let mut owner_task = pin!(localside::run(
             &mut owner_ep,
             admission,
             EARLY_POLICY,
@@ -760,7 +760,7 @@ fn projected_early_release<'scope>(
             tls.send::<p::Verified>(&generation).await?;
             assert_eq!(tls.recv::<p::VerifiedTaken>().await?, generation);
             assert_eq!(tls.recv::<p::Retired>().await?, generation);
-            Ok::<_, local::Failure>(())
+            Ok::<_, hibana_quic::quic::early_data::Failure>(())
         });
         let mut app_task = pin!(async {
             assert_eq!(app.offer().await?.recv::<p::Range>().await?, 0);
@@ -771,7 +771,7 @@ fn projected_early_release<'scope>(
             app.send::<p::RangeApplied>(&0).await?;
             assert_eq!(app.offer().await?.recv::<p::Released>().await?, generation);
             app.send::<p::ReleaseSeen>(&generation).await?;
-            Ok::<_, local::Failure>(())
+            Ok::<_, hibana_quic::quic::early_data::Failure>(())
         });
         let mut all = pin!(TaskSet::new([
             input_task.as_mut(),

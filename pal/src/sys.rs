@@ -1,5 +1,8 @@
 //! Small native Linux/macOS boundary. No external package or protocol progress.
-use std::io;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("The native ABI implementation currently supports x86_64 and aarch64.");
+use crate::unix::error as io;
+pub(crate) mod os;
 #[cfg(target_os = "linux")]
 type Count = usize;
 #[cfg(target_os = "macos")]
@@ -65,4 +68,25 @@ pub(crate) fn entropy(destination: &mut [u8]) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) mod file;
+#[cfg(target_os = "linux")]
+pub(crate) fn entropy(mut destination: &mut [u8]) -> io::Result<()> {
+    unsafe extern "C" {
+        fn getrandom(bytes: *mut core::ffi::c_void, len: usize, flags: u32) -> isize;
+    }
+    while !destination.is_empty() {
+        // SAFETY: the unique initialized slice remains valid for its length. Flags zero waits for initialized kernel entropy.
+        let n = unsafe { getrandom(destination.as_mut_ptr().cast(), destination.len(), 0) };
+        if n < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if n == 0 || n as usize > destination.len() {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        destination = &mut destination[n as usize..];
+    }
+    Ok(())
+}

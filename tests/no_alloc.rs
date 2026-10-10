@@ -1,15 +1,15 @@
 //! Measures implemented component paths only, not a complete QUIC/TLS handshake.
-use hibana_quic::quic::imp::crypto_buffer::CryptoBuffer;
-use hibana_quic::quic::imp::kernel::accounting::AckRange;
-use hibana_quic::quic::imp::kernel::accounting::PacketKind;
-use hibana_quic::quic::imp::kernel::accounting::PathBudget;
-use hibana_quic::quic::imp::kernel::accounting::SentLedger;
-use hibana_quic::quic::imp::kernel::flow::ConnectionReceive;
-use hibana_quic::quic::imp::kernel::flow::StreamReceive;
-use hibana_quic::quic::imp::kernel::packet::decode_varint;
-use hibana_quic::quic::imp::kernel::packet::encode_varint;
-use hibana_quic::quic::imp::kernel::storage::LeasePool;
-use hibana_quic::quic::imp::kernel::storage::OwnerId;
+use hibana_quic::quic::accounting::AckRange;
+use hibana_quic::quic::accounting::PacketKind;
+use hibana_quic::quic::accounting::PathBudget;
+use hibana_quic::quic::accounting::SentLedger;
+use hibana_quic::quic::buffer::CryptoBuffer;
+use hibana_quic::quic::flow::ConnectionReceive;
+use hibana_quic::quic::flow::StreamReceive;
+use hibana_quic::quic::packet::decode_varint;
+use hibana_quic::quic::packet::encode_varint;
+use hibana_quic::quic::storage::LeasePool;
+use hibana_quic::quic::storage::OwnerId;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -82,7 +82,7 @@ fn implemented_components_do_not_allocate() {
     let mut stream = StreamReceive::new(16).unwrap();
     stream.on_data(&mut connection, 0, 8, true).unwrap();
     let mut sent = SentLedger::<4>::new(1);
-    let r = sent.reserve(PacketKind::Initial, 1200, true).unwrap();
+    let r = sent.reserve(PacketKind::Initial, 1200, true, true).unwrap();
     sent.adapter_accepted(r, 0).unwrap();
     let pn = r.packet();
     sent.acknowledge(

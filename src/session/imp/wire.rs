@@ -81,16 +81,16 @@ pub struct Decoder {
     pub len: usize,
     offset: u64,
     protocol: Protocol,
-    request: bool,
+    side: crate::quic::Side,
 }
 impl Decoder {
-    pub fn new(protocol: Protocol, request: bool) -> Self {
+    pub fn new(protocol: Protocol, side: crate::quic::Side) -> Self {
         Self {
             bytes: [0; CAPACITY],
             len: 0,
             offset: 0,
             protocol,
-            request,
+            side,
         }
     }
     pub fn consume(&mut self, n: usize) -> Result<(), ()> {
@@ -133,7 +133,7 @@ impl Decoder {
             return Err(());
         }
         let f = http3::decode_fields(&self.bytes[h.encoded_len..end]).map_err(|_| ())?;
-        if self.request {
+        if self.side == crate::quic::Side::Server {
             if f.method != Some(Method::Post)
                 || f.https != Some(true)
                 || f.status.is_some()

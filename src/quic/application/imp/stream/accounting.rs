@@ -44,14 +44,22 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
         Ok(())
     }
     pub(super) fn accept_stream(&mut self, id: u64) -> Result<StreamHandle, Error> {
+        match self.table.lookup(id) {
+            Ok(stream) => {
+                self.register(stream)?;
+                return Ok(stream);
+            }
+            Err(streams::Error::NotOpened) => {}
+            Err(error) => return Err(error.into()),
+        }
         let stream = self.table.get_or_accept(id)?;
         // Implicit lower peer streams also get real per-slot control metadata.
         let mut handles = [None; MAX_LIVE_STREAMS];
         for (slot, h) in handles.iter_mut().zip(self.table.live_handles()) {
             *slot = Some(h);
         }
-        for handle in handles.into_iter().flatten() {
-            self.register(handle)?;
+        for handle in handles.iter().flatten() {
+            self.register(*handle)?;
         }
         Ok(stream)
     }

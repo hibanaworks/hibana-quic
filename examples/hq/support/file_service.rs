@@ -15,6 +15,49 @@ use std::{
     path::Path,
     rc::Rc,
 };
+/// This selects only local file handlers. The library owns the authenticated
+/// prefix, affine handoff, stream work, retirement, closing and draining.
+pub enum Files {
+    Client(Client),
+    Server(FileServer),
+}
+
+impl Files {
+    pub fn local_limits(&self) -> hibana_quic::quic::streams::Limits {
+        match self {
+            Self::Client(client) => {
+                if super::application_storage::client_uses_large_window(client.count) {
+                    super::application_storage::local_limits::<
+                        { super::application_storage::CLIENT_RECEIVE_BYTES },
+                    >(
+                        hibana_quic::quic::Side::Client,
+                        super::application_storage::capacity(client.protocol, client.count),
+                        client.protocol,
+                    )
+                } else {
+                    super::application_storage::local_limits::<
+                        { super::application_storage::RECEIVE_BYTES },
+                    >(
+                        hibana_quic::quic::Side::Client,
+                        super::application_storage::capacity(client.protocol, client.count),
+                        client.protocol,
+                    )
+                }
+            }
+            Self::Server(server) => super::application_storage::local_limits::<
+                { super::application_storage::RECEIVE_BYTES },
+            >(
+                hibana_quic::quic::Side::Server,
+                super::application_storage::capacity(
+                    server.protocol,
+                    super::application_storage::server_capacity(server.completion_limit),
+                ),
+                server.protocol,
+            ),
+        }
+    }
+}
+
 pub const MAX_REQUESTS: usize = hibana_quic::quic::application::MAX_REQUESTS;
 #[derive(Clone, Default)]
 pub struct Diagnostics(Rc<RefCell<Option<String>>>);
@@ -378,7 +421,7 @@ impl StreamSink for Downloads {
         if protocol == Protocol::Http3 {
             let mut slab = vec![0; 65536];
             let bytes = super::http3_files::decode_response(
-                &hibana_quic_pal::fs::FileStorage(&download.file),
+                &super::native_files::FileStorage(&download.file),
                 &mut slab,
             )
             .await
@@ -522,7 +565,7 @@ mod tests {
             ready(client.downloads.write(0, &chunk[..n])).unwrap();
         }
         assert!(!destination.0.join("item").exists());
-        let reactor = hibana_quic_pal::async_io::Reactor::<1, 1>::new().unwrap();
+        let reactor = hibana_quic_pal::unix::reactor::Reactor::<1, 1>::new().unwrap();
         reactor
             .block_on(client.downloads.finish(0))
             .unwrap()

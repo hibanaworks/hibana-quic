@@ -22,28 +22,7 @@ const ZERO: EcnCounts = EcnCounts {
     ce: 0,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum Codepoint {
-    NotEct = 0,
-    Ect1 = 1,
-    Ect0 = 2,
-    Ce = 3,
-}
-impl Codepoint {
-    /// The upper six bits are DSCP, not ECN.
-    pub const fn from_ip_tos(tos: u8) -> Self {
-        match tos & 3 {
-            0 => Self::NotEct,
-            1 => Self::Ect1,
-            2 => Self::Ect0,
-            _ => Self::Ce,
-        }
-    }
-    pub const fn bits(self) -> u8 {
-        self as u8
-    }
-}
+use crate::io::Codepoint;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PathIdentity {
@@ -341,3 +320,5 @@ mod tests {
         );
     }
 }
+
+pub(crate) mod exchange;

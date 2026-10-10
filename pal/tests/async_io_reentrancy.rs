@@ -4,12 +4,12 @@
 //! callbacks reenter another timer operation without polling the same future.
 //! Unsafe is confined to the standard Arc-backed RawWaker test instrumentation.
 
-use hibana_quic_pal::async_io::Reactor;
+use hibana_quic_pal::unix::reactor::Reactor;
+use hibana_quic_pal::unix::{UdpSocket, error as io};
 use std::{
     cell::RefCell,
     future::{Future, poll_fn},
     mem::ManuallyDrop,
-    net::UdpSocket,
     pin::{Pin, pin},
     rc::Rc,
     sync::{
@@ -101,7 +101,7 @@ fn reactor() -> (Rc<TestReactor>, Hook) {
     (reactor, hook)
 }
 fn bind() -> UdpSocket {
-    UdpSocket::bind("127.0.0.1:0").unwrap()
+    UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap()
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn socket_waker_clone_replace_cancel_and_competing_error_release_registry() {
         let mut second = pin!(socket.recv_from(&mut second_bytes));
         assert!(
             matches!(second.as_mut().poll(&mut cx), Poll::Ready(Err(error))
-            if error.kind() == std::io::ErrorKind::AlreadyExists)
+            if error.kind() == io::ErrorKind::AlreadyExists)
         );
     }
     assert!(calls.clone.load(Ordering::Relaxed) >= 3);
@@ -185,7 +185,7 @@ fn timer_dispatch_calls_waker_after_releasing_registry() {
 fn socket_dispatch_and_success_call_waker_after_releasing_registry() {
     let (reactor, _hook) = reactor();
     let socket = reactor.register_udp(bind()).unwrap();
-    let sender = bind();
+    let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let address = socket.local_addr().unwrap();
     let (calls, waker) = waker();
     let mut bytes = [0; 8];

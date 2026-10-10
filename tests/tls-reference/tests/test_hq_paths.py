@@ -378,7 +378,7 @@ def validate(result, expected_hash, perturb):
         initial, active = networks["server"].get("initial") or {}, networks["server"].get("active") or {}
         require(initial.get("remote") == relay.get("initial_mapping"), "server initial remote differs from actual original NAT mapping")
         require(active.get("remote") == relay.get("replacement_mapping"), "server failed to adopt actual replacement NAT mapping")
-        require(initial.get("local") == active.get("local"), "NAT rebinding unexpectedly changed server local address")
+        require(initial.get("localside") == active.get("localside"), "NAT rebinding unexpectedly changed server localside address")
         require(networks["server"].get("active_path_changes", 0) >= 1, "server did not report an active path change")
         require(networks["server"].get("address_and_mtu_validated") is True, "replacement NAT path did not pass address and MTU validation")
         require(networks["client"].get("initial") == networks["client"].get("active"), "relay changed the client-visible tuple")
@@ -401,9 +401,9 @@ def validate(result, expected_hash, perturb):
             require(network.get("initial") != network.get("active"), f"{role} preferred-address tuple stayed unchanged")
         ci, ca = networks["client"].get("initial") or {}, networks["client"].get("active") or {}
         si, sa = networks["server"].get("initial") or {}, networks["server"].get("active") or {}
-        require(ci.get("remote") == si.get("local") == result["initial_server_address"], "preferred initial tuple does not match concrete received metadata")
-        require(ca.get("remote") == sa.get("local") == preferred, "preferred advertised address was not adopted by both endpoints")
-        require(ci.get("local") == ca.get("local") == si.get("remote") == sa.get("remote"), "preferred migration unexpectedly changed the client endpoint")
+        require(ci.get("remote") == si.get("localside") == result["initial_server_address"], "preferred initial tuple does not match concrete received metadata")
+        require(ca.get("remote") == sa.get("localside") == preferred, "preferred advertised address was not adopted by both endpoints")
+        require(ci.get("localside") == ca.get("localside") == si.get("remote") == sa.get("remote"), "preferred migration unexpectedly changed the client endpoint")
 
 
 def main():

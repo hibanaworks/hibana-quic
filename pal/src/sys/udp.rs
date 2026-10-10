@@ -1,10 +1,9 @@
 //! Native message ABI only. Ancillary bytes are parsed with checked slices.
 //! Linux UAPI and Darwin XNU bsd/sys/socket.h, netinet/in.h, netinet6/in6.h.
-use std::{
+use crate::unix::{AsRawFd, UdpSocket, error as io};
+use core::{
     ffi::c_void,
-    io,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6, UdpSocket},
-    os::fd::AsRawFd,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
 };
 #[cfg(target_os = "linux")]
 type ControlLength = usize;
@@ -30,7 +29,7 @@ struct Header {
     flags: i32,
 }
 #[repr(C, align(8))]
-struct Bytes<const N: usize>([u8; N]);
+pub(super) struct Bytes<const N: usize>(pub(super) [u8; N]);
 unsafe extern "C" {
     fn recvmsg(fd: i32, message: *mut Header, flags: i32) -> isize;
     fn sendmsg(fd: i32, message: *const Header, flags: i32) -> isize;
@@ -129,7 +128,7 @@ pub(crate) fn enable(socket: &impl AsRawFd, ipv4: bool, dual: bool) -> io::Resul
     }
     Ok(())
 }
-fn encode(address: SocketAddr) -> (Bytes<128>, u32) {
+pub(super) fn encode(address: SocketAddr) -> (Bytes<128>, u32) {
     let mut bytes = Bytes([0; 128]);
     let (family, len) = if address.is_ipv4() {
         (2u16, 16)
@@ -154,7 +153,7 @@ fn encode(address: SocketAddr) -> (Bytes<128>, u32) {
     }
     (bytes, len)
 }
-fn decode(bytes: &[u8]) -> io::Result<SocketAddr> {
+pub(super) fn decode(bytes: &[u8]) -> io::Result<SocketAddr> {
     if bytes.len() < 4 {
         return Err(invalid());
     }
@@ -418,7 +417,7 @@ pub(crate) fn send(
 }
 #[cfg(test)]
 pub(crate) fn bind_v6_only() -> io::Result<UdpSocket> {
-    use std::os::fd::{FromRawFd, OwnedFd};
+    use crate::unix::OwnedFd;
     // SAFETY: socket has no pointer parameters; a nonnegative result is a new fd.
     let fd = result(unsafe { socket(abi::AF6 as i32, 2, 0) } as isize)? as i32;
     // SAFETY: this fresh descriptor has exactly one Rust owner.
@@ -436,8 +435,8 @@ mod tests {
     #[test]
     fn live_native_ipv4_and_ipv6_metadata() {
         for bind in ["127.0.0.1:0", "[::1]:0"] {
-            let receiver = UdpSocket::bind(bind).unwrap();
-            let sender = UdpSocket::bind(bind).unwrap();
+            let receiver = UdpSocket::bind(bind.parse().unwrap()).unwrap();
+            let sender = UdpSocket::bind(bind.parse().unwrap()).unwrap();
             receiver
                 .set_read_timeout(Some(std::time::Duration::from_secs(1)))
                 .unwrap();

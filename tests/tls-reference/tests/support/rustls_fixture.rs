@@ -10,11 +10,11 @@ use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::runtime::TaskSet;
 use hibana_quic::runtime::carrier::CarrierStorage;
 use hibana_quic_reference_tls::rustls::quic::{Connection, KeyChange, Keys};
-use hibana_tls::endpoint::Level;
-use hibana_tls::endpoint::Provider;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::global;
-use hibana_tls::handshake::local;
+use hibana_tls::handshake::localside;
 use std::collections::VecDeque;
 pub struct Peer {
     pub connection: Connection,
@@ -53,8 +53,8 @@ impl Peer {
     }
 }
 struct Input<'a>(&'a RefCell<&'a mut Peer>);
-impl local::MessageInput for Input<'_> {
-    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, local::Error> {
+impl hibana_tls::handshake::MessageInput for Input<'_> {
+    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, hibana_tls::handshake::Error> {
         let mut n = 4;
         let mut copied = 0;
         while copied < n {
@@ -69,7 +69,7 @@ impl local::MessageInput for Input<'_> {
             if copied == 4 {
                 n = 4 + ((out[1] as usize) << 16) + ((out[2] as usize) << 8) + out[3] as usize;
                 if n > out.len() {
-                    return Err(local::Error::Capacity);
+                    return Err(hibana_tls::handshake::Error::Capacity);
                 }
             }
         }
@@ -89,7 +89,7 @@ pub fn handshake_observe(
     let peer = RefCell::new(peer);
     let mut input = Input(&peer);
     let mut bytes = [0; 8192];
-    let slot = local::MessageSlot::new(&mut bytes);
+    let slot = hibana_tls::handshake::MessageSlot::new(&mut bytes);
     let carrier = CarrierStorage::<1, 16, 4>::new();
     let mut slab = vec![0; 65536];
     let mut storage = SessionKitStorage::uninit();
@@ -98,25 +98,25 @@ pub fn handshake_observe(
     let rv = kit
         .rendezvous(&mut slab, carrier.bind(id).unwrap())
         .unwrap();
-    let programs = if client {
-        global::client_programs()
+    let projection = if client {
+        { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) }
     } else {
-        global::server_programs()
+        { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) }
     };
-    let mut verify = rv.enter(id, &programs.verify).unwrap();
-    let mut wire = rv.enter(id, &programs.input).unwrap();
+    let mut verify = rv.enter(id, &projection.1).unwrap();
+    let mut wire = rv.enter(id, &projection.0).unwrap();
     let owner = async {
         if client {
-            local::client_owner(&mut verify, &candidate, &slot).await
+            localside::verify::client_owner(&mut verify, &candidate, &slot).await
         } else {
-            local::server_owner(&mut verify, &candidate, &slot).await
+            localside::verify::server_owner(&mut verify, &candidate, &slot).await
         }
     };
     let receiver = async {
         if client {
-            local::client_input(&mut wire, &slot, &mut input).await
+            localside::input::client_input(&mut wire, &slot, &mut input).await
         } else {
-            local::server_input(&mut wire, &slot, &mut input).await
+            localside::input::server_input(&mut wire, &slot, &mut input).await
         }
     };
     let mut owner = pin!(owner);

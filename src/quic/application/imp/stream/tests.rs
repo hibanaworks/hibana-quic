@@ -31,7 +31,7 @@ fn production_is_one_shot_even_after_drop_and_same_stream_registration() {
     let _ = <ProductionReleased<'static> as NotCopy<_>>::witness;
     let _ = <InputReleased<'static> as NotCopy<_>>::witness;
     let _ = <DeliveryReleased<'static> as NotCopy<_>>::witness;
-    let _ = <crate::quic::application::local::reclaim::Joined<'static> as NotCopy<_>>::witness;
+    let _ = <crate::quic::application::imp::reclaim::Joined<'static> as NotCopy<_>>::witness;
     let _ = <crate::quic::imp::recovery::ApplicationLoss<'static> as NotCopy<_>>::witness;
     trait NotClone<A> {
         fn witness() {}
@@ -43,7 +43,7 @@ fn production_is_one_shot_even_after_drop_and_same_stream_registration() {
     let _ = <ProductionReleased<'static> as NotClone<_>>::witness;
     let _ = <InputReleased<'static> as NotClone<_>>::witness;
     let _ = <DeliveryReleased<'static> as NotClone<_>>::witness;
-    let _ = <crate::quic::application::local::reclaim::Joined<'static> as NotClone<_>>::witness;
+    let _ = <crate::quic::application::imp::reclaim::Joined<'static> as NotClone<_>>::witness;
     let _ = <crate::quic::imp::recovery::ApplicationLoss<'static> as NotClone<_>>::witness;
     let scope = ApplicationKeyScope::new(707);
     let mut slots = [StreamSlot::<8>::EMPTY];
@@ -682,7 +682,7 @@ fn delivered_receipt_cannot_cross_actual_tables() {
 }
 #[test]
 fn peer_stream_credit_follows_real_reclaim_and_retries_until_ack() {
-    use crate::quic::application::local::reclaim::Joined;
+    use crate::quic::application::imp::reclaim::Joined;
     let scope = ApplicationKeyScope::new(1108);
     let mut slots = [StreamSlot::<8>::EMPTY];
     let mut chunks = [SendChunk::<8>::EMPTY; 2];
@@ -775,7 +775,7 @@ fn peer_stream_credit_follows_real_reclaim_and_retries_until_ack() {
 
 #[test]
 fn owned_release_receipts_reuse_one_slot_and_ignore_only_closed_stream_frames() {
-    use crate::quic::application::local::reclaim::Joined;
+    use crate::quic::application::imp::reclaim::Joined;
     let scope = ApplicationKeyScope::new(1107);
     let mut slots = [StreamSlot::<8>::EMPTY];
     let mut chunks = [SendChunk::<8>::EMPTY; 2];

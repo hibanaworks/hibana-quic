@@ -9,7 +9,7 @@ use hibana::{Endpoint, g, runtime::ids::SessionId};
 use hibana_quic::{
     quic::application::{BodyReader, ClientRequests, ServerHandler, StreamSink},
     runtime::join2,
-    session::{self, Protocol, local::stream},
+    session::{self, Protocol, stream},
 };
 
 const CLIENT: u8 = 0;
@@ -52,7 +52,7 @@ fn projected_endpoint_rejects_reply_injected_on_the_outbound_route() {
     let mut storage = session::Storage::new();
     let mut slab = [0; 65536];
     let program = hibana::runtime::program::project::<CLIENT, _>(&global());
-    let result = drive(session::local::run(
+    let result = drive(session::localside::run(
         &mut storage,
         &mut slab,
         SessionId::new(9),
@@ -92,7 +92,7 @@ fn raw_and_http3_streams_carry_multiple_messages_with_single_byte_fragments() {
         let mut storage = session::Storage::new();
         let mut slab = [0; 65536];
         let program = hibana::runtime::program::project::<CLIENT, _>(&global());
-        drive(session::local::run(
+        drive(session::localside::run(
             &mut storage,
             &mut slab,
             SessionId::new(9),
@@ -104,7 +104,7 @@ fn raw_and_http3_streams_carry_multiple_messages_with_single_byte_fragments() {
                 let mut remote = session::Storage::new();
                 let mut remote_slab = [0; 65536];
                 let remote_program = hibana::runtime::program::project::<SERVER, _>(&global());
-                session::local::run(
+                session::localside::run(
                     &mut remote,
                     &mut remote_slab,
                     SessionId::new(9),
@@ -120,13 +120,18 @@ fn raw_and_http3_streams_carry_multiple_messages_with_single_byte_fragments() {
                     async |remote_peer| {
                         let mut request =
                             stream::Requests::new(peer, protocol, "localhost").map_err(|_| ())?;
-                        let mut input = stream::Input::new(remote_peer, protocol, true);
+                        let mut input = stream::Input::new(
+                            remote_peer,
+                            protocol,
+                            hibana_quic::quic::Side::Server,
+                        );
                         let mut service = stream::Service {
                             peer: remote_peer,
                             protocol,
                         };
                         let mut response = service.open(0, &[]).await?;
-                        let mut output = stream::Input::new(peer, protocol, false);
+                        let mut output =
+                            stream::Input::new(peer, protocol, hibana_quic::quic::Side::Client);
                         join2(
                             async {
                                 let mut prefix = [0; 1024];
@@ -177,7 +182,7 @@ fn framed_input_rejects_truncated_wrong_peer_and_oversized_messages() {
             let carrier = CarrierStorage::<4, 256, 8>::new();
             let binding = carrier.bind(SessionId::new(9)).unwrap();
             let peer = carrier.peer(CLIENT, SERVER).unwrap();
-            let mut input = stream::Input::new(&peer, protocol, false);
+            let mut input = stream::Input::new(&peer, protocol, hibana_quic::quic::Side::Client);
             let future = async {
                 let prefix: &[u8] = match protocol {
                     Protocol::Quic => b"HBN1",

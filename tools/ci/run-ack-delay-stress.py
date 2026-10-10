@@ -54,7 +54,7 @@ def main():
     binary = args.binary.resolve(strict=True)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    fixture = Path(__file__).resolve().parents[2] / 'pal/tests/test_direct_parallel_localhost.py'
+    fixture = Path(__file__).resolve().parents[2] / 'tests/interop/native/test_direct_parallel_localhost.py'
     summary = {'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                'scope': 'native self-peer stress; separate from official independent interop',
                'criterion': 'authenticated matching files and retired owners; server idle is reported separately',

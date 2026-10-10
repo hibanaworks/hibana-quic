@@ -1,4 +1,4 @@
-//! Reconstructed regression tests; require fresh execution.
+//! Regression tests for scoped QUIC scheduling.
 use super::*;
 use std::{boxed::Box, sync::Arc, task::Wake};
 std::thread_local! {

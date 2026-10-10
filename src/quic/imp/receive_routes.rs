@@ -1,7 +1,7 @@
 //! Bounded host datagram routing. This owns only received bytes, never QUIC
 //! progress, keys, completion permission, or a connection's retirement decision.
 //! A single physical reader dispatches to independently owned receivers.
-use crate::quic::path::Address;
+use crate::io::Address;
 use alloc::{collections::VecDeque, rc::Rc, vec::Vec};
 use core::{
     cell::RefCell,
@@ -23,14 +23,14 @@ pub struct Packet<const BYTES: usize> {
     address: Address,
     bytes: [u8; BYTES],
     len: usize,
-    ecn: Option<crate::quic::ecn::imp::Codepoint>,
+    ecn: Option<crate::io::Codepoint>,
 }
 impl<const BYTES: usize> Packet<BYTES> {
     pub fn address(&self) -> Address {
         self.address
     }
 
-    pub fn ecn(&self) -> Option<crate::quic::ecn::imp::Codepoint> {
+    pub fn ecn(&self) -> Option<crate::io::Codepoint> {
         self.ecn
     }
     pub fn bytes(&self) -> &[u8] {
@@ -116,7 +116,7 @@ impl<const BYTES: usize> Dispatcher<BYTES> {
         address: Address,
         destination: &[u8],
         bytes: &[u8],
-        ecn: Option<crate::quic::ecn::imp::Codepoint>,
+        ecn: Option<crate::io::Codepoint>,
     ) -> Delivery {
         if bytes.len() > BYTES {
             return Delivery::Oversized;
@@ -220,7 +220,7 @@ mod tests {
                 address(1),
                 b"new-local",
                 b"new packet",
-                Some(crate::quic::ecn::imp::Codepoint::Ect1)
+                Some(crate::io::Codepoint::Ect1)
             ),
             Delivery::Queued
         );
@@ -229,7 +229,7 @@ mod tests {
             panic!("new owner did not receive");
         };
         assert_eq!(packet.bytes(), b"new packet");
-        assert_eq!(packet.ecn(), Some(crate::quic::ecn::imp::Codepoint::Ect1));
+        assert_eq!(packet.ecn(), Some(crate::io::Codepoint::Ect1));
         assert!(old_read.as_mut().poll(&mut cx).is_pending());
     }
     #[test]

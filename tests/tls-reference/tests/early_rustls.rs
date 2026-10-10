@@ -1,18 +1,18 @@
 //! Independent cross-peer PSK_DHE tests using pinned rustls QUIC directly.
 //! The rustls peer allocates; bounded zero-allocation evidence is in resumption.rs.
-use hibana_quic::quic::early_data::imp::EarlyFreshness;
-use hibana_quic::quic::early_data::imp::EarlyStatus;
-use hibana_quic::quic::early_data::imp::QuarantineSlot;
-use hibana_quic::quic::early_data::imp::ReplayStorage;
-use hibana_quic::quic::early_data::imp::ServerPolicy;
-use hibana_quic_pal::entropy::KernelEntropy;
+use hibana_quic::quic::early_data::EarlyFreshness;
+use hibana_quic::quic::early_data::EarlyStatus;
+use hibana_quic::quic::early_data::QuarantineSlot;
+use hibana_quic::quic::early_data::ReplayStorage;
+use hibana_quic::quic::early_data::ServerPolicy;
+use hibana_quic_pal::unix::entropy::KernelEntropy;
 use hibana_quic_reference_tls::rustls;
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::UnixTime;
 use hibana_tls::certificate::trust_anchor_from_der;
-use hibana_tls::endpoint::Level;
-use hibana_tls::endpoint::Provider;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::ClientConfig;
 use hibana_tls::handshake::ClientEarlyData;
@@ -170,7 +170,7 @@ fn bounded_client_early_keys_interoperate_with_rustls_and_explicit_rejection() {
             let mut buffers = Buffers::new();
             let client = ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),
@@ -285,7 +285,7 @@ fn rustls_client_early_keys_interoperate_and_real_hrr_rejects_early_only() {
             let mut entropy = KernelEntropy;
             let server = ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
                 transport_parameters: SERVER_PARAMS,
@@ -365,7 +365,7 @@ fn rustls_client_early_keys_interoperate_and_real_hrr_rejects_early_only() {
                         assert_eq!(bounded.early_status(), EarlyStatus::Rejected);
                         assert_eq!(
                             bounded.open_early(0, b"header", &mut packet[..request.len() + 16]),
-                            Err(hibana_tls::endpoint::Error::KeysUnavailable)
+                            Err(hibana_tls::quic::Error::KeysUnavailable)
                         );
                     }
                 }

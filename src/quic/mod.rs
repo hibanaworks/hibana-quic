@@ -1,25 +1,33 @@
 //! Direct role-local QUIC connection from the composed global choreography.
-//! TLS message order runs in tls::handshake::{global,local}; packet framing,
+//! TLS message order runs in tls::handshake::{global,localside}; packet framing,
 //! cryptographic arithmetic and recovery bookkeeping remain role-owned data.
 
 pub mod early_data;
 pub mod ecn;
-use imp::kernel;
 pub mod path;
 pub mod retry;
 
-pub use local::AttachmentError;
+pub use localside::AttachmentError;
 
 pub mod application;
-use application::imp::stream;
-use imp::application_wire;
-use imp::early_wire;
 pub mod global;
-pub mod imp;
-pub(crate) use local::initial;
-pub mod local;
-use imp::parameters;
-use imp::recovery;
+pub(crate) mod imp;
+
+pub use imp::crypto_buffer as buffer;
+pub use imp::kernel::parameters as transport_parameters;
+pub use imp::kernel::recovery as loss;
+/// Packet codecs and bounded numerical types for caller-owned connections.
+pub use imp::kernel::{
+    accounting, connection_id, flights, flow, new_token, packet, storage, streams, version,
+};
+pub use imp::publication_gate as publication;
+pub use imp::tls as transcript;
+pub use imp::{application_wire, early_requests, early_wire};
+#[cfg(feature = "alloc")]
+pub use imp::{datagram, receive_routes as routing};
+pub mod localside;
+pub use imp::parameters;
+pub use imp::recovery;
 #[cfg(test)]
 mod scheduler_tests;
 use imp::tls;
@@ -39,9 +47,9 @@ use hibana::{
     Endpoint, EndpointError,
     runtime::resolver::{DecisionArm, ResolverError, ResolverRef},
 };
-use hibana_tls::endpoint::Level;
-use hibana_tls::handshake::local::keys::ReceivePacketKey;
-use hibana_tls::handshake::local::keys::TransmitPacketKey;
+use hibana_tls::handshake::keys::ReceivePacketKey;
+use hibana_tls::handshake::keys::TransmitPacketKey;
+use hibana_tls::quic::Level;
 use tls::{CryptoFlight, CryptoInput, Finished, Inbox, InboxError, Transcript};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,7 +60,7 @@ pub enum Side {
 
 #[derive(Clone, Copy)]
 pub struct Config<'a> {
-    pub initial_path: Option<crate::quic::path::Address>,
+    pub initial_path: Option<crate::io::Address>,
     pub local_preferred: Option<crate::quic::path::imp::preferred::Preferred>,
     pub version: crate::quic::imp::kernel::version::Version,
     pub side: Side,
@@ -86,7 +94,7 @@ pub use crate::io::{Clock, DatagramRx, DatagramTx, IoError, ReceivedDatagram};
 #[derive(Debug)]
 pub enum Error {
     Endpoint(EndpointError),
-    Transcript(hibana_tls::handshake::local::Error),
+    Transcript(hibana_tls::handshake::Error),
     Resolver(ResolverError),
     Crypto(crypto::Error),
     EndpointAt {
@@ -94,7 +102,7 @@ pub enum Error {
         expected_label: u8,
         error: EndpointError,
     },
-    Tls(hibana_tls::endpoint::Error),
+    Tls(hibana_tls::quic::Error),
     Packet(crate::quic::imp::kernel::packet::Error),
     Reassembly(crate::quic::imp::crypto_buffer::Error),
     Recovery(recovery::Error),
@@ -122,8 +130,8 @@ impl From<crypto::Error> for Error {
         Self::Crypto(v)
     }
 }
-impl From<hibana_tls::endpoint::Error> for Error {
-    fn from(v: hibana_tls::endpoint::Error) -> Self {
+impl From<hibana_tls::quic::Error> for Error {
+    fn from(v: hibana_tls::quic::Error) -> Self {
         Self::Tls(v)
     }
 }
@@ -286,7 +294,7 @@ pub struct Storage<'scope, 'book, const N: usize, const P: usize> {
     write_application: Inbox<ApplicationWriteKeys<'scope>>,
     finished: Inbox<Finished<'scope, P>>,
     datagram: Inbox<wire::Datagram<'book, N>>,
-    failure: Cell<Option<hibana_tls::endpoint::Error>>,
+    failure: Cell<Option<hibana_tls::quic::Error>>,
     early_packets: RefCell<Option<&'book mut dyn early_wire::RetainPackets>>,
     pending_application: RefCell<Option<([u8; N], ReceivedDatagram, u64)>>,
 }
@@ -321,8 +329,8 @@ impl<'scope, 'book, const N: usize, const P: usize> Storage<'scope, 'book, N, P>
     fn retain_application(
         &self,
         packet: &[u8],
-        ecn: Option<crate::quic::ecn::imp::Codepoint>,
-        path: Option<crate::quic::path::Address>,
+        ecn: Option<crate::io::Codepoint>,
+        path: Option<crate::io::Address>,
         received_at: u64,
     ) -> Result<(), Error> {
         if packet.is_empty() || packet.len() > N {
@@ -364,8 +372,8 @@ impl<const N: usize, const P: usize> Drop for Clear<'_, '_, '_, N, P> {
     }
 }
 
-pub use local::handshake;
-pub(crate) use local::handshake_with_early;
+pub use localside::handshake;
+pub(crate) use localside::handshake_with_early;
 
 use imp::publication_gate;
 

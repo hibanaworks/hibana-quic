@@ -9,14 +9,14 @@ use crate::quic::early_data::imp::RememberedLimits;
 use crate::quic::early_data::imp::ReplayClaim;
 use crate::quic::imp::kernel::packet::MAX_VARINT;
 use core::cell::RefCell;
-use hibana_tls::endpoint::Error;
-use hibana_tls::endpoint::Level;
-use hibana_tls::endpoint::Observations;
-use hibana_tls::handshake::local::keys::EarlyKeyMaterial;
-use hibana_tls::handshake::local::keys::FinishedAuthenticated;
-use hibana_tls::handshake::local::keys::KeySource;
-use hibana_tls::handshake::local::keys::ReceivePacketKey;
-use hibana_tls::handshake::local::keys::TransmitPacketKey;
+use hibana_tls::handshake::keys::EarlyKeyMaterial;
+use hibana_tls::handshake::keys::FinishedAuthenticated;
+use hibana_tls::handshake::keys::KeySource;
+use hibana_tls::handshake::keys::ReceivePacketKey;
+use hibana_tls::handshake::keys::TransmitPacketKey;
+use hibana_tls::quic::Error;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Observations;
 
 pub struct CryptoInput<'scope, const N: usize> {
     scope: &'scope ApplicationKeyScope,
@@ -91,7 +91,7 @@ impl<const N: usize> Drop for CryptoFlight<N> {
         self.bytes.erase();
     }
 }
-pub use hibana_tls::handshake::local::keys::{Finished, PeerParameters};
+pub use hibana_tls::handshake::keys::{Finished, PeerParameters};
 
 pub struct Transcript<'scope, 'cfg, 'buf> {
     pub(in crate::quic) source: KeySource<'scope, 'cfg, 'buf>,
@@ -203,7 +203,7 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
     }
     pub fn take_early_admission(
         &mut self,
-    ) -> Result<crate::quic::early_data::local::Admission<'scope>, Error> {
+    ) -> Result<crate::quic::early_data::Admission<'scope>, Error> {
         self.ensure_live()?;
         self.source.take_early_admission()
     }

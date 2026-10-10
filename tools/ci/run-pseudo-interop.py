@@ -8,7 +8,7 @@ from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--binary',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
 p.add_argument('--loss-scope',choices=('global','per-connection'),default='global')
 a=p.parse_args();binary=a.binary.resolve(strict=True);out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
-root=Path(__file__).resolve().parents[2];tests=root/'pal/tests'
+root=Path(__file__).resolve().parents[2];tests=root/'tests/interop/native'
 cases=[
  ('proxy-unit',['-m','unittest','discover','-s',str(tests),'-p','test_udp_impairment.py'],30),
  ('handshake',[str(tests/'test_direct_handshake_localhost.py'),'--binary',str(binary),'--output',str(out/'handshake.json')],60),

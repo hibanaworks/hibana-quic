@@ -7,7 +7,7 @@
 //!
 //! References: RFC 9000 sections 8.1, 12.3, 13.1; RFC 9002 section 7.2.
 
-use crate::quic::ecn::imp::Codepoint;
+use crate::io::Codepoint;
 use crate::quic::ecn::imp::MarkedPackets;
 use crate::quic::ecn::imp::PathIdentity;
 
@@ -308,29 +308,11 @@ impl<const CAPACITY: usize> SentLedger<CAPACITY> {
         }
     }
 
-    /// Reserve a history slot and its future in-flight counter capacity before
-    /// exposing any packet to the adapter. `in_flight` is a caller-supplied RFC
-    /// 9002 classification (ACK-eliciting or containing PADDING), not merely
-    /// whether the datagram has bytes. A false classification must therefore
-    /// carry no retransmittable payload: accepted ACK-only records may be
-    /// reclaimed by `reclaim_completed_prefix`. Congestion-window checks belong
-    /// upstream. This compatibility API conservatively treats every in-flight
-    /// packet as ACK-eliciting. Use `reserve_classified` for precise PTO/RTT
-    /// inputs, particularly for ACK+PADDING packets.
-    pub fn reserve(
-        &mut self,
-        kind: PacketKind,
-        bytes: u64,
-        in_flight: bool,
-    ) -> Result<SendReservation, AccountingError> {
-        self.reserve_classified(kind, bytes, in_flight, in_flight)
-    }
-
     /// Reserve with independent congestion-accounting and ACK-eliciting facts.
     /// PADDING makes a packet in-flight but does not elicit ACKs. ACK-eliciting
     /// packets must be in-flight; rejecting a contradictory classification burns
     /// neither a slot nor a packet number.
-    pub fn reserve_classified(
+    pub fn reserve(
         &mut self,
         kind: PacketKind,
         bytes: u64,
@@ -1194,7 +1176,9 @@ mod tests {
             for index in 0..5 {
                 let state = (pattern >> (index * 2)) & 3;
                 for ledger in [&mut original, &mut compact] {
-                    let r = ledger.reserve(PacketKind::OneRtt, 10, state == 1).unwrap();
+                    let r = ledger
+                        .reserve(PacketKind::OneRtt, 10, state == 1, state == 1)
+                        .unwrap();
                     match state {
                         0 | 1 => ledger.adapter_accepted(r, index as u64).unwrap(),
                         2 => ledger.cancel(r).unwrap(),
@@ -1221,13 +1205,15 @@ mod tests {
     #[test]
     fn compact_ack_history_does_not_pin_an_outstanding_packet_or_invent_receipts() {
         let mut ledger = SentLedger::<4>::new(1);
-        let outstanding = ledger.reserve(PacketKind::OneRtt, 50, true).unwrap();
+        let outstanding = ledger.reserve(PacketKind::OneRtt, 50, true, true).unwrap();
         ledger.adapter_accepted(outstanding, 1).unwrap();
         for pn in 1..=256 {
             if ledger.remaining_capacity() == 0 {
                 ledger.compact_ack_history().unwrap();
             }
-            let ack = ledger.reserve(PacketKind::OneRtt, 10, false).unwrap();
+            let ack = ledger
+                .reserve(PacketKind::OneRtt, 10, false, false)
+                .unwrap();
             assert_eq!(ack.packet().value, pn);
             ledger.adapter_accepted(ack, pn + 1).unwrap();
             assert_eq!(ledger.reclaim_completed_prefix(APP).unwrap(), 0);
@@ -1273,7 +1259,9 @@ mod tests {
     #[test]
     fn compact_ack_history_is_space_local_and_discarded_only_at_retirement() {
         let mut ledger = SentLedger::<4>::new(1);
-        let sent = ledger.reserve(PacketKind::OneRtt, 10, false).unwrap();
+        let sent = ledger
+            .reserve(PacketKind::OneRtt, 10, false, false)
+            .unwrap();
         ledger.adapter_accepted(sent, 3).unwrap();
         ledger.compact_ack_history().unwrap();
         let range = [AckRange { start: 0, end: 0 }];
@@ -1321,13 +1309,13 @@ mod tests {
             ..old
         };
         let mut ledger = SentLedger::<8>::new(9);
-        let candidate = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
+        let candidate = ledger.reserve(PacketKind::OneRtt, 100, true, true).unwrap();
         ledger
             .adapter_accepted_on_path(candidate, 0, Codepoint::NotEct, old)
             .unwrap();
         let mut largest = 0;
         for i in 1..=3 {
-            let sent = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
+            let sent = ledger.reserve(PacketKind::OneRtt, 100, true, true).unwrap();
             ledger
                 .adapter_accepted_on_path(sent, i, Codepoint::NotEct, current)
                 .unwrap();
@@ -1342,7 +1330,7 @@ mod tests {
             ledger.count_later_sent_on_path(candidate.packet(), largest, current),
             0
         );
-        let same = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
+        let same = ledger.reserve(PacketKind::OneRtt, 100, true, true).unwrap();
         ledger
             .adapter_accepted_on_path(same, 4, Codepoint::NotEct, old)
             .unwrap();
@@ -1371,8 +1359,8 @@ mod tests {
             ..old
         };
         let mut ledger = SentLedger::<8>::new(9);
-        let a = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
-        let b = ledger.reserve(PacketKind::OneRtt, 200, true).unwrap();
+        let a = ledger.reserve(PacketKind::OneRtt, 100, true, true).unwrap();
+        let b = ledger.reserve(PacketKind::OneRtt, 200, true, true).unwrap();
         ledger
             .adapter_accepted_on_path(a, 10, Codepoint::Ect0, old)
             .unwrap();
@@ -1415,7 +1403,7 @@ mod tests {
             path_generation: 1,
         };
         let mut ledger = SentLedger::<4>::new(9);
-        let pending = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
+        let pending = ledger.reserve(PacketKind::OneRtt, 100, true, true).unwrap();
         assert_eq!(
             ledger.adapter_accepted_on_path(
                 pending,
@@ -1452,7 +1440,7 @@ mod tests {
         };
         let mut ledger = SentLedger::<4>::new(9);
         let packet = ledger
-            .reserve_classified(PacketKind::OneRtt, 30, false, false)
+            .reserve(PacketKind::OneRtt, 30, false, false)
             .unwrap();
         ledger
             .adapter_accepted_on_path(packet, 5, Codepoint::NotEct, old)
@@ -1482,8 +1470,10 @@ mod tests {
             path_generation: 1,
         };
         let mut ledger = SentLedger::<4>::new(9);
-        let early = ledger.reserve(PacketKind::ZeroRtt, 100, true).unwrap();
-        let later = ledger.reserve(PacketKind::OneRtt, 200, true).unwrap();
+        let early = ledger
+            .reserve(PacketKind::ZeroRtt, 100, true, true)
+            .unwrap();
+        let later = ledger.reserve(PacketKind::OneRtt, 200, true, true).unwrap();
         ledger
             .adapter_accepted_on_path(early, 1, Codepoint::NotEct, path)
             .unwrap();
@@ -1500,12 +1490,16 @@ mod tests {
     #[test]
     fn congestion_bounds_are_space_local_monotone_and_not_exact_rtt_samples() {
         let mut ledger = SentLedger::<4>::new(7);
-        let initial = ledger.reserve(PacketKind::Initial, 10, false).unwrap();
+        let initial = ledger
+            .reserve(PacketKind::Initial, 10, false, false)
+            .unwrap();
         ledger.adapter_accepted(initial, 100).unwrap();
         ledger
             .reclaim_completed_prefix(PacketNumberSpace::Initial)
             .unwrap();
-        let cancelled = ledger.reserve(PacketKind::OneRtt, 10, false).unwrap();
+        let cancelled = ledger
+            .reserve(PacketKind::OneRtt, 10, false, false)
+            .unwrap();
         ledger.cancel(cancelled).unwrap();
         ledger
             .reclaim_completed_prefix(PacketNumberSpace::ApplicationData)
@@ -1514,7 +1508,7 @@ mod tests {
             ledger.congestion_sent_at_upper_bound(cancelled.packet()),
             None
         );
-        let lost = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
+        let lost = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
         ledger.adapter_accepted(lost, 20).unwrap();
         ledger.declare_lost(lost.packet()).unwrap();
         ledger
@@ -1529,7 +1523,7 @@ mod tests {
             ledger.congestion_sent_at_upper_bound(initial.packet()),
             Some(100)
         );
-        let retained = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
+        let retained = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
         ledger.adapter_accepted(retained, 30).unwrap();
         assert_eq!(
             ledger.congestion_sent_at_upper_bound(retained.packet()),
@@ -1552,13 +1546,13 @@ mod tests {
     #[test]
     fn ecn_commits_only_on_acceptance_and_survives_loss_and_reclaim() {
         let mut ledger = SentLedger::<4>::new(7);
-        let cancelled = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
+        let cancelled = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
         ledger.cancel(cancelled).unwrap();
         assert_eq!(
             ledger.accepted_ecn_counts(PacketNumberSpace::ApplicationData),
             MarkedPackets::default()
         );
-        let accepted = ledger.reserve(PacketKind::OneRtt, 20, true).unwrap();
+        let accepted = ledger.reserve(PacketKind::OneRtt, 20, true, true).unwrap();
         ledger
             .adapter_accepted_ecn(accepted, 10, Codepoint::Ect0)
             .unwrap();
@@ -1595,7 +1589,7 @@ mod tests {
     #[test]
     fn ecn_overflow_and_ce_reject_before_flight_mutation() {
         let mut ledger = SentLedger::<2>::new(7);
-        let reservation = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
+        let reservation = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
         assert_eq!(
             ledger.adapter_accepted_ecn(reservation, 1, Codepoint::Ce),
             Err(AccountingError::InvalidClassification)
@@ -1654,7 +1648,9 @@ mod tests {
     #[test]
     fn cancelled_and_retry_repacketized_numbers_are_never_reused() {
         let mut ledger = SentLedger::<2>::new(1);
-        let first = ledger.reserve(PacketKind::Initial, 1200, true).unwrap();
+        let first = ledger
+            .reserve(PacketKind::Initial, 1200, true, true)
+            .unwrap();
         assert_eq!(ledger.bytes_in_flight(), 0);
         assert_eq!(ledger.reserved_in_flight(), 1200);
         ledger.cancel(first).unwrap();
@@ -1665,7 +1661,9 @@ mod tests {
         ledger.forget_before(PacketNumberSpace::Initial, 1).unwrap();
         // Retry changes crypto/header state upstream; this same connection
         // allocator is retained and a newly packetized Initial gets PN 1.
-        let retry = ledger.reserve(PacketKind::Initial, 1200, true).unwrap();
+        let retry = ledger
+            .reserve(PacketKind::Initial, 1200, true, true)
+            .unwrap();
         assert_eq!(retry.packet().value, 1);
         assert_eq!(
             ledger.adapter_accepted(first, 1),
@@ -1679,7 +1677,9 @@ mod tests {
     fn duplicate_ack_and_loss_never_double_subtract() {
         for loss_first in [true, false] {
             let mut ledger = SentLedger::<1>::new(1);
-            let reservation = ledger.reserve(PacketKind::OneRtt, 1200, true).unwrap();
+            let reservation = ledger
+                .reserve(PacketKind::OneRtt, 1200, true, true)
+                .unwrap();
             ledger.adapter_accepted(reservation, 10).unwrap();
             let packet = reservation.packet();
             if loss_first {
@@ -1708,7 +1708,7 @@ mod tests {
     #[test]
     fn cancellation_after_acceptance_is_rejected() {
         let mut ledger = SentLedger::<1>::new(1);
-        let r = ledger.reserve(PacketKind::OneRtt, 200, true).unwrap();
+        let r = ledger.reserve(PacketKind::OneRtt, 200, true, true).unwrap();
         assert_eq!(
             ack(&mut ledger, r.packet()),
             Err(AccountingError::UnsentPacket)
@@ -1729,9 +1729,9 @@ mod tests {
     #[test]
     fn ack_ranges_validate_atomically_without_iterating_packet_number_gaps() {
         let mut ledger = SentLedger::<3>::new(1);
-        let a = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
-        let gap = ledger.reserve(PacketKind::OneRtt, 20, true).unwrap();
-        let b = ledger.reserve(PacketKind::OneRtt, 30, true).unwrap();
+        let a = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
+        let gap = ledger.reserve(PacketKind::OneRtt, 20, true, true).unwrap();
+        let b = ledger.reserve(PacketKind::OneRtt, 30, true, true).unwrap();
         ledger.adapter_accepted(a, 0).unwrap();
         ledger.cancel(gap).unwrap();
         ledger.adapter_accepted(b, 0).unwrap();
@@ -1771,7 +1771,7 @@ mod tests {
     #[test]
     fn malformed_ack_ranges_leave_flight_unchanged() {
         let mut ledger = SentLedger::<2>::new(1);
-        let r = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
+        let r = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
         ledger.adapter_accepted(r, 0).unwrap();
         for range in [
             AckRange { start: 2, end: 1 },
@@ -1804,11 +1804,11 @@ mod tests {
     #[test]
     fn ack_prevalidation_is_read_only_and_rejects_malformed_frames_atomically() {
         let mut ledger = SentLedger::<3>::new(1);
-        let sent = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
+        let sent = ledger.reserve(PacketKind::OneRtt, 100, true, true).unwrap();
         ledger.adapter_accepted(sent, 10).unwrap();
-        let cancelled = ledger.reserve(PacketKind::OneRtt, 200, true).unwrap();
+        let cancelled = ledger.reserve(PacketKind::OneRtt, 200, true, true).unwrap();
         ledger.cancel(cancelled).unwrap();
-        let _pending = ledger.reserve(PacketKind::OneRtt, 300, true).unwrap();
+        let _pending = ledger.reserve(PacketKind::OneRtt, 300, true, true).unwrap();
         let valid = [AckRange { start: 0, end: 0 }];
         for _ in 0..2 {
             assert_eq!(ledger.validate_ack(APP, &valid), Ok(()));
@@ -1861,7 +1861,7 @@ mod tests {
     #[test]
     fn previous_ack_validation_does_not_bypass_later_retirement() {
         let mut ledger = SentLedger::<1>::new(1);
-        let sent = ledger.reserve(PacketKind::OneRtt, 100, true).unwrap();
+        let sent = ledger.reserve(PacketKind::OneRtt, 100, true, true).unwrap();
         ledger.adapter_accepted(sent, 0).unwrap();
         let range = [AckRange { start: 0, end: 0 }];
         ledger.validate_ack(APP, &range).unwrap();
@@ -1880,7 +1880,7 @@ mod tests {
     #[test]
     fn bounded_history_returns_backpressure_and_ignores_old_ack() {
         let mut ledger = SentLedger::<1>::new(1);
-        let r = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
+        let r = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
         assert_eq!(
             ledger.forget_before(APP, 1),
             Err(AccountingError::OutstandingPackets)
@@ -1892,7 +1892,7 @@ mod tests {
         );
         ack(&mut ledger, r.packet()).unwrap();
         assert_eq!(
-            ledger.reserve(PacketKind::OneRtt, 10, true),
+            ledger.reserve(PacketKind::OneRtt, 10, true, true),
             Err(AccountingError::Full)
         );
         ledger.forget_before(APP, 1).unwrap();
@@ -1900,7 +1900,7 @@ mod tests {
         assert_eq!(ack(&mut ledger, r.packet()), Ok(AckSummary::default()));
         assert_eq!(
             ledger
-                .reserve(PacketKind::OneRtt, 10, true)
+                .reserve(PacketKind::OneRtt, 10, true, true)
                 .unwrap()
                 .packet()
                 .value,
@@ -1911,13 +1911,13 @@ mod tests {
     #[test]
     fn mixed_old_and_new_ack_processes_retained_suffix_atomically() {
         let mut ledger = SentLedger::<2>::new(1);
-        let old = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
+        let old = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
         ledger.adapter_accepted(old, 0).unwrap();
         ack(&mut ledger, old.packet()).unwrap();
         ledger.forget_before(APP, 1).unwrap();
-        let current = ledger.reserve(PacketKind::OneRtt, 20, true).unwrap();
+        let current = ledger.reserve(PacketKind::OneRtt, 20, true, true).unwrap();
         ledger.adapter_accepted(current, 1).unwrap();
-        let cancelled = ledger.reserve(PacketKind::OneRtt, 30, true).unwrap();
+        let cancelled = ledger.reserve(PacketKind::OneRtt, 30, true, true).unwrap();
         ledger.cancel(cancelled).unwrap();
         assert_eq!(
             ledger.acknowledge(APP, &[AckRange { start: 0, end: 2 }]),
@@ -1947,7 +1947,12 @@ mod tests {
         for number in 0..256_u64 {
             let locally_cancelled = number % 2 == 0;
             let reservation = ledger
-                .reserve(PacketKind::OneRtt, 1200, locally_cancelled)
+                .reserve(
+                    PacketKind::OneRtt,
+                    1200,
+                    locally_cancelled,
+                    locally_cancelled,
+                )
                 .unwrap();
             assert_eq!(reservation.packet().value, number);
             // Even ACK-only construction is still pending until the adapter
@@ -1978,10 +1983,14 @@ mod tests {
     #[test]
     fn reclamation_never_crosses_pending_or_in_flight_data() {
         let mut ledger = SentLedger::<3>::new(1);
-        let data = ledger.reserve(PacketKind::OneRtt, 1200, true).unwrap();
-        let ack_only = ledger.reserve(PacketKind::OneRtt, 80, false).unwrap();
+        let data = ledger
+            .reserve(PacketKind::OneRtt, 1200, true, true)
+            .unwrap();
+        let ack_only = ledger
+            .reserve(PacketKind::OneRtt, 80, false, false)
+            .unwrap();
         ledger.adapter_accepted(ack_only, 0).unwrap();
-        let completed = ledger.reserve(PacketKind::OneRtt, 900, true).unwrap();
+        let completed = ledger.reserve(PacketKind::OneRtt, 900, true, true).unwrap();
         ledger.adapter_accepted(completed, 0).unwrap();
         ack(&mut ledger, completed.packet()).unwrap();
 
@@ -1997,7 +2006,7 @@ mod tests {
         assert_eq!(ledger.retained_records(), 0);
         assert_eq!(
             ledger
-                .reserve(PacketKind::OneRtt, 1200, true)
+                .reserve(PacketKind::OneRtt, 1200, true, true)
                 .unwrap()
                 .packet()
                 .value,
@@ -2008,8 +2017,12 @@ mod tests {
     #[test]
     fn reclamation_is_space_local_and_retirement_failure_is_atomic() {
         let mut ledger = SentLedger::<2>::new(1);
-        let initial = ledger.reserve(PacketKind::Initial, 1200, true).unwrap();
-        let app = ledger.reserve(PacketKind::OneRtt, 80, false).unwrap();
+        let initial = ledger
+            .reserve(PacketKind::Initial, 1200, true, true)
+            .unwrap();
+        let app = ledger
+            .reserve(PacketKind::OneRtt, 80, false, false)
+            .unwrap();
         ledger.adapter_accepted(app, 0).unwrap();
         assert_eq!(ledger.reclaim_completed_prefix(APP), Ok(1));
         assert_eq!(
@@ -2030,19 +2043,25 @@ mod tests {
     #[test]
     fn recovery_snapshots_and_exact_new_ack_state_are_distinct() {
         let mut ledger = SentLedger::<6>::new(1);
-        let sent = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
+        let sent = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
         ledger.adapter_accepted(sent, 10).unwrap();
-        let lost = ledger.reserve(PacketKind::OneRtt, 200, true).unwrap();
+        let lost = ledger.reserve(PacketKind::OneRtt, 200, true, true).unwrap();
         ledger.adapter_accepted(lost, 20).unwrap();
         ledger.declare_lost(lost.packet()).unwrap();
-        let ack_only = ledger.reserve(PacketKind::Initial, 40, false).unwrap();
+        let ack_only = ledger
+            .reserve(PacketKind::Initial, 40, false, false)
+            .unwrap();
         ledger.adapter_accepted(ack_only, 30).unwrap();
-        let acked = ledger.reserve(PacketKind::Initial, 300, true).unwrap();
+        let acked = ledger
+            .reserve(PacketKind::Initial, 300, true, true)
+            .unwrap();
         ledger.adapter_accepted(acked, 40).unwrap();
         ack(&mut ledger, acked.packet()).unwrap();
-        let cancelled = ledger.reserve(PacketKind::Initial, 15, true).unwrap();
+        let cancelled = ledger.reserve(PacketKind::Initial, 15, true, true).unwrap();
         ledger.cancel(cancelled).unwrap();
-        let pending = ledger.reserve(PacketKind::OneRtt, 20, true).unwrap();
+        let pending = ledger.reserve(PacketKind::OneRtt, 20, true, true).unwrap();
         assert_eq!(ledger.outstanding_sent().count(), 2);
         assert_eq!(
             ledger
@@ -2086,17 +2105,17 @@ mod tests {
     fn padding_only_is_in_flight_but_not_ack_eliciting() {
         let mut ledger = SentLedger::<3>::new(1);
         assert_eq!(
-            ledger.reserve_classified(PacketKind::OneRtt, 100, false, true),
+            ledger.reserve(PacketKind::OneRtt, 100, false, true),
             Err(AccountingError::InvalidClassification)
         );
         assert_eq!(ledger.next_packet_number(APP), Some(0));
         assert_eq!(ledger.retained_records(), 0);
         let padding = ledger
-            .reserve_classified(PacketKind::Initial, 1200, true, false)
+            .reserve(PacketKind::Initial, 1200, true, false)
             .unwrap();
         ledger.adapter_accepted(padding, 0).unwrap();
         let ack_only = ledger
-            .reserve_classified(PacketKind::OneRtt, 80, false, false)
+            .reserve(PacketKind::OneRtt, 80, false, false)
             .unwrap();
         ledger.adapter_accepted(ack_only, 1).unwrap();
         assert_eq!(ledger.bytes_in_flight(), 1200);
@@ -2113,9 +2132,7 @@ mod tests {
             .unwrap();
         assert!(snapshot.in_flight);
         assert!(!snapshot.ack_eliciting);
-        let crypto = ledger
-            .reserve_classified(PacketKind::OneRtt, 500, true, true)
-            .unwrap();
+        let crypto = ledger.reserve(PacketKind::OneRtt, 500, true, true).unwrap();
         ledger.adapter_accepted(crypto, 2).unwrap();
         assert_eq!(
             ledger
@@ -2130,17 +2147,13 @@ mod tests {
     #[test]
     fn late_lost_ack_keeps_rtt_classification_without_counting_flight_twice() {
         let mut ledger = SentLedger::<3>::new(1);
-        let sent = ledger
-            .reserve_classified(PacketKind::OneRtt, 100, true, true)
-            .unwrap();
+        let sent = ledger.reserve(PacketKind::OneRtt, 100, true, true).unwrap();
         ledger.adapter_accepted(sent, 10).unwrap();
-        let lost = ledger
-            .reserve_classified(PacketKind::OneRtt, 200, true, true)
-            .unwrap();
+        let lost = ledger.reserve(PacketKind::OneRtt, 200, true, true).unwrap();
         ledger.adapter_accepted(lost, 20).unwrap();
         ledger.declare_lost(lost.packet()).unwrap();
         let padding = ledger
-            .reserve_classified(PacketKind::Initial, 1200, true, false)
+            .reserve(PacketKind::Initial, 1200, true, false)
             .unwrap();
         ledger.adapter_accepted(padding, 30).unwrap();
         assert_eq!(ledger.outstanding_sent().count(), 2);
@@ -2183,20 +2196,34 @@ mod tests {
     #[test]
     fn later_sent_count_excludes_holes_other_spaces_and_reclaimed_history() {
         let mut ledger = SentLedger::<7>::new(1);
-        let candidate = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
+        let candidate = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
         ledger.adapter_accepted(candidate, 0).unwrap();
-        let cancelled = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
+        let cancelled = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
         ledger.cancel(cancelled).unwrap();
-        let pending = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
-        let later = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
+        let pending = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
+        let later = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
         ledger.adapter_accepted(later, 3).unwrap();
-        let lost = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
+        let lost = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
         ledger.adapter_accepted(lost, 4).unwrap();
         ledger.declare_lost(lost.packet()).unwrap();
-        let acknowledged = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
+        let acknowledged = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
         ledger.adapter_accepted(acknowledged, 5).unwrap();
         ack(&mut ledger, acknowledged.packet()).unwrap();
-        let other = ledger.reserve(PacketKind::Handshake, 100, true).unwrap();
+        let other = ledger
+            .reserve(PacketKind::Handshake, 100, true, true)
+            .unwrap();
         ledger.adapter_accepted(other, 6).unwrap();
         assert_eq!(ledger.count_later_sent(candidate.packet(), 5), 3);
         assert_eq!(ledger.count_later_sent(candidate.packet(), 4), 2);
@@ -2215,21 +2242,33 @@ mod tests {
     #[test]
     fn discarded_space_releases_each_flight_byte_once_and_preserves_pn() {
         let mut ledger = SentLedger::<7>::new(1);
-        let sent = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
+        let sent = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
         ledger.adapter_accepted(sent, 0).unwrap();
-        let lost = ledger.reserve(PacketKind::Initial, 200, true).unwrap();
+        let lost = ledger
+            .reserve(PacketKind::Initial, 200, true, true)
+            .unwrap();
         ledger.adapter_accepted(lost, 1).unwrap();
         ledger.declare_lost(lost.packet()).unwrap();
-        let acknowledged = ledger.reserve(PacketKind::Initial, 300, true).unwrap();
+        let acknowledged = ledger
+            .reserve(PacketKind::Initial, 300, true, true)
+            .unwrap();
         ledger.adapter_accepted(acknowledged, 2).unwrap();
         ack(&mut ledger, acknowledged.packet()).unwrap();
-        let cancelled = ledger.reserve(PacketKind::Initial, 400, true).unwrap();
+        let cancelled = ledger
+            .reserve(PacketKind::Initial, 400, true, true)
+            .unwrap();
         ledger.cancel(cancelled).unwrap();
-        let ack_only = ledger.reserve(PacketKind::Initial, 20, false).unwrap();
+        let ack_only = ledger
+            .reserve(PacketKind::Initial, 20, false, false)
+            .unwrap();
         ledger.adapter_accepted(ack_only, 4).unwrap();
-        let other = ledger.reserve(PacketKind::Handshake, 500, true).unwrap();
+        let other = ledger
+            .reserve(PacketKind::Handshake, 500, true, true)
+            .unwrap();
         ledger.adapter_accepted(other, 5).unwrap();
-        let pending_other = ledger.reserve(PacketKind::OneRtt, 50, true).unwrap();
+        let pending_other = ledger.reserve(PacketKind::OneRtt, 50, true, true).unwrap();
         assert_eq!(ledger.discard_space(PacketNumberSpace::Initial), Ok(100));
         assert_eq!(ledger.bytes_in_flight(), 500);
         assert_eq!(ledger.reserved_in_flight(), 50);
@@ -2240,7 +2279,9 @@ mod tests {
             Err(AccountingError::HistoryUnavailable)
         );
         assert_eq!(ack(&mut ledger, sent.packet()), Ok(AckSummary::default()));
-        let next = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
+        let next = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
         assert_eq!(next.packet().value, 5);
         assert_eq!(
             ledger.adapter_accepted(sent, 6),
@@ -2252,10 +2293,16 @@ mod tests {
     #[test]
     fn discarded_space_rejects_pending_ownership_without_mutation() {
         let mut ledger = SentLedger::<3>::new(1);
-        let sent = ledger.reserve(PacketKind::Initial, 100, true).unwrap();
+        let sent = ledger
+            .reserve(PacketKind::Initial, 100, true, true)
+            .unwrap();
         ledger.adapter_accepted(sent, 0).unwrap();
-        let pending = ledger.reserve(PacketKind::Initial, 200, true).unwrap();
-        let other = ledger.reserve(PacketKind::Handshake, 300, true).unwrap();
+        let pending = ledger
+            .reserve(PacketKind::Initial, 200, true, true)
+            .unwrap();
+        let other = ledger
+            .reserve(PacketKind::Handshake, 300, true, true)
+            .unwrap();
         ledger.adapter_accepted(other, 1).unwrap();
         assert_eq!(
             ledger.discard_space(PacketNumberSpace::Initial),
@@ -2284,7 +2331,9 @@ mod tests {
     fn discarded_space_handles_maximum_bytes_and_exhausted_number() {
         let mut ledger = SentLedger::<1>::new(1);
         ledger.allocator.next[0] = MAX_PACKET_NUMBER;
-        let last = ledger.reserve(PacketKind::Initial, u64::MAX, true).unwrap();
+        let last = ledger
+            .reserve(PacketKind::Initial, u64::MAX, true, true)
+            .unwrap();
         ledger.adapter_accepted(last, 0).unwrap();
         assert_eq!(
             ledger.discard_space(PacketNumberSpace::Initial),
@@ -2293,7 +2342,7 @@ mod tests {
         assert_eq!(ledger.bytes_in_flight(), 0);
         assert_eq!(ledger.next_packet_number(PacketNumberSpace::Initial), None);
         assert_eq!(
-            ledger.reserve(PacketKind::Initial, 1, true),
+            ledger.reserve(PacketKind::Initial, 1, true, true),
             Err(AccountingError::PacketNumberExhausted)
         );
         assert_eq!(ack(&mut ledger, last.packet()), Ok(AckSummary::default()));
@@ -2302,13 +2351,15 @@ mod tests {
     #[test]
     fn non_flight_packets_and_reservation_overflow_are_explicit() {
         let mut ledger = SentLedger::<3>::new(1);
-        let a = ledger.reserve(PacketKind::OneRtt, u64::MAX, true).unwrap();
+        let a = ledger
+            .reserve(PacketKind::OneRtt, u64::MAX, true, true)
+            .unwrap();
         assert_eq!(
-            ledger.reserve(PacketKind::OneRtt, 1, true),
+            ledger.reserve(PacketKind::OneRtt, 1, true, true),
             Err(AccountingError::Overflow)
         );
         // Failed reservation did not consume a PN or table slot.
-        let b = ledger.reserve(PacketKind::OneRtt, 5, false).unwrap();
+        let b = ledger.reserve(PacketKind::OneRtt, 5, false, false).unwrap();
         assert_eq!(b.packet().value, 1);
         ledger.adapter_accepted(a, 0).unwrap();
         ledger.adapter_accepted(b, 0).unwrap();
@@ -2326,10 +2377,10 @@ mod tests {
     #[test]
     fn retired_and_different_connection_completions_are_rejected() {
         let mut ledger = SentLedger::<1>::new(1);
-        let r = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
+        let r = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
         let mut next_connection = SentLedger::<1>::new(2);
         next_connection
-            .reserve(PacketKind::OneRtt, 10, true)
+            .reserve(PacketKind::OneRtt, 10, true, true)
             .unwrap();
         assert_eq!(
             next_connection.adapter_accepted(r, 0),
@@ -2416,7 +2467,7 @@ mod tests {
         assert_eq!(empty.reserve(0), Err(AccountingError::Full));
         let mut ledger = SentLedger::<0>::new(1);
         assert_eq!(
-            ledger.reserve(PacketKind::Initial, 0, false),
+            ledger.reserve(PacketKind::Initial, 0, false, false),
             Err(AccountingError::Full)
         );
     }
@@ -2427,7 +2478,7 @@ mod tests {
         // duplicates and wrong order. Invalid operations leave state intact.
         for mut sequence in 0..4096_u32 {
             let mut ledger = SentLedger::<1>::new(1);
-            let r = ledger.reserve(PacketKind::OneRtt, 17, true).unwrap();
+            let r = ledger.reserve(PacketKind::OneRtt, 17, true, true).unwrap();
             for _ in 0..6 {
                 match sequence % 4 {
                     0 => {
@@ -2503,11 +2554,15 @@ mod tests {
     #[test]
     fn early_rejection_preserves_one_rtt_and_never_rewinds_shared_packet_numbers() {
         let mut ledger = SentLedger::<8>::new(900);
-        let early = ledger.reserve(PacketKind::ZeroRtt, 1200, true).unwrap();
+        let early = ledger
+            .reserve(PacketKind::ZeroRtt, 1200, true, true)
+            .unwrap();
         ledger.adapter_accepted(early, 1).unwrap();
-        let one = ledger.reserve(PacketKind::OneRtt, 600, true).unwrap();
+        let one = ledger.reserve(PacketKind::OneRtt, 600, true, true).unwrap();
         ledger.adapter_accepted(one, 2).unwrap();
-        let pending = ledger.reserve(PacketKind::ZeroRtt, 1200, true).unwrap();
+        let pending = ledger
+            .reserve(PacketKind::ZeroRtt, 1200, true, true)
+            .unwrap();
         assert_eq!(
             ledger.reject_zero_rtt(),
             Err(AccountingError::OutstandingPackets)
@@ -2534,7 +2589,7 @@ mod tests {
                 .bytes_removed_from_flight,
             600
         );
-        let next = ledger.reserve(PacketKind::OneRtt, 10, true).unwrap();
+        let next = ledger.reserve(PacketKind::OneRtt, 10, true, true).unwrap();
         assert_eq!(next.packet().value, 3);
     }
 }

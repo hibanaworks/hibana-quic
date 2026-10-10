@@ -86,11 +86,11 @@ fn minimal_programs() -> (RoleProgram<{ p::TX_WIRE }>, RoleProgram<{ p::UDP }>) 
 
 fn run_publications(publications: &[u8], combined: bool) {
     let (sender_program, receiver_program, starter_program) = if combined {
-        let programs = application::global::programs();
+        let projection = application::global::choreography();
         (
-            programs.handshake.tx_wire,
-            programs.handshake.udp,
-            Some(programs.handshake.tls_tx),
+            project(&projection),
+            project(&projection),
+            Some(project::<{ p::TLS_TX }, _>(&projection)),
         )
     } else {
         let (sender, receiver) = minimal_programs();

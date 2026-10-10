@@ -2,13 +2,10 @@
 //! the post-Retry continuation cannot select it a second time.
 //!
 //! This client prefix is composed into [`crate::quic::global`]. Its endpoints
-//! are attached by [`crate::quic::local::Endpoints`] and the real Retry local is
-//! invoked by [`crate::quic::local::run`] before continuing the same handshake.
+//! are attached by [`crate::quic::localside::Endpoints`] and the real Retry local is
+//! invoked by [`crate::quic::localside::run`] before continuing the same handshake.
+use hibana::g;
 use hibana::runtime::program::Projectable;
-use hibana::{
-    g,
-    runtime::program::{RoleProgram, project},
-};
 pub const OWNER: u8 = 3;
 pub const IO: u8 = 4;
 pub type Packet = g::Msg<0, ()>;
@@ -138,11 +135,6 @@ pub fn choreography() -> impl Projectable {
         ),
     )
 }
-pub fn programs() -> (RoleProgram<OWNER>, RoleProgram<IO>) {
-    let global = choreography();
-    (project(&global), project(&global))
-}
-
 pub type Skip = g::Msg<30, ()>;
 pub type Skipped = g::Msg<31, ()>;
 pub fn prefix() -> impl Projectable {

@@ -2,14 +2,12 @@
 mod async_fixture;
 // Real two-connection PSK_DHE resumption. Fixture setup is host-only; measured
 // constructors, encrypted TLS flights, issuance, cache and resumption allocate zero.
-use hibana_quic_pal::entropy::KernelEntropy;
+use hibana_quic_pal::unix::entropy::KernelEntropy;
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::TrustAnchor;
 use hibana_tls::certificate::UnixTime;
 use hibana_tls::certificate::trust_anchor_from_der;
-use hibana_tls::endpoint::Level;
-use hibana_tls::endpoint::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::ClientConfig;
 use hibana_tls::handshake::ClientResumption;
@@ -18,6 +16,8 @@ use hibana_tls::handshake::ServerConfig;
 use hibana_tls::handshake::ServerResumption;
 use hibana_tls::handshake::SigningKey;
 use hibana_tls::handshake::Storage;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use hibana_tls::ticket;
 use hibana_tls::ticket::Binding;
 use hibana_tls::ticket::ClientCache;
@@ -194,7 +194,7 @@ fn connect_clocks_with_cipher(
     let mut entropy = KernelEntropy;
     let cfg = ClientConfig {
         protocol: Default::default(),
-        version: hibana_quic::quic::imp::kernel::version::Version::V1,
+        version: hibana_quic::quic::version::Version::V1,
         server_name: "localhost",
         trust_anchors: anchors,
         now: now(),
@@ -222,7 +222,7 @@ fn connect_clocks_with_cipher(
     let mut server = BoundedTls::server_with_tickets_and_policy(
         ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::imp::kernel::version::Version::V1,
+            version: hibana_quic::quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: params,
@@ -444,7 +444,7 @@ fn changed_trust_anchor_or_verification_limits_cannot_reuse_old_offer() {
         let result = BoundedTls::client_resuming(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: changed,
                 now: now(),
@@ -498,7 +498,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     let mut client = BoundedTls::client_resuming(
         ClientConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::imp::kernel::version::Version::V1,
+            version: hibana_quic::quic::version::Version::V1,
             server_name: "localhost",
             trust_anchors: &anchors,
             now: now(),
@@ -517,7 +517,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     let mut server = BoundedTls::server_with_tickets(
         ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::imp::kernel::version::Version::V1,
+            version: hibana_quic::quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: SERVER_PARAMS,
@@ -545,7 +545,7 @@ fn known_ticket_invalid_binder_is_fatal_and_never_selects_application_keys() {
     let error = async_fixture::reject_server_message(&mut server, &hello[..out.len]);
     assert!(matches!(
         error,
-        hibana_tls::handshake::local::Error::Crypto(Failure::Ticket(ticket::Error::Binder))
+        hibana_tls::handshake::Error::Crypto(Failure::Ticket(ticket::Error::Binder))
     ));
     assert!(server.last_failure().is_some());
     assert!(!server.has_keys(Level::OneRtt));
@@ -717,7 +717,7 @@ fn strict_chacha_ticket_roundtrip_and_policy_mismatch_before_output() {
         let result = BoundedTls::client_resuming_with_policy(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),

@@ -3,14 +3,11 @@
 //! The output role settles its actual send before another input is admitted.
 //!
 //! INPUT, OWNER and OUTPUT are attached and run by
-//! [`crate::quic::retry::local::server::receive`]. That function shows the actual
+//! [`crate::quic::retry::localside::server::receive`]. That function shows the actual
 //! incoming, admission and outgoing futures, with physical UDP supplied by the caller.
 //! The separate client prefix is composed into [`crate::quic::global`].
+use hibana::g;
 use hibana::runtime::program::Projectable;
-use hibana::{
-    g,
-    runtime::program::{RoleProgram, project},
-};
 
 pub const INPUT: u8 = 0;
 pub const OWNER: u8 = 1;
@@ -73,20 +70,6 @@ pub fn choreography() -> impl Projectable {
             g::send::<OWNER, INPUT, Joined>(),
         ),
     )
-}
-
-pub struct Programs {
-    pub input: RoleProgram<INPUT>,
-    pub owner: RoleProgram<OWNER>,
-    pub output: RoleProgram<OUTPUT>,
-}
-pub fn programs() -> Programs {
-    let global = choreography();
-    Programs {
-        input: project(&global),
-        owner: project(&global),
-        output: project(&global),
-    }
 }
 
 /// Client Retry prefix composed into the connection handshake.

@@ -4,7 +4,7 @@
 use crate::quic::imp::kernel::accounting::AckRange;
 use crate::quic::imp::kernel::accounting::PacketNumber;
 use crate::quic::imp::kernel::accounting::PacketNumberSpace;
-use hibana_tls::endpoint::Level;
+use hibana_tls::quic::Level;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {

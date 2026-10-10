@@ -1,7 +1,7 @@
 //! HTTP/3 control order, its endpoint-owning localside, and bounded byte codecs.
 pub mod global;
-pub mod imp;
-pub mod local;
+pub(crate) mod imp;
+pub mod localside;
 pub use imp::wire::*;
 
 /// Bounded request validation and projected response consumption.

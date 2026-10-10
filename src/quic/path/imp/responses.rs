@@ -4,7 +4,7 @@ use core::cell::RefCell;
 const CAPACITY: usize = 4;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Response {
-    pub(crate) path: Option<crate::quic::path::Address>,
+    pub(crate) path: Option<crate::io::Address>,
     sequence: u64,
     pub(crate) data: [u8; 8],
 }
@@ -25,7 +25,7 @@ impl Responses {
     pub(crate) fn observe(
         &self,
         data: [u8; 8],
-        path: Option<crate::quic::path::Address>,
+        path: Option<crate::io::Address>,
     ) -> Result<(), ()> {
         let mut n = self.0.try_borrow_mut().map_err(|_| ())?;
         if n.pending

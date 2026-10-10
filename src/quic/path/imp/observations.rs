@@ -1,9 +1,9 @@
 //! Authenticated path observations, bounded probe receipts and numeric decisions.
 //! Projected communication and probe sequencing live in the sibling local module.
+use crate::io::Address;
 use crate::quic::Side;
 use crate::quic::application::Error;
 use crate::quic::imp::tls::Inbox;
-use crate::quic::path::Address;
 use core::cell::RefCell;
 use hibana_tls::crypto::hkdf;
 use hibana_tls::secret::Secret;

@@ -4,10 +4,10 @@
 #[path = "support/component_smoke.rs"]
 mod component_smoke;
 use core::panic::PanicInfo;
-use hibana_quic::quic::imp::crypto_buffer::CryptoBuffer;
-use hibana_quic::quic::imp::kernel::flow::ConnectionReceive;
-use hibana_quic::quic::imp::kernel::flow::StreamReceive;
-use hibana_quic::quic::imp::kernel::packet::decode_varint;
+use hibana_quic::quic::buffer::CryptoBuffer;
+use hibana_quic::quic::flow::ConnectionReceive;
+use hibana_quic::quic::flow::StreamReceive;
+use hibana_quic::quic::packet::decode_varint;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {

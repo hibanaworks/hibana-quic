@@ -1,4 +1,4 @@
-//! Reconstructed bounded ordinary-publication authority. Fresh tests required.
+//! Scoped, bounded ordinary-publication authority.
 //! Closing publication requires a separate consumed terminal capability.
 use crate::crypto::directional::{ApplicationKeyScope, PublicationGateInstallation};
 use core::{

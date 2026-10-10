@@ -1,7 +1,5 @@
 //! Scoped synchronous recovery facets for direct role-local packet I/O.
 //!
-//! RECONSTRUCTED after the 2026-10-03 executor reset. Fresh compilation and
-//! execution are required; historical test results do not validate these bytes.
 //! Packet authentication and adapter acceptance are affine producer boundaries.
 //! No borrow of the numerical owner escapes a synchronous method.
 use super::Side;
@@ -40,9 +38,9 @@ use crate::quic::imp::kernel::recovery::TimeoutAction;
 use crate::quic::imp::kernel::recovery::TimerContext;
 use crate::quic::imp::kernel::recovery::TimerDeadline;
 use core::cell::RefCell;
-use hibana_tls::endpoint::Level;
-use hibana_tls::handshake::local::keys::AuthenticatedLevelRead;
-use hibana_tls::handshake::local::keys::FinishedAuthenticated;
+use hibana_tls::handshake::keys::AuthenticatedLevelRead;
+use hibana_tls::handshake::keys::FinishedAuthenticated;
+use hibana_tls::quic::Level;
 
 pub const LEDGER_CAPACITY: usize = 64;
 // Keep a bounded recovery lane inside the existing ledger: ordinary in-flight
@@ -320,13 +318,13 @@ impl<'book> Reservation<'book> {
 pub struct Completion<'book> {
     reservation: Reservation<'book>,
     accepted_at: Option<u64>,
-    ecn: crate::quic::ecn::imp::Codepoint,
+    ecn: crate::io::Codepoint,
 }
 impl<'book> Completion<'book> {
     pub(in crate::quic) fn from_adapter(
         reservation: Reservation<'book>,
         accepted_at: Option<u64>,
-        ecn: crate::quic::ecn::imp::Codepoint,
+        ecn: crate::io::Codepoint,
     ) -> Self {
         Self {
             reservation,
@@ -518,10 +516,37 @@ pub struct ApplicationOutcome<'scope> {
     pub duplicate: bool,
     pub ack_eliciting: bool,
     pub newly_acknowledged: usize,
-    pub packets: [Option<PacketNumber>; LEDGER_CAPACITY],
     pub key_acks: [Option<KeyAcknowledged<'scope>>; LEDGER_CAPACITY],
     pub confirmation: Option<HandshakeConfirmed<'scope>>,
     pub history_floor: u64,
+}
+
+impl Default for ApplicationOutcome<'_> {
+    fn default() -> Self {
+        Self {
+            frame_acks: None,
+            duplicate: false,
+            ack_eliciting: false,
+            newly_acknowledged: 0,
+            key_acks: core::array::from_fn(|_| None),
+            confirmation: None,
+            history_floor: 0,
+        }
+    }
+}
+impl ApplicationOutcome<'_> {
+    /// Discard all affine grants before reuse or after a failed effect pass.
+    fn clear(&mut self) {
+        self.frame_acks = None;
+        self.confirmation = None;
+        for grant in &mut self.key_acks {
+            *grant = None;
+        }
+        self.duplicate = false;
+        self.ack_eliciting = false;
+        self.newly_acknowledged = 0;
+        self.history_floor = 0;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -627,6 +652,16 @@ impl Received {
         floor: 0,
         largest_received_at: 0,
     };
+    fn contains_or_discards(&self, pn: u64) -> Result<bool, Error> {
+        if pn > packet::MAX_VARINT {
+            return Err(Error::Binding);
+        }
+        Ok(pn < self.floor
+            || self.ranges[..self.len]
+                .iter()
+                .any(|range| range.smallest <= pn && pn <= range.largest)
+            || (self.len == ACK_CAPACITY && pn + 1 < self.ranges[self.len - 1].smallest))
+    }
     /// Bound ACK memory by retiring the oldest disjoint ranges, while retaining
     /// the largest and permanently excluding discarded packet numbers.
     /// RFC 9000 section 13.2.3; no capacity increase or fabricated ACK ranges.
@@ -643,41 +678,41 @@ impl Received {
         {
             return Ok(true);
         }
-        let mut items = [packet::AckRange {
-            smallest: 0,
-            largest: 0,
-        }; ACK_CAPACITY + 1];
-        items[..self.len].copy_from_slice(&self.ranges[..self.len]);
-        items[self.len] = packet::AckRange {
-            smallest: pn,
-            largest: pn,
-        };
-        items[..self.len + 1].sort_unstable_by_key(|b| core::cmp::Reverse(b.largest));
-        let mut next = Self::EMPTY;
-        next.floor = self.floor;
-        next.largest_received_at = if self.len == 0 || pn > self.ranges[0].largest {
-            received_at
-        } else {
-            self.largest_received_at
-        };
-        for range in &items[..self.len + 1] {
-            if next.len != 0
-                && range.largest.saturating_add(1) >= next.ranges[next.len - 1].smallest
-            {
-                next.ranges[next.len - 1].smallest =
-                    next.ranges[next.len - 1].smallest.min(range.smallest);
-            } else {
-                if next.len == ACK_CAPACITY {
-                    next.floor = next
-                        .floor
-                        .max(range.largest.checked_add(1).ok_or(Error::Binding)?);
-                    continue;
+        let position = self.ranges[..self.len].partition_point(|range| range.largest > pn);
+        if self.len == 0 || pn > self.ranges[0].largest {
+            self.largest_received_at = received_at;
+        }
+        let upper = position
+            .checked_sub(1)
+            .filter(|&index| self.ranges[index].smallest == pn + 1);
+        let lower = (position < self.len)
+            .then_some(position)
+            .filter(|&index| self.ranges[index].largest + 1 == pn);
+        match (upper, lower) {
+            (Some(upper), Some(lower)) => {
+                self.ranges[upper].smallest = self.ranges[lower].smallest;
+                self.ranges.copy_within(lower + 1..self.len, lower);
+                self.len -= 1;
+            }
+            (Some(upper), None) => self.ranges[upper].smallest = pn,
+            (None, Some(lower)) => self.ranges[lower].largest = pn,
+            (None, None) => {
+                if self.len == ACK_CAPACITY {
+                    if position == self.len {
+                        self.floor = self.floor.max(pn + 1);
+                        return Ok(true);
+                    }
+                    self.floor = self.floor.max(self.ranges[self.len - 1].largest + 1);
+                    self.len -= 1;
                 }
-                next.ranges[next.len] = *range;
-                next.len += 1;
+                self.ranges.copy_within(position..self.len, position + 1);
+                self.ranges[position] = packet::AckRange {
+                    smallest: pn,
+                    largest: pn,
+                };
+                self.len += 1;
             }
         }
-        *self = next;
         Ok(pn < self.floor)
     }
 }
@@ -1114,7 +1149,7 @@ impl<const B: usize> Numbers<'_, B> {
             {
                 if matches!(
                     packet.ecn,
-                    crate::quic::ecn::imp::Codepoint::Ect0 | crate::quic::ecn::imp::Codepoint::Ect1
+                    crate::io::Codepoint::Ect0 | crate::io::Codepoint::Ect1
                 ) {
                     self.lost_ecn_packets = self
                         .lost_ecn_packets
@@ -1271,8 +1306,8 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     }
     pub(crate) fn validated_path(
         &mut self,
-        old: crate::quic::path::Address,
-        new: crate::quic::path::Address,
+        old: crate::io::Address,
+        new: crate::io::Address,
         now: u64,
     ) -> Result<(), Error> {
         let mut n = self.book.numbers.borrow_mut();
@@ -1481,7 +1516,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     /// The ordinary application allocator is shared; a rejected send burns its PN.
     pub fn reserve_early(
         &mut self,
-        key: &hibana_tls::handshake::local::keys::TransmitPacketKey<'_>,
+        key: &hibana_tls::handshake::keys::TransmitPacketKey<'_>,
         plaintext: &[u8],
         bytes: u64,
         now: u64,
@@ -1734,12 +1769,7 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
         )
     }
     pub fn cancel(&mut self, reservation: Reservation<'book>) -> Result<(), Error> {
-        settle(
-            self.book,
-            reservation,
-            None,
-            crate::quic::ecn::imp::Codepoint::NotEct,
-        )
+        settle(self.book, reservation, None, crate::io::Codepoint::NotEct)
     }
     pub fn has_outstanding_crypto(&self) -> bool {
         self.book.numbers.borrow().flights.active_flights() != 0
@@ -1988,17 +2018,16 @@ fn reserve_kind<'book, const B: usize>(
         return Err(Error::CongestionLimited);
     }
     let path = n.path.reserve(bytes)?;
-    let send =
-        match n
-            .ledger
-            .reserve_classified(kind, bytes, ack_eliciting || padded, ack_eliciting)
-        {
-            Ok(value) => value,
-            Err(error) => {
-                n.path.cancel(path)?;
-                return Err(error.into());
-            }
-        };
+    let send = match n
+        .ledger
+        .reserve(kind, bytes, ack_eliciting || padded, ack_eliciting)
+    {
+        Ok(value) => value,
+        Err(error) => {
+            n.path.cancel(path)?;
+            return Err(error.into());
+        }
+    };
     let reference = match flight
         .map(|id| n.flights.reserve(id, send.packet()))
         .transpose()
@@ -2048,7 +2077,7 @@ fn settle<const B: usize>(
     book: &Recovery<'_, B>,
     reservation: Reservation<'_>,
     accepted_at: Option<u64>,
-    ecn: crate::quic::ecn::imp::Codepoint,
+    ecn: crate::io::Codepoint,
 ) -> Result<(), Error> {
     if !core::ptr::eq(&book.identity, reservation.identity)
         || !core::ptr::eq(book.scope, reservation.scope)
@@ -2073,10 +2102,7 @@ fn settle<const B: usize>(
         // the later of two observations of the same monotonic clock.
         let observed_at = n.last_now.map_or(at, |previous| previous.max(at));
         n.ledger.adapter_accepted_ecn(reservation.send, at, ecn)?;
-        if matches!(
-            ecn,
-            crate::quic::ecn::imp::Codepoint::Ect0 | crate::quic::ecn::imp::Codepoint::Ect1
-        ) {
+        if matches!(ecn, crate::io::Codepoint::Ect0 | crate::io::Codepoint::Ect1) {
             n.first_ecn_sent_at = Some(n.first_ecn_sent_at.map_or(at, |old| old.min(at)));
         }
         n.path.adapter_accepted(reservation.path)?;
@@ -2195,12 +2221,7 @@ impl<'book, 'scope, const B: usize> Publication<'book, 'scope, B> {
         )
     }
     pub fn cancel(&mut self, reservation: Reservation<'book>) -> Result<(), Error> {
-        settle(
-            self.book,
-            reservation,
-            None,
-            crate::quic::ecn::imp::Codepoint::NotEct,
-        )
+        settle(self.book, reservation, None, crate::io::Codepoint::NotEct)
     }
     pub fn acknowledgment_sent(&mut self, snapshot: AckSnapshot<'book>) -> Result<(), Error> {
         ack_sent(self.book, snapshot)
@@ -2266,7 +2287,7 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
         plaintext: &[u8],
         received_at: u64,
         now: u64,
-        ecn: Option<crate::quic::ecn::imp::Codepoint>,
+        ecn: Option<crate::io::Codepoint>,
     ) -> Result<PacketOutcome, Error> {
         if !core::ptr::eq(self.book.scope, receipt.scope())
             || !receipt.authenticates_plaintext(plaintext)
@@ -2280,7 +2301,8 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
             _ => return Err(Error::UnsupportedLevel),
         };
         let mut n = self.book.numbers.borrow_mut();
-        let outcome = process_packet(
+        let mut outcome = ApplicationOutcome::default();
+        process_packet(
             &mut n,
             self.book.scope,
             index,
@@ -2290,6 +2312,7 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
             received_at,
             now,
             ecn,
+            &mut outcome,
         )?;
         if index == 1 && n.side == Side::Server {
             n.path.mark_validated()?;
@@ -2305,8 +2328,8 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
     /// Finished can add early packets to the application ACK history.
     pub fn apply_stored_early(
         &mut self,
-        packet: crate::quic::early_data::local::StoredPacket<'scope>,
-        finished: &hibana_tls::handshake::local::keys::FinishedAuthenticated<'scope>,
+        packet: crate::quic::early_data::StoredPacket<'scope>,
+        finished: &hibana_tls::handshake::keys::FinishedAuthenticated<'scope>,
         now: u64,
     ) -> Result<PacketOutcome, Error> {
         if !core::ptr::eq(self.book.scope, packet.scope())
@@ -2326,9 +2349,15 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
             return Err(AccountingError::HistoryUnavailable.into());
         }
         n.check_time(now)?;
-        let mut received = n.received[2];
-        let duplicate = received.insert(packet.packet_number(), now)?;
-        commit_received(&mut n, 2, received, packet.ack_eliciting(), now)?;
+        let duplicate = n.received[2].contains_or_discards(packet.packet_number())?;
+        commit_received(
+            &mut n,
+            2,
+            packet.packet_number(),
+            now,
+            packet.ack_eliciting(),
+            now,
+        )?;
         if !duplicate {
             n.received_ecn
                 .processed(PacketNumberSpace::ApplicationData, packet.ecn())?;
@@ -2340,21 +2369,22 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
         })
     }
 
-    pub fn apply_application_packet(
+    pub fn apply_application_packet<'output>(
         &mut self,
-        receipt: AckEligible<'scope>,
-        plaintext: &[u8],
+        receipt: AckEligible<'scope, '_>,
         received_at: u64,
         now: u64,
-        ecn: Option<crate::quic::ecn::imp::Codepoint>,
-    ) -> Result<ApplicationOutcome<'scope>, Error> {
+        ecn: Option<crate::io::Codepoint>,
+        outcome: &'output mut ApplicationOutcome<'scope>,
+    ) -> Result<&'output mut ApplicationOutcome<'scope>, Error> {
+        outcome.clear();
+        let plaintext = receipt.plaintext();
         if !core::ptr::eq(self.book.scope, receipt.scope())
-            || !receipt.authenticates_plaintext(plaintext)
             || receipt.opened().len != plaintext.len()
         {
             return Err(Error::Binding);
         }
-        process_packet(
+        let result = process_packet(
             &mut self.book.numbers.borrow_mut(),
             self.book.scope,
             2,
@@ -2364,7 +2394,15 @@ impl<'scope, const B: usize> Rx<'_, 'scope, B> {
             received_at,
             now,
             ecn,
-        )
+            outcome,
+        );
+        match result {
+            Ok(()) => Ok(outcome),
+            Err(error) => {
+                outcome.clear();
+                Err(error)
+            }
+        }
     }
 }
 
@@ -2378,8 +2416,9 @@ fn process_packet<'scope, const B: usize>(
     plaintext: &[u8],
     received_at: u64,
     now: u64,
-    ecn: Option<crate::quic::ecn::imp::Codepoint>,
-) -> Result<ApplicationOutcome<'scope>, Error> {
+    ecn: Option<crate::io::Codepoint>,
+    outcome: &mut ApplicationOutcome<'scope>,
+) -> Result<(), Error> {
     if received_at > now {
         return Err(kernel::RecoveryError::TimeWentBackwards.into());
     }
@@ -2433,18 +2472,10 @@ fn process_packet<'scope, const B: usize>(
             _ => return Err(Error::UnsupportedFrame),
         }
     }
-    let mut received = n.received[index];
-    let duplicate = received.insert(packet_number, received_at)?;
-    let mut outcome = ApplicationOutcome {
-        frame_acks: None,
-        duplicate,
-        ack_eliciting,
-        newly_acknowledged: 0,
-        packets: [None; LEDGER_CAPACITY],
-        key_acks: core::array::from_fn(|_| None),
-        confirmation: None,
-        history_floor: n.floor[2],
-    };
+    let duplicate = n.received[index].contains_or_discards(packet_number)?;
+    outcome.duplicate = duplicate;
+    outcome.ack_eliciting = ack_eliciting;
+    outcome.history_floor = n.floor[2];
     if !duplicate {
         for frame in frames(plaintext, level)? {
             if let Frame::Ack { ranges, delay, ecn } = frame? {
@@ -2459,7 +2490,7 @@ fn process_packet<'scope, const B: usize>(
                     received_epoch,
                     now - received_at,
                     now,
-                    &mut outcome,
+                    outcome,
                 )?;
             }
         }
@@ -2482,28 +2513,23 @@ fn process_packet<'scope, const B: usize>(
     }
     // Even an incoming packet below a newly pruned cutoff commits that cutoff.
     // No frame effects are applied when the insertion reported it discarded.
-    commit_received(n, index, received, ack_eliciting, now)?;
+    commit_received(n, index, packet_number, received_at, ack_eliciting, now)?;
     if !duplicate {
         n.received_ecn.processed(space, ecn)?;
         n.idle_activity.received(now);
     }
     outcome.history_floor = n.floor[2];
-    if space == PacketNumberSpace::ApplicationData && outcome.packets.iter().any(Option::is_some) {
-        outcome.frame_acks = Some(FrameAcknowledgments {
-            scope,
-            packets: outcome.packets,
-        });
-    }
-    Ok(outcome)
+    Ok(())
 }
 fn commit_received<const B: usize>(
     n: &mut Numbers<'_, B>,
     index: usize,
-    received: Received,
+    packet_number: u64,
+    received_at: u64,
     ack_eliciting: bool,
     now: u64,
 ) -> Result<(), Error> {
-    n.received[index] = received;
+    n.received[index].insert(packet_number, received_at)?;
     if ack_eliciting {
         n.ack_revision[index] = n.ack_revision[index]
             .checked_add(1)
@@ -2557,8 +2583,8 @@ fn apply_ack<'scope, const B: usize>(
             crate::quic::ecn::imp::MarkedPackets::default(),
             |mut counts, packet| {
                 match packet.ecn {
-                    crate::quic::ecn::imp::Codepoint::Ect0 => counts.ect0 += 1,
-                    crate::quic::ecn::imp::Codepoint::Ect1 => counts.ect1 += 1,
+                    crate::io::Codepoint::Ect0 => counts.ect0 += 1,
+                    crate::io::Codepoint::Ect1 => counts.ect1 += 1,
                     _ => {}
                 }
                 counts
@@ -2607,7 +2633,13 @@ fn apply_ack<'scope, const B: usize>(
         let received_key_generation = received_epoch.ok_or(Error::Binding)?;
         for (offset, packet) in packets[..count].iter().flatten().enumerate() {
             let slot = output.newly_acknowledged + offset;
-            output.packets[slot] = Some(packet.packet);
+            output
+                .frame_acks
+                .get_or_insert(FrameAcknowledgments {
+                    scope,
+                    packets: [None; LEDGER_CAPACITY],
+                })
+                .packets[slot] = Some(packet.packet);
             // Acknowledging early data retires its bytes, but cannot authorize
             // an update of the later 1-RTT key generation.
             if n.ledger.sent_kind(packet.packet) == Some(PacketKind::ZeroRtt) {
@@ -2837,7 +2869,7 @@ mod tests {
         packet_number: u64,
         plaintext: &[u8],
     ) -> AuthenticatedLevelRead<'a> {
-        let rx = hibana_tls::handshake::local::keys::ReceivePacketKey::from_initial(
+        let rx = hibana_tls::handshake::keys::ReceivePacketKey::from_initial(
             scope,
             key(KeyKind::Initial, 7),
         )
@@ -2860,17 +2892,17 @@ mod tests {
         )
         .unwrap()
     }
-    fn app_receipt<'a>(
+    fn app_receipt<'a, 'packet>(
+        bytes: &'packet mut [u8; 2048],
         rx: &mut ApplicationReadKeys<'a>,
         peer: &mut PacketKey,
         packet_number: u64,
         plaintext: &[u8],
         now: u64,
-    ) -> AckEligible<'a> {
-        let mut bytes = [0; 2048];
+    ) -> AckEligible<'a, 'packet> {
         bytes[..plaintext.len()].copy_from_slice(plaintext);
         let len = peer
-            .seal(packet_number, &[0x40], &mut bytes, plaintext.len())
+            .seal(packet_number, &[0x40], bytes, plaintext.len())
             .unwrap();
         match rx
             .open(
@@ -2885,7 +2917,7 @@ mod tests {
             .unwrap()
         {
             AuthenticatedRead::Ready(receipt) => receipt,
-            AuthenticatedRead::PeerUpdate(_) => panic!("unexpected key transition"),
+            AuthenticatedRead::PeerUpdate(..) => panic!("unexpected key transition"),
         }
     }
     fn ack(pn: u64, output: &mut [u8]) -> usize {
@@ -2909,11 +2941,11 @@ mod tests {
         book!(book, scope, installation, arena, Side::Client, 204);
         let scope = book.scope();
         let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
-        let old = crate::quic::path::Address {
+        let old = crate::io::Address {
             local: "127.0.0.1:1000".parse().unwrap(),
             remote: "127.0.0.1:2000".parse().unwrap(),
         };
-        let new = crate::quic::path::Address {
+        let new = crate::io::Address {
             remote: "127.0.0.2:2000".parse().unwrap(),
             ..old
         };
@@ -2927,7 +2959,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 reservation,
                 Some(1),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         tx.validated_path(old, new, 10).unwrap();
@@ -2952,11 +2984,11 @@ mod tests {
     fn port_only_rebinding_keeps_rtt_but_invalidates_inherited_ecn_capability() {
         book!(book, scope, installation, arena, Side::Client, 205);
         let (mut tx, _, _, _, mut retirement) = book.split().unwrap();
-        let old = crate::quic::path::Address {
+        let old = crate::io::Address {
             local: "127.0.0.1:1000".parse().unwrap(),
             remote: "127.0.0.1:2000".parse().unwrap(),
         };
-        let new = crate::quic::path::Address {
+        let new = crate::io::Address {
             remote: "127.0.0.1:3000".parse().unwrap(),
             ..old
         };
@@ -3003,7 +3035,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 early,
                 Some(1),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let ordinary = tx.reserve_application(&[1], 0, 80, false, 2).unwrap();
@@ -3012,7 +3044,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 ordinary,
                 Some(2),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let before = tx.snapshot();
@@ -3039,6 +3071,9 @@ mod tests {
 
     #[test]
     fn early_and_application_share_pns_but_early_acks_never_grant_key_updates() {
+        let mut packet_outcome = ApplicationOutcome::default();
+        let mut received_bytes = [0; 2048];
+
         // Numerical accounting fixture: the public early entry additionally
         // requires an actual scoped TLS-owned ZeroRtt key.
         book!(book, scope, installation, arena, Side::Client, 172);
@@ -3095,7 +3130,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 early,
                 Some(1),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let ordinary = tx.reserve_application(&[1], 0, 64, false, 2).unwrap();
@@ -3104,12 +3139,13 @@ mod tests {
             .settle(Completion::from_adapter(
                 ordinary,
                 Some(2),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let mut plain = [0; 128];
         let len = ack(1, &mut plain);
         let receipt = app_receipt(
+            &mut received_bytes,
             &mut read,
             &mut key(KeyKind::OneRtt, 7),
             0,
@@ -3117,14 +3153,20 @@ mod tests {
             10,
         );
         let outcome = rx
-            .apply_application_packet(receipt, &plain[..len], 10, 10, None)
+            .apply_application_packet(receipt, 10, 10, None, &mut packet_outcome)
             .unwrap();
         assert_eq!(outcome.newly_acknowledged, 1);
         assert!(outcome.key_acks.iter().all(Option::is_none));
         assert!(outcome.confirmation.is_none());
-        assert_eq!(outcome.packets[0].unwrap().value, 1);
+        assert_eq!(
+            outcome.frame_acks.as_ref().unwrap().packets[0]
+                .unwrap()
+                .value,
+            1
+        );
         let len = ack(2, &mut plain);
         let receipt = app_receipt(
+            &mut received_bytes,
             &mut read,
             &mut key(KeyKind::OneRtt, 7),
             1,
@@ -3132,19 +3174,40 @@ mod tests {
             11,
         );
         let outcome = rx
-            .apply_application_packet(receipt, &plain[..len], 11, 11, None)
+            .apply_application_packet(receipt, 11, 11, None, &mut packet_outcome)
             .unwrap();
         assert!(outcome.key_acks.iter().any(Option::is_some));
         assert!(
             outcome.confirmation.is_some(),
             "a real 1-RTT ACK confirms the handshake even when HANDSHAKE_DONE was lost"
         );
+        // Reusing caller-owned output must revoke every previous affine grant
+        // even when the next authenticated packet fails before frame parsing.
+        let receipt = app_receipt(
+            &mut received_bytes,
+            &mut read,
+            &mut key(KeyKind::OneRtt, 7),
+            2,
+            &[1],
+            12,
+        );
+        assert!(matches!(
+            rx.apply_application_packet(receipt, 12, 11, None, &mut packet_outcome),
+            Err(Error::Recovery(kernel::RecoveryError::TimeWentBackwards))
+        ));
+        assert!(packet_outcome.frame_acks.is_none());
+        assert!(packet_outcome.key_acks.iter().all(Option::is_none));
+        assert!(packet_outcome.confirmation.is_none());
+        assert_eq!(packet_outcome.newly_acknowledged, 0);
         retirement.disarm();
         drop(guard);
     }
 
     #[test]
     fn application_crypto_is_bound_to_the_retained_flight_and_acked_in_application_space() {
+        let mut packet_outcome = ApplicationOutcome::default();
+        let mut received_bytes = [0; 2048];
+
         book!(book, scope, installation, arena, Side::Client, 171);
         let (mut read, _) = crate::crypto::directional::ApplicationReadKeys::install(
             installation,
@@ -3181,7 +3244,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 reservation,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert!(!completion.ordinary_settled().unwrap());
@@ -3199,13 +3262,14 @@ mod tests {
         ));
         let len = ack(pn, &mut plaintext);
         let receipt = app_receipt(
+            &mut received_bytes,
             &mut read,
             &mut key(KeyKind::OneRtt, 7),
             0,
             &plaintext[..len],
             10,
         );
-        rx.apply_application_packet(receipt, &plaintext[..len], 10, 10, None)
+        rx.apply_application_packet(receipt, 10, 10, None, &mut packet_outcome)
             .unwrap();
         assert_eq!(tx.snapshot().active_flights, 0);
         assert!(completion.ordinary_settled().unwrap());
@@ -3215,6 +3279,9 @@ mod tests {
 
     #[test]
     fn buffered_ack_delay_preserves_actual_receive_time_and_prevents_rtt_inflation() {
+        let mut packet_outcome = ApplicationOutcome::default();
+        let mut received_bytes = [0; 2048];
+
         book!(book, scope, installation, arena, Side::Client, 901);
         let (mut read, _) = ApplicationReadKeys::install(
             installation,
@@ -3223,8 +3290,15 @@ mod tests {
         )
         .unwrap();
         let (tx, mut rx, _, _, mut retirement) = book.split().unwrap();
-        let receipt = app_receipt(&mut read, &mut key(KeyKind::OneRtt, 7), 0, &[1], 16_020_000);
-        rx.apply_application_packet(receipt, &[1], 20_000, 16_020_000, None)
+        let receipt = app_receipt(
+            &mut received_bytes,
+            &mut read,
+            &mut key(KeyKind::OneRtt, 7),
+            0,
+            &[1],
+            16_020_000,
+        );
+        rx.apply_application_packet(receipt, 20_000, 16_020_000, None, &mut packet_outcome)
             .unwrap();
         let ack = tx.pending_ack().unwrap();
         assert_eq!(ack.encoded_delay(16_020_000), Ok(2_000_000));
@@ -3332,6 +3406,9 @@ mod tests {
 
     #[test]
     fn retained_crypto_can_carry_actual_ack_without_fabricating_peer_delivery() {
+        let mut packet_outcome = ApplicationOutcome::default();
+        let mut received_bytes = [0; 2048];
+
         book!(book, scope, installation, arena, Side::Client, 271);
         let (mut read, _) = crate::crypto::directional::ApplicationReadKeys::install(
             installation,
@@ -3341,8 +3418,15 @@ mod tests {
         .unwrap();
         let (mut tx, mut rx, _, mut publication, mut retirement) = book.split().unwrap();
         let incoming = [1];
-        let receipt = app_receipt(&mut read, &mut key(KeyKind::OneRtt, 7), 7, &incoming, 10);
-        rx.apply_application_packet(receipt, &incoming, 10, 10, None)
+        let receipt = app_receipt(
+            &mut received_bytes,
+            &mut read,
+            &mut key(KeyKind::OneRtt, 7),
+            7,
+            &incoming,
+            10,
+        );
+        rx.apply_application_packet(receipt, 10, 10, None, &mut packet_outcome)
             .unwrap();
         let ack = tx.ack_for_packet(Level::OneRtt).unwrap();
         let flight = tx.store_crypto(Level::OneRtt, 0, b"ticket").unwrap();
@@ -3381,7 +3465,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 sent,
                 Some(12),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         publication.acknowledgment_sent(ack).unwrap();
@@ -3413,7 +3497,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 reservation,
                 Some(1),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let mut plaintext = [0; 64];
@@ -3446,7 +3530,7 @@ mod tests {
                 .settle(Completion::from_adapter(
                     pending,
                     Some(now),
-                    crate::quic::ecn::imp::Codepoint::Ect0,
+                    crate::io::Codepoint::Ect0,
                 ))
                 .unwrap();
         }
@@ -3492,7 +3576,7 @@ mod tests {
                 &plain[..len],
                 10 + incoming,
                 10 + incoming,
-                Some(crate::quic::ecn::imp::Codepoint::NotEct),
+                Some(crate::io::Codepoint::NotEct),
             )
             .unwrap();
             assert!(observer.ecn_observation().unwrap().first_failure.is_none());
@@ -3510,7 +3594,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 next,
                 Some(13),
-                crate::quic::ecn::imp::Codepoint::Ect0,
+                crate::io::Codepoint::Ect0,
             ))
             .unwrap();
         let len = ack(pn, &mut plain);
@@ -3520,7 +3604,7 @@ mod tests {
             &plain[..len],
             14,
             14,
-            Some(crate::quic::ecn::imp::Codepoint::NotEct),
+            Some(crate::io::Codepoint::NotEct),
         )
         .unwrap();
         let evidence = observer.ecn_observation().unwrap();
@@ -3547,7 +3631,7 @@ mod tests {
                 .settle(Completion::from_adapter(
                     pending,
                     Some(now),
-                    crate::quic::ecn::imp::Codepoint::Ect0,
+                    crate::io::Codepoint::Ect0,
                 ))
                 .unwrap();
         }
@@ -3574,7 +3658,7 @@ mod tests {
                 &plain[..len],
                 10 + incoming,
                 10 + incoming,
-                Some(crate::quic::ecn::imp::Codepoint::NotEct),
+                Some(crate::io::Codepoint::NotEct),
             )
             .unwrap();
             assert!(
@@ -3591,7 +3675,7 @@ mod tests {
 
     #[test]
     fn authenticated_ecn_counts_once_and_missing_metadata_disables_ack_ecn() {
-        use crate::quic::ecn::imp::Codepoint;
+        use crate::io::Codepoint;
         book!(book, scope, installation, arena, Side::Client, 740);
         let scope = book.scope();
         let (tx, mut rx, _, _, mut retirement) = book.split().unwrap();
@@ -3656,25 +3740,13 @@ mod tests {
         let (tx, mut rx, _, _, mut retirement) = book.split().unwrap();
         let receipt = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 0, &[1]);
         assert_eq!(
-            rx.apply_packet(
-                receipt,
-                &[0],
-                0,
-                0,
-                Some(crate::quic::ecn::imp::Codepoint::Ect0)
-            ),
+            rx.apply_packet(receipt, &[0], 0, 0, Some(crate::io::Codepoint::Ect0)),
             Err(Error::Binding)
         );
         assert!(tx.pending_ack().is_none());
         let valid = initial_receipt(scope, &mut key(KeyKind::Initial, 7), 0, &[1]);
-        rx.apply_packet(
-            valid,
-            &[1],
-            1,
-            1,
-            Some(crate::quic::ecn::imp::Codepoint::Ect1),
-        )
-        .unwrap();
+        rx.apply_packet(valid, &[1], 1, 1, Some(crate::io::Codepoint::Ect1))
+            .unwrap();
         assert_eq!(
             tx.pending_ack().unwrap().ecn(),
             Some(packet::EcnCounts {
@@ -3700,7 +3772,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 first,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         rx.received_datagram(160).unwrap();
@@ -3728,7 +3800,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 next,
                 Some(100),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         retirement.disarm();
@@ -3765,7 +3837,7 @@ mod tests {
                 .settle(Completion::from_adapter(
                     packet,
                     Some(0),
-                    crate::quic::ecn::imp::Codepoint::NotEct,
+                    crate::io::Codepoint::NotEct,
                 ))
                 .unwrap();
         }
@@ -3786,7 +3858,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 first,
                 Some(at),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert_eq!(tx.pending_probe(), Some(Level::Handshake));
@@ -3804,7 +3876,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 second,
                 Some(at),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert_eq!(tx.snapshot().probe_credits, 0);
@@ -3824,7 +3896,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 app,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let handshake = tx
@@ -3834,7 +3906,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 handshake,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let deadline = clock
@@ -3857,7 +3929,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 first,
                 Some(at),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert_eq!(tx.pending_probe(), Some(Level::OneRtt));
@@ -3871,7 +3943,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 second,
                 Some(at),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert_eq!(tx.pending_probe(), None);
@@ -3892,7 +3964,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 handshake,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let app = tx.reserve_application(&[1], 0, 64, false, 0).unwrap();
@@ -3900,7 +3972,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 app,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let deadline = clock
@@ -3924,7 +3996,7 @@ mod tests {
                 .settle(Completion::from_adapter(
                     probe,
                     Some(at),
-                    crate::quic::ecn::imp::Codepoint::NotEct,
+                    crate::io::Codepoint::NotEct,
                 ))
                 .unwrap();
         }
@@ -3952,7 +4024,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 probe,
                 Some(second_at),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert_eq!(tx.pending_probe(), Some(Level::OneRtt));
@@ -3963,7 +4035,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 app,
                 Some(second_at),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert_eq!(tx.snapshot().probe_credits, 0);
@@ -3993,7 +4065,7 @@ mod tests {
                 .settle(Completion::from_adapter(
                     probe,
                     Some(at),
-                    crate::quic::ecn::imp::Codepoint::NotEct,
+                    crate::io::Codepoint::NotEct,
                 ))
                 .unwrap();
         }
@@ -4017,7 +4089,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 first,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let deadline = clock.update(0, [true, false]).unwrap().unwrap();
@@ -4037,7 +4109,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 rejected,
                 None,
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert_eq!(tx.snapshot().probe_credits, credits);
@@ -4050,7 +4122,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 retry,
                 Some(at),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert_eq!(tx.snapshot().bytes_in_flight, 2400);
@@ -4076,7 +4148,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 reservation,
                 Some(20),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         {
@@ -4114,7 +4186,7 @@ mod tests {
             publication.settle(Completion::from_adapter(
                 reservation,
                 Some(9),
-                crate::quic::ecn::imp::Codepoint::NotEct
+                crate::io::Codepoint::NotEct
             )),
             Err(Error::Recovery(kernel::RecoveryError::TimeWentBackwards))
         );
@@ -4143,7 +4215,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 sent,
                 Some(10_000),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let mut plaintext = [0; 64];
@@ -4182,7 +4254,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 second,
                 Some(20),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         clock.update(30, [true, false]).unwrap();
@@ -4190,7 +4262,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 first,
                 Some(10),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         {
@@ -4223,6 +4295,9 @@ mod tests {
 
     #[test]
     fn delayed_acceptance_rechecks_loss_after_a_later_packet_was_acknowledged() {
+        let mut packet_outcome = ApplicationOutcome::default();
+        let mut received_bytes = [0; 2048];
+
         book!(book, scope, installation, arena, Side::Client, 88);
         let (mut read, _) = crate::crypto::directional::ApplicationReadKeys::install(
             installation,
@@ -4242,27 +4317,34 @@ mod tests {
             .settle(Completion::from_adapter(
                 second,
                 Some(11),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         publication
             .settle(Completion::from_adapter(
                 third,
                 Some(12),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         publication
             .settle(Completion::from_adapter(
                 fourth,
                 Some(13),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let mut plaintext = [0; 64];
         let len = ack(3, &mut plaintext);
-        let receipt = app_receipt(&mut read, &mut peer, 0, &plaintext[..len], 20);
-        rx.apply_application_packet(receipt, &plaintext[..len], 20, 20, None)
+        let receipt = app_receipt(
+            &mut received_bytes,
+            &mut read,
+            &mut peer,
+            0,
+            &plaintext[..len],
+            20,
+        );
+        rx.apply_application_packet(receipt, 20, 20, None, &mut packet_outcome)
             .unwrap();
         assert_eq!(tx.take_lost_application().map(|grant| grant.packet()), None);
         assert_eq!(tx.snapshot().reserved_in_flight, 32);
@@ -4270,7 +4352,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 delayed,
                 Some(10),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         // Only now does PN 0 carry actual accepted-send evidence; its three
@@ -4331,6 +4413,83 @@ mod tests {
     }
 
     #[test]
+    fn long_packet_ack_composition_preserves_real_ranges_and_capacity_fallback() {
+        book!(book, scope, installation, arena, Side::Client, 7402);
+        let own_scope = book.scope();
+        let (tx, mut rx, _, _, mut retirement) = book.split().unwrap();
+        let mut peer_key = key(KeyKind::Initial, 7);
+        let receipt = initial_receipt(own_scope, &mut peer_key, 3, &[1]);
+        rx.apply_packet(receipt, &[1], 1, 1, None).unwrap();
+        let config = crate::quic::Config {
+            local_preferred: None,
+            initial_path: None,
+            version: crate::quic::imp::kernel::version::Version::V1,
+            side: Side::Client,
+            local_connection_id: b"clientid",
+            original_destination_id: b"original",
+            retry_source_id: None,
+            initial_token: &[],
+            peer_connection_id: b"peerpeer",
+        };
+        let peer = crate::quic::ConnectionId::new(b"peerpeer").unwrap();
+        let (plain, carried) = crate::quic::imp::wire::PlainPacket::<1200>::with_received_ack(
+            config,
+            &peer,
+            Level::Initial,
+            packet::Frame::Ping,
+            tx.ack_for_packet(Level::Initial),
+            2,
+        )
+        .unwrap();
+        assert_eq!(plain.len(), 1200);
+        assert_eq!(
+            carried.unwrap().ranges(),
+            &[packet::AckRange {
+                smallest: 3,
+                largest: 3
+            }]
+        );
+        assert!(tx.pending_ack().is_some(), "encoding is not publication");
+        assert!(matches!(
+            crate::quic::imp::wire::PlainPacket::<1200>::with_received_ack(
+                config,
+                &peer,
+                Level::Handshake,
+                packet::Frame::Ping,
+                tx.ack_for_packet(Level::Initial),
+                2,
+            ),
+            Err(crate::quic::Error::Binding)
+        ));
+        let bytes = [0; 1200];
+        let mut fallback_cases = 0;
+        for len in 1000..1200 {
+            if let Ok((_, None)) = crate::quic::imp::wire::PlainPacket::<1200>::with_received_ack(
+                config,
+                &peer,
+                Level::Initial,
+                packet::Frame::Crypto {
+                    offset: 0,
+                    data: &bytes[..len],
+                },
+                tx.ack_for_packet(Level::Initial),
+                2,
+            ) {
+                fallback_cases += 1;
+            }
+        }
+        assert!(
+            fallback_cases > 0,
+            "a full packet must omit an ACK that does not fit"
+        );
+        assert!(
+            tx.pending_ack().is_some(),
+            "omitted ACK cannot settle receive history"
+        );
+        retirement.disarm();
+    }
+
+    #[test]
     fn ack_only_receive_is_available_for_piggyback_without_an_ack_loop() {
         book!(book, scope, installation, arena, Side::Client, 7401);
         let own_scope = book.scope();
@@ -4342,7 +4501,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 reservation,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let mut plaintext = [0; 64];
@@ -4388,7 +4547,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 reservation,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let deadline = clock.update(0, [true, false]).unwrap().unwrap();
@@ -4440,7 +4599,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 send,
                 Some(2),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         publication.acknowledgment_sent(stale_ack).unwrap();
@@ -4453,7 +4612,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 send,
                 None,
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert!(!observer.ordinary_settled().unwrap());
@@ -4466,7 +4625,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 send,
                 Some(4),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert!(!observer.ordinary_settled().unwrap());
@@ -4482,6 +4641,87 @@ mod tests {
             observer.handshake_confirmed(),
             Err(Error::Accounting(AccountingError::Retired))
         );
+    }
+
+    #[test]
+    fn in_place_receive_ranges_match_sorted_reference() {
+        fn reference(history: &mut Received, pn: u64, received_at: u64) -> bool {
+            if pn < history.floor
+                || history.ranges[..history.len]
+                    .iter()
+                    .any(|range| range.smallest <= pn && pn <= range.largest)
+            {
+                return true;
+            }
+            let mut items = [packet::AckRange {
+                smallest: 0,
+                largest: 0,
+            }; ACK_CAPACITY + 1];
+            items[..history.len].copy_from_slice(&history.ranges[..history.len]);
+            items[history.len] = packet::AckRange {
+                smallest: pn,
+                largest: pn,
+            };
+            items[..history.len + 1].sort_unstable_by_key(|b| core::cmp::Reverse(b.largest));
+            let mut next = Received::EMPTY;
+            next.floor = history.floor;
+            next.largest_received_at = if history.len == 0 || pn > history.ranges[0].largest {
+                received_at
+            } else {
+                history.largest_received_at
+            };
+            for range in &items[..history.len + 1] {
+                if next.len != 0
+                    && range.largest.saturating_add(1) >= next.ranges[next.len - 1].smallest
+                {
+                    next.ranges[next.len - 1].smallest =
+                        next.ranges[next.len - 1].smallest.min(range.smallest);
+                } else {
+                    if next.len == ACK_CAPACITY {
+                        next.floor = next.floor.max(range.largest.checked_add(1).unwrap());
+                        continue;
+                    }
+                    next.ranges[next.len] = *range;
+                    next.len += 1;
+                }
+            }
+            *history = next;
+            pn < history.floor
+        }
+        for seed in 1..=64u64 {
+            let mut random = seed;
+            let mut actual = Received::EMPTY;
+            let mut expected = Received::EMPTY;
+            for time in 0..2048u64 {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                let pn = match seed % 4 {
+                    0 => time,
+                    1 => time * 2,
+                    2 => random % 1024,
+                    _ => packet::MAX_VARINT - random % 1024,
+                };
+                let classified = actual.contains_or_discards(pn).unwrap();
+                let inserted = actual.insert(pn, time).unwrap();
+                assert_eq!(classified, inserted);
+                assert_eq!(inserted, reference(&mut expected, pn, time));
+                assert_eq!(actual.len, expected.len);
+                assert_eq!(actual.floor, expected.floor);
+                assert_eq!(actual.largest_received_at, expected.largest_received_at);
+                assert_eq!(
+                    &actual.ranges[..actual.len],
+                    &expected.ranges[..expected.len]
+                );
+            }
+            let before = actual;
+            assert_eq!(
+                actual.insert(packet::MAX_VARINT + 1, 9000),
+                Err(Error::Binding)
+            );
+            assert_eq!(&actual.ranges[..actual.len], &before.ranges[..before.len]);
+            assert_eq!(actual.floor, before.floor);
+        }
     }
 
     #[test]
@@ -4564,7 +4804,7 @@ mod tests {
                         .settle(Completion::from_adapter(
                             packet,
                             Some(now),
-                            crate::quic::ecn::imp::Codepoint::NotEct,
+                            crate::io::Codepoint::NotEct,
                         ))
                         .unwrap();
                     admitted += 1;
@@ -4602,7 +4842,7 @@ mod tests {
                 .settle(Completion::from_adapter(
                     packet,
                     Some(now),
-                    crate::quic::ecn::imp::Codepoint::NotEct,
+                    crate::io::Codepoint::NotEct,
                 ))
                 .unwrap();
         }
@@ -4623,7 +4863,7 @@ mod tests {
                     .settle(Completion::from_adapter(
                         probe,
                         Some(now),
-                        crate::quic::ecn::imp::Codepoint::NotEct,
+                        crate::io::Codepoint::NotEct,
                     ))
                     .unwrap();
             }
@@ -4660,7 +4900,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 first,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let mut bytes = [0; 128];
@@ -4673,7 +4913,7 @@ mod tests {
                 .settle(Completion::from_adapter(
                     sent,
                     Some(now),
-                    crate::quic::ecn::imp::Codepoint::NotEct,
+                    crate::io::Codepoint::NotEct,
                 ))
                 .unwrap();
         }
@@ -4698,6 +4938,9 @@ mod tests {
     #[test]
     fn more_than_64_real_acknowledged_or_rejected_sends_reclaim_bounded_storage_without_allocating()
     {
+        let mut packet_outcome = ApplicationOutcome::default();
+        let mut received_bytes = [0; 2048];
+
         book!(book, scope, installation, arena, Side::Client, 76);
         let (mut read, _) = crate::crypto::directional::ApplicationReadKeys::install(
             installation,
@@ -4735,7 +4978,7 @@ mod tests {
                     .settle(Completion::from_adapter(
                         r,
                         None,
-                        crate::quic::ecn::imp::Codepoint::NotEct,
+                        crate::io::Codepoint::NotEct,
                     ))
                     .unwrap();
             } else {
@@ -4743,26 +4986,37 @@ mod tests {
                     .settle(Completion::from_adapter(
                         r,
                         Some(now),
-                        crate::quic::ecn::imp::Codepoint::NotEct,
+                        crate::io::Codepoint::NotEct,
                     ))
                     .unwrap();
                 let mut plaintext = [0; 64];
                 let len = ack(pn, &mut plaintext);
-                let receipt =
-                    app_receipt(&mut read, &mut peer, peer_pn, &plaintext[..len], now + 1);
+                let receipt = app_receipt(
+                    &mut received_bytes,
+                    &mut read,
+                    &mut peer,
+                    peer_pn,
+                    &plaintext[..len],
+                    now + 1,
+                );
                 peer_pn += 1;
                 let result = rx
-                    .apply_application_packet(receipt, &plaintext[..len], now + 1, now + 1, None)
+                    .apply_application_packet(receipt, now + 1, now + 1, None, &mut packet_outcome)
                     .unwrap();
                 assert_eq!(result.newly_acknowledged, 1);
                 assert_eq!(
-                    result.packets[0],
+                    result.frame_acks.as_ref().unwrap().packets[0],
                     Some(PacketNumber {
                         space: PacketNumberSpace::ApplicationData,
                         value: pn
                     })
                 );
-                let grant = result.key_acks.into_iter().flatten().next().unwrap();
+                let grant = result
+                    .key_acks
+                    .iter_mut()
+                    .filter_map(Option::take)
+                    .next()
+                    .unwrap();
                 assert_eq!(grant.sent_key_generation(), 0);
                 assert_eq!(grant.received_key_generation(), 0);
                 ValidatedKeyAck::from_connection_ack(grant).unwrap();
@@ -4801,7 +5055,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 rejected,
                 None,
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         assert!(publication.take_initial_retirement().is_none());
@@ -4812,7 +5066,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 handshake,
                 Some(1),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let token = publication.take_initial_retirement().unwrap();
@@ -4878,6 +5132,9 @@ mod tests {
 
     #[test]
     fn actual_ack_declares_only_eligible_loss_and_duplicate_ack_mints_no_new_key_receipt() {
+        let mut packet_outcome = ApplicationOutcome::default();
+        let mut received_bytes = [0; 2048];
+
         book!(book, scope, installation, arena, Side::Client, 81);
         let (mut read, _) = crate::crypto::directional::ApplicationReadKeys::install(
             installation,
@@ -4893,15 +5150,22 @@ mod tests {
                 .settle(Completion::from_adapter(
                     r,
                     Some(pn),
-                    crate::quic::ecn::imp::Codepoint::NotEct,
+                    crate::io::Codepoint::NotEct,
                 ))
                 .unwrap();
         }
         let mut plaintext = [0; 64];
         let len = ack(3, &mut plaintext);
-        let receipt = app_receipt(&mut read, &mut peer, 0, &plaintext[..len], 4);
+        let receipt = app_receipt(
+            &mut received_bytes,
+            &mut read,
+            &mut peer,
+            0,
+            &plaintext[..len],
+            4,
+        );
         let outcome = rx
-            .apply_application_packet(receipt, &plaintext[..len], 4, 4, None)
+            .apply_application_packet(receipt, 4, 4, None, &mut packet_outcome)
             .unwrap();
         assert_eq!(outcome.newly_acknowledged, 1);
         assert_eq!(outcome.history_floor, 1);
@@ -4913,12 +5177,19 @@ mod tests {
             })
         );
         assert_eq!(tx.take_lost_application().map(|grant| grant.packet()), None);
-        let receipt = app_receipt(&mut read, &mut peer, 1, &plaintext[..len], 5);
+        let receipt = app_receipt(
+            &mut received_bytes,
+            &mut read,
+            &mut peer,
+            1,
+            &plaintext[..len],
+            5,
+        );
         let duplicate = rx
-            .apply_application_packet(receipt, &plaintext[..len], 5, 5, None)
+            .apply_application_packet(receipt, 5, 5, None, &mut packet_outcome)
             .unwrap();
         assert_eq!(duplicate.newly_acknowledged, 0);
-        assert!(duplicate.key_acks.into_iter().all(|grant| grant.is_none()));
+        assert!(duplicate.key_acks.iter().all(|grant| grant.is_none()));
         let deadline = clock
             .update_application(5, [false, false, true])
             .unwrap()
@@ -4943,6 +5214,9 @@ mod tests {
 
     #[test]
     fn key_ack_bridge_preserves_actual_scope_and_rejects_an_older_receiving_epoch() {
+        let mut packet_outcome = ApplicationOutcome::default();
+        let mut received_bytes = [0; 2048];
+
         book!(book, scope, installation, arena, Side::Client, 79);
         let (mut read, mut write) = crate::crypto::directional::ApplicationReadKeys::install(
             installation,
@@ -4969,17 +5243,29 @@ mod tests {
             .settle(Completion::from_adapter(
                 sealed.into_reservation(),
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let mut plaintext = [0; 64];
         let len = ack(0, &mut plaintext);
-        let receipt = app_receipt(&mut read, &mut old_peer, 0, &plaintext[..len], 1);
+        let receipt = app_receipt(
+            &mut received_bytes,
+            &mut read,
+            &mut old_peer,
+            0,
+            &plaintext[..len],
+            1,
+        );
         let outcome = rx
-            .apply_application_packet(receipt, &plaintext[..len], 1, 1, None)
+            .apply_application_packet(receipt, 1, 1, None, &mut packet_outcome)
             .unwrap();
         let grant = ValidatedKeyAck::from_connection_ack(
-            outcome.key_acks.into_iter().flatten().next().unwrap(),
+            outcome
+                .key_acks
+                .iter_mut()
+                .filter_map(Option::take)
+                .next()
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -4996,7 +5282,7 @@ mod tests {
         let mut bytes = [0; 64];
         bytes[0] = 1;
         let len = new_peer.seal(10, &[0x44], &mut bytes, 1).unwrap();
-        let transition = match read
+        let (transition, updated_plaintext) = match read
             .open(
                 10,
                 true,
@@ -5008,12 +5294,14 @@ mod tests {
             )
             .unwrap()
         {
-            AuthenticatedRead::PeerUpdate(transition) => transition,
+            AuthenticatedRead::PeerUpdate(transition, plaintext) => (transition, plaintext),
             _ => panic!("next epoch bypassed write installation"),
         };
         let installed = write.install_peer_update(transition).unwrap();
-        let ready = read.accept_write_epoch(installed).unwrap();
-        rx.apply_application_packet(ready, &[1], 2, 2, None)
+        let ready = read
+            .accept_write_epoch(installed, updated_plaintext)
+            .unwrap();
+        rx.apply_application_packet(ready, 2, 2, None, &mut packet_outcome)
             .unwrap();
         let next = tx
             .reserve_application(&[1], write.generation(), 22, false, 3)
@@ -5028,15 +5316,27 @@ mod tests {
             .settle(Completion::from_adapter(
                 sealed.into_reservation(),
                 Some(3),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         let len = ack(pn, &mut plaintext);
-        let receipt = app_receipt(&mut read, &mut old_peer, 1, &plaintext[..len], 4);
+        let receipt = app_receipt(
+            &mut received_bytes,
+            &mut read,
+            &mut old_peer,
+            1,
+            &plaintext[..len],
+            4,
+        );
         let outcome = rx
-            .apply_application_packet(receipt, &plaintext[..len], 4, 4, None)
+            .apply_application_packet(receipt, 4, 4, None, &mut packet_outcome)
             .unwrap();
-        let grant = outcome.key_acks.into_iter().flatten().next().unwrap();
+        let grant = outcome
+            .key_acks
+            .iter_mut()
+            .filter_map(Option::take)
+            .next()
+            .unwrap();
         assert_eq!(grant.sent_key_generation(), 1);
         assert_eq!(grant.received_key_generation(), 0);
         assert!(matches!(
@@ -5048,6 +5348,7 @@ mod tests {
 
     #[test]
     fn actual_validated_finished_and_handshake_done_gate_confirmation_and_old_space_retirement() {
+        let mut packet_outcome = ApplicationOutcome::default();
         use super::tls_fixture as fixture;
         use hibana_tls::certificate::CertificateDer;
         use hibana_tls::certificate::Limits;
@@ -5234,7 +5535,7 @@ mod tests {
             .settle(Completion::from_adapter(
                 app,
                 Some(0),
-                crate::quic::ecn::imp::Codepoint::NotEct,
+                crate::io::Codepoint::NotEct,
             ))
             .unwrap();
         buffer[0] = 0x1e;
@@ -5255,10 +5556,10 @@ mod tests {
             _ => panic!("unexpected update"),
         };
         let result = rx
-            .apply_application_packet(receipt, &[0x1e], 10, 10, None)
+            .apply_application_packet(receipt, 10, 10, None, &mut packet_outcome)
             .unwrap();
         assert!(completion.handshake_confirmed().unwrap());
-        let confirmation = result.confirmation.unwrap();
+        let confirmation = result.confirmation.take().unwrap();
         assert_eq!(
             rx.retire_handshake(&confirmation),
             Err(Error::Accounting(AccountingError::OutstandingPackets))

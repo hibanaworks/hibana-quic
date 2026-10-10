@@ -1,5 +1,4 @@
 //! Short-header protection owned by application RX/TX continuations.
-//! Recovered from the original edit commands after executor replacement.
 use super::{Error, recovery::Reservation};
 use crate::crypto::IntegrityBudget;
 use crate::crypto::directional::ApplicationReadKeys;
@@ -12,40 +11,16 @@ use crate::quic::imp::kernel::packet::PacketIter;
 use crate::quic::imp::kernel::packet::ShortHeader;
 use hibana_tls::secret::Erase;
 
-#[must_use = "consume authentication before frame effects"]
-pub struct OpenedApplication<'scope, const N: usize> {
-    bytes: [u8; N],
-    start: usize,
-    len: usize,
-    packet_number: u64,
-    receipt: Option<AuthenticatedRead<'scope>>,
-}
-impl<'scope, const N: usize> OpenedApplication<'scope, N> {
-    pub fn plaintext(&self) -> &[u8] {
-        &self.bytes[self.start..self.start + self.len]
-    }
-    pub fn packet_number(&self) -> u64 {
-        self.packet_number
-    }
-    pub fn take_receipt(&mut self) -> Option<AuthenticatedRead<'scope>> {
-        self.receipt.take()
-    }
-}
-impl<const N: usize> Drop for OpenedApplication<'_, N> {
-    fn drop(&mut self) {
-        self.bytes.erase();
-    }
-}
 #[allow(clippy::too_many_arguments)]
-pub fn open<'scope, const N: usize>(
+pub fn open<'scope, 'packet, const N: usize>(
     keys: &mut ApplicationReadKeys<'scope>,
     integrity: &mut IntegrityBudget,
-    datagram: &[u8],
+    datagram: &'packet mut [u8],
     local_cid: &[u8],
     largest_authenticated: Option<u64>,
     now: u64,
     pto: u64,
-) -> Result<OpenedApplication<'scope, N>, Error> {
+) -> Result<AuthenticatedRead<'scope, 'packet>, Error> {
     if datagram.len() > N {
         return Err(Error::Capacity);
     }
@@ -66,37 +41,26 @@ pub fn open<'scope, const N: usize>(
         .try_into()
         .map_err(|_| Error::Capacity)?;
     let mask = keys.header_mask(sample)?;
-    let mut result = OpenedApplication {
-        bytes: [0; N],
-        start: 0,
-        len: 0,
-        packet_number: 0,
-        receipt: None,
-    };
-    result.bytes[..datagram.len()].copy_from_slice(datagram);
-    result.bytes[0] ^= mask[0] & 0x1f;
-    let pn_len = usize::from(result.bytes[0] & 3) + 1;
+    let storage = datagram;
+    storage[0] ^= mask[0] & 0x1f;
+    let pn_len = usize::from(storage[0] & 3) + 1;
     for i in 0..pn_len {
-        result.bytes[pn_offset + i] ^= mask[i + 1];
+        storage[pn_offset + i] ^= mask[i + 1];
     }
     let (truncated, _) = packet::decode_truncated_packet_number(
-        result.bytes[0],
-        &result.bytes[pn_offset..pn_offset + pn_len],
+        storage[0],
+        &storage[pn_offset..pn_offset + pn_len],
     )?;
     let pn = packet::restore_packet_number(truncated, pn_len as u8, largest_authenticated)?;
     let start = pn_offset + pn_len;
-    let (header, payload) = result.bytes[..datagram.len()].split_at_mut(start);
+    let (header, payload) = storage.split_at_mut(start);
     let receipt = keys.open(pn, header[0] & 4 != 0, header, payload, integrity, now, pto)?;
     packet::validate_reserved_bits(header[0])?;
     let len = receipt.opened().len;
     if len == 0 {
         return Err(packet::Error::EmptyPayload.into());
     }
-    result.start = start;
-    result.len = len;
-    result.packet_number = pn;
-    result.receipt = Some(receipt);
-    Ok(result)
+    Ok(receipt)
 }
 #[must_use = "retain reservation until actual publication or cancellation"]
 pub struct SealedApplicationDatagram<'book, const N: usize> {

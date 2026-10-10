@@ -14,24 +14,27 @@ complete cryptographic security.
 ## Why Hibana
 
 The protocol order is executable: the same global choreography that explains
-who may act next is projected into the programs enforced by the running roles.
+who may act next is projected into the per-role programs enforced by the running endpoints.
 QUIC receive, TLS, transmit, UDP publication, timers and retirement are separate
 participants in that choreography.
 
 1. **Declare the order.** [QUIC `choreography()`](src/quic/global.rs) composes
    Retry, early data, receive/transmit, timers and Initial-key retirement with
    `seq`, `par`, `route` and `roll`.
-2. **Project and attach.** The same file's `programs()` derives each
-   `RoleProgram` with `project`. [`local::Endpoints::attach`](src/quic/local/mod.rs)
-   binds those programs to one session and installs the physical-send resolver.
-3. **Execute the localsides.** [The local composition](src/quic/local/run.rs)
-   runs the actual [receive](src/quic/local/receive.rs),
-   [transmit](src/quic/local/transmit.rs),
-   [publication](src/quic/local/publication.rs) and
-   [timer](src/quic/local/timer.rs) continuations. Their `send`, `recv` and
-   `offer` operations must follow the projected programs.
+2. **Project and attach.** [`localside::Endpoints::attach`](src/quic/localside/mod.rs)
+   takes that global directly, derives each `RoleProgram` with `project`,
+   and enters the session to obtain each affine `Endpoint`. It also installs the
+   physical-send resolver. There is no separate connection-program bundle.
+3. **Execute the localsides.** [The local composition](src/quic/localside/run.rs)
+   runs the actual [receive](src/quic/localside/receive.rs),
+   [transmit](src/quic/localside/transmit.rs),
+   [publication](src/quic/localside/publication.rs) and
+   [timer](src/quic/localside/timer.rs) continuations. Their `send`, `recv` and
+   `offer` operations must follow the role projections.
+   [Handshake packet storage and decoding](src/quic/imp/handshake_wire.rs)
+   perform authentication and CRYPTO reassembly without advancing endpoints.
 4. **Move resources with the protocol.**
-   [Application admission](src/quic/application/local/ownership.rs) moves the
+   [Application admission](src/quic/application/localside/ownership.rs) moves the
    transmit continuation, authenticated Finished receipt and transcript through
    owned slots. It checks their connection scope before admitting application
    traffic. A message label alone is not a substitute for those resources.
@@ -47,16 +50,16 @@ thread, and an endpoint does not spawn or poll its localside.
 For a complete connection, follow these concrete definitions:
 
 - [Application global](src/quic/application/global.rs): role identifiers,
-  choreography and projected programs, including the TLS/QUIC prefix.
-- [Application locals](src/quic/application/local/mod.rs): `Endpoints`, the
+  choreography and role projections, including the TLS/QUIC prefix.
+- [Application locals](src/quic/application/localside/mod.rs): `Endpoints`, the
   endpoint-to-consumer inventory, and `Endpoints::attach` in the same file.
-- [Application execution](src/quic/application/local/run.rs): construction of
+- [Application execution](src/quic/application/localside/run.rs): construction of
   each receive, source, sink, key, timer, publication and retirement future;
   the `TaskSet` listing those futures is the actual concurrent execution set.
-- [Caller-owned session](src/quic/application/local/borrowed.rs): session storage,
+- [Caller-owned session](src/quic/application/localside/borrowed.rs): session storage,
   program projection, endpoint attachment and the call into that execution.
-- [Handshake locals](src/quic/local/mod.rs) and
-  [their execution](src/quic/local/run.rs): the same ownership/attachment and
+- [Handshake locals](src/quic/localside/mod.rs) and
+  [their execution](src/quic/localside/run.rs): the same ownership/attachment and
   execution split for the authenticated prefix.
 
 Some localsides hold several endpoints; for example, application receive holds
@@ -66,49 +69,66 @@ consumers rather than pretending there is one task for every endpoint.
 
 [`runtime::TaskSet`](src/runtime/mod.rs) polls the composed local futures; it does
 not choose QUIC/TLS protocol transitions. On native systems, the PAL
-[`Reactor::block_on`](pal/src/async_io.rs) supplies polling and I/O wakeups.
+[`Reactor::block_on`](pal/src/unix/reactor.rs) supplies polling and I/O wakeups.
 With caller-owned storage, another executor can poll the same connection future.
-For an application defined with its own global, [session execution](src/session/local/mod.rs)
+For an application defined with its own global, [session execution](src/session/localside/mod.rs)
 attaches its projected endpoint and joins its application localside with the
 network localside. The [raw QUIC example](examples/hello-quic/client.rs) passes
-its projected program and `local::run` directly into that entrypoint.
+its projected program and `localside::run` directly into that entrypoint.
+
+### Public entrypoints and implementation storage
+
+Application code starts with `session`, a shared application global and its
+client/server localsides, as shown in the examples below. Endpoint projection
+and application execution use the same types on native and caller-owned paths.
+
+For a custom connection, `quic::application::{Buffers, Setup}` supplies storage
+and parameters. Use `quic::application::localside::Endpoints` for attachment,
+`Buffers` and `Setup` for caller-owned resources, and the corresponding localside
+to run them. Allocator-backed storage is under `quic::application::storage`.
+Packet codecs (`quic::packet`), transport parameters (`quic::transport_parameters`),
+recovery receipts (`quic::recovery`) and publication capabilities
+(`quic::publication`) are the low-level public interfaces used by diagnostic tools.
+Their definitions remain with the implementation components under `imp/`; the
+`imp` module itself is private. Public exports name the actual types and functions,
+without a second wrapper or an alternate protocol owner.
 
 ### Follow each protocol group
 
-Each protocol group has a `global` for permitted communication, a `local` for
+Each protocol group has a `global` for permitted communication, a `localside/` for
 actual endpoint-owning execution, and `imp` for byte storage and computation.
 An embedded group reuses endpoints from the containing connection; it does not
 create a duplicate session or a second controller.
 
-- **QUIC handshake and connected application:** their `local/mod.rs` defines
-  and attaches the endpoint set; `local/run.rs` assembles the actual futures.
+- **QUIC handshake and connected application:** their `localside/mod.rs` defines
+  and attaches the endpoint set; `localside/run.rs` assembles the actual futures.
 - **Retry admission:** [global](src/quic/retry/global.rs) →
-  [server locals](src/quic/retry/local/server.rs). `receive` attaches INPUT,
+  [server locals](src/quic/retry/localside/server.rs). `receive` attaches INPUT,
   OWNER and OUTPUT and joins incoming, admission and outgoing operations.
-- **ECN:** [global](src/quic/ecn/global.rs) → [owner local](src/quic/ecn/local/mod.rs).
+- **ECN:** [global](src/quic/ecn/global.rs) → [owner local](src/quic/ecn/localside/mod.rs).
   Its owner and the publication local share the complete connection projection.
 - **Path validation:** [global](src/quic/path/global.rs) →
-  [owner local](src/quic/path/local/mod.rs); address and probe observations are
+  [owner local](src/quic/path/localside/mod.rs); address and probe observations are
   separate [implementation data](src/quic/path/imp/observations.rs).
 - **Early data:** [global](src/quic/early_data/global.rs) →
-  [quarantine owner](src/quic/early_data/local/mod.rs), composed with the
-  [connected early locals](src/quic/application/local/early.rs).
+  [quarantine owner](src/quic/early_data/localside/mod.rs), composed with the
+  [connected early locals](src/quic/application/localside/early.rs).
 - **HTTP/3 control:** [global](src/http3/global.rs) →
-  [actual control owner](src/http3/local/mod.rs). The connection's source and sink
+  [actual control owner](src/http3/localside/mod.rs). The connection's source and sink
   share that choreography. [Codecs and retained bytes](src/http3/imp/mod.rs) do
   not select the next endpoint operation.
 - **HTTP/3 response consumption:** [global](src/http3/message/global.rs) →
-  [reader/writer locals](src/http3/message/local/mod.rs) →
-  [attachment and join](src/http3/message/local/run.rs).
+  [reader/writer locals](src/http3/message/localside/mod.rs) →
+  [attachment and join](src/http3/message/localside/run.rs).
 - **User application:** [shared example global](examples/hello-quic/global.rs) →
-  [client](examples/hello-quic/local/client.rs) or
-  [server](examples/hello-quic/local/server.rs) →
-  [session attachment](src/session/local/mod.rs). The HTTP/3 example uses the
+  [client](examples/hello-quic/client.rs) or
+  [server](examples/hello-quic/server.rs) →
+  [session attachment](src/session/localside/mod.rs). The HTTP/3 example uses the
   same application-level structure.
 
 The scheduler and PAL supply polling, wakeups and physical I/O. The above globals
-and endpoint operations still decide protocol progress; moving a file into `local`
-is not itself a guarantee. The concrete checks and their limits follow below.
+and endpoint operations enforce protocol progress. The concrete checks and their
+limits follow below.
 
 ### What is enforced
 
@@ -120,9 +140,9 @@ publish the same progress twice. These are runtime protocol checks combined
 with Rust ownership, not a claim that every invalid program fails to compile.
 
 Rust moves and scoped borrows separately enforce resource ownership. For example,
-[stream reclamation](src/quic/application/local/reclaim.rs) joins source, input
+[stream reclamation](src/quic/application/localside/reclaim.rs) joins source, input
 and delivery receipts for the same identity before releasing storage;
-[key ownership](src/quic/application/local/keys.rs) separates receive-side
+[key ownership](src/quic/application/localside/keys.rs) separates receive-side
 control from transmit-side sealing authority.
 
 Hibana does not prove the QUIC algorithms, certificate validation, cryptographic
@@ -165,9 +185,12 @@ The two examples calculate a square across a real network connection:
 - [HTTP/3 application](examples/hello-http3/global.rs), using authenticated
   HTTP/3 POST request/response bodies on `/hibana`.
 
-Each has one `global.rs`, `local/client.rs`, `local/server.rs`, and small native
-`client.rs` / `server.rs` launchers. The HTTP/3 and raw examples have identical
-application conversations; the launcher's `Protocol` selects the carrier.
+Each has one shared `global.rs` and a `client.rs` / `server.rs` pair. Each
+executable keeps its connection settings and inline `localside` module together.
+The HTTP/3 and raw examples have identical application conversations; `Protocol`
+selects the transport. `project(&global::choreography())` infers its role and graph
+type from the localside passed beside it. Only the localside signature names its
+`Endpoint<'_, CLIENT>` or `Endpoint<'_, SERVER>`; no `RoleProgram` annotation is needed.
 
 ### Shared global
 
@@ -177,6 +200,8 @@ from the expression, and the same value composes with `g::seq`, `g::route`, or
 separate type-level copy of the conversation is needed.
 
 ```rust
+//! One application choreography projected by both client and server.
+//! Each launcher attaches its own projected Endpoint and runs localside::run.
 use hibana::g;
 use hibana::runtime::program::Projectable;
 pub const CLIENT: u8 = 0;
@@ -197,185 +222,435 @@ pub fn choreography() -> impl Projectable {
 }
 ```
 
-### Client localside
+### Raw QUIC client
+
+[Complete executable](examples/hello-quic/client.rs). It imports only the shared `global.rs` above.
 
 ```rust
-use crate::global::*;
-use hibana::Endpoint;
-#[derive(Debug)]
-pub enum Error {
-    Protocol(hibana::EndpointError),
-    IncorrectSquare,
-}
-pub async fn run(client: &mut Endpoint<'_, CLIENT>) -> Result<(), Error> {
-    for number in [42_u64, 7] {
-        client
-            .send::<Number>(&number)
-            .await
-            .map_err(Error::Protocol)?;
-        let square = client.recv::<Square>().await.map_err(Error::Protocol)?;
-        if square != number * number {
-            return Err(Error::IncorrectSquare);
-        }
-    }
-    Ok(())
-}
-
-impl core::fmt::Display for Error {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Protocol(error) => write!(f, "{error:?}"),
-            Self::IncorrectSquare => f.write_str("incorrect square"),
-        }
+mod global;
+use hibana::runtime::program::project;
+use hibana_quic::session::{self, Protocol};
+use hibana_quic_pal::unix::{
+    Instant, UdpSocket,
+    clock::{Clock, before_deadline},
+    entropy::KernelEntropy,
+    reactor::Reactor,
+};
+use std::time::Duration;
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(1);
     }
 }
-impl core::error::Error for Error {}
-```
-
-### Server localside
-
-```rust
-use crate::global::*;
-use hibana::Endpoint;
-#[derive(Debug)]
-pub enum Error {
-    Protocol(hibana::EndpointError),
-    Overflow,
-}
-pub async fn run(server: &mut Endpoint<'_, SERVER>) -> Result<(), Error> {
-    for _ in 0..2 {
-        let number = server.recv::<Number>().await.map_err(Error::Protocol)?;
-        let square = number.checked_mul(number).ok_or(Error::Overflow)?;
-        server
-            .send::<Square>(&square)
-            .await
-            .map_err(Error::Protocol)?;
-    }
-    Ok(())
-}
-
-impl core::fmt::Display for Error {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Protocol(error) => write!(f, "{error:?}"),
-            Self::Overflow => f.write_str("square overflow"),
-        }
-    }
-}
-impl core::error::Error for Error {}
-```
-
-The client launcher projects `CLIENT`; the server launcher projects `SERVER`
-from that same global. `session::client` and `session::server` own the carrier,
-TLS connection, native reactor, bounded buffers and teardown. They join the
-application local with the real network driver, without an application-side
-phase flag or replacement state machine.
-
-### Raw QUIC client launcher
-
-[Complete executable](examples/hello-quic/client.rs); `global` and `local` refer to the files above.
-
-```rust
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 2 {
         return Err("usage: client REMOTE CA.pem (DNS:localhost)".into());
     }
-    let config = launch::Client {
-        remote: args[0].parse().map_err(|e| format!("{e}"))?,
-        server_name: "localhost".into(),
-        ca: args[1].clone().into(),
-        protocol: Protocol::Quic,
-        timeout: Duration::from_secs(30),
-    };
-    launch::client(
-        config,
-        global::SERVER,
-        &project::<{ global::CLIENT }, _>(&global::choreography()),
-        local::run,
+    let reactor = Reactor::<4, 8>::new().map_err(|e| e.to_string())?;
+    let clock = Clock::new(&reactor, Instant::now());
+    let protocol = Protocol::Quic;
+    let remote = args[0].parse().map_err(|e| format!("{e}"))?;
+    let socket = reactor
+        .register_udp(UdpSocket::bind_for_peer(remote).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let certificates = hibana_tls::certificate::pem::decode_certificates(
+        &std::fs::read(&args[1]).map_err(|e| e.to_string())?,
     )?;
+    let anchors = certificates
+        .iter()
+        .map(|der| {
+            hibana_tls::certificate::trust_anchor_from_der(
+                &hibana_tls::certificate::CertificateDer::from(der.as_slice()),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("{e:?}"))?;
+    let config = session::Client {
+        address: hibana_quic::io::Address {
+            local: socket.local_addr().map_err(|e| e.to_string())?,
+            remote,
+        },
+        now: hibana_tls::certificate::UnixTime::since_unix_epoch(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?,
+        ),
+        server_name: "localhost",
+        trust_anchors: &anchors,
+        protocol,
+        idle_timeout_ms: 15_000,
+        stream_capacity: 8,
+    };
+    let program = project(&global::choreography());
+    reactor
+        .block_on(Box::pin(before_deadline(
+            &clock,
+            Instant::now() + Duration::from_secs(30),
+            session::localside::owned::client(
+                &socket,
+                &clock,
+                &mut KernelEntropy,
+                config,
+                global::SERVER,
+                &program,
+                localside::run,
+            ),
+        )))
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
     println!("42 squared = 1764\n7 squared = 49");
     Ok(())
 }
+
+// This role's application code is next to its connection setup.
+pub mod localside {
+    //! The client application localside. Its Endpoint follows the shared global.
+    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
+    use crate::global::*;
+    use hibana::Endpoint;
+    #[derive(Debug)]
+    pub enum Error {
+        Protocol(hibana::EndpointError),
+        IncorrectSquare,
+    }
+    pub async fn run(client: &mut Endpoint<'_, CLIENT>) -> Result<(), Error> {
+        for number in [42_u64, 7] {
+            client
+                .send::<Number>(&number)
+                .await
+                .map_err(Error::Protocol)?;
+            let square = client.recv::<Square>().await.map_err(Error::Protocol)?;
+            if square != number * number {
+                return Err(Error::IncorrectSquare);
+            }
+        }
+        Ok(())
+    }
+}
 ```
 
-### Raw QUIC server launcher
+### Raw QUIC server
 
-[Complete executable](examples/hello-quic/server.rs); `global` and `local` refer to the files above.
+[Complete executable](examples/hello-quic/server.rs). It imports only the shared `global.rs` above.
 
 ```rust
+mod global;
+use hibana::runtime::program::project;
+use hibana_quic::session::{self, Protocol};
+use hibana_quic_pal::unix::{
+    Instant, UdpSocket,
+    clock::{Clock, before_deadline},
+    entropy::KernelEntropy,
+    reactor::Reactor,
+};
+use std::time::Duration;
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 3 {
         return Err("usage: server LISTEN CERT.pem KEY.pem".into());
     }
-    let config = launch::Server {
-        listen: args[0].parse().map_err(|e| format!("{e}"))?,
-        certificate: args[1].clone().into(),
-        key: args[2].clone().into(),
-        protocol: Protocol::Quic,
-        timeout: Duration::from_secs(30),
+    let reactor = Reactor::<4, 8>::new().map_err(|e| e.to_string())?;
+    let clock = Clock::new(&reactor, Instant::now());
+    let protocol = Protocol::Quic;
+    let socket = reactor
+        .register_udp(
+            UdpSocket::bind(args[0].parse().map_err(|e| format!("{e}"))?)
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    let certificates = hibana_tls::certificate::pem::decode_certificates(
+        &std::fs::read(&args[1]).map_err(|e| e.to_string())?,
+    )?;
+    let chain: Vec<_> = certificates.iter().map(Vec::as_slice).collect();
+    let key = match hibana_tls::certificate::pem::decode_private_key(
+        &hibana_tls::secret::Secret::new(std::fs::read(&args[2]).map_err(|e| e.to_string())?),
+    )? {
+        hibana_tls::certificate::pem::PrivateKeyDer::Pkcs8(bytes) => {
+            hibana_tls::handshake::SigningKey::from_pkcs8_der(&bytes)
+        }
+        hibana_tls::certificate::pem::PrivateKeyDer::Sec1(bytes) => {
+            hibana_tls::handshake::SigningKey::from_sec1_der(&bytes)
+        }
+    }
+    .map_err(|e| format!("{e:?}"))?;
+    let config = session::Server {
+        protocol,
+        certificate_chain: &chain,
+        signing_key: &key,
+        idle_timeout_ms: 15_000,
+        stream_capacity: 8,
     };
-    launch::server(
-        config,
-        global::CLIENT,
-        &project::<{ global::SERVER }, _>(&global::choreography()),
-        local::run,
-    )
+    eprintln!(
+        "listening on {}",
+        socket.local_addr().map_err(|e| e.to_string())?
+    );
+    let program = project(&global::choreography());
+    reactor
+        .block_on(Box::pin(before_deadline(
+            &clock,
+            Instant::now() + Duration::from_secs(30),
+            session::localside::owned::server(
+                &socket,
+                &clock,
+                &mut KernelEntropy,
+                config,
+                global::CLIENT,
+                &program,
+                localside::run,
+            ),
+        )))
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    println!("served two requests");
+    Ok(())
+}
+
+// This role's application code is next to its connection setup.
+pub mod localside {
+    //! The server application localside. Its Endpoint follows the shared global.
+    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
+    use crate::global::*;
+    use hibana::Endpoint;
+    #[derive(Debug)]
+    pub enum Error {
+        Protocol(hibana::EndpointError),
+        Overflow,
+    }
+    pub async fn run(server: &mut Endpoint<'_, SERVER>) -> Result<(), Error> {
+        for _ in 0..2 {
+            let number = server.recv::<Number>().await.map_err(Error::Protocol)?;
+            let square = number.checked_mul(number).ok_or(Error::Overflow)?;
+            server
+                .send::<Square>(&square)
+                .await
+                .map_err(Error::Protocol)?;
+        }
+        Ok(())
+    }
 }
 ```
 
-### HTTP/3 client launcher
+### HTTP/3 client
 
-[Complete executable](examples/hello-http3/client.rs); `global` and `local` refer to the files above.
+[Complete executable](examples/hello-http3/client.rs). It imports only the shared `global.rs` above.
 
 ```rust
+mod global;
+use hibana::runtime::program::project;
+use hibana_quic::session::{self, Protocol};
+use hibana_quic_pal::unix::{
+    Instant, UdpSocket,
+    clock::{Clock, before_deadline},
+    entropy::KernelEntropy,
+    reactor::Reactor,
+};
+use std::time::Duration;
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 2 {
         return Err("usage: client REMOTE CA.pem (DNS:localhost)".into());
     }
-    let config = launch::Client {
-        remote: args[0].parse().map_err(|e| format!("{e}"))?,
-        server_name: "localhost".into(),
-        ca: args[1].clone().into(),
-        protocol: Protocol::Http3,
-        timeout: Duration::from_secs(30),
-    };
-    launch::client(
-        config,
-        global::SERVER,
-        &project::<{ global::CLIENT }, _>(&global::choreography()),
-        local::run,
+    let reactor = Reactor::<4, 8>::new().map_err(|e| e.to_string())?;
+    let clock = Clock::new(&reactor, Instant::now());
+    let protocol = Protocol::Http3;
+    let remote = args[0].parse().map_err(|e| format!("{e}"))?;
+    let socket = reactor
+        .register_udp(UdpSocket::bind_for_peer(remote).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let certificates = hibana_tls::certificate::pem::decode_certificates(
+        &std::fs::read(&args[1]).map_err(|e| e.to_string())?,
     )?;
+    let anchors = certificates
+        .iter()
+        .map(|der| {
+            hibana_tls::certificate::trust_anchor_from_der(
+                &hibana_tls::certificate::CertificateDer::from(der.as_slice()),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("{e:?}"))?;
+    let config = session::Client {
+        address: hibana_quic::io::Address {
+            local: socket.local_addr().map_err(|e| e.to_string())?,
+            remote,
+        },
+        now: hibana_tls::certificate::UnixTime::since_unix_epoch(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?,
+        ),
+        server_name: "localhost",
+        trust_anchors: &anchors,
+        protocol,
+        idle_timeout_ms: 15_000,
+        stream_capacity: 8,
+    };
+    let program = project(&global::choreography());
+    reactor
+        .block_on(Box::pin(before_deadline(
+            &clock,
+            Instant::now() + Duration::from_secs(30),
+            session::localside::owned::client(
+                &socket,
+                &clock,
+                &mut KernelEntropy,
+                config,
+                global::SERVER,
+                &program,
+                localside::run,
+            ),
+        )))
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
     println!("42 squared = 1764\n7 squared = 49");
     Ok(())
 }
+
+// This role's application code is next to its connection setup.
+pub mod localside {
+    //! The client application localside. Its Endpoint follows the shared global.
+    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
+    use crate::global::*;
+    use hibana::Endpoint;
+    #[derive(Debug)]
+    pub enum Error {
+        Protocol(hibana::EndpointError),
+        IncorrectSquare,
+    }
+    pub async fn run(client: &mut Endpoint<'_, CLIENT>) -> Result<(), Error> {
+        for number in [42_u64, 7] {
+            client
+                .send::<Number>(&number)
+                .await
+                .map_err(Error::Protocol)?;
+            let square = client.recv::<Square>().await.map_err(Error::Protocol)?;
+            if square != number * number {
+                return Err(Error::IncorrectSquare);
+            }
+        }
+        Ok(())
+    }
+}
 ```
 
-### HTTP/3 server launcher
+### HTTP/3 server
 
-[Complete executable](examples/hello-http3/server.rs); `global` and `local` refer to the files above.
+[Complete executable](examples/hello-http3/server.rs). It imports only the shared `global.rs` above.
 
 ```rust
+mod global;
+use hibana::runtime::program::project;
+use hibana_quic::session::{self, Protocol};
+use hibana_quic_pal::unix::{
+    Instant, UdpSocket,
+    clock::{Clock, before_deadline},
+    entropy::KernelEntropy,
+    reactor::Reactor,
+};
+use std::time::Duration;
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 3 {
         return Err("usage: server LISTEN CERT.pem KEY.pem".into());
     }
-    let config = launch::Server {
-        listen: args[0].parse().map_err(|e| format!("{e}"))?,
-        certificate: args[1].clone().into(),
-        key: args[2].clone().into(),
-        protocol: Protocol::Http3,
-        timeout: Duration::from_secs(30),
+    let reactor = Reactor::<4, 8>::new().map_err(|e| e.to_string())?;
+    let clock = Clock::new(&reactor, Instant::now());
+    let protocol = Protocol::Http3;
+    let socket = reactor
+        .register_udp(
+            UdpSocket::bind(args[0].parse().map_err(|e| format!("{e}"))?)
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    let certificates = hibana_tls::certificate::pem::decode_certificates(
+        &std::fs::read(&args[1]).map_err(|e| e.to_string())?,
+    )?;
+    let chain: Vec<_> = certificates.iter().map(Vec::as_slice).collect();
+    let key = match hibana_tls::certificate::pem::decode_private_key(
+        &hibana_tls::secret::Secret::new(std::fs::read(&args[2]).map_err(|e| e.to_string())?),
+    )? {
+        hibana_tls::certificate::pem::PrivateKeyDer::Pkcs8(bytes) => {
+            hibana_tls::handshake::SigningKey::from_pkcs8_der(&bytes)
+        }
+        hibana_tls::certificate::pem::PrivateKeyDer::Sec1(bytes) => {
+            hibana_tls::handshake::SigningKey::from_sec1_der(&bytes)
+        }
+    }
+    .map_err(|e| format!("{e:?}"))?;
+    let config = session::Server {
+        protocol,
+        certificate_chain: &chain,
+        signing_key: &key,
+        idle_timeout_ms: 15_000,
+        stream_capacity: 8,
     };
-    launch::server(
-        config,
-        global::CLIENT,
-        &project::<{ global::SERVER }, _>(&global::choreography()),
-        local::run,
-    )
+    eprintln!(
+        "listening on {}",
+        socket.local_addr().map_err(|e| e.to_string())?
+    );
+    let program = project(&global::choreography());
+    reactor
+        .block_on(Box::pin(before_deadline(
+            &clock,
+            Instant::now() + Duration::from_secs(30),
+            session::localside::owned::server(
+                &socket,
+                &clock,
+                &mut KernelEntropy,
+                config,
+                global::CLIENT,
+                &program,
+                localside::run,
+            ),
+        )))
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    println!("served two requests");
+    Ok(())
+}
+
+// This role's application code is next to its connection setup.
+pub mod localside {
+    //! The server application localside. Its Endpoint follows the shared global.
+    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
+    use crate::global::*;
+    use hibana::Endpoint;
+    #[derive(Debug)]
+    pub enum Error {
+        Protocol(hibana::EndpointError),
+        Overflow,
+    }
+    pub async fn run(server: &mut Endpoint<'_, SERVER>) -> Result<(), Error> {
+        for _ in 0..2 {
+            let number = server.recv::<Number>().await.map_err(Error::Protocol)?;
+            let square = number.checked_mul(number).ok_or(Error::Overflow)?;
+            server
+                .send::<Square>(&square)
+                .await
+                .map_err(Error::Protocol)?;
+        }
+        Ok(())
+    }
 }
 ```
 
@@ -386,27 +661,27 @@ certificate chain/key for `DNS:localhost` and its CA. Verification stays enabled
 do not use production keys for a demonstration.
 
 ```sh
-cargo build --locked --release --manifest-path pal/Cargo.toml --examples
+cargo build --locked --release --manifest-path examples/Cargo.toml --examples
 ```
 
 Raw QUIC, in separate terminals:
 
 ```sh
-pal/target/release/examples/quic-server 127.0.0.1:4433 chain.pem key.pem
-pal/target/release/examples/quic-client 127.0.0.1:4433 ca.pem
+examples/target/release/examples/quic-server 127.0.0.1:4433 chain.pem key.pem
+examples/target/release/examples/quic-client 127.0.0.1:4433 ca.pem
 ```
 
 HTTP/3, in separate terminals:
 
 ```sh
-pal/target/release/examples/http3-server 127.0.0.1:4433 chain.pem key.pem
-pal/target/release/examples/http3-client 127.0.0.1:4433 ca.pem
+examples/target/release/examples/http3-server 127.0.0.1:4433 chain.pem key.pem
+examples/target/release/examples/http3-client 127.0.0.1:4433 ca.pem
 ```
 
 Or verify both exchanges automatically:
 
 ```sh
-python3 examples/check-transfers.py pal/target/release/examples chain.pem key.pem ca.pem
+python3 examples/check-transfers.py examples/target/release/examples chain.pem key.pem ca.pem
 ```
 
 With `CARGO_TARGET_DIR`, use that directory's `release/examples/` instead.
@@ -429,8 +704,8 @@ This profile is a two-role application channel, not a general web router or
 multiparty connection manager.
 
 The shared attachment and stream effects live in the `no_std` core, using
-caller-owned storage and ordinary Rust futures. Native UDP sockets, file-based
-certificate loading and the reactor live in PAL. Bare-metal integrations supply
+caller-owned storage and ordinary Rust futures. Native UDP sockets and the reactor live in PAL. The example launchers read
+certificate files and pass borrowed certificate bytes to TLS. Bare-metal integrations supply
 packet I/O, clock, entropy, connection storage and their executor through the
 core contracts. They can reuse the application global and localsides; the core
 does not supply a board-specific network driver.
@@ -446,15 +721,15 @@ are still untrusted inputs, and matching message labels do not establish that a
 peer runs the same source code. TLS, strict frame parsing and the receiver's
 projected endpoint enforce their respective boundaries.
 
-- [Network session entry points](pal/src/launch.rs) own native resources.
-- [Network session execution](src/session/local/owned.rs) joins a caller's
+- [Application launchers](examples/hello-quic/client.rs) acquire native resources.
+- [Network session execution](src/session/localside/owned.rs) joins a caller's
   localside with the QUIC/HTTP/3 driver.
-- [OS-independent role attachment](src/session/local/mod.rs) joins the localside
+- [OS-independent role attachment](src/session/localside/mod.rs) joins the localside
   and its stream driver.
-- [Stream effects](src/session/local/stream.rs) and [framing](src/session/imp/wire.rs)
+- [Stream effects](src/session/imp/stream.rs) and [framing](src/session/imp/wire.rs)
   remain below the application interface.
 - [Core I/O contracts](src/io/mod.rs) support OS and bare-metal adapters.
-- [CLI file transfer](pal/README.md) and its
+- [CLI file transfer](examples/hq/main.rs) and its
   [single-command script](examples/http3-transfer.sh) are additional examples.
 
 ## Find the protocol and its implementation
@@ -464,17 +739,17 @@ below `imp/`:
 
 | Protocol | Order | Execution | Implementation |
 |---|---|---|---|
-| QUIC handshake | [global.rs](src/quic/global.rs) | [local/](src/quic/local/mod.rs) | [imp/](src/quic/imp/mod.rs) |
-| Application | [global.rs](src/quic/application/global.rs) | [local/](src/quic/application/local/mod.rs) | [imp/](src/quic/application/imp/mod.rs) |
-| Early data | [global.rs](src/quic/early_data/global.rs) | [local/](src/quic/early_data/local/mod.rs) | [imp/](src/quic/early_data/imp/mod.rs) |
-| ECN | [global.rs](src/quic/ecn/global.rs) | [local/](src/quic/ecn/local/mod.rs) | [imp/](src/quic/ecn/imp/mod.rs) |
-| Path validation | [global.rs](src/quic/path/global.rs) | [local/](src/quic/path/local/mod.rs) | [imp/](src/quic/path/imp/mod.rs) |
-| Retry client | [global/client.rs](src/quic/retry/global/client.rs) | [local/](src/quic/retry/local/mod.rs) | [imp/](src/quic/retry/imp/mod.rs) |
+| QUIC handshake | [global.rs](src/quic/global.rs) | [localside/](src/quic/localside/mod.rs) | [imp/](src/quic/imp/mod.rs) |
+| Application | [global.rs](src/quic/application/global.rs) | [localside/](src/quic/application/localside/mod.rs) | [imp/](src/quic/application/imp/mod.rs) |
+| Early data | [global.rs](src/quic/early_data/global.rs) | [localside/](src/quic/early_data/localside/mod.rs) | [imp/](src/quic/early_data/imp/mod.rs) |
+| ECN | [global.rs](src/quic/ecn/global.rs) | [localside/](src/quic/ecn/localside/mod.rs) | [imp/](src/quic/ecn/imp/mod.rs) |
+| Path validation | [global.rs](src/quic/path/global.rs) | [localside/](src/quic/path/localside/mod.rs) | [imp/](src/quic/path/imp/mod.rs) |
+| Retry client | [global/client.rs](src/quic/retry/global/client.rs) | [localside/](src/quic/retry/localside/mod.rs) | [imp/](src/quic/retry/imp/mod.rs) |
 
 Server Retry admission uses the same core [global](src/quic/retry/global.rs)
-with the [PAL input/owner/output locals](src/quic/retry/local/server.rs).
+with the [Retry input/owner/output localsides](src/quic/retry/localside/server.rs).
 
-`local/mod.rs` contains the composition or direct role entry. The role files
+`localside/mod.rs` contains the composition or direct role entry. The role files
 contain the actual endpoint operations; `imp/` contains buffers, codecs and
 arithmetic.
 
@@ -495,15 +770,15 @@ Licensed under MIT OR Apache-2.0; see LICENSE-MIT and LICENSE-APACHE.
 
 The protocol implementation has one home in `src/`:
 
-- [QUIC global](src/quic/global.rs) and [localsides](src/quic/local/mod.rs) own the handshake and its affine continuations.
-- [Connected global](src/quic/application/global.rs) and [localsides](src/quic/application/local/mod.rs) own streams, keys, close and retirement.
-- [Retry global](src/quic/retry/global.rs), [server localsides](src/quic/retry/local/server.rs) and [packet arithmetic](src/quic/retry/imp/admission.rs) perform admission with injected I/O.
-- [HTTP/3 message global](src/http3/message/global.rs), [localsides](src/http3/message/local/mod.rs) and [bounded codec](src/http3/message/imp/wire.rs) consume message storage without filesystem assumptions.
-- [Application session](src/session/local/mod.rs) connects user-projected localsides to the common stream implementation.
+- [QUIC global](src/quic/global.rs) and [localsides](src/quic/localside/mod.rs) own the handshake and its affine continuations.
+- [Connected global](src/quic/application/global.rs) and [localsides](src/quic/application/localside/mod.rs) own streams, keys, close and retirement.
+- [Retry global](src/quic/retry/global.rs), [server localsides](src/quic/retry/localside/server.rs) and [packet arithmetic](src/quic/retry/imp/admission.rs) perform admission with injected I/O.
+- [HTTP/3 message global](src/http3/message/global.rs), [localsides](src/http3/message/localside/mod.rs) and [bounded codec](src/http3/message/imp/wire.rs) consume message storage without filesystem assumptions.
+- [Application session](src/session/localside/mod.rs) connects user-projected localsides to the common stream implementation.
 
-[Borrowed connection attachment](src/quic/application/local/borrowed.rs) consumes
+[Borrowed connection attachment](src/quic/application/localside/borrowed.rs) consumes
 caller-owned slabs, buffers, keys and physical capabilities without allocating.
-[Owned attachment](src/quic/application/local/owned/mod.rs), enabled with `alloc`,
+[Owned attachment](src/quic/application/localside/owned/mod.rs), enabled with `alloc`,
 allocates the buffers and calls that same attachment. It does not select phases
 or implement another protocol. `alloc` is a compile-time memory choice, not an
 operating-system or async-runtime requirement.

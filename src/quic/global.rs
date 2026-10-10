@@ -1,15 +1,12 @@
 //! Finite handshake graph: direct TLS message order, independent TX publication,
 //! timer ownership and affine Initial-key retirement compose in parallel.
 //!
-//! Role identifiers below index the projected programs. Their attached affine
-//! endpoints are defined and created in [`crate::quic::local::Endpoints`].
-//! [`crate::quic::local::run`] shows which actual futures own or borrow each endpoint
+//! Role identifiers below index the role projections. Their attached affine
+//! endpoints are defined and created in [`crate::quic::localside::Endpoints`].
+//! [`crate::quic::localside::run`] shows which actual futures own or borrow each endpoint
 //! and how those futures are polled together.
+use hibana::g;
 use hibana::runtime::program::Projectable;
-use hibana::{
-    g,
-    runtime::program::{RoleProgram, project},
-};
 pub const RX: u8 = 0;
 pub const TLS_RX: u8 = 1;
 pub const TX: u8 = 2;
@@ -377,39 +374,4 @@ pub fn choreography() -> impl Projectable {
             ),
         ),
     )
-}
-pub struct Programs {
-    pub rx: RoleProgram<RX>,
-    pub tls_rx: RoleProgram<TLS_RX>,
-    pub tx: RoleProgram<TX>,
-    pub tls_tx: RoleProgram<TLS_TX>,
-    pub tls_complete: RoleProgram<TLS_COMPLETE>,
-    pub tls_handoff: RoleProgram<TLS_HANDOFF>,
-    pub udp: RoleProgram<UDP>,
-    pub timer: RoleProgram<TIMER>,
-    pub timer_tx: RoleProgram<TIMER_TX>,
-    pub tx_wire: RoleProgram<TX_WIRE>,
-    pub initial_event: RoleProgram<INITIAL_EVENT>,
-    pub initial_owner: RoleProgram<INITIAL_OWNER>,
-    pub timer_stop: RoleProgram<TIMER_STOP>,
-    pub receive_stop: RoleProgram<RECEIVE_STOP>,
-}
-pub fn programs() -> Programs {
-    let global = choreography();
-    Programs {
-        rx: project(&global),
-        tls_rx: project(&global),
-        tx: project(&global),
-        tls_tx: project(&global),
-        tls_complete: project(&global),
-        tls_handoff: project(&global),
-        udp: project(&global),
-        timer: project(&global),
-        timer_tx: project(&global),
-        tx_wire: project(&global),
-        initial_event: project(&global),
-        initial_owner: project(&global),
-        timer_stop: project(&global),
-        receive_stop: project(&global),
-    }
 }

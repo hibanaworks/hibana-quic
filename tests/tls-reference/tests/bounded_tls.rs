@@ -1,14 +1,14 @@
 //! Real bounded TLS full handshakes; rcgen/rustls and fixture setup are host-only.
 use hibana_quic::crypto::CipherSuite;
 use hibana_quic::entropy::{Entropy, Unavailable};
-use hibana_quic_pal::entropy::KernelEntropy;
+use hibana_quic_pal::unix::entropy::KernelEntropy;
 use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::UnixTime;
 use hibana_tls::certificate::trust_anchor_from_der;
-use hibana_tls::endpoint as tls;
-use hibana_tls::endpoint::Level;
-use hibana_tls::endpoint::Provider;
+use hibana_tls::quic as tls;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::ClientConfig;
 use hibana_tls::handshake::ServerConfig;
@@ -260,7 +260,7 @@ fn bounded_case(case: Case) {
                 BoundedTls::client_with_policy(
                     ClientConfig {
                         protocol: Default::default(),
-                        version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                        version: hibana_quic::quic::version::Version::V1,
                         server_name: if case.wrong_name {
                             "wrong.invalid"
                         } else {
@@ -284,7 +284,7 @@ fn bounded_case(case: Case) {
                 BoundedTls::server_with_policy(
                     ServerConfig {
                         protocol: Default::default(),
-                        version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                        version: hibana_quic::quic::version::Version::V1,
                         certificate_chain: &chain,
                         signing_key: &identity.signing,
                         transport_parameters: SERVER_PARAMS,
@@ -321,8 +321,8 @@ fn bounded_case(case: Case) {
         si.corrupt = case.corrupt_client;
         let mut cm = [0; 8192];
         let mut sm = [0; 8192];
-        let cs = local::MessageSlot::new(&mut cm);
-        let ss = local::MessageSlot::new(&mut sm);
+        let cs = hibana_tls::handshake::MessageSlot::new(&mut cm);
+        let ss = hibana_tls::handshake::MessageSlot::new(&mut sm);
         let cc = CarrierStorage::<1, 16, 4>::new();
         let sc = CarrierStorage::<1, 16, 4>::new();
         let mut cslab = vec![0; 65536];
@@ -335,15 +335,15 @@ fn bounded_case(case: Case) {
         let sk = sk.init();
         let cr = ck.rendezvous(&mut cslab, cc.bind(cid).unwrap()).unwrap();
         let sr = sk.rendezvous(&mut sslab, sc.bind(sid).unwrap()).unwrap();
-        let cp = global::client_programs();
-        let sp = global::server_programs();
-        let mut cinput = cr.enter(cid, &cp.input).unwrap();
-        let mut cverify = cr.enter(cid, &cp.verify).unwrap();
-        let mut sinput = sr.enter(sid, &sp.input).unwrap();
-        let mut sverify = sr.enter(sid, &sp.verify).unwrap();
-        let reactor = hibana_quic_pal::async_io::Reactor::<0, 0>::new().unwrap();
+        let cp = { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) };
+        let sp = { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) };
+        let mut cinput = cr.enter(cid, &cp.0).unwrap();
+        let mut cverify = cr.enter(cid, &cp.1).unwrap();
+        let mut sinput = sr.enter(sid, &sp.0).unwrap();
+        let mut sverify = sr.enter(sid, &sp.1).unwrap();
+        let reactor = hibana_quic_pal::unix::reactor::Reactor::<0, 0>::new().unwrap();
         let result = measured(|| {
-            let mut co = pin!(local::client_owner(&mut cverify, &client.tls, &cs));
+            let mut co = pin!(localside::verify::client_owner(&mut cverify, &client.tls, &cs));
             let mut co = pin!(poll_fn(|cx| {
                 let result = co.as_mut().poll(cx);
                 if let Some(w) = client.reader.borrow_mut().take() {
@@ -351,8 +351,8 @@ fn bounded_case(case: Case) {
                 }
                 result
             }));
-            let mut cin = pin!(local::client_input(&mut cinput, &cs, &mut ci));
-            let mut so = pin!(local::server_owner(&mut sverify, &server.tls, &ss));
+            let mut cin = pin!(localside::input::client_input(&mut cinput, &cs, &mut ci));
+            let mut so = pin!(localside::verify::server_owner(&mut sverify, &server.tls, &ss));
             let mut so = pin!(poll_fn(|cx| {
                 let result = so.as_mut().poll(cx);
                 if let Some(w) = server.reader.borrow_mut().take() {
@@ -360,7 +360,7 @@ fn bounded_case(case: Case) {
                 }
                 result
             }));
-            let mut sin = pin!(local::server_input(&mut sinput, &ss, &mut si));
+            let mut sin = pin!(localside::input::server_input(&mut sinput, &ss, &mut si));
             let tasks = TaskSet::new([co.as_mut(), cin.as_mut(), so.as_mut(), sin.as_mut()]);
             if cancel {
                 let mut tasks = pin!(tasks);
@@ -483,7 +483,7 @@ use hibana::runtime::{SessionKitStorage, ids::SessionId};
 use hibana_quic::runtime::TaskSet;
 use hibana_quic::runtime::carrier::CarrierStorage;
 use hibana_tls::handshake::global;
-use hibana_tls::handshake::local;
+use hibana_tls::handshake::localside;
 struct Shared<P> {
     tls: RefCell<P>,
     reader: RefCell<Option<Waker>>,
@@ -498,8 +498,8 @@ struct Input<'a, P> {
     fragment: usize,
     corrupt: u8,
 }
-impl<P: Provider> local::MessageInput for Input<'_, P> {
-    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, local::Error> {
+impl<P: Provider> hibana_tls::handshake::MessageInput for Input<'_, P> {
+    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, hibana_tls::handshake::Error> {
         if self.stall {
             out[..4].copy_from_slice(&[1, 0, 0, 0]);
             return core::future::pending().await;
@@ -518,7 +518,7 @@ impl<P: Provider> local::MessageInput for Input<'_, P> {
                     {
                         Ok(Some(p)) => Poll::Ready(Ok(p)),
                         Ok(None) => Poll::Pending,
-                        Err(e) => Poll::Ready(Err(local::Error::Input(e))),
+                        Err(e) => Poll::Ready(Err(hibana_tls::handshake::Error::Input(e))),
                     }
                 })
                 .await?;
@@ -535,7 +535,7 @@ impl<P: Provider> local::MessageInput for Input<'_, P> {
             if copied == 4 {
                 n = 4 + ((out[1] as usize) << 16) + ((out[2] as usize) << 8) + out[3] as usize;
                 if n > out.len() {
-                    return Err(local::Error::Capacity);
+                    return Err(hibana_tls::handshake::Error::Capacity);
                 }
             }
         }
@@ -553,7 +553,7 @@ use rustls_pki_types::ServerName;
 async fn feed_reference<P: Provider>(
     candidate: &Shared<P>,
     reference: &Shared<RustlsProvider>,
-) -> Result<(), local::Error> {
+) -> Result<(), hibana_tls::handshake::Error> {
     let mut bytes = [0; 37];
     loop {
         let output = poll_fn(|cx| {
@@ -567,7 +567,7 @@ async fn feed_reference<P: Provider>(
                     Poll::Ready(Ok(None))
                 }
                 Ok(None) => Poll::Pending,
-                Err(e) => Poll::Ready(Err(local::Error::Input(e))),
+                Err(e) => Poll::Ready(Err(hibana_tls::handshake::Error::Input(e))),
             }
         })
         .await?;
@@ -578,7 +578,7 @@ async fn feed_reference<P: Provider>(
             .tls
             .borrow_mut()
             .receive(output.level, &bytes[..output.len])
-            .map_err(local::Error::Input)?;
+            .map_err(hibana_tls::handshake::Error::Input)?;
         let w = reference.reader.borrow_mut().take();
         if let Some(w) = w {
             w.wake();
@@ -595,7 +595,7 @@ fn reference_case(candidate_client: bool, retry: bool) {
         BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),
@@ -609,7 +609,7 @@ fn reference_case(candidate_client: bool, retry: bool) {
     } else {
         let config = ServerConfig {
             protocol: Default::default(),
-            version: hibana_quic::quic::imp::kernel::version::Version::V1,
+            version: hibana_quic::quic::version::Version::V1,
             certificate_chain: &chain,
             signing_key: &id.signing,
             transport_parameters: SERVER_PARAMS,
@@ -656,7 +656,7 @@ fn reference_case(candidate_client: bool, retry: bool) {
         corrupt: 0,
     };
     let mut bytes = [0; 8192];
-    let slot = local::MessageSlot::new(&mut bytes);
+    let slot = hibana_tls::handshake::MessageSlot::new(&mut bytes);
     let carrier = CarrierStorage::<1, 16, 4>::new();
     let mut slab = vec![0; 65536];
     let mut kit = SessionKitStorage::uninit();
@@ -665,26 +665,26 @@ fn reference_case(candidate_client: bool, retry: bool) {
     let rendezvous = kit
         .rendezvous(&mut slab, carrier.bind(id).unwrap())
         .unwrap();
-    let programs = if candidate_client {
-        global::client_programs()
+    let projection = if candidate_client {
+        { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) }
     } else {
-        global::server_programs()
+        { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) }
     };
-    let mut verify = rendezvous.enter(id, &programs.verify).unwrap();
-    let mut wire = rendezvous.enter(id, &programs.input).unwrap();
-    let reactor = hibana_quic_pal::async_io::Reactor::<0, 0>::new().unwrap();
+    let mut verify = rendezvous.enter(id, &projection.1).unwrap();
+    let mut wire = rendezvous.enter(id, &projection.0).unwrap();
+    let reactor = hibana_quic_pal::unix::reactor::Reactor::<0, 0>::new().unwrap();
     let owner = async {
         if candidate_client {
-            local::client_owner(&mut verify, &candidate.tls, &slot).await
+            localside::verify::client_owner(&mut verify, &candidate.tls, &slot).await
         } else {
-            local::server_owner(&mut verify, &candidate.tls, &slot).await
+            localside::verify::server_owner(&mut verify, &candidate.tls, &slot).await
         }
     };
     let receiver = async {
         if candidate_client {
-            local::client_input(&mut wire, &slot, &mut input).await
+            localside::input::client_input(&mut wire, &slot, &mut input).await
         } else {
-            local::server_input(&mut wire, &slot, &mut input).await
+            localside::input::server_input(&mut wire, &slot, &mut input).await
         }
     };
     let mut owner = pin!(owner);
@@ -776,7 +776,7 @@ fn caller_entropy_failure_does_not_construct_a_provider() {
         BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 server_name: "localhost",
                 trust_anchors: &anchors,
                 now: now(),

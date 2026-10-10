@@ -14,7 +14,9 @@ use hibana_quic::runtime::join2;
 fn retry_rekey_is_outside_the_receive_and_publication_rolls() {
     for (retry, repeat) in [(false, false), (true, false), (true, true)] {
         let refused = core::cell::Cell::new(false);
-        let (owner_program, io_program) = p::programs();
+        let graph = p::choreography();
+        let owner_program = hibana::runtime::program::project::<{ p::OWNER }, _>(&graph);
+        let io_program = hibana::runtime::program::project::<{ p::IO }, _>(&graph);
         let carrier = CarrierStorage::<1, 16, 8>::new();
         let mut slab = [0; 65536];
         let mut kit = SessionKitStorage::uninit();

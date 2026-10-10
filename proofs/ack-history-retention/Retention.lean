@@ -25,3 +25,13 @@ theorem bounded_ranges (ranges : List Nat) (capacity : Nat) :
 theorem retained_not_fabricated (ranges : List Nat) (capacity pn : Nat)
     (h : pn ∈ ranges.take capacity) : pn ∈ ranges := by
   exact List.mem_of_mem_take h
+
+ theorem insert_shift_fits (capacity count position : Nat)
+     (hc : count < capacity) (hp : position ≤ count) :
+     position + 1 + (count - position) ≤ capacity := by
+   omega
+
+ theorem merge_shift_fits (capacity count position : Nat)
+     (hc : count ≤ capacity) (hp : position < count) :
+     position + (count - position - 1) < capacity := by
+   omega

@@ -159,16 +159,46 @@ pub struct ApplicationWriteKeys<'a> {
     update_evidence: Option<UpdateEvidence<'a>>,
     last_now: u64,
 }
-#[derive(Debug)]
-pub enum AuthenticatedRead<'a> {
-    Ready(AckEligible<'a>),
-    PeerUpdate(PeerUpdateAuthenticated<'a>),
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Peer updates transfer the actual affine key without allocation."
+)]
+pub enum AuthenticatedRead<'a, 'packet> {
+    Ready(AckEligible<'a, 'packet>),
+    PeerUpdate(PeerUpdateAuthenticated<'a>, &'packet [u8]),
 }
-impl AuthenticatedRead<'_> {
+impl core::fmt::Debug for AuthenticatedRead<'_, '_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuthenticatedRead")
+            .field("opened", &self.opened())
+            .finish_non_exhaustive()
+    }
+}
+impl core::fmt::Debug for AckEligible<'_, '_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AckEligible")
+            .field("packet_number", &self.packet_number)
+            .field("opened", &self.opened)
+            .finish_non_exhaustive()
+    }
+}
+impl<'a, 'packet> AuthenticatedRead<'a, 'packet> {
+    pub const fn packet_number(&self) -> u64 {
+        match self {
+            Self::Ready(receipt) => receipt.packet_number,
+            Self::PeerUpdate(receipt, _) => receipt.packet_number,
+        }
+    }
+    pub const fn plaintext(&self) -> &'packet [u8] {
+        match self {
+            Self::Ready(receipt) => receipt.plaintext,
+            Self::PeerUpdate(_, plaintext) => plaintext,
+        }
+    }
     pub const fn opened(&self) -> Opened {
         match self {
             Self::Ready(receipt) => receipt.opened,
-            Self::PeerUpdate(receipt) => receipt.opened,
+            Self::PeerUpdate(receipt, _) => receipt.opened,
         }
     }
 }
@@ -176,21 +206,33 @@ impl AuthenticatedRead<'_> {
 /// Actual authentication and completed write-epoch coupling, bound to plaintext.
 /// ```compile_fail
 /// use hibana_quic::crypto::directional::AckEligible;
-/// fn duplicate(receipt: AckEligible<'_>) { let first = receipt; let second = receipt; }
+/// fn duplicate(receipt: AckEligible<'_, '_>) { let first = receipt; let second = receipt; }
 /// ```
 /// ```compile_fail
 /// use hibana_quic::crypto::{Opened, directional::AckEligible};
-/// fn forge(snapshot: Opened) -> AckEligible<'static> { snapshot.into() }
+/// fn forge(snapshot: Opened) -> AckEligible<'static, 'static> { snapshot.into() }
+/// ```
+/// The authenticated bytes remain immutably borrowed until their receipt is consumed.
+/// ```compile_fail,E0506
+/// use hibana_quic::crypto::{IntegrityBudget, directional::ApplicationReadKeys};
+/// fn change_authenticated_bytes(keys: &mut ApplicationReadKeys<'_>, bytes: &mut [u8]) {
+///     let receipt = keys.open(0, false, &[0x40], bytes,
+///         &mut IntegrityBudget::new(), 0, 1000).unwrap();
+///     bytes[0] ^= 1;
+///     core::hint::black_box(receipt);
+/// }
 /// ```
 #[must_use = "ACK processing must consume the authenticated packet's eligibility"]
-#[derive(Debug)]
-pub struct AckEligible<'a> {
+pub struct AckEligible<'a, 'packet> {
     scope: &'a ApplicationKeyScope,
     packet_number: u64,
     opened: Opened,
-    plaintext_digest: [u8; 32],
+    plaintext: &'packet [u8],
 }
-impl<'a> AckEligible<'a> {
+impl<'a, 'packet> AckEligible<'a, 'packet> {
+    pub const fn plaintext(&self) -> &'packet [u8] {
+        self.plaintext
+    }
     pub const fn scope(&self) -> &'a ApplicationKeyScope {
         self.scope
     }
@@ -202,9 +244,6 @@ impl<'a> AckEligible<'a> {
     }
     pub const fn connection_generation(&self) -> u64 {
         self.scope.connection_generation()
-    }
-    pub fn authenticates_plaintext(&self, plaintext: &[u8]) -> bool {
-        self.plaintext_digest == crate::crypto::plaintext_digest(plaintext)
     }
 }
 /// Only successful next-generation AEAD mints this affine receipt.
@@ -376,16 +415,16 @@ impl<'a> ApplicationReadKeys<'a> {
     /// Exactly one AEAD attempt, no fallback or HKDF. Outstanding transitions
     /// block before AEAD so no later packet bypasses the write-installation gate.
     #[allow(clippy::too_many_arguments)]
-    pub fn open(
+    pub fn open<'packet>(
         &mut self,
         pn: u64,
         phase: bool,
         header: &[u8],
-        buffer: &mut [u8],
+        buffer: &'packet mut [u8],
         budget: &mut IntegrityBudget,
         now: u64,
         pto: u64,
-    ) -> Result<AuthenticatedRead<'a>, Error> {
+    ) -> Result<AuthenticatedRead<'a, 'packet>, Error> {
         self.ensure_ready()?;
         if header.first().is_none_or(|first| (first & 4 != 0) != phase) {
             return Err(Error::InvalidHeader);
@@ -470,15 +509,18 @@ impl<'a> ApplicationReadKeys<'a> {
                 generation,
                 key_updated: true,
             };
-            Ok(AuthenticatedRead::PeerUpdate(PeerUpdateAuthenticated {
-                receive_key: promoted,
-                scope: self.scope,
-                packet_number: pn,
-                opened,
-                previous_generation,
-                observed_at: now,
-                plaintext_digest: crate::crypto::plaintext_digest(&buffer[..len]),
-            }))
+            Ok(AuthenticatedRead::PeerUpdate(
+                PeerUpdateAuthenticated {
+                    receive_key: promoted,
+                    scope: self.scope,
+                    packet_number: pn,
+                    opened,
+                    previous_generation,
+                    observed_at: now,
+                    plaintext_digest: crate::crypto::plaintext_digest(&buffer[..len]),
+                },
+                &buffer[..len],
+            ))
         } else {
             let generation = if previous {
                 self.previous_max = Some(self.previous_max.map_or(pn, |max| max.max(pn)));
@@ -501,18 +543,24 @@ impl<'a> ApplicationReadKeys<'a> {
                     generation,
                     key_updated: false,
                 },
-                plaintext_digest: crate::crypto::plaintext_digest(&buffer[..len]),
+                plaintext: &buffer[..len],
             }))
         }
     }
-    pub fn accept_write_epoch(
+    pub fn accept_write_epoch<'packet>(
         &mut self,
         installed: WriteEpochInstalled<'a>,
-    ) -> Result<AckEligible<'a>, Error> {
+        plaintext: &'packet [u8],
+    ) -> Result<AckEligible<'a, 'packet>, Error> {
         if self.material.is_none() {
             return Err(Error::KeyDiscarded);
         }
         let receipt = installed.authenticated;
+        if receipt.opened.len != plaintext.len()
+            || receipt.plaintext_digest != crate::crypto::plaintext_digest(plaintext)
+        {
+            return Err(Error::KeyUpdateError);
+        }
         if !core::ptr::eq(self.scope, receipt.scope)
             || self
                 .material
@@ -531,7 +579,7 @@ impl<'a> ApplicationReadKeys<'a> {
             scope: self.scope,
             packet_number: receipt.packet_number,
             opened: receipt.opened,
-            plaintext_digest: receipt.plaintext_digest,
+            plaintext,
         })
     }
     pub(crate) fn prepare_local_update(&mut self) -> Result<LocalUpdateReady<'a>, Error> {

@@ -60,12 +60,14 @@ jobs:
         run: |
           cargo +1.95.0 test --locked --manifest-path tests/tls-reference/Cargo.toml
           cargo +1.95.0 test --locked --manifest-path pal/Cargo.toml
+          cargo +1.95.0 test --locked --manifest-path examples/Cargo.toml
       - name: Strict Clippy for QUIC, TLS and Host
         run: |
           cargo +1.95.0 clippy --locked --lib --tests -- -D warnings
           cargo +1.95.0 clippy --locked --features alloc --lib --tests -- -D warnings
           cargo +1.95.0 clippy --locked --manifest-path ../hibana-tls/Cargo.toml --all-targets --features alloc -- -D warnings
           cargo +1.95.0 clippy --locked --manifest-path pal/Cargo.toml --all-targets -- -D warnings
+          cargo +1.95.0 clippy --locked --manifest-path examples/Cargo.toml --all-targets -- -D warnings
       - name: Exact runner nine-certificate chain including zero-allocation assertion
         run: |
           source tools/ci/pins.env
@@ -77,7 +79,7 @@ jobs:
       - name: Bounded diagnostics, source pairing and impairment fixtures
         run: |
           python3 -m unittest discover -s tests -p 'test_*.py'
-          python3 -m unittest discover -s pal/tests -p 'test_udp_impairment.py'
+          python3 -m unittest discover -s tests/interop/native -p 'test_udp_impairment.py'
       - name: Save paired source identity
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -139,12 +141,12 @@ jobs:
           python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
           mkdir -p ci-safe-results
           cp .ci-work/paired-source/source-pair.json ci-safe-results/
-          cargo +1.95.0 build --locked --release --manifest-path pal/Cargo.toml --bin hq
+          cargo +1.95.0 build --locked --release --manifest-path examples/Cargo.toml --bin hq
           sha256sum "$CARGO_TARGET_DIR/release/hq" > ci-safe-results/binary.sha256
       - name: Finite seven Handshake plus three short packet losses
-        run: python3 pal/tests/reproduce_key_wait.py 3 --binary "$CARGO_TARGET_DIR/release/hq" --connections 1 --impairment loss --loss-scope global --timeout-seconds 120 --trace-routes --output ci-safe-results/key-wait.json
+        run: python3 tests/interop/native/reproduce_key_wait.py 3 --binary "$CARGO_TARGET_DIR/release/hq" --connections 1 --impairment loss --loss-scope global --timeout-seconds 120 --trace-routes --output ci-safe-results/key-wait.json
       - name: Finite slow path and three Finished losses
-        run: python3 pal/tests/reproduce_slow_finished.py --binary "$CARGO_TARGET_DIR/release/hq" --connections 1 --impairment loss --timeout-seconds 180 --output ci-safe-results/slow-finished.json
+        run: python3 tests/interop/native/reproduce_slow_finished.py --binary "$CARGO_TARGET_DIR/release/hq" --connections 1 --impairment loss --timeout-seconds 180 --output ci-safe-results/slow-finished.json
       - name: Fifty concurrent connections, loss and corruption, five seeds each
         if: success() || failure()
         run: python3 tools/ci/run-ack-delay-stress.py --binary "$CARGO_TARGET_DIR/release/hq" --output ci-safe-results/stress
@@ -181,8 +183,8 @@ jobs:
         run: cargo +1.95.0 run --locked --manifest-path pal/Cargo.toml --example ${{ matrix.example }}
       - name: Compile and test the application localsides
         run: |
-          cargo +1.95.0 test --locked --manifest-path pal/Cargo.toml --examples
-          cargo +1.95.0 build --locked --release --manifest-path pal/Cargo.toml --examples
+          cargo +1.95.0 test --locked --manifest-path examples/Cargo.toml --examples
+          cargo +1.95.0 build --locked --release --manifest-path examples/Cargo.toml --examples
       - name: Authenticated raw QUIC and HTTP/3 exchanges
         run: |
           certs="$RUNNER_TEMP/example-certificates"

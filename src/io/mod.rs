@@ -12,9 +12,9 @@ pub enum IoError {
 /// metadata is not evidence of Not-ECT. Authentication still precedes counting.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReceivedDatagram {
-    pub path: Option<crate::quic::path::Address>,
+    pub path: Option<crate::io::Address>,
     pub len: usize,
-    pub ecn: Option<crate::quic::ecn::imp::Codepoint>,
+    pub ecn: Option<crate::io::Codepoint>,
 }
 pub trait DatagramRx {
     fn receive(
@@ -28,8 +28,8 @@ pub trait DatagramTx {
     fn send_on_path(
         &mut self,
         bytes: &[u8],
-        ecn: crate::quic::ecn::imp::Codepoint,
-        path: Option<crate::quic::path::Address>,
+        ecn: crate::io::Codepoint,
+        path: Option<crate::io::Address>,
     ) -> impl Future<Output = Result<u64, IoError>> {
         async move {
             if path.is_some() {
@@ -42,7 +42,7 @@ pub trait DatagramTx {
     fn send(
         &mut self,
         bytes: &[u8],
-        ecn: crate::quic::ecn::imp::Codepoint,
+        ecn: crate::io::Codepoint,
     ) -> impl Future<Output = Result<u64, IoError>>;
 }
 pub trait Clock {
@@ -66,6 +66,8 @@ pub trait RandomAccess {
 /// Unconnected UDP access for server admission, before peer binding.
 /// Receive returns the actual source and destination path with the datagram.
 pub trait DatagramSocket {
+    /// Actual bound local address of this socket.
+    fn local_address(&self) -> Result<core::net::SocketAddr, IoError>;
     fn receive_from(
         &self,
         bytes: &mut [u8],
@@ -73,7 +75,37 @@ pub trait DatagramSocket {
     fn send_to_path(
         &self,
         bytes: &[u8],
-        path: crate::quic::path::Address,
-        ecn: crate::quic::ecn::imp::Codepoint,
+        path: crate::io::Address,
+        ecn: crate::io::Codepoint,
     ) -> impl Future<Output = Result<usize, IoError>>;
+}
+
+use core::net::SocketAddr;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Address {
+    pub local: SocketAddr,
+    pub remote: SocketAddr,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum Codepoint {
+    NotEct = 0,
+    Ect1 = 1,
+    Ect0 = 2,
+    Ce = 3,
+}
+impl Codepoint {
+    /// The upper six bits are DSCP, not ECN.
+    pub const fn from_ip_tos(tos: u8) -> Self {
+        match tos & 3 {
+            0 => Self::NotEct,
+            1 => Self::Ect1,
+            2 => Self::Ect0,
+            _ => Self::Ce,
+        }
+    }
+    pub const fn bits(self) -> u8 {
+        self as u8
+    }
 }

@@ -1,10 +1,10 @@
 //! Framing regression from the authenticated Initial ranges in runner
 //! 37434925514. This is synthetic data with the observed lengths, not captured
 //! TLS material and not a claim to replay a full encrypted connection.
-use hibana_quic::quic::imp::crypto_buffer::CryptoBuffer;
-use hibana_quic::quic::imp::crypto_buffer::Error;
-use hibana_quic::quic::imp::crypto_buffer::bitmap_bytes;
-use hibana_quic::quic::imp::crypto_buffer::parse_message;
+use hibana_quic::quic::buffer::CryptoBuffer;
+use hibana_quic::quic::buffer::Error;
+use hibana_quic::quic::buffer::bitmap_bytes;
+use hibana_quic::quic::buffer::parse_message;
 
 #[test]
 fn repeated_initial_prefix_does_not_complete_a_missing_client_hello_tail() {

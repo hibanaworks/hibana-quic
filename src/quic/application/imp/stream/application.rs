@@ -216,8 +216,34 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         Ok(ready)
     }
 
+    /// Find one eligible stream without copying a capacity-sized handle array.
+    /// The table borrow ends before the returned handle reaches a localside.
+    pub fn find_readable_stream(
+        &self,
+        mut accept: impl FnMut(StreamHandle) -> bool,
+    ) -> Result<Option<StreamHandle>, Error> {
+        let n = self
+            .core
+            .numbers
+            .try_borrow()
+            .map_err(|_| Error::Borrowed)?;
+        for stream in n.table.live_handles() {
+            if !n.table.can_receive(stream.id())
+                || n.state(stream)?.input_release.is_none()
+                || !accept(stream)
+            {
+                continue;
+            }
+            let view = n.table.receive(stream)?;
+            if !view.first.is_empty() || !view.second.is_empty() || view.fin || view.reset.is_some()
+            {
+                return Ok(Some(stream));
+            }
+        }
+        Ok(None)
+    }
     pub fn readable_stream(&self) -> Result<Option<StreamHandle>, Error> {
-        Ok(self.ready_streams()?.into_iter().flatten().next())
+        self.find_readable_stream(|_| true)
     }
 
     pub fn delivery(&self, stream: StreamHandle) -> Result<Option<DeliveryRecord>, Error> {

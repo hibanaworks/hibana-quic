@@ -1,10 +1,10 @@
 //! Depth-eight certificate verification, with runtime-generated private keys.
 #[path = "../../support/async_tls_fixture.rs"]
 mod async_fixture;
-use hibana_quic_pal::entropy::KernelEntropy;
+use hibana_quic_pal::unix::entropy::KernelEntropy;
 use hibana_tls::certificate::*;
-use hibana_tls::endpoint::Level;
-use hibana_tls::endpoint::Provider;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::ClientConfig;
 use hibana_tls::handshake::Failure;
@@ -224,7 +224,7 @@ fn ten_chain_is_rejected_by_bounded_wrapper() {
         measured(|| BoundedTls::server(
             ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &c.signing,
                 transport_parameters: &[4, 1, 63]
@@ -344,7 +344,7 @@ fn handshake(
     client: &mut BoundedTls<'_, '_>,
     server: &mut BoundedTls<'_, '_>,
     fragment: usize,
-) -> Result<(), hibana_tls::handshake::local::Error> {
+) -> Result<(), hibana_tls::handshake::Error> {
     async_fixture::try_handshake_with::<16384>(client, server, fragment, false).map(|_| ())
 }
 fn authenticated_packets(client: &mut impl Provider, server: &mut impl Provider) {
@@ -378,7 +378,7 @@ fn full_handshake(
         let mut client = BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 server_name: name,
                 trust_anchors: &anchors,
                 now: time,
@@ -392,7 +392,7 @@ fn full_handshake(
         let mut server = BoundedTls::server(
             ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 certificate_chain: chain,
                 signing_key: signing,
                 transport_parameters: &[4, 1, 63],
@@ -456,7 +456,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
         let mut client = BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 server_name: "server.allowed.test",
                 trust_anchors: &anchors,
                 now: time,
@@ -470,7 +470,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
         let mut server = BoundedTls::server(
             ServerConfig {
                 protocol: Default::default(),
-                version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                version: hibana_quic::quic::version::Version::V1,
                 certificate_chain: &chain,
                 signing_key: &id.signing,
                 transport_parameters: &[4, 1, 63],
@@ -483,7 +483,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
         assert!(
             matches!(
                 rejected,
-                Err(hibana_tls::handshake::local::Error::Crypto(
+                Err(hibana_tls::handshake::Error::Crypto(
                     Failure::Capacity
                 ))
             ),
@@ -503,7 +503,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
             let mut client = BoundedTls::client(
                 ClientConfig {
                     protocol: Default::default(),
-                    version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                    version: hibana_quic::quic::version::Version::V1,
                     server_name: name,
                     trust_anchors: trust,
                     now: time,
@@ -517,7 +517,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
             let mut server = BoundedTls::server(
                 ServerConfig {
                     protocol: Default::default(),
-                    version: hibana_quic::quic::imp::kernel::version::Version::V1,
+                    version: hibana_quic::quic::version::Version::V1,
                     certificate_chain: &chain,
                     signing_key: &id.signing,
                     transport_parameters: &[4, 1, 63],
@@ -530,7 +530,7 @@ fn enlarged_chain_requires_explicit_storage_and_still_rejects_wrong_authenticati
             assert!(
                 matches!(
                     rejected,
-                    Err(hibana_tls::handshake::local::Error::Crypto(
+                    Err(hibana_tls::handshake::Error::Crypto(
                         Failure::Certificate(_)
                     ))
                 ),

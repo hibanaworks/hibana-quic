@@ -7,6 +7,8 @@
 //! The actual TLS and Early roles supply those capabilities; these numerical
 //! kernels do not manufacture them or interpret copied status as authority.
 
+pub(super) mod codec;
+
 use hibana_tls::secret::Erase;
 
 const MAX: u64 = (1 << 62) - 1;
@@ -1189,3 +1191,5 @@ mod tests {
 
 #[cfg(test)]
 mod owner_tests;
+
+pub(super) mod exchange;

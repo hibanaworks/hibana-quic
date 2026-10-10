@@ -7,12 +7,13 @@ use hibana_quic::crypto::PacketKey;
 use hibana_quic::crypto::directional::ApplicationKeyScope;
 use hibana_quic::crypto::directional::AuthenticatedRead;
 use hibana_quic::quic::Side;
-use hibana_quic::quic::imp::kernel::accounting::AccountingError;
-use hibana_quic::quic::imp::recovery;
-use hibana_quic::quic::imp::recovery::Recovery;
+use hibana_quic::quic::accounting::AccountingError;
+use hibana_quic::quic::recovery;
+use hibana_quic::quic::recovery::Recovery;
 
 #[test]
 fn authenticated_loss_gaps_prune_without_fabricating_acks_or_readmitting_replays() {
+    let mut packet_outcome = recovery::ApplicationOutcome::default();
     let mut scope = ApplicationKeyScope::new(601);
     let mut installation = scope.claim().unwrap();
     let recovery = installation.take_recovery().unwrap();
@@ -42,7 +43,7 @@ fn authenticated_loss_gaps_prune_without_fabricating_acks_or_readmitting_replays
             panic!("unexpected key update")
         };
         let outcome = rx
-            .apply_application_packet(receipt, &bytes[..1], pn, pn, None)
+            .apply_application_packet(receipt, pn, pn, None, &mut packet_outcome)
             .unwrap();
         assert!(!outcome.duplicate);
         let ack = tx.pending_ack().unwrap();
@@ -64,7 +65,7 @@ fn authenticated_loss_gaps_prune_without_fabricating_acks_or_readmitting_replays
         panic!("unexpected key update")
     };
     assert!(matches!(
-        rx.apply_application_packet(replay, &original[..1], 5000, 5000, None),
+        rx.apply_application_packet(replay, 5000, 5000, None, &mut packet_outcome),
         Err(recovery::Error::Accounting(
             AccountingError::HistoryUnavailable
         ))
