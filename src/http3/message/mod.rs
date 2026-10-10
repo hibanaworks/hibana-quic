@@ -1,9 +1,9 @@
 //! HTTP/3 message decoding using one Hibana global and direct localsides.
 //!
-//! [`decode_response`] consumes FIN-complete random-access storage in place. It is not
+//! [`crate::http3::message::decode_response`] consumes FIN-complete random-access storage in place. It is not
 //! a streaming client or a connection factory. The caller owns publication of
 //! the resulting body; an error must leave that storage unpublished.
-//! [`decode_request`] validates the bounded GET profile used by `hq`.
+//! [`crate::http3::message::decode_request`] validates the bounded GET profile used by `hq`.
 pub mod global;
 mod imp;
 pub mod local;

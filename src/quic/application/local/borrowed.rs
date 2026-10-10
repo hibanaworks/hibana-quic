@@ -1,6 +1,7 @@
 //! Attach the connected protocol to caller-owned storage and physical capabilities.
 //! The returned future owns the projected endpoints until all roles retire.
 use super::super::{self as application, *};
+use super::Endpoints;
 use crate::{
     io::{Clock, DatagramRx, DatagramTx},
     quic::imp::{
@@ -36,7 +37,7 @@ pub async fn client<'scope, const N: usize, const P: usize, const RX: usize, con
         .rendezvous(slab, queues.bind(session).map_err(Error::Transport)?)
         .map_err(Error::Attach)?;
     let mut roles =
-        Roles::attach(&rendezvous, session, &programs, &outcomes).map_err(Error::Attachment)?;
+        Endpoints::attach(&rendezvous, session, &programs, &outcomes).map_err(Error::Attachment)?;
     let result = if source.early_status() == crate::quic::early_data::imp::EarlyStatus::Offered {
         application::client_early::<N, P, RX, CHUNK>(
             &mut roles,
@@ -90,7 +91,7 @@ pub async fn server<'scope, const N: usize, const P: usize, const RX: usize, con
         .rendezvous(slab, queues.bind(session).map_err(Error::Transport)?)
         .map_err(Error::Attach)?;
     let mut roles =
-        Roles::attach(&rendezvous, session, &programs, &outcomes).map_err(Error::Attachment)?;
+        Endpoints::attach(&rendezvous, session, &programs, &outcomes).map_err(Error::Attachment)?;
     let result = match input {
         Some(input) => {
             application::server_stream::<N, P, RX, CHUNK>(

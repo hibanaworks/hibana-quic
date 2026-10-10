@@ -22,9 +22,9 @@ participants in that choreography.
    Retry, early data, receive/transmit, timers and Initial-key retirement with
    `seq`, `par`, `route` and `roll`.
 2. **Project and attach.** The same file's `programs()` derives each
-   `RoleProgram` with `project`. [Role attachment](src/quic/local/attach.rs)
+   `RoleProgram` with `project`. [`local::Endpoints::attach`](src/quic/local/mod.rs)
    binds those programs to one session and installs the physical-send resolver.
-3. **Execute the localsides.** [The local composition](src/quic/local/mod.rs)
+3. **Execute the localsides.** [The local composition](src/quic/local/run.rs)
    runs the actual [receive](src/quic/local/receive.rs),
    [transmit](src/quic/local/transmit.rs),
    [publication](src/quic/local/publication.rs) and
@@ -35,6 +35,43 @@ participants in that choreography.
    transmit continuation, authenticated Finished receipt and transcript through
    owned slots. It checks their connection scope before admitting application
    traffic. A message label alone is not a substitute for those resources.
+
+### Where are the running roles?
+
+A role identifier names a participant in the global. A projected `RoleProgram`
+describes its permitted operations. An `Endpoint` is that participant's affine,
+attached protocol capability. The actual computation is an async localside that
+owns or exclusively borrows endpoints and resources. A role identifier is not a
+thread, and an endpoint does not spawn or poll its localside.
+
+For a complete connection, follow these concrete definitions:
+
+- [Application global](src/quic/application/global.rs): role identifiers,
+  choreography and projected programs, including the TLS/QUIC prefix.
+- [Application locals](src/quic/application/local/mod.rs): `Endpoints`, the
+  endpoint-to-consumer inventory, and `Endpoints::attach` in the same file.
+- [Application execution](src/quic/application/local/run.rs): construction of
+  each receive, source, sink, key, timer, publication and retirement future;
+  the `TaskSet` listing those futures is the actual concurrent execution set.
+- [Caller-owned session](src/quic/application/local/borrowed.rs): session storage,
+  program projection, endpoint attachment and the call into that execution.
+- [Handshake locals](src/quic/local/mod.rs) and
+  [their execution](src/quic/local/run.rs): the same ownership/attachment and
+  execution split for the authenticated prefix.
+
+Some localsides hold several endpoints; for example, application receive holds
+`receive`, `rx_keys` and `peer_event`. Startup and retirement also borrow these
+endpoints in the order required by the global. Their fields document the
+consumers rather than pretending there is one task for every endpoint.
+
+[`runtime::TaskSet`](src/runtime/mod.rs) polls the composed local futures; it does
+not choose QUIC/TLS protocol transitions. On native systems, the PAL
+[`Reactor::block_on`](pal/src/async_io.rs) supplies polling and I/O wakeups.
+With caller-owned storage, another executor can poll the same connection future.
+For an application defined with its own global, [session execution](src/session/local/mod.rs)
+attaches its projected endpoint and joins its application localside with the
+network localside. The [raw QUIC example](examples/hello-quic/client.rs) passes
+its projected program and `local::run` directly into that entrypoint.
 
 ### What is enforced
 

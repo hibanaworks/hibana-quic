@@ -1,7 +1,7 @@
 //! Materialize accepted early requests before ordinary RX can consume their ACKs.
 //! The finite projected prefix transfers real production receipts to the same
 //! collector used by ordinary streams. Rejected intents use the ordinary source.
-use super::{Error, Roles, global as p, io, reclaim};
+use super::{Endpoints, Error, global as p, io, reclaim};
 use crate::quic::application::imp::stream::App;
 use crate::quic::application::imp::stream::Publication;
 use crate::quic::application::imp::stream::Tx;
@@ -16,7 +16,7 @@ fn check(actual: u64, expected: u64) -> Result<(), Error> {
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: usize, B>(
-    roles: &mut Roles<'_>,
+    roles: &mut Endpoints<'_>,
     requests: Option<&Requests<'_, '_>>,
     count: usize,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,

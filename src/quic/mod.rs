@@ -8,8 +8,7 @@ use imp::kernel;
 pub mod path;
 pub mod retry;
 
-pub use attach::Error as AttachmentError;
-pub(crate) use local::attach;
+pub use local::AttachmentError;
 
 pub mod application;
 use application::imp::stream;
@@ -219,23 +218,6 @@ impl ConnectionId {
 }
 
 pub use wire::{ReceiveContinuation, ReceiveMaterial, TransmitContinuation};
-
-pub struct Roles<'a> {
-    pub rx: Endpoint<'a, { global::RX }>,
-    pub tls_rx: Endpoint<'a, { global::TLS_RX }>,
-    pub tx: Endpoint<'a, { global::TX }>,
-    pub tls_tx: Endpoint<'a, { global::TLS_TX }>,
-    pub tls_complete: Endpoint<'a, { global::TLS_COMPLETE }>,
-    pub tls_handoff: Endpoint<'a, { global::TLS_HANDOFF }>,
-    pub udp: Endpoint<'a, { global::UDP }>,
-    pub timer: Endpoint<'a, { global::TIMER }>,
-    pub initial_event: Endpoint<'a, { global::INITIAL_EVENT }>,
-    pub initial_owner: Endpoint<'a, { global::INITIAL_OWNER }>,
-    pub timer_stop: Endpoint<'a, { global::TIMER_STOP }>,
-    pub receive_stop: Endpoint<'a, { global::RECEIVE_STOP }>,
-    pub timer_tx: Endpoint<'a, { global::TIMER_TX }>,
-    pub tx_wire: Endpoint<'a, { global::TX_WIRE }>,
-}
 
 struct Schedule {
     revision: Cell<u64>,

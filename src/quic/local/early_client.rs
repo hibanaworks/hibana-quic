@@ -1,8 +1,8 @@
 //! Bounded client request intent retained across the authenticated early decision.
 //! These bytes do not authorize publication or successful delivery. Only the
 //! projected wire role may attach evidence of an actual accepted UDP send.
-use super::Error;
 use super::application::{ClientRequests, MAX_REQUEST_BYTES};
+use super::{Endpoints, Error};
 use crate::crypto::directional::ApplicationKeyScope;
 use crate::quic::early_data::imp::EarlyStatus;
 use crate::quic::early_data::imp::RememberedLimits;
@@ -262,8 +262,7 @@ fn replay_safe_get(bytes: &[u8]) -> bool {
 }
 
 use super::{
-    Clock, Config, DatagramTx, Outcome, Roles, Side, global as p, initial, publication_gate,
-    recovery,
+    Clock, Config, DatagramTx, Outcome, Side, global as p, initial, publication_gate, recovery,
     tls::{CryptoFlight, Inbox, Transcript},
     wire,
 };
@@ -277,7 +276,7 @@ use hibana_tls::handshake::local::keys::TransmitPacketKey;
 /// edges; an enabled client sends ClientHello before any early datagram.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::quic) async fn run<'book, 'scope, const N: usize>(
-    roles: &mut Roles<'_>,
+    roles: &mut Endpoints<'_>,
     source: &mut Transcript<'scope, '_, '_>,
     requests: Option<&mut Requests<'_, 'scope>>,
     config: Config<'_>,

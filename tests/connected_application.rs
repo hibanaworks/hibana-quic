@@ -862,9 +862,9 @@ impl StreamSink for Sink {
 // until both peers have completed their close/drain continuation.
 macro_rules! roles {
     ($rv:expr, $sid:expr, $program:expr) => {
-        application::Roles {
+        application::local::Endpoints {
             ecn_owner: $rv.enter($sid, &$program.ecn_owner).unwrap(),
-            handshake: quic::Roles {
+            handshake: quic::local::Endpoints {
                 rx: $rv.enter($sid, &$program.handshake.rx).unwrap(),
                 tls_rx: $rv.enter($sid, &$program.handshake.tls_rx).unwrap(),
                 tx: $rv.enter($sid, &$program.handshake.tx).unwrap(),

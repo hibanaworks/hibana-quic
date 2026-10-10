@@ -160,30 +160,6 @@ pub struct Report {
     pub ecn_feedback_error: Option<crate::quic::ecn::imp::Error>,
 }
 
-pub struct Roles<'a> {
-    pub ecn_owner: Endpoint<'a, { crate::quic::ecn::global::OWNER }>,
-    pub handshake: super::Roles<'a>,
-    pub source: Endpoint<'a, { global::SOURCE }>,
-    pub source_join: Endpoint<'a, { global::SOURCE_JOIN }>,
-    pub ingress: Endpoint<'a, { global::INGRESS }>,
-    pub receive: Endpoint<'a, { global::RECEIVE }>,
-    pub sink: Endpoint<'a, { global::SINK }>,
-    pub rx_keys: Endpoint<'a, { global::RX_KEYS }>,
-    pub tx_keys: Endpoint<'a, { global::TX_KEYS }>,
-    pub clock: Endpoint<'a, { global::CLOCK }>,
-    pub tx_clock: Endpoint<'a, { global::TX_CLOCK }>,
-    pub transmit: Endpoint<'a, { global::TRANSMIT }>,
-    pub adapter: Endpoint<'a, { global::ADAPTER }>,
-    pub peer_event: Endpoint<'a, { global::PEER_EVENT }>,
-    pub peer_close: Endpoint<'a, { global::PEER_CLOSE }>,
-    pub files_event: Endpoint<'a, { global::FILES_EVENT }>,
-    pub files_close: Endpoint<'a, { global::FILES_CLOSE }>,
-    pub close_join: Endpoint<'a, { global::CLOSE_JOIN }>,
-    pub source_collector: Endpoint<'a, { global::SOURCE_COLLECTOR }>,
-    pub input_collector: Endpoint<'a, { global::INPUT_COLLECTOR }>,
-    pub delivery_collector: Endpoint<'a, { global::DELIVERY_COLLECTOR }>,
-}
-
 #[derive(Debug)]
 pub enum Error {
     Transport(hibana::runtime::transport::TransportError),

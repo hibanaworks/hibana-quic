@@ -1,5 +1,5 @@
 //! Finished-gated optional early receive bridge in the connected global.
-use super::{EarlyServer, Error, Roles};
+use super::{EarlyServer, Endpoints, Error};
 use crate::crypto::IntegrityBudget;
 use crate::quic::Clock;
 use crate::quic::Config;
@@ -33,7 +33,7 @@ fn check(value: u64, expected: u64) -> Result<(), Error> {
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn receive<'scope, const N: usize, const RX: usize, const CHUNK: usize>(
-    roles: &mut Roles<'_>,
+    roles: &mut Endpoints<'_>,
     source: &mut Transcript<'scope, '_, '_>,
     config: Config<'_>,
     early: Option<EarlyServer<'_, RX>>,

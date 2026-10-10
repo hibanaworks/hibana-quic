@@ -1,5 +1,10 @@
 //! Finite handshake graph: direct TLS message order, independent TX publication,
 //! timer ownership and affine Initial-key retirement compose in parallel.
+//!
+//! Role identifiers below index the projected programs. Their attached affine
+//! endpoints are defined and created in [`crate::quic::local::Endpoints`].
+//! [`crate::quic::local::run`] shows which actual futures own or borrow each endpoint
+//! and how those futures are polled together.
 use hibana::runtime::program::Projectable;
 use hibana::{
     g,

@@ -1,5 +1,10 @@
 //! The connected global: actual affine startup, concurrent ordinary roles,
 //! complete ordinary retirement, then closing or draining.
+//!
+//! Role identifiers below index the projected programs. Their attached affine
+//! endpoints are defined and created in [`crate::quic::application::local::Endpoints`].
+//! [`crate::quic::application::local::run`] shows which actual futures own or borrow each endpoint
+//! and how those futures are polled together.
 use crate::quic::ecn::global as e;
 use crate::quic::global::{RX as PREFIX_RX, TLS_RX as PREFIX_TLS_RX, TX as PREFIX_TX};
 use hibana::runtime::program::Projectable;

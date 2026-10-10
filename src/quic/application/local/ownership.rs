@@ -1,6 +1,6 @@
 //! Affine transitions between the projected prefix, ordinary application and
 //! closing continuations. Hibana owns progress; actual affine slots own resources.
-use super::{Error, OrdinaryRetired, Roles, global as p, keys, termination};
+use super::{Endpoints, Error, OrdinaryRetired, global as p, keys, termination};
 use crate::quic::Config;
 use crate::quic::ReceiveContinuation;
 use crate::quic::ReceiveMaterial;
@@ -20,7 +20,7 @@ pub(crate) struct Received<'scope, const P: usize> {
 /// validation, then returns through the actual transcript and read admission.
 /// Its ownership gates every send in that round trip, including with Q=1.
 pub(crate) async fn transfer<'source, 'scope, 'cfg, 'buf, const P: usize>(
-    roles: &mut Roles<'_>,
+    roles: &mut Endpoints<'_>,
     source: &'source mut Transcript<'scope, 'cfg, 'buf>,
     config: Config<'_>,
     received: ReceiveContinuation<'scope, P>,
@@ -129,7 +129,7 @@ pub(crate) async fn transfer<'source, 'scope, 'cfg, 'buf, const P: usize>(
 /// The actual write owner grants RX its unique control client before RX may
 /// request key transitions; ordinary TX receives the owner's sealing access.
 pub(crate) async fn admit<'lane, 'owner, 'scope, const P: usize>(
-    roles: &mut Roles<'_>,
+    roles: &mut Endpoints<'_>,
     peer: ValidatedPeer<'scope, P>,
     owner: &'owner keys::KeyOwner<'scope>,
     exchange: &'lane keys::Exchange<'owner, 'scope>,
@@ -191,7 +191,7 @@ struct RetiredPeer<'scope> {
 /// The accumulated affine grant enables one retired owner's response at a time,
 /// so each direct recv has one possible incoming sender even on a Q=1 carrier.
 pub(crate) async fn retire<'scope>(
-    roles: &mut Roles<'_>,
+    roles: &mut Endpoints<'_>,
     ordinary: OrdinaryRetired<'scope>,
     outcomes: termination::TerminalOutcomes<'scope>,
 ) -> Result<Closing<'scope>, Error> {

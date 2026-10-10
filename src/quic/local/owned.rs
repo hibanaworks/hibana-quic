@@ -3,12 +3,12 @@ use crate::io::{Clock, DatagramRx, DatagramTx};
 use crate::quic;
 use crate::quic::Config;
 use crate::quic::Outcome;
-use crate::quic::Roles;
 use crate::quic::Storage;
 use crate::quic::imp::crypto_buffer::CryptoBuffer;
 use crate::quic::imp::publication_gate::Issuer;
 use crate::quic::imp::recovery::Recovery;
 use crate::quic::imp::tls::Transcript;
+use crate::quic::local::Endpoints;
 use crate::quic::{
     application::local::owned::{DATAGRAM, PARAMETERS},
     global,
@@ -59,7 +59,7 @@ pub async fn handshake<'scope>(
                 .map_err(|e| format!("carrier: {e:?}"))?,
         )
         .map_err(|e| format!("rendezvous: {e:?}"))?;
-    let mut roles = Roles::attach(&rendezvous, session, &programs, &adapter_result)
+    let mut roles = Endpoints::attach(&rendezvous, session, &programs, &adapter_result)
         .map_err(|e| format!("handshake attachment: {e:?}"))?;
     let mut storage = Box::new(
         Storage::<DATAGRAM, PARAMETERS>::new(config.peer_connection_id)

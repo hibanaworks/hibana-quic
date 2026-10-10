@@ -17,7 +17,7 @@ fn handshake_attachment_creates_no_transport_receipt() {
         .init()
         .rendezvous(&mut slab, carrier.bind(sid).unwrap())
         .unwrap();
-    let roles = quic::Roles::attach(&rendezvous, sid, &programs, &outcome).unwrap();
+    let roles = quic::local::Endpoints::attach(&rendezvous, sid, &programs, &outcome).unwrap();
     assert_eq!(carrier.queued(), 0);
     drop(roles);
 }
@@ -34,8 +34,9 @@ fn application_attachment_uses_one_complete_projection() {
         .init()
         .rendezvous(&mut slab, carrier.bind(sid).unwrap())
         .unwrap();
-    let roles = application::Roles::attach(&rendezvous, sid, &programs, &outcomes).unwrap();
+    let roles =
+        application::local::Endpoints::attach(&rendezvous, sid, &programs, &outcomes).unwrap();
     assert_eq!(carrier.queued(), 0);
-    assert!(application::Roles::attach(&rendezvous, sid, &programs, &outcomes).is_err());
+    assert!(application::local::Endpoints::attach(&rendezvous, sid, &programs, &outcomes).is_err());
     drop(roles);
 }

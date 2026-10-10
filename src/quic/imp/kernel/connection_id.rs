@@ -21,6 +21,7 @@
 //! after a datagram using this CID was actually accepted for sending there.
 //!
 //! Sources: RFC 9000 sections [5.1], [9.5], [10.3], [19.15], and [19.16].
+//!
 //! [5.1]: https://www.rfc-editor.org/rfc/rfc9000.html#section-5.1
 //! [9.5]: https://www.rfc-editor.org/rfc/rfc9000.html#section-9.5
 //! [10.3]: https://www.rfc-editor.org/rfc/rfc9000.html#section-10.3
