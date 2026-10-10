@@ -27,7 +27,7 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         Ok(stream)
     }
 
-    pub(in crate::quic) fn take_production(
+    pub(crate) fn take_production(
         &mut self,
         stream: StreamHandle,
     ) -> Result<Production<'book>, Error> {
@@ -121,7 +121,7 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
 
     /// Admit at most one chunk and the available peer credit. FIN is attached
     /// only when the complete supplied suffix fits.
-    pub(in crate::quic) fn enqueue_prefix(
+    pub(crate) fn enqueue_prefix(
         &mut self,
         production: &mut Production<'_>,
         bytes: &[u8],

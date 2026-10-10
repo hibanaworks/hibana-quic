@@ -395,7 +395,7 @@ async fn connected<
     .await?;
     let control = Control::new(stop);
     let state = io::State::<CHUNK, H::Body>::new();
-    let http3_input = http3::Ingress::new();
+    let http3_input = crate::http3::imp::control::Ingress::new();
     let terminal = termination::Exchange::new(&control, scope, application_protocol);
     let reset_exchange = reset::Exchange::new();
     let reclaim_exchange = reclaim::Exchange::new();
@@ -410,7 +410,7 @@ async fn connected<
         &reclaim_exchange,
     )
     .await?;
-    let paths = crate::quic::path::local::Paths::new(
+    let paths = crate::quic::path::imp::observations::Paths::new(
         config.initial_path,
         config.side,
         local_ids.as_ref().map(|storage| storage.seed),
@@ -621,7 +621,7 @@ async fn connected<
             &completion_book,
             clock,
         );
-        let http3_control = http3::owner(
+        let http3_control = crate::http3::local::owner(
             &mut roles.handshake.initial_owner,
             application_protocol,
             &http3_input,

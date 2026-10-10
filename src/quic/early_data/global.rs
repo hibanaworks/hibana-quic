@@ -1,4 +1,11 @@
 //! The early-byte owner has finite holding, verified release, and discard paths.
+//!
+//! The quarantine OWNER executes [`crate::quic::early_data::local::run`].
+//! The connected early-data locals wire authenticated packet input, TLS Finished
+//! and application release to that owner; see
+//! [`crate::quic::application::local`] and its execution in
+//! [`crate::quic::application::local::run`]. Bounded retained bytes and replay
+//! claims are owned in [`crate::quic::early_data::imp`].
 use hibana::g;
 use hibana::runtime::program::Projectable;
 pub const INPUT: u8 = 0;

@@ -103,7 +103,7 @@ pub(crate) struct State<
 > {
     pub(crate) responses: crate::quic::path::imp::responses::Responses,
     pub(crate) peers: RefCell<Option<crate::quic::path::imp::peer_ids::Peers<'storage, 'scope>>>,
-    pub(crate) paths: crate::quic::path::local::Paths<'storage>,
+    pub(crate) paths: crate::quic::path::imp::observations::Paths<'storage>,
     pub(crate) ids: RefCell<Option<crate::quic::path::imp::ids::Ids<'storage, 'scope>>>,
     pending: RefCell<Option<Pending<'book, 'streams, N>>>,
     owners: RefCell<Owners<'book, 'streams, 'storage, 'scope, N, RX, CHUNK>>,
@@ -129,7 +129,7 @@ impl<'book, 'streams, 'storage, 'scope, const N: usize, const RX: usize, const C
         book: recovery::Publication<'book, 'scope, N>,
         streams: stream::Publication<'streams, 'storage, 'scope, RX, CHUNK>,
         ids: Option<crate::quic::path::imp::ids::Ids<'storage, 'scope>>,
-        paths: crate::quic::path::local::Paths<'storage>,
+        paths: crate::quic::path::imp::observations::Paths<'storage>,
         peers: Option<crate::quic::path::imp::peer_ids::Peers<'storage, 'scope>>,
     ) -> Self {
         Self {
@@ -453,7 +453,7 @@ pub(crate) async fn run<
             state
                 .paths
                 .request
-                .put(Some(crate::quic::path::local::Requested {
+                .put(Some(crate::quic::path::imp::observations::Requested {
                     pto: book.pto_duration_us()?,
                     confirmed: book.snapshot().handshake_confirmed,
                     response_path: state
@@ -529,7 +529,7 @@ pub(crate) async fn run<
                 state
                     .paths
                     .request
-                    .put(Some(crate::quic::path::local::Requested {
+                    .put(Some(crate::quic::path::imp::observations::Requested {
                         pto: book.pto_duration_us()?,
                         confirmed: book.snapshot().handshake_confirmed,
                         response_path: state
@@ -684,7 +684,7 @@ fn prepare<'book, 'streams, 'scope, const N: usize, const RX: usize, const CHUNK
     responses: &crate::quic::path::imp::responses::Responses,
     ids: &RefCell<Option<crate::quic::path::imp::ids::Ids<'_, '_>>>,
     peers: &RefCell<Option<crate::quic::path::imp::peer_ids::Peers<'_, '_>>>,
-    grant: crate::quic::path::local::Grant,
+    grant: crate::quic::path::imp::observations::Grant,
 ) -> Result<Option<Pending<'book, 'streams, N>>, Error> {
     let selected = match (peers.borrow().as_ref(), grant.path) {
         (Some(peers), Some(path)) => Some(
@@ -2033,7 +2033,7 @@ mod tests {
             book_publication,
             publication,
             None,
-            crate::quic::path::local::Paths::new(None, quic::Side::Client, None, None),
+            crate::quic::path::imp::observations::Paths::new(None, quic::Side::Client, None, None),
             None,
         );
         let packet = stream_packet(&mut book_tx, &mut tx, &mut write);
@@ -2105,7 +2105,7 @@ mod tests {
             book_publication,
             publication,
             None,
-            crate::quic::path::local::Paths::new(None, quic::Side::Client, None, None),
+            crate::quic::path::imp::observations::Paths::new(None, quic::Side::Client, None, None),
             None,
         );
         let packet = stream_packet(&mut book_tx, &mut tx, &mut write);
@@ -2178,7 +2178,7 @@ mod tests {
             book_publication,
             publication,
             None,
-            crate::quic::path::local::Paths::new(None, quic::Side::Client, None, None),
+            crate::quic::path::imp::observations::Paths::new(None, quic::Side::Client, None, None),
             None,
         );
         // Burn numbers before filling the ordinary admission quota. PTO headroom

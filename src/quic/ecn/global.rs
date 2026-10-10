@@ -2,6 +2,11 @@
 //! phase discriminator. A request owns either one pending publication or the
 //! actual end of publication. Every permit is settled before the next request.
 //! Failure has no edge back to probing or validated marking.
+//!
+//! OWNER is the ECN owner continuation in [`crate::quic::ecn::local`]; PUBLISHER
+//! is the physical publication continuation in the connected QUIC execution.
+//! [`crate::quic::application::local::Endpoints`] attaches both projected programs;
+//! [`crate::quic::application::local::run`] assembles the actual futures.
 use hibana::g;
 use hibana::runtime::program::Projectable;
 

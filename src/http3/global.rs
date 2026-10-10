@@ -1,5 +1,11 @@
 //! HTTP/3 control progression: the first actual SETTINGS receipt selects the
 //! ready continuation. Subsequent frames cannot re-enter startup.
+//!
+//! The OWNER endpoint is executed by [`crate::http3::local`]. SOURCE and SINK
+//! are the request/response locals in the QUIC application. The complete graph is
+//! projected by [`crate::quic::application::global::programs`], attached by
+//! [`crate::quic::application::local::Endpoints`], and polled in
+//! [`crate::quic::application::local::run`]. Byte parsing lives in [`crate::http3::imp`].
 use hibana::g;
 use hibana::runtime::program::Projectable;
 pub const OWNER: u8 = crate::quic::global::INITIAL_OWNER;

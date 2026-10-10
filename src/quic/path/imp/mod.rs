@@ -3,3 +3,5 @@ pub mod ids;
 pub mod peer_ids;
 pub mod preferred;
 pub(crate) mod responses;
+
+pub(crate) mod observations;

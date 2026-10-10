@@ -758,7 +758,7 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     sink: &mut impl StreamSink,
     reclaim: &super::reclaim::Exchange<'book>,
-    auxiliary: Option<&super::http3::Ingress>,
+    auxiliary: Option<&crate::http3::imp::control::Ingress>,
 ) -> Result<(), Error> {
     loop {
         let offered = endpoint.offer().await?;
@@ -919,7 +919,7 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
     requests: &mut Sender<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
     mut streaming: Option<&mut impl StreamSink>,
     reclaim: &super::reclaim::Exchange<'book>,
-    auxiliary: Option<&super::http3::Ingress>,
+    auxiliary: Option<&crate::http3::imp::control::Ingress>,
 ) -> Result<(), Error> {
     let mut pending: [Option<PendingRequest>; MAX_LIVE_STREAMS] =
         [const { None }; MAX_LIVE_STREAMS];

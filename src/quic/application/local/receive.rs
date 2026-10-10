@@ -66,7 +66,7 @@ pub(crate) async fn run<
     responses: &crate::quic::path::imp::responses::Responses,
     local_ids: &RefCell<Option<crate::quic::path::imp::ids::Ids<'_, 'scope>>>,
     peer_ids: &RefCell<Option<crate::quic::path::imp::peer_ids::Peers<'_, 'scope>>>,
-    paths: &crate::quic::path::local::Paths<'_>,
+    paths: &crate::quic::path::imp::observations::Paths<'_>,
     mut pending_application: Option<([u8; N], quic::ReceivedDatagram, u64)>,
 ) -> Result<(), Error> {
     let scope = material.application.scope();

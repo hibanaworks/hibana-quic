@@ -1,9 +1,8 @@
-//! HTTP/3: explicit global control choreography and bounded wire codecs.
-//! Direct IO roles remain with their privately owned QUIC application resources.
+//! HTTP/3 control order, its endpoint-owning localside, and bounded byte codecs.
 pub mod global;
-mod tables;
-pub mod wire;
-pub use wire::*;
+pub mod imp;
+pub mod local;
+pub use imp::wire::*;
 
 /// Bounded request validation and projected response consumption.
 pub mod message;

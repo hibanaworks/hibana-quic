@@ -1,5 +1,9 @@
 //! One-shot client Retry boundary. The Retry branch is outside both rolls:
 //! the post-Retry continuation cannot select it a second time.
+//!
+//! This client prefix is composed into [`crate::quic::global`]. Its endpoints
+//! are attached by [`crate::quic::local::Endpoints`] and the real Retry local is
+//! invoked by [`crate::quic::local::run`] before continuing the same handshake.
 use hibana::runtime::program::Projectable;
 use hibana::{
     g,

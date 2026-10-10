@@ -1,3 +1,5 @@
+//! The client application localside. Its Endpoint follows the shared global.
+//! QUIC/TLS and environment I/O are owned by the lower connection layers.
 use crate::global::*;
 use hibana::Endpoint;
 #[derive(Debug)]

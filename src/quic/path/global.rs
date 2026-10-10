@@ -1,5 +1,11 @@
 //! Path validation is a nested projected continuation. A Pending probe cannot
 //! return to ordinary publication without a resolved or abandoned boundary.
+//!
+//! OWNER executes the path-validation continuation in [`crate::quic::path::local`].
+//! TRANSMIT requests and settles each probe from the application transmit local.
+//! Their endpoints belong to [`crate::quic::application::local::Endpoints`];
+//! [`crate::quic::application::local::run`] polls both futures. Observed addresses,
+//! probe receipts and bounded arithmetic live in [`crate::quic::path::imp`].
 use hibana::g;
 use hibana::runtime::program::Projectable;
 // Role18 continues after its Initial-retirement prefix in this same session.

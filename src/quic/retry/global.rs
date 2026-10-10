@@ -1,6 +1,11 @@
 //! Server Retry admission order. Native observations and token-validation
 //! receipts remain separately owned data; unit messages cannot fabricate them.
 //! The output role settles its actual send before another input is admitted.
+//!
+//! INPUT, OWNER and OUTPUT are attached and run by
+//! [`crate::quic::retry::local::server::receive`]. That function shows the actual
+//! incoming, admission and outgoing futures, with physical UDP supplied by the caller.
+//! The separate client prefix is composed into [`crate::quic::global`].
 use hibana::runtime::program::Projectable;
 use hibana::{
     g,

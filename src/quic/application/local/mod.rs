@@ -8,7 +8,6 @@
 mod acknowledgments;
 mod early;
 mod early_client;
-mod http3;
 mod io;
 pub(super) mod keys;
 pub(super) mod ownership;

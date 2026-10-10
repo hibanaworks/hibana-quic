@@ -73,6 +73,43 @@ attaches its projected endpoint and joins its application localside with the
 network localside. The [raw QUIC example](examples/hello-quic/client.rs) passes
 its projected program and `local::run` directly into that entrypoint.
 
+### Follow each protocol group
+
+Each protocol group has a `global` for permitted communication, a `local` for
+actual endpoint-owning execution, and `imp` for byte storage and computation.
+An embedded group reuses endpoints from the containing connection; it does not
+create a duplicate session or a second controller.
+
+- **QUIC handshake and connected application:** their `local/mod.rs` defines
+  and attaches the endpoint set; `local/run.rs` assembles the actual futures.
+- **Retry admission:** [global](src/quic/retry/global.rs) →
+  [server locals](src/quic/retry/local/server.rs). `receive` attaches INPUT,
+  OWNER and OUTPUT and joins incoming, admission and outgoing operations.
+- **ECN:** [global](src/quic/ecn/global.rs) → [owner local](src/quic/ecn/local/mod.rs).
+  Its owner and the publication local share the complete connection projection.
+- **Path validation:** [global](src/quic/path/global.rs) →
+  [owner local](src/quic/path/local/mod.rs); address and probe observations are
+  separate [implementation data](src/quic/path/imp/observations.rs).
+- **Early data:** [global](src/quic/early_data/global.rs) →
+  [quarantine owner](src/quic/early_data/local/mod.rs), composed with the
+  [connected early locals](src/quic/application/local/early.rs).
+- **HTTP/3 control:** [global](src/http3/global.rs) →
+  [actual control owner](src/http3/local/mod.rs). The connection's source and sink
+  share that choreography. [Codecs and retained bytes](src/http3/imp/mod.rs) do
+  not select the next endpoint operation.
+- **HTTP/3 response consumption:** [global](src/http3/message/global.rs) →
+  [reader/writer locals](src/http3/message/local/mod.rs) →
+  [attachment and join](src/http3/message/local/run.rs).
+- **User application:** [shared example global](examples/hello-quic/global.rs) →
+  [client](examples/hello-quic/local/client.rs) or
+  [server](examples/hello-quic/local/server.rs) →
+  [session attachment](src/session/local/mod.rs). The HTTP/3 example uses the
+  same application-level structure.
+
+The scheduler and PAL supply polling, wakeups and physical I/O. The above globals
+and endpoint operations still decide protocol progress; moving a file into `local`
+is not itself a guarantee. The concrete checks and their limits follow below.
+
 ### What is enforced
 
 At each attached endpoint, Hibana checks the permitted operation, peer,
@@ -472,7 +509,7 @@ or implement another protocol. `alloc` is a compile-time memory choice, not an
 operating-system or async-runtime requirement.
 
 The environment supplies [DatagramRx, DatagramTx, DatagramSocket and Clock](src/io/mod.rs),
-[cryptographic Entropy](https://github.com/hibanaworks/hibana-tls/blob/80f7ebdad3cd80718df10af1cd3555f0cf9f90aa/src/entropy.rs),
+[cryptographic Entropy](https://github.com/hibanaworks/hibana-tls/blob/d1806e9c4a6d6c59294d15b671e72a637165691a/src/entropy.rs),
 and an executor that polls ordinary Rust futures. Native implementations and
 minimal environment examples are under [pal/](pal/README.md).
 

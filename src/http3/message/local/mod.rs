@@ -1,4 +1,5 @@
 //! Direct reader/writer locals. Each stored chunk precedes the next read.
+pub mod run;
 use super::{Error, Result, global::*, imp::wire::*};
 use crate::http3::Fields;
 use crate::io::RandomAccess;

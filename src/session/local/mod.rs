@@ -1,3 +1,7 @@
+//! Attach the caller's projected application role and drive it with network I/O.
+//! [`run`] creates the actual endpoint, gives its exclusive borrow to the caller's
+//! application future, then joins that future with the network future. The caller
+//! supplies the application global; this module does not invent another protocol.
 use super::{Error, Storage};
 use crate::runtime::{carrier::Peer, join2};
 use hibana::{

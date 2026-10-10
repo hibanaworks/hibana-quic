@@ -127,7 +127,7 @@ pub struct App<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
 /// One production lease for one live stream in this exact table. It cannot be
 /// cloned or reissued after FIN/abandon. The projected source continuation owns
 /// it while producing bytes; retransmission uses independent retained chunks.
-pub(in crate::quic) struct Production<'book> {
+pub(crate) struct Production<'book> {
     identity: &'book Identity,
     stream: StreamHandle,
 }
