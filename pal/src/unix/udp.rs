@@ -353,6 +353,12 @@ fn decode_ecn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Linux routes the entire 127/8 block to loopback; Darwin needs configured
+    // aliases. Both paths still use independently bound ports on Darwin.
+    #[cfg(target_os = "linux")]
+    const LOOPBACK_ALIAS: &str = "127.0.0.2";
+    #[cfg(target_os = "macos")]
+    const LOOPBACK_ALIAS: &str = "127.0.0.1";
     fn socket(v6: bool) -> UdpMetadataSocket {
         let socket = UdpSocket::bind(
             (if v6 { "[::1]:0" } else { "127.0.0.1:0" })
@@ -451,7 +457,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         let mut bytes = [0; 64];
-        for ip in [Ipv4Addr::LOCALHOST, Ipv4Addr::new(127, 0, 0, 2)] {
+        for ip in [Ipv4Addr::LOCALHOST, LOOPBACK_ALIAS.parse().unwrap()] {
             let destination = SocketAddr::from((ip, server.local_addr().unwrap().port()));
             client
                 .send_to(b"request", destination, Codepoint::Ect0)
@@ -539,7 +545,7 @@ mod tests {
             Codepoint::Ce,
             Codepoint::NotEct,
         ] {
-            for ip in ["127.0.0.1", "::1", "127.0.0.2"] {
+            for ip in ["127.0.0.1", "::1", LOOPBACK_ALIAS] {
                 let destination =
                     SocketAddr::new(ip.parse().unwrap(), server.local_addr().unwrap().port());
                 let client = if destination.is_ipv4() {
@@ -577,17 +583,21 @@ mod tests {
 
     #[test]
     fn mapped_concrete_binding_uses_canonical_ipv4_tuple() {
+        let ip: Ipv4Addr = LOOPBACK_ALIAS.parse().unwrap();
         let mut server = UdpMetadataSocket::new(
-            UdpSocket::bind("[::ffff:127.0.0.2]:0".parse().unwrap()).unwrap(),
+            UdpSocket::bind(SocketAddr::V6(SocketAddrV6::new(
+                ip.to_ipv6_mapped(),
+                0,
+                0,
+                0,
+            )))
+            .unwrap(),
         )
         .unwrap();
         server
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
-        let destination = SocketAddr::from((
-            Ipv4Addr::new(127, 0, 0, 2),
-            server.local_addr().unwrap().port(),
-        ));
+        let destination = SocketAddr::from((ip, server.local_addr().unwrap().port()));
         let mut client = socket(false);
         client
             .send_to(b"request", destination, Codepoint::Ce)
@@ -612,7 +622,7 @@ mod tests {
         assert_eq!(response.local, request.source);
         assert_eq!(response.ecn, Some(Codepoint::Ect1));
         assert_eq!(&bytes[..response.len], b"response");
-        let wrong_local = SocketAddr::from((Ipv4Addr::LOCALHOST, destination.port()));
+        let wrong_local = SocketAddr::from((Ipv4Addr::new(127, 0, 0, 3), destination.port()));
         assert_eq!(
             server
                 .send_from(

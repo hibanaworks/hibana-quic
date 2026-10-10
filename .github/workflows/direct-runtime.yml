@@ -180,7 +180,9 @@ jobs:
       - run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/examples-target" >> "$GITHUB_ENV"
       - run: rustup toolchain install 1.95.0 --profile minimal
       - name: Verify native environment capabilities
-        run: cargo +1.95.0 run --locked --manifest-path pal/Cargo.toml --example ${{ matrix.example }}
+        run: |
+          cargo +1.95.0 test --locked --manifest-path pal/Cargo.toml
+          cargo +1.95.0 run --locked --manifest-path pal/Cargo.toml --example ${{ matrix.example }}
       - name: Compile and test the application localsides
         run: |
           cargo +1.95.0 test --locked --manifest-path examples/Cargo.toml --examples

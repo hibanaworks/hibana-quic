@@ -45,6 +45,7 @@ mod abi {
     pub const AF6: u16 = 10;
     pub const PKT4: i32 = 8;
     pub const TOS: i32 = 1;
+    pub const RECEIVED_TOS: i32 = 1;
     pub const RECVTOS: i32 = 13;
     pub const ONLY6: i32 = 26;
     pub const RECVPKT6: i32 = 49;
@@ -59,6 +60,7 @@ mod abi {
     pub const AF6: u16 = 30;
     pub const PKT4: i32 = 26;
     pub const TOS: i32 = 3;
+    pub const RECEIVED_TOS: i32 = 27;
     pub const RECVTOS: i32 = 27;
     pub const ONLY6: i32 = 27;
     pub const RECVPKT6: i32 = 61;
@@ -118,7 +120,9 @@ pub(crate) fn ipv6_only(socket: &impl AsRawFd) -> io::Result<bool> {
     Ok(value != 0)
 }
 pub(crate) fn enable(socket: &impl AsRawFd, ipv4: bool, dual: bool) -> io::Result<()> {
-    if ipv4 || dual {
+    // Darwin reports mapped IPv4 packets through the IPv6 ancillary API and
+    // rejects IPv4 receive options on an IPv6 socket.
+    if ipv4 || (cfg!(target_os = "linux") && dual) {
         option(socket, 0, abi::RECVTOS, 1)?;
         option(socket, 0, abi::PKT4, 1)?;
     }
@@ -263,7 +267,7 @@ fn parse(bytes: &[u8]) -> io::Result<[Option<Metadata>; 8]> {
                     ipi6_ifindex: u32_at(payload, 16)?,
                 }))
             }
-            (0, k) if k == abi::TOS => {
+            (0, k) if k == abi::RECEIVED_TOS => {
                 if payload.len() != 1 {
                     return Err(invalid());
                 }
@@ -296,7 +300,9 @@ pub(crate) fn receive(
 ) -> io::Result<Received> {
     let mut address = Bytes([0u8; 128]);
     let mut control = Bytes([0u8; 512]);
-    if capacity > control.0.len() {
+    // Darwin treats zero control capacity as disabled ancillary reception,
+    // rather than reporting MSG_CTRUNC. Reject unusable storage before recvmsg.
+    if capacity < HEADER || capacity > control.0.len() {
         return Err(invalid());
     }
     let mut iov = IoVector {
@@ -326,10 +332,39 @@ pub(crate) fn receive(
     {
         return Err(invalid());
     }
+    let address = decode(&address.0[..header.name_len as usize])?;
+    #[cfg(target_os = "macos")]
+    let address = match address {
+        // A concrete mapped binding can return an AF_INET peer on Darwin.
+        // Keep the socket's physical family at this native ABI boundary.
+        SocketAddr::V4(address) if socket.local_addr()?.is_ipv6() => SocketAddr::V6(
+            SocketAddrV6::new(address.ip().to_ipv6_mapped(), address.port(), 0, 0),
+        ),
+        address => address,
+    };
+    let metadata = parse(&control.0[..control_len])?;
+    #[cfg(target_os = "macos")]
+    let metadata = {
+        let mut metadata = metadata;
+        // Mapped IPv4 delivery carries IPv6 traffic-class ancillary data on
+        // Darwin. Expose its checked byte as ECN evidence for the wire family.
+        if let SocketAddr::V6(address) = address
+            && address.ip().to_ipv4_mapped().is_some()
+        {
+            for message in &mut metadata {
+                if let Some(Metadata::Ipv6TClass(class)) = message {
+                    *message = Some(Metadata::Ipv4Tos(
+                        u8::try_from(*class).map_err(|_| invalid())?,
+                    ));
+                }
+            }
+        }
+        metadata
+    };
     Ok(Received {
         bytes: len,
-        address: decode(&address.0[..header.name_len as usize])?,
-        metadata: parse(&control.0[..control_len])?,
+        address,
+        metadata,
     })
 }
 fn append(
@@ -360,6 +395,22 @@ pub(crate) fn send(
     ipv4: bool,
     ecn: u8,
 ) -> io::Result<usize> {
+    // Darwin also sends mapped IPv4 packets through the IPv6 ancillary API.
+    let ipv4 = if cfg!(target_os = "macos") {
+        destination.is_ipv4()
+    } else {
+        ipv4
+    };
+    #[cfg(target_os = "macos")]
+    let source = source.map(|address| match address {
+        SocketAddr::V4(address) if destination.is_ipv6() => SocketAddr::V6(SocketAddrV6::new(
+            address.ip().to_ipv6_mapped(),
+            address.port(),
+            0,
+            0,
+        )),
+        address => address,
+    });
     let (mut address, address_len) = encode(destination);
     let mut control = Bytes([0u8; 128]);
     let mut used = 0;
@@ -496,7 +547,7 @@ mod tests {
     fn ancillary_lengths_are_checked_before_payload_access() {
         let mut bytes = [0; 64];
         let mut used = 0;
-        append(&mut bytes, &mut used, 0, abi::TOS, &[2]).unwrap();
+        append(&mut bytes, &mut used, 0, abi::RECEIVED_TOS, &[2]).unwrap();
         let metadata = parse(&bytes[..used]).unwrap();
         assert!(matches!(metadata[0], Some(Metadata::Ipv4Tos(2))));
         for n in 1..HEADER + 1 {
@@ -522,10 +573,10 @@ mod tests {
         append(&mut bytes, &mut used, 255, 255, &[7; 9]).unwrap();
         assert!(parse(&bytes[..used]).unwrap().iter().all(Option::is_none));
         for _ in 0..8 {
-            append(&mut bytes, &mut used, 0, abi::TOS, &[0]).unwrap();
+            append(&mut bytes, &mut used, 0, abi::RECEIVED_TOS, &[0]).unwrap();
         }
         assert!(parse(&bytes[..used]).is_ok());
-        append(&mut bytes, &mut used, 0, abi::TOS, &[0]).unwrap();
+        append(&mut bytes, &mut used, 0, abi::RECEIVED_TOS, &[0]).unwrap();
         assert!(parse(&bytes[..used]).is_err());
         assert!(append(&mut [0; 4], &mut 0, 0, abi::TOS, &[0]).is_err());
     }

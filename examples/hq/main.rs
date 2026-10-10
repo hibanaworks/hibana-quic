@@ -1279,6 +1279,62 @@ mod admission_tests {
         time::Duration,
     };
 
+    fn wait_for_rejection_yield<const S: usize, const T: usize, F: Future>(
+        reactor: &HostReactor<S, T>,
+        mut admission: std::pin::Pin<&mut F>,
+    ) {
+        use std::{
+            sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            },
+            task::{Poll, Wake},
+        };
+        struct ObservedWake {
+            during_poll: AtomicBool,
+            parent: Waker,
+        }
+        impl Wake for ObservedWake {
+            fn wake(self: Arc<Self>) {
+                self.wake_by_ref();
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.during_poll.store(true, Ordering::Relaxed);
+                self.parent.wake_by_ref();
+            }
+        }
+        let start = Instant::now();
+        let clock = HostClock::new(reactor, start);
+        reactor
+            .block_on(before_deadline(
+                &clock,
+                start.checked_add(Duration::from_secs(1)).unwrap(),
+                std::future::poll_fn(|cx| {
+                    // Kernel readiness wakes outside this poll. A fresh recorder
+                    // observes the cooperative yield after one rejected packet.
+                    let observed = Arc::new(ObservedWake {
+                        during_poll: AtomicBool::new(false),
+                        parent: cx.waker().clone(),
+                    });
+                    let waker = Waker::from(Arc::clone(&observed));
+                    assert!(
+                        admission
+                            .as_mut()
+                            .poll(&mut Context::from_waker(&waker))
+                            .is_pending(),
+                        "a rejected datagram completed Initial admission"
+                    );
+                    if observed.during_poll.load(Ordering::Relaxed) {
+                        Poll::Ready(Ok::<_, String>(()))
+                    } else {
+                        Poll::Pending
+                    }
+                }),
+            ))
+            .unwrap()
+            .expect("Initial rejection did not yield before its deadline");
+    }
+
     #[test]
     fn requested_idle_budget_matches_wire_and_application_setup() {
         use hibana_quic::quic::transport_parameters::Parameters;
@@ -1369,11 +1425,18 @@ mod admission_tests {
         bytes[15] ^= 1;
         peer.send_to(&bytes[..hlen + 1176], socket.local_addr().unwrap())
             .unwrap();
-        let std::task::Poll::Ready(Ok((_, original, source, len, ecn))) =
-            admission.as_mut().poll(&mut context)
-        else {
-            panic!("the following intact Initial was not admitted");
-        };
+        // Drive actual readiness after the intact datagram is submitted; one
+        // manual poll cannot assume that loopback delivery has already finished.
+        let start = Instant::now();
+        let clock = HostClock::new(&reactor, start);
+        let (_, original, source, len, ecn) = reactor
+            .block_on(before_deadline(
+                &clock,
+                start.checked_add(Duration::from_secs(1)).unwrap(),
+                admission,
+            ))
+            .unwrap()
+            .expect("the following intact Initial was not admitted");
         assert_eq!(ecn, Some(hibana_quic::io::Codepoint::NotEct));
         assert_eq!(original, b"original");
         assert_eq!(source, b"client01");
@@ -1396,7 +1459,7 @@ mod admission_tests {
             let mut admission = Box::pin(admit_initial(&socket, &mut first));
             let mut context = Context::from_waker(Waker::noop());
             assert!(admission.as_mut().poll(&mut context).is_pending());
-            assert!(admission.as_mut().poll(&mut context).is_pending());
+            wait_for_rejection_yield(&reactor, admission.as_mut());
         }
         let mut reply = [0; 64];
         let (len, source) = peer.recv_from(&mut reply).unwrap();
@@ -1445,7 +1508,7 @@ mod admission_tests {
                 let mut admission = Box::pin(admit_initial(&socket, &mut first));
                 let mut context = Context::from_waker(Waker::noop());
                 assert!(admission.as_mut().poll(&mut context).is_pending());
-                assert!(admission.as_mut().poll(&mut context).is_pending());
+                wait_for_rejection_yield(&reactor, admission.as_mut());
             }
             let clock = HostClock::new(&reactor, Instant::now());
             let metadata = reactor
