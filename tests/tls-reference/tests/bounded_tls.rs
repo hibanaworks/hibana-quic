@@ -6,14 +6,14 @@ use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::UnixTime;
 use hibana_tls::certificate::trust_anchor_from_der;
-use hibana_tls::quic as tls;
-use hibana_tls::quic::Level;
-use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::ClientConfig;
 use hibana_tls::handshake::ServerConfig;
 use hibana_tls::handshake::SigningKey;
 use hibana_tls::handshake::Storage;
+use hibana_tls::quic as tls;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -172,74 +172,121 @@ fn identity_for_wrong_ca() -> Identity {
 }
 #[test]
 fn direct_transcript_roles_validate_full_tls_without_allocating() {
-    bounded_case(Case::default());
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(&WAKE, Case::default());
 }
 #[test]
 fn async_partial_input_cancellation_erases_and_fails_closed() {
-    bounded_case(Case {
-        cancel: true,
-        ..Case::default()
-    });
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(
+        &WAKE,
+        Case {
+            cancel: true,
+            ..Case::default()
+        },
+    );
 }
 #[test]
 fn async_one_byte_fragmentation() {
-    bounded_case(Case {
-        fragment: 1,
-        ..Case::default()
-    });
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(
+        &WAKE,
+        Case {
+            fragment: 1,
+            ..Case::default()
+        },
+    );
 }
 #[test]
 fn async_odd_fragmentation() {
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
     for fragment in [3, 17, 127, 4096] {
-        bounded_case(Case {
-            fragment,
-            ..Case::default()
-        });
+        bounded_case(
+            &WAKE,
+            Case {
+                fragment,
+                ..Case::default()
+            },
+        );
     }
 }
 #[test]
 fn async_chacha20_full_handshake_and_packet_keys() {
-    bounded_case(Case {
-        policy: CipherPolicy::ChaCha20Only,
-        ..Case::default()
-    });
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(
+        &WAKE,
+        Case {
+            policy: CipherPolicy::ChaCha20Only,
+            ..Case::default()
+        },
+    );
 }
 #[test]
 fn async_rejects_wrong_certificate_authority() {
-    bounded_case(Case {
-        wrong_ca: true,
-        ..Case::default()
-    });
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(
+        &WAKE,
+        Case {
+            wrong_ca: true,
+            ..Case::default()
+        },
+    );
 }
 #[test]
 fn async_rejects_wrong_hostname() {
-    bounded_case(Case {
-        wrong_name: true,
-        ..Case::default()
-    });
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(
+        &WAKE,
+        Case {
+            wrong_name: true,
+            ..Case::default()
+        },
+    );
 }
 #[test]
 fn async_rejects_corrupted_certificate_verify() {
-    bounded_case(Case {
-        corrupt_server: 15,
-        ..Case::default()
-    });
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(
+        &WAKE,
+        Case {
+            corrupt_server: 15,
+            ..Case::default()
+        },
+    );
 }
 #[test]
 fn async_rejects_corrupted_server_finished() {
-    bounded_case(Case {
-        corrupt_server: 20,
-        ..Case::default()
-    });
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(
+        &WAKE,
+        Case {
+            corrupt_server: 20,
+            ..Case::default()
+        },
+    );
 }
 #[test]
 fn async_rejects_corrupted_client_finished() {
-    bounded_case(Case {
-        corrupt_client: 20,
-        ..Case::default()
-    });
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(
+        &WAKE,
+        Case {
+            corrupt_client: 20,
+            ..Case::default()
+        },
+    );
 }
-fn bounded_case(case: Case) {
+fn bounded_case(wake: &'static hibana_quic_pal::unix::reactor::WakeStorage, case: Case) {
     {
         let cancel = case.cancel;
         let identity = identity();
@@ -335,15 +382,31 @@ fn bounded_case(case: Case) {
         let sk = sk.init();
         let cr = ck.rendezvous(&mut cslab, cc.bind(cid).unwrap()).unwrap();
         let sr = sk.rendezvous(&mut sslab, sc.bind(sid).unwrap()).unwrap();
-        let cp = { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) };
-        let sp = { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) };
+        let cp = {
+            let graph = global::client();
+            (
+                hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+                hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
+            )
+        };
+        let sp = {
+            let graph = global::server();
+            (
+                hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+                hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
+            )
+        };
         let mut cinput = cr.enter(cid, &cp.0).unwrap();
         let mut cverify = cr.enter(cid, &cp.1).unwrap();
         let mut sinput = sr.enter(sid, &sp.0).unwrap();
         let mut sverify = sr.enter(sid, &sp.1).unwrap();
-        let reactor = hibana_quic_pal::unix::reactor::Reactor::<0, 0>::new().unwrap();
+        let reactor = hibana_quic_pal::unix::reactor::Reactor::<0, 0>::new(wake).unwrap();
         let result = measured(|| {
-            let mut co = pin!(localside::verify::client_owner(&mut cverify, &client.tls, &cs));
+            let mut co = pin!(localside::verify::client_owner(
+                &mut cverify,
+                &client.tls,
+                &cs
+            ));
             let mut co = pin!(poll_fn(|cx| {
                 let result = co.as_mut().poll(cx);
                 if let Some(w) = client.reader.borrow_mut().take() {
@@ -352,7 +415,11 @@ fn bounded_case(case: Case) {
                 result
             }));
             let mut cin = pin!(localside::input::client_input(&mut cinput, &cs, &mut ci));
-            let mut so = pin!(localside::verify::server_owner(&mut sverify, &server.tls, &ss));
+            let mut so = pin!(localside::verify::server_owner(
+                &mut sverify,
+                &server.tls,
+                &ss
+            ));
             let mut so = pin!(poll_fn(|cx| {
                 let result = so.as_mut().poll(cx);
                 if let Some(w) = server.reader.borrow_mut().take() {
@@ -499,7 +566,11 @@ struct Input<'a, P> {
     corrupt: u8,
 }
 impl<P: Provider> hibana_tls::handshake::MessageInput for Input<'_, P> {
-    async fn read_message(&mut self, level: Level, out: &mut [u8]) -> Result<usize, hibana_tls::handshake::Error> {
+    async fn read_message(
+        &mut self,
+        level: Level,
+        out: &mut [u8],
+    ) -> Result<usize, hibana_tls::handshake::Error> {
         if self.stall {
             out[..4].copy_from_slice(&[1, 0, 0, 0]);
             return core::future::pending().await;
@@ -586,7 +657,11 @@ async fn feed_reference<P: Provider>(
         hibana_quic::runtime::yield_now().await;
     }
 }
-fn reference_case(candidate_client: bool, retry: bool) {
+fn reference_case(
+    wake: &'static hibana_quic_pal::unix::reactor::WakeStorage,
+    candidate_client: bool,
+    retry: bool,
+) {
     let id = identity();
     let chain = [id.leaf.as_ref()];
     let anchors = [trust_anchor_from_der(&CertificateDer::from(id.root.as_ref())).unwrap()];
@@ -666,13 +741,25 @@ fn reference_case(candidate_client: bool, retry: bool) {
         .rendezvous(&mut slab, carrier.bind(id).unwrap())
         .unwrap();
     let projection = if candidate_client {
-        { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) }
+        {
+            let graph = global::client();
+            (
+                hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+                hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
+            )
+        }
     } else {
-        { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) }
+        {
+            let graph = global::server();
+            (
+                hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+                hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
+            )
+        }
     };
     let mut verify = rendezvous.enter(id, &projection.1).unwrap();
     let mut wire = rendezvous.enter(id, &projection.0).unwrap();
-    let reactor = hibana_quic_pal::unix::reactor::Reactor::<0, 0>::new().unwrap();
+    let reactor = hibana_quic_pal::unix::reactor::Reactor::<0, 0>::new(wake).unwrap();
     let owner = async {
         if candidate_client {
             localside::verify::client_owner(&mut verify, &candidate.tls, &slot).await
@@ -722,15 +809,21 @@ fn reference_case(candidate_client: bool, retry: bool) {
 }
 #[test]
 fn async_client_authenticates_independent_rustls_server() {
-    reference_case(true, false);
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    reference_case(&WAKE, true, false);
 }
 #[test]
 fn async_server_authenticates_independent_rustls_client() {
-    reference_case(false, false);
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    reference_case(&WAKE, false, false);
 }
 #[test]
 fn async_server_hello_retry_with_independent_rustls() {
-    reference_case(false, true);
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    reference_case(&WAKE, false, true);
 }
 
 fn new_session_ticket(extension: &[u8]) -> Vec<u8> {
@@ -745,18 +838,28 @@ fn new_session_ticket(extension: &[u8]) -> Vec<u8> {
 }
 #[test]
 fn async_authenticated_ticket_keeps_keys_and_allocates_zero() {
-    bounded_case(Case {
-        ticket: Some(0),
-        ..Case::default()
-    });
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    bounded_case(
+        &WAKE,
+        Case {
+            ticket: Some(0),
+            ..Case::default()
+        },
+    );
 }
 #[test]
 fn async_authenticated_ticket_rejects_role_level_and_malformed_fields() {
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
     for scenario in 1..=6 {
-        bounded_case(Case {
-            ticket: Some(scenario),
-            ..Case::default()
-        });
+        bounded_case(
+            &WAKE,
+            Case {
+                ticket: Some(scenario),
+                ..Case::default()
+            },
+        );
     }
 }
 

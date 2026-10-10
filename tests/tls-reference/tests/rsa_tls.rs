@@ -7,11 +7,11 @@ use hibana_tls::certificate::CertificateDer;
 use hibana_tls::certificate::Limits;
 use hibana_tls::certificate::UnixTime;
 use hibana_tls::certificate::trust_anchor_from_der;
-use hibana_tls::quic::Level;
-use hibana_tls::quic::Provider;
 use hibana_tls::handshake::BoundedTls;
 use hibana_tls::handshake::ClientConfig;
 use hibana_tls::handshake::Storage;
+use hibana_tls::quic::Level;
+use hibana_tls::quic::Provider;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::{
@@ -150,6 +150,7 @@ fn index(level: Level) -> usize {
     }
 }
 fn exchange(
+    wake: &'static hibana_quic_pal::unix::reactor::WakeStorage,
     client: &mut BoundedTls<'_, '_>,
     server: &mut RustlsProvider,
     corrupt_cv: bool,
@@ -274,10 +275,16 @@ fn exchange(
     let rv = kit
         .rendezvous(&mut slab, carrier.bind(sid).unwrap())
         .unwrap();
-    let projection = { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) };
+    let projection = {
+        let graph = global::client();
+        (
+            hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+            hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
+        )
+    };
     let mut owner = rv.enter(sid, &projection.1).unwrap();
     let mut receiver = rv.enter(sid, &projection.0).unwrap();
-    let reactor = hibana_quic_pal::unix::reactor::Reactor::<0, 0>::new().unwrap();
+    let reactor = hibana_quic_pal::unix::reactor::Reactor::<0, 0>::new(wake).unwrap();
     let result = {
         let feed = async {
             let mut wire = [0; 8208];
@@ -328,7 +335,11 @@ fn exchange(
                 hibana_quic::runtime::yield_now().await;
             }
         };
-        let mut owner = pin!(localside::verify::client_owner(&mut owner, &client.tls, &slot));
+        let mut owner = pin!(localside::verify::client_owner(
+            &mut owner,
+            &client.tls,
+            &slot
+        ));
         let mut owner = pin!(poll_fn(|cx| {
             let result = measured(|| owner.as_mut().poll(cx));
             if let Some(w) = client.reader.borrow_mut().take() {
@@ -336,7 +347,11 @@ fn exchange(
             }
             result
         }));
-        let mut receiver = pin!(localside::input::client_input(&mut receiver, &slot, &mut input));
+        let mut receiver = pin!(localside::input::client_input(
+            &mut receiver,
+            &slot,
+            &mut input
+        ));
         let mut feed = pin!(feed);
         reactor
             .block_on(TaskSet::new([
@@ -348,7 +363,7 @@ fn exchange(
     };
     result.map(|()| input.saw)
 }
-fn run(bits: u16, corrupt_cv: bool) {
+fn run(wake: &'static hibana_quic_pal::unix::reactor::WakeStorage, bits: u16, corrupt_cv: bool) {
     let id = identity(bits);
     let anchors = [trust_anchor_from_der(&CertificateDer::from(id.root.as_ref())).unwrap()];
     let mut buffers = Buffers::new();
@@ -369,7 +384,7 @@ fn run(bits: u16, corrupt_cv: bool) {
     })
     .unwrap();
     let mut server = RustlsProvider::server(vec![id.leaf], id.key, SERVER_PARAMS.to_vec()).unwrap();
-    let result = exchange(&mut client, &mut server, corrupt_cv);
+    let result = exchange(wake, &mut client, &mut server, corrupt_cv);
     if corrupt_cv {
         assert!(matches!(
             result,
@@ -401,11 +416,15 @@ fn run(bits: u16, corrupt_cv: bool) {
 }
 #[test]
 fn rsa_2048_3072_4096_servers_authenticate_real_bounded_client() {
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
     for bits in [2048, 3072, 4096] {
-        run(bits, false);
+        run(&WAKE, bits, false);
     }
 }
 #[test]
 fn authenticated_packet_with_corrupted_rsa_certificate_verify_fails_closed() {
-    run(2048, true);
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    run(&WAKE, 2048, true);
 }
