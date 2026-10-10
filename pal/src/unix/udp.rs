@@ -447,7 +447,12 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         let mut bytes = [0; 64];
-        for ip in [Ipv4Addr::LOCALHOST, Ipv4Addr::new(127, 0, 0, 2)] {
+        // Linux routes the entire loopback /8; Darwin only has the configured address.
+        #[cfg(target_os = "linux")]
+        let destinations = [Ipv4Addr::LOCALHOST, Ipv4Addr::new(127, 0, 0, 2)];
+        #[cfg(target_os = "macos")]
+        let destinations = [Ipv4Addr::LOCALHOST];
+        for ip in destinations {
             let destination = SocketAddr::from((ip, server.local_addr().unwrap().port()));
             client
                 .send_to(b"request", destination, Codepoint::Ect0)
@@ -535,7 +540,11 @@ mod tests {
             Codepoint::Ce,
             Codepoint::NotEct,
         ] {
-            for ip in ["127.0.0.1", "::1", "127.0.0.2"] {
+            #[cfg(target_os = "linux")]
+            let destinations = ["127.0.0.1", "::1", "127.0.0.2"];
+            #[cfg(target_os = "macos")]
+            let destinations = ["127.0.0.1", "::1"];
+            for ip in destinations {
                 let destination =
                     SocketAddr::new(ip.parse().unwrap(), server.local_addr().unwrap().port());
                 let client = if destination.is_ipv4() {
@@ -574,14 +583,14 @@ mod tests {
     #[test]
     fn mapped_concrete_binding_uses_canonical_ipv4_tuple() {
         let mut server = UdpMetadataSocket::new(
-            UdpSocket::bind("[::ffff:127.0.0.2]:0".parse().unwrap()).unwrap(),
+            UdpSocket::bind("[::ffff:127.0.0.1]:0".parse().unwrap()).unwrap(),
         )
         .unwrap();
         server
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         let destination = SocketAddr::from((
-            Ipv4Addr::new(127, 0, 0, 2),
+            Ipv4Addr::LOCALHOST,
             server.local_addr().unwrap().port(),
         ));
         let mut client = socket(false);
@@ -608,7 +617,7 @@ mod tests {
         assert_eq!(response.local, request.source);
         assert_eq!(response.ecn, Some(Codepoint::Ect1));
         assert_eq!(&bytes[..response.len], b"response");
-        let wrong_local = SocketAddr::from((Ipv4Addr::LOCALHOST, destination.port()));
+        let wrong_local = SocketAddr::from((Ipv4Addr::new(127, 0, 0, 2), destination.port()));
         assert_eq!(
             server
                 .send_from(
