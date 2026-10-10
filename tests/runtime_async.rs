@@ -371,12 +371,12 @@ fn six_real_roles_repeat_parallel_routes_while_an_independent_receive_is_idle() 
         .rendezvous(&mut slab, carrier.bind(sid).unwrap())
         .unwrap();
     // The enclosing session owns endpoints until every actor has stopped.
-    let mut e0 = rv.enter(sid, &project::<0, _>(&program)).unwrap();
-    let mut e1 = rv.enter(sid, &project::<1, _>(&program)).unwrap();
-    let mut e2 = rv.enter(sid, &project::<2, _>(&program)).unwrap();
-    let mut e3 = rv.enter(sid, &project::<3, _>(&program)).unwrap();
-    let mut e4 = rv.enter(sid, &project::<4, _>(&program)).unwrap();
-    let mut e5 = rv.enter(sid, &project::<5, _>(&program)).unwrap();
+    let mut e0 = rv.enter(sid, &project::<0>(&program)).unwrap();
+    let mut e1 = rv.enter(sid, &project::<1>(&program)).unwrap();
+    let mut e2 = rv.enter(sid, &project::<2>(&program)).unwrap();
+    let mut e3 = rv.enter(sid, &project::<3>(&program)).unwrap();
+    let mut e4 = rv.enter(sid, &project::<4>(&program)).unwrap();
+    let mut e5 = rv.enter(sid, &project::<5>(&program)).unwrap();
     let first_count = Cell::new(0);
     let second_count = Cell::new(0);
     let role0 = async {

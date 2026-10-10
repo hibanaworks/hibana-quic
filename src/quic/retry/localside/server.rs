@@ -39,9 +39,9 @@ pub async fn receive<const D: usize>(
     }
     let send_result = Cell::new(None);
     let graph = p::choreography();
-    let input_program = hibana::runtime::program::project::<{ p::INPUT }, _>(&graph);
-    let owner_program = hibana::runtime::program::project::<{ p::OWNER }, _>(&graph);
-    let output_program = hibana::runtime::program::project::<{ p::OUTPUT }, _>(&graph);
+    let input_program = hibana::runtime::program::project::<{ p::INPUT }>(&graph);
+    let owner_program = hibana::runtime::program::project::<{ p::OWNER }>(&graph);
+    let output_program = hibana::runtime::program::project::<{ p::OUTPUT }>(&graph);
     let carrier = CarrierStorage::<1, 16, 8>::new();
     let mut kit = SessionKitStorage::uninit();
     let session = kit

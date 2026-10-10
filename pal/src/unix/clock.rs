@@ -96,12 +96,17 @@ pub async fn before_deadline<T, E, const S: usize, const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
+    use std::boxed::Box;
     #[test]
     fn clock_uses_one_physical_timer_and_cancels_that_same_timer() {
         use super::*;
         use std::task::{Context, Waker};
-        let reactor = Reactor::<1, 2>::new().unwrap();
+        let reactor = {
+            static WAKE: crate::unix::reactor::WakeStorage =
+                crate::unix::reactor::WakeStorage::new();
+            Reactor::<1, 2>::new(&WAKE)
+        }
+        .unwrap();
         let physical = Clock::new(&reactor, Instant::now());
         let mut wait = Box::pin(physical.wait_until(physical.now() + 1_000_000));
         let mut cx = Context::from_waker(Waker::noop());

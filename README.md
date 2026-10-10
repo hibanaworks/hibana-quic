@@ -4,9 +4,9 @@ QUIC v1/v2 and HTTP/3 for Rust, using [Hibana](https://github.com/hibanaworks/hi
 to express protocol order and transfer ownership between roles.
 TLS is provided by [hibana-tls](https://github.com/hibanaworks/hibana-tls).
 
-The core is `no_std`, forbids unsafe Rust, and needs no allocator by default.
-Its optional `alloc` feature provides owned connection buffers using the same
-globals and localsides. [hibana-quic-pal](pal/) supplies Linux/macOS UDP,
+The library is `no_std`, forbids unsafe Rust, and does not link the `alloc` crate.
+Connection entry points borrow their stream slots and runtime arenas from the caller.
+TLS, routing and protocol futures use bounded storage. [hibana-quic-pal](pal/) supplies Linux/macOS UDP,
 readiness, clocks, entropy and file access; it contains no protocol choreography.
 This is experimental software; passing interoperability tests does not establish
 complete cryptographic security.
@@ -70,11 +70,11 @@ consumers rather than pretending there is one task for every endpoint.
 [`runtime::TaskSet`](src/runtime/mod.rs) polls the composed local futures; it does
 not choose QUIC/TLS protocol transitions. On native systems, the PAL
 [`Reactor::block_on`](pal/src/unix/reactor.rs) supplies polling and I/O wakeups.
-With caller-owned storage, another executor can poll the same connection future.
+The command-line examples use std for arguments and files. Their application endpoints and connection storage follow the same allocator-free library API. With caller-owned storage, another executor can poll the same connection future.
 For an application defined with its own global, [session execution](src/session/localside/mod.rs)
 attaches its projected endpoint and joins its application localside with the
 network localside. The [raw QUIC example](examples/hello-quic/client.rs) passes
-its projected program and `localside::run` directly into that entrypoint.
+its projected program and an inferred async application localside directly into that entrypoint.
 
 ### Public entrypoints and implementation storage
 
@@ -186,11 +186,11 @@ The two examples calculate a square across a real network connection:
   HTTP/3 POST request/response bodies on `/hibana`.
 
 Each has one shared `global.rs` and a `client.rs` / `server.rs` pair. Each
-executable keeps its connection settings and inline `localside` module together.
+executable keeps its connection settings and async application localside together.
 The HTTP/3 and raw examples have identical application conversations; `Protocol`
-selects the transport. `project(&global::choreography())` infers its role and graph
-type from the localside passed beside it. Only the localside signature names its
-`Endpoint<'_, CLIENT>` or `Endpoint<'_, SERVER>`; no `RoleProgram` annotation is needed.
+selects the transport. `project::<CLIENT>(&global::choreography())` selects the role while inferring the graph
+type. The connection entrypoint infers the async localside's endpoint argument;
+no `Endpoint`, `RoleProgram`, lifetime, or `_` type annotation is needed.
 
 ### Shared global
 
@@ -201,7 +201,7 @@ separate type-level copy of the conversation is needed.
 
 ```rust
 //! One application choreography projected by both client and server.
-//! Each launcher attaches its own projected Endpoint and runs localside::run.
+//! Each launcher projects its role and supplies an inferred application localside.
 use hibana::g;
 use hibana::runtime::program::Projectable;
 pub const CLIENT: u8 = 0;
@@ -228,6 +228,7 @@ pub fn choreography() -> impl Projectable {
 
 ```rust
 mod global;
+use global::{Number, Square};
 use hibana::runtime::program::project;
 use hibana_quic::session::{self, Protocol};
 use hibana_quic_pal::unix::{
@@ -248,21 +249,31 @@ fn run() -> Result<(), String> {
     if args.len() != 2 {
         return Err("usage: client REMOTE CA.pem (DNS:localhost)".into());
     }
-    let reactor = Reactor::<4, 8>::new().map_err(|e| e.to_string())?;
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<4, 8>::new(&WAKE)
+    }
+    .map_err(|e| e.to_string())?;
     let clock = Clock::new(&reactor, Instant::now());
     let protocol = Protocol::Quic;
     let remote = args[0].parse().map_err(|e| format!("{e}"))?;
     let socket = reactor
         .register_udp(UdpSocket::bind_for_peer(remote).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    let certificates = hibana_tls::certificate::pem::decode_certificates(
+    let mut certificate_bytes = [0; 16384];
+    let mut certificates: [&[u8]; 16] = [&[]; 16];
+    let certificate_count = hibana_tls::certificate::pem::decode_certificates(
         &std::fs::read(&args[1]).map_err(|e| e.to_string())?,
+        &mut certificate_bytes,
+        &mut certificates,
     )?;
+    let certificates = &certificates[..certificate_count];
     let anchors = certificates
         .iter()
         .map(|der| {
             hibana_tls::certificate::trust_anchor_from_der(
-                &hibana_tls::certificate::CertificateDer::from(der.as_slice()),
+                &hibana_tls::certificate::CertificateDer::from(*der),
             )
         })
         .collect::<Result<Vec<_>, _>>()
@@ -283,51 +294,54 @@ fn run() -> Result<(), String> {
         idle_timeout_ms: 15_000,
         stream_capacity: 8,
     };
-    let program = project(&global::choreography());
+    let program = project::<{ global::CLIENT }>(&global::choreography());
+    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
+    let mut connection_slab = [0; 256 * 1024];
+    let mut application_slab = [0; 65536];
+    let mut entropy = KernelEntropy;
+    let connection = core::pin::pin!(session::localside::owned::client(
+        &mut streams,
+        &mut connection_slab,
+        &mut application_slab,
+        &socket,
+        &clock,
+        &mut entropy,
+        config,
+        global::SERVER,
+        &program,
+        async |client| -> Result<(), ApplicationError> {
+            for number in [42_u64, 7] {
+                client
+                    .send::<Number>(&number)
+                    .await
+                    .map_err(ApplicationError::Protocol)?;
+                let square = client
+                    .recv::<Square>()
+                    .await
+                    .map_err(ApplicationError::Protocol)?;
+                if square != number * number {
+                    return Err(ApplicationError::IncorrectSquare);
+                }
+            }
+            Ok(())
+        },
+    ));
     reactor
-        .block_on(Box::pin(before_deadline(
+        .block_on(before_deadline(
             &clock,
             Instant::now() + Duration::from_secs(30),
-            session::localside::owned::client(
-                &socket,
-                &clock,
-                &mut KernelEntropy,
-                config,
-                global::SERVER,
-                &program,
-                localside::run,
-            ),
-        )))
+            connection,
+        ))
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
     println!("42 squared = 1764\n7 squared = 49");
     Ok(())
 }
 
-// This role's application code is next to its connection setup.
-pub mod localside {
-    //! The client application localside. Its Endpoint follows the shared global.
-    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
-    use crate::global::*;
-    use hibana::Endpoint;
-    #[derive(Debug)]
-    pub enum Error {
-        Protocol(hibana::EndpointError),
-        IncorrectSquare,
-    }
-    pub async fn run(client: &mut Endpoint<'_, CLIENT>) -> Result<(), Error> {
-        for number in [42_u64, 7] {
-            client
-                .send::<Number>(&number)
-                .await
-                .map_err(Error::Protocol)?;
-            let square = client.recv::<Square>().await.map_err(Error::Protocol)?;
-            if square != number * number {
-                return Err(Error::IncorrectSquare);
-            }
-        }
-        Ok(())
-    }
+#[derive(Debug)]
+pub enum ApplicationError {
+    Protocol(hibana::EndpointError),
+    IncorrectSquare,
 }
 ```
 
@@ -337,6 +351,7 @@ pub mod localside {
 
 ```rust
 mod global;
+use global::{Number, Square};
 use hibana::runtime::program::project;
 use hibana_quic::session::{self, Protocol};
 use hibana_quic_pal::unix::{
@@ -357,7 +372,12 @@ fn run() -> Result<(), String> {
     if args.len() != 3 {
         return Err("usage: server LISTEN CERT.pem KEY.pem".into());
     }
-    let reactor = Reactor::<4, 8>::new().map_err(|e| e.to_string())?;
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<4, 8>::new(&WAKE)
+    }
+    .map_err(|e| e.to_string())?;
     let clock = Clock::new(&reactor, Instant::now());
     let protocol = Protocol::Quic;
     let socket = reactor
@@ -366,12 +386,38 @@ fn run() -> Result<(), String> {
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-    let certificates = hibana_tls::certificate::pem::decode_certificates(
+    let mut certificate_bytes = [0; 16384];
+    let mut certificates: [&[u8]; 16] = [&[]; 16];
+    let certificate_count = hibana_tls::certificate::pem::decode_certificates(
         &std::fs::read(&args[1]).map_err(|e| e.to_string())?,
+        &mut certificate_bytes,
+        &mut certificates,
     )?;
-    let chain: Vec<_> = certificates.iter().map(Vec::as_slice).collect();
+    let certificates = &certificates[..certificate_count];
+    let chain = certificates;
+    let mut key_bytes = [0; 4096];
+    let mut key_pem = hibana_tls::secret::Secret::new([0; 16384]);
+    use std::io::Read;
+    let mut file = std::fs::File::open(&args[2]).map_err(|e| e.to_string())?;
+    let mut key_len = 0;
+    loop {
+        if key_len == key_pem.len() {
+            if file.read(&mut [0; 1]).map_err(|e| e.to_string())? != 0 {
+                return Err("key PEM exceeds storage".into());
+            }
+            break;
+        }
+        let count = file
+            .read(&mut key_pem[key_len..])
+            .map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        key_len += count;
+    }
     let key = match hibana_tls::certificate::pem::decode_private_key(
-        &hibana_tls::secret::Secret::new(std::fs::read(&args[2]).map_err(|e| e.to_string())?),
+        &key_pem[..key_len],
+        &mut key_bytes,
     )? {
         hibana_tls::certificate::pem::PrivateKeyDer::Pkcs8(bytes) => {
             hibana_tls::handshake::SigningKey::from_pkcs8_der(&bytes)
@@ -383,7 +429,7 @@ fn run() -> Result<(), String> {
     .map_err(|e| format!("{e:?}"))?;
     let config = session::Server {
         protocol,
-        certificate_chain: &chain,
+        certificate_chain: chain,
         signing_key: &key,
         idle_timeout_ms: 15_000,
         stream_capacity: 8,
@@ -392,49 +438,54 @@ fn run() -> Result<(), String> {
         "listening on {}",
         socket.local_addr().map_err(|e| e.to_string())?
     );
-    let program = project(&global::choreography());
+    let program = project::<{ global::SERVER }>(&global::choreography());
+    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
+    let mut connection_slab = [0; 256 * 1024];
+    let mut application_slab = [0; 65536];
+    let mut entropy = KernelEntropy;
+    let connection = core::pin::pin!(session::localside::owned::server(
+        &mut streams,
+        &mut connection_slab,
+        &mut application_slab,
+        &socket,
+        &clock,
+        &mut entropy,
+        config,
+        global::CLIENT,
+        &program,
+        async |server| -> Result<(), ApplicationError> {
+            for _ in 0..2 {
+                let number = server
+                    .recv::<Number>()
+                    .await
+                    .map_err(ApplicationError::Protocol)?;
+                let square = number
+                    .checked_mul(number)
+                    .ok_or(ApplicationError::Overflow)?;
+                server
+                    .send::<Square>(&square)
+                    .await
+                    .map_err(ApplicationError::Protocol)?;
+            }
+            Ok(())
+        },
+    ));
     reactor
-        .block_on(Box::pin(before_deadline(
+        .block_on(before_deadline(
             &clock,
             Instant::now() + Duration::from_secs(30),
-            session::localside::owned::server(
-                &socket,
-                &clock,
-                &mut KernelEntropy,
-                config,
-                global::CLIENT,
-                &program,
-                localside::run,
-            ),
-        )))
+            connection,
+        ))
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
     println!("served two requests");
     Ok(())
 }
 
-// This role's application code is next to its connection setup.
-pub mod localside {
-    //! The server application localside. Its Endpoint follows the shared global.
-    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
-    use crate::global::*;
-    use hibana::Endpoint;
-    #[derive(Debug)]
-    pub enum Error {
-        Protocol(hibana::EndpointError),
-        Overflow,
-    }
-    pub async fn run(server: &mut Endpoint<'_, SERVER>) -> Result<(), Error> {
-        for _ in 0..2 {
-            let number = server.recv::<Number>().await.map_err(Error::Protocol)?;
-            let square = number.checked_mul(number).ok_or(Error::Overflow)?;
-            server
-                .send::<Square>(&square)
-                .await
-                .map_err(Error::Protocol)?;
-        }
-        Ok(())
-    }
+#[derive(Debug)]
+pub enum ApplicationError {
+    Protocol(hibana::EndpointError),
+    Overflow,
 }
 ```
 
@@ -444,6 +495,7 @@ pub mod localside {
 
 ```rust
 mod global;
+use global::{Number, Square};
 use hibana::runtime::program::project;
 use hibana_quic::session::{self, Protocol};
 use hibana_quic_pal::unix::{
@@ -464,21 +516,31 @@ fn run() -> Result<(), String> {
     if args.len() != 2 {
         return Err("usage: client REMOTE CA.pem (DNS:localhost)".into());
     }
-    let reactor = Reactor::<4, 8>::new().map_err(|e| e.to_string())?;
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<4, 8>::new(&WAKE)
+    }
+    .map_err(|e| e.to_string())?;
     let clock = Clock::new(&reactor, Instant::now());
     let protocol = Protocol::Http3;
     let remote = args[0].parse().map_err(|e| format!("{e}"))?;
     let socket = reactor
         .register_udp(UdpSocket::bind_for_peer(remote).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    let certificates = hibana_tls::certificate::pem::decode_certificates(
+    let mut certificate_bytes = [0; 16384];
+    let mut certificates: [&[u8]; 16] = [&[]; 16];
+    let certificate_count = hibana_tls::certificate::pem::decode_certificates(
         &std::fs::read(&args[1]).map_err(|e| e.to_string())?,
+        &mut certificate_bytes,
+        &mut certificates,
     )?;
+    let certificates = &certificates[..certificate_count];
     let anchors = certificates
         .iter()
         .map(|der| {
             hibana_tls::certificate::trust_anchor_from_der(
-                &hibana_tls::certificate::CertificateDer::from(der.as_slice()),
+                &hibana_tls::certificate::CertificateDer::from(*der),
             )
         })
         .collect::<Result<Vec<_>, _>>()
@@ -499,51 +561,54 @@ fn run() -> Result<(), String> {
         idle_timeout_ms: 15_000,
         stream_capacity: 8,
     };
-    let program = project(&global::choreography());
+    let program = project::<{ global::CLIENT }>(&global::choreography());
+    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
+    let mut connection_slab = [0; 256 * 1024];
+    let mut application_slab = [0; 65536];
+    let mut entropy = KernelEntropy;
+    let connection = core::pin::pin!(session::localside::owned::client(
+        &mut streams,
+        &mut connection_slab,
+        &mut application_slab,
+        &socket,
+        &clock,
+        &mut entropy,
+        config,
+        global::SERVER,
+        &program,
+        async |client| -> Result<(), ApplicationError> {
+            for number in [42_u64, 7] {
+                client
+                    .send::<Number>(&number)
+                    .await
+                    .map_err(ApplicationError::Protocol)?;
+                let square = client
+                    .recv::<Square>()
+                    .await
+                    .map_err(ApplicationError::Protocol)?;
+                if square != number * number {
+                    return Err(ApplicationError::IncorrectSquare);
+                }
+            }
+            Ok(())
+        },
+    ));
     reactor
-        .block_on(Box::pin(before_deadline(
+        .block_on(before_deadline(
             &clock,
             Instant::now() + Duration::from_secs(30),
-            session::localside::owned::client(
-                &socket,
-                &clock,
-                &mut KernelEntropy,
-                config,
-                global::SERVER,
-                &program,
-                localside::run,
-            ),
-        )))
+            connection,
+        ))
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
     println!("42 squared = 1764\n7 squared = 49");
     Ok(())
 }
 
-// This role's application code is next to its connection setup.
-pub mod localside {
-    //! The client application localside. Its Endpoint follows the shared global.
-    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
-    use crate::global::*;
-    use hibana::Endpoint;
-    #[derive(Debug)]
-    pub enum Error {
-        Protocol(hibana::EndpointError),
-        IncorrectSquare,
-    }
-    pub async fn run(client: &mut Endpoint<'_, CLIENT>) -> Result<(), Error> {
-        for number in [42_u64, 7] {
-            client
-                .send::<Number>(&number)
-                .await
-                .map_err(Error::Protocol)?;
-            let square = client.recv::<Square>().await.map_err(Error::Protocol)?;
-            if square != number * number {
-                return Err(Error::IncorrectSquare);
-            }
-        }
-        Ok(())
-    }
+#[derive(Debug)]
+pub enum ApplicationError {
+    Protocol(hibana::EndpointError),
+    IncorrectSquare,
 }
 ```
 
@@ -553,6 +618,7 @@ pub mod localside {
 
 ```rust
 mod global;
+use global::{Number, Square};
 use hibana::runtime::program::project;
 use hibana_quic::session::{self, Protocol};
 use hibana_quic_pal::unix::{
@@ -573,7 +639,12 @@ fn run() -> Result<(), String> {
     if args.len() != 3 {
         return Err("usage: server LISTEN CERT.pem KEY.pem".into());
     }
-    let reactor = Reactor::<4, 8>::new().map_err(|e| e.to_string())?;
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<4, 8>::new(&WAKE)
+    }
+    .map_err(|e| e.to_string())?;
     let clock = Clock::new(&reactor, Instant::now());
     let protocol = Protocol::Http3;
     let socket = reactor
@@ -582,12 +653,38 @@ fn run() -> Result<(), String> {
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-    let certificates = hibana_tls::certificate::pem::decode_certificates(
+    let mut certificate_bytes = [0; 16384];
+    let mut certificates: [&[u8]; 16] = [&[]; 16];
+    let certificate_count = hibana_tls::certificate::pem::decode_certificates(
         &std::fs::read(&args[1]).map_err(|e| e.to_string())?,
+        &mut certificate_bytes,
+        &mut certificates,
     )?;
-    let chain: Vec<_> = certificates.iter().map(Vec::as_slice).collect();
+    let certificates = &certificates[..certificate_count];
+    let chain = certificates;
+    let mut key_bytes = [0; 4096];
+    let mut key_pem = hibana_tls::secret::Secret::new([0; 16384]);
+    use std::io::Read;
+    let mut file = std::fs::File::open(&args[2]).map_err(|e| e.to_string())?;
+    let mut key_len = 0;
+    loop {
+        if key_len == key_pem.len() {
+            if file.read(&mut [0; 1]).map_err(|e| e.to_string())? != 0 {
+                return Err("key PEM exceeds storage".into());
+            }
+            break;
+        }
+        let count = file
+            .read(&mut key_pem[key_len..])
+            .map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        key_len += count;
+    }
     let key = match hibana_tls::certificate::pem::decode_private_key(
-        &hibana_tls::secret::Secret::new(std::fs::read(&args[2]).map_err(|e| e.to_string())?),
+        &key_pem[..key_len],
+        &mut key_bytes,
     )? {
         hibana_tls::certificate::pem::PrivateKeyDer::Pkcs8(bytes) => {
             hibana_tls::handshake::SigningKey::from_pkcs8_der(&bytes)
@@ -599,7 +696,7 @@ fn run() -> Result<(), String> {
     .map_err(|e| format!("{e:?}"))?;
     let config = session::Server {
         protocol,
-        certificate_chain: &chain,
+        certificate_chain: chain,
         signing_key: &key,
         idle_timeout_ms: 15_000,
         stream_capacity: 8,
@@ -608,49 +705,54 @@ fn run() -> Result<(), String> {
         "listening on {}",
         socket.local_addr().map_err(|e| e.to_string())?
     );
-    let program = project(&global::choreography());
+    let program = project::<{ global::SERVER }>(&global::choreography());
+    let mut streams = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 8];
+    let mut connection_slab = [0; 256 * 1024];
+    let mut application_slab = [0; 65536];
+    let mut entropy = KernelEntropy;
+    let connection = core::pin::pin!(session::localside::owned::server(
+        &mut streams,
+        &mut connection_slab,
+        &mut application_slab,
+        &socket,
+        &clock,
+        &mut entropy,
+        config,
+        global::CLIENT,
+        &program,
+        async |server| -> Result<(), ApplicationError> {
+            for _ in 0..2 {
+                let number = server
+                    .recv::<Number>()
+                    .await
+                    .map_err(ApplicationError::Protocol)?;
+                let square = number
+                    .checked_mul(number)
+                    .ok_or(ApplicationError::Overflow)?;
+                server
+                    .send::<Square>(&square)
+                    .await
+                    .map_err(ApplicationError::Protocol)?;
+            }
+            Ok(())
+        },
+    ));
     reactor
-        .block_on(Box::pin(before_deadline(
+        .block_on(before_deadline(
             &clock,
             Instant::now() + Duration::from_secs(30),
-            session::localside::owned::server(
-                &socket,
-                &clock,
-                &mut KernelEntropy,
-                config,
-                global::CLIENT,
-                &program,
-                localside::run,
-            ),
-        )))
+            connection,
+        ))
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
     println!("served two requests");
     Ok(())
 }
 
-// This role's application code is next to its connection setup.
-pub mod localside {
-    //! The server application localside. Its Endpoint follows the shared global.
-    //! QUIC/TLS and environment I/O are owned by the lower connection layers.
-    use crate::global::*;
-    use hibana::Endpoint;
-    #[derive(Debug)]
-    pub enum Error {
-        Protocol(hibana::EndpointError),
-        Overflow,
-    }
-    pub async fn run(server: &mut Endpoint<'_, SERVER>) -> Result<(), Error> {
-        for _ in 0..2 {
-            let number = server.recv::<Number>().await.map_err(Error::Protocol)?;
-            let square = number.checked_mul(number).ok_or(Error::Overflow)?;
-            server
-                .send::<Square>(&square)
-                .await
-                .map_err(Error::Protocol)?;
-        }
-        Ok(())
-    }
+#[derive(Debug)]
+pub enum ApplicationError {
+    Protocol(hibana::EndpointError),
+    Overflow,
 }
 ```
 

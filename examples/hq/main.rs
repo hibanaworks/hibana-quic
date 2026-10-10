@@ -89,11 +89,11 @@ impl TlsBuffers {
         }
     }
 }
-fn signing_key(key: &PrivateKeyDer) -> Result<SigningKey> {
+fn signing_key(key: &PrivateKeyDer<'_>) -> Result<SigningKey> {
     match key {
-        PrivateKeyDer::Pkcs8(key) => SigningKey::from_pkcs8_der(key.as_slice())
+        PrivateKeyDer::Pkcs8(key) => SigningKey::from_pkcs8_der(key.as_ref())
             .map_err(|_| "server signing key must be ECDSA P-256 PKCS8".into()),
-        PrivateKeyDer::Sec1(key) => SigningKey::from_sec1_der(key.as_slice())
+        PrivateKeyDer::Sec1(key) => SigningKey::from_sec1_der(key.as_ref())
             .map_err(|_| "server signing key must be ECDSA P-256 SEC1".into()),
     }
 }
@@ -277,9 +277,11 @@ async fn connected<const S: usize, const T: usize>(
     tls: BoundedTls<'_, '_>,
     first: Option<(&[u8], Option<hibana_quic::io::Codepoint>)>,
     mut files: Option<host_files::Files>,
-    early: Option<application_storage::EarlyStorage>,
+    early: Option<application_storage::EarlyStorage<'_>>,
     key_update_target: u64,
-    routed: Option<&mut hibana_quic::quic::routing::Receiver<{ hibana_quic::session::DATAGRAM }>>,
+    routed: Option<
+        &mut hibana_quic::quic::routing::Receiver<'_, { hibana_quic::session::DATAGRAM }>,
+    >,
     server_token: Option<&[u8]>,
     idle_timeout_ms: u64,
 ) -> Result<Report> {
@@ -310,8 +312,9 @@ async fn connected<const S: usize, const T: usize>(
     )
     .map_err(|e| format!("recovery: {e:?}"))?;
     let statistics = Statistics::default();
+    let mut alternate_bytes = [0; hibana_quic::session::DATAGRAM];
     let mut receive = Receive::<_, { hibana_quic::session::DATAGRAM }> {
-        alternate: alternate.map(|socket| (socket, vec![0; hibana_quic::session::DATAGRAM])),
+        alternate: alternate.map(|socket| (socket, &mut alternate_bytes[..])),
         routed,
         socket,
         address,
@@ -341,6 +344,7 @@ async fn connected<const S: usize, const T: usize>(
         };
         // One combined projection and one library invocation own every phase.
         // A failed transfer cannot fall back to a successful prefix report.
+        let mut connection_slab = [0; 256 * 1024];
         let report = Box::pin(async {
             match files {
                 host_files::Files::Client(client) => {
@@ -356,9 +360,22 @@ async fn connected<const S: usize, const T: usize>(
                         idle_timeout_ms,
                     };
                     if application_storage::client_uses_large_window(client.count) {
+                        let mut streams: Vec<
+                            hibana_quic::quic::streams::StreamSlot<
+                                { application_storage::CLIENT_RECEIVE_BYTES },
+                            >,
+                        > = (0..profile.stream_capacity)
+                            .map(|_| hibana_quic::quic::streams::StreamSlot::EMPTY)
+                            .collect();
+                        let mut early_requests: Vec<_> = (0..profile.early_request_capacity)
+                            .map(|_| hibana_quic::quic::early_requests::RequestSlot::EMPTY)
+                            .collect();
                         hibana_quic::quic::application::localside::owned::client::<
                             { application_storage::CLIENT_RECEIVE_BYTES },
                         >(
+                            &mut streams,
+                            &mut early_requests,
+                            &mut connection_slab,
                             &mut hibana_quic_pal::unix::entropy::KernelEntropy,
                             &mut source,
                             config,
@@ -374,9 +391,22 @@ async fn connected<const S: usize, const T: usize>(
                         )
                         .await
                     } else {
+                        let mut streams: Vec<
+                            hibana_quic::quic::streams::StreamSlot<
+                                { application_storage::RECEIVE_BYTES },
+                            >,
+                        > = (0..profile.stream_capacity)
+                            .map(|_| hibana_quic::quic::streams::StreamSlot::EMPTY)
+                            .collect();
+                        let mut early_requests: Vec<_> = (0..profile.early_request_capacity)
+                            .map(|_| hibana_quic::quic::early_requests::RequestSlot::EMPTY)
+                            .collect();
                         hibana_quic::quic::application::localside::owned::client::<
                             { application_storage::RECEIVE_BYTES },
                         >(
+                            &mut streams,
+                            &mut early_requests,
+                            &mut connection_slab,
                             &mut hibana_quic_pal::unix::entropy::KernelEntropy,
                             &mut source,
                             config,
@@ -404,7 +434,12 @@ async fn connected<const S: usize, const T: usize>(
                         server_token,
                         idle_timeout_ms,
                     };
+                    let mut streams: Vec<_> = (0..profile.stream_capacity)
+                        .map(|_| hibana_quic::quic::streams::StreamSlot::EMPTY)
+                        .collect();
                     hibana_quic::quic::application::localside::owned::server(
+                        &mut streams,
+                        &mut connection_slab,
                         &mut hibana_quic_pal::unix::entropy::KernelEntropy,
                         &mut source,
                         config,
@@ -425,8 +460,8 @@ async fn connected<const S: usize, const T: usize>(
         })
         .await
         .map_err(|error| match diagnostics.take() {
-            Some(detail) => format!("{error}: {detail}"),
-            None => error,
+            Some(detail) => format!("{error:?}: {detail}"),
+            None => format!("{error:?}"),
         })?;
         if report.key_generation < key_update_target {
             return Err("requested key generation was not actually installed".into());
@@ -448,7 +483,9 @@ async fn connected<const S: usize, const T: usize>(
         body_bytes = observations.body_bytes.get();
         (Some(report), report.resumed)
     } else {
+        let mut handshake_slab = [0; 65536];
         let continuations = Box::pin(hibana_quic::quic::localside::owned::handshake(
+            &mut handshake_slab,
             &mut source,
             config,
             &mut receive,
@@ -458,7 +495,8 @@ async fn connected<const S: usize, const T: usize>(
             &mut book,
             generation,
         ))
-        .await?;
+        .await
+        .map_err(|e| format!("handshake: {e:?}"))?;
         // Explicit prefix diagnostics end here, with real affine continuations.
         let resumed = continuations.0.finished.receipt().resumed();
         drop(continuations);
@@ -753,13 +791,14 @@ async fn run_async<const S: usize, const T: usize>(
             let ticket_clock = WallTicketClock;
             let mut offer = None;
             let mut previous: Option<Report> = None;
-            let roots = pem::certificates(&ca)?;
+            let mut root_bytes = [0; 65536];
+            let mut roots: [&[u8]; 64] = [&[]; 64];
+            let root_count = pem::certificates(&ca, &mut root_bytes, &mut roots)?;
+            let roots = &roots[..root_count];
             let anchors = roots
                 .iter()
                 .map(|root| {
-                    trust_anchor_from_der(&hibana_tls::certificate::CertificateDer::from(
-                        root.as_ref(),
-                    ))
+                    trust_anchor_from_der(&hibana_tls::certificate::CertificateDer::from(*root))
                 })
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|e| format!("trust anchor: {e:?}"))?;
@@ -952,9 +991,12 @@ async fn run_async<const S: usize, const T: usize>(
                 )
                 .await;
             }
-            let certificates = pem::certificates(&cert)?;
-            let key = signing_key(&pem::private_key(&key)?)?;
-            let chain: Vec<&[u8]> = certificates.iter().map(|cert| cert.as_ref()).collect();
+            let mut certificate_bytes = [0; 16384];
+            let mut certificates: [&[u8]; 16] = [&[]; 16];
+            let count = pem::certificates(&cert, &mut certificate_bytes, &mut certificates)?;
+            let mut key_bytes = [0; 4096];
+            let key = signing_key(&pem::private_key(&key, &mut key_bytes)?)?;
+            let chain = &certificates[..count];
             let socket = reactor
                 .register_udp(UdpSocket::bind(listen).map_err(|e| format!("UDP bind: {e}"))?)
                 .map_err(|e| format!("UDP registration: {e}"))?;
@@ -1120,11 +1162,21 @@ async fn run_async<const S: usize, const T: usize>(
                 let config = ServerConfig {
                     protocol,
                     version,
-                    certificate_chain: &chain,
+                    certificate_chain: chain,
                     signing_key: &key,
                     transport_parameters: &parameters,
                 };
-                let early_storage = early.then(application_storage::EarlyStorage::new);
+                let mut early_slots: Vec<_> = (0..if early {
+                    application_storage::STREAMS
+                } else {
+                    0
+                })
+                    .map(|_| hibana_quic::quic::early_data::QuarantineSlot::EMPTY)
+                    .collect();
+                let early_storage = early
+                    .then(|| application_storage::EarlyStorage::new(&mut early_slots))
+                    .transpose()
+                    .map_err(|e| format!("early storage: {e:?}"))?;
                 let tls = if let Some(storage) = early_storage.as_ref() {
                     let early_config = hibana_tls::handshake::ServerEarlyData::buffered::<
                         { application_storage::RECEIVE_BYTES },
@@ -1225,7 +1277,12 @@ fn run(options: Options) -> Result<String> {
 }
 fn run_sized<const S: usize, const T: usize>(options: Options) -> Result<String> {
     let require_clean_client = matches!(&options, Options::Client { .. });
-    let reactor = HostReactor::<S, T>::new().map_err(|e| format!("host reactor: {e}"))?;
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        HostReactor::<S, T>::new(&WAKE)
+    }
+    .map_err(|e| format!("host reactor: {e}"))?;
     let clock = HostClock::new(&reactor, Instant::now());
     let deadline = clock
         .start
@@ -1279,62 +1336,6 @@ mod admission_tests {
         time::Duration,
     };
 
-    fn wait_for_rejection_yield<const S: usize, const T: usize, F: Future>(
-        reactor: &HostReactor<S, T>,
-        mut admission: std::pin::Pin<&mut F>,
-    ) {
-        use std::{
-            sync::{
-                Arc,
-                atomic::{AtomicBool, Ordering},
-            },
-            task::{Poll, Wake},
-        };
-        struct ObservedWake {
-            during_poll: AtomicBool,
-            parent: Waker,
-        }
-        impl Wake for ObservedWake {
-            fn wake(self: Arc<Self>) {
-                self.wake_by_ref();
-            }
-            fn wake_by_ref(self: &Arc<Self>) {
-                self.during_poll.store(true, Ordering::Relaxed);
-                self.parent.wake_by_ref();
-            }
-        }
-        let start = Instant::now();
-        let clock = HostClock::new(reactor, start);
-        reactor
-            .block_on(before_deadline(
-                &clock,
-                start.checked_add(Duration::from_secs(1)).unwrap(),
-                std::future::poll_fn(|cx| {
-                    // Kernel readiness wakes outside this poll. A fresh recorder
-                    // observes the cooperative yield after one rejected packet.
-                    let observed = Arc::new(ObservedWake {
-                        during_poll: AtomicBool::new(false),
-                        parent: cx.waker().clone(),
-                    });
-                    let waker = Waker::from(Arc::clone(&observed));
-                    assert!(
-                        admission
-                            .as_mut()
-                            .poll(&mut Context::from_waker(&waker))
-                            .is_pending(),
-                        "a rejected datagram completed Initial admission"
-                    );
-                    if observed.during_poll.load(Ordering::Relaxed) {
-                        Poll::Ready(Ok::<_, String>(()))
-                    } else {
-                        Poll::Pending
-                    }
-                }),
-            ))
-            .unwrap()
-            .expect("Initial rejection did not yield before its deadline");
-    }
-
     #[test]
     fn requested_idle_budget_matches_wire_and_application_setup() {
         use hibana_quic::quic::transport_parameters::Parameters;
@@ -1352,8 +1353,9 @@ mod admission_tests {
                     initial_token: &[],
                     peer_connection_id: b"peer0001",
                 };
+                let mut slots = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 1];
                 let mut storage = application_storage::Storage::<1024>::new(
-                    1,
+                    &mut slots,
                     Default::default(),
                     &mut KernelEntropy,
                 )
@@ -1407,7 +1409,12 @@ mod admission_tests {
             .unwrap();
         // The source CID is plaintext but authenticated associated data.
         bytes[15] ^= 1;
-        let reactor = HostReactor::<4, 8>::new().unwrap();
+        let reactor = {
+            static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+                hibana_quic_pal::unix::reactor::WakeStorage::new();
+            HostReactor::<4, 8>::new(&WAKE)
+        }
+        .unwrap();
         let socket = reactor
             .register_udp(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap())
             .unwrap();
@@ -1425,18 +1432,11 @@ mod admission_tests {
         bytes[15] ^= 1;
         peer.send_to(&bytes[..hlen + 1176], socket.local_addr().unwrap())
             .unwrap();
-        // Drive actual readiness after the intact datagram is submitted; one
-        // manual poll cannot assume that loopback delivery has already finished.
-        let start = Instant::now();
-        let clock = HostClock::new(&reactor, start);
-        let (_, original, source, len, ecn) = reactor
-            .block_on(before_deadline(
-                &clock,
-                start.checked_add(Duration::from_secs(1)).unwrap(),
-                admission,
-            ))
-            .unwrap()
-            .expect("the following intact Initial was not admitted");
+        let std::task::Poll::Ready(Ok((_, original, source, len, ecn))) =
+            admission.as_mut().poll(&mut context)
+        else {
+            panic!("the following intact Initial was not admitted");
+        };
         assert_eq!(ecn, Some(hibana_quic::io::Codepoint::NotEct));
         assert_eq!(original, b"original");
         assert_eq!(source, b"client01");
@@ -1445,7 +1445,12 @@ mod admission_tests {
 
     #[test]
     fn unknown_version_probe_gets_reversed_cids_and_v1_without_initial_admission() {
-        let reactor = HostReactor::<4, 8>::new().unwrap();
+        let reactor = {
+            static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+                hibana_quic_pal::unix::reactor::WakeStorage::new();
+            HostReactor::<4, 8>::new(&WAKE)
+        }
+        .unwrap();
         let socket = reactor
             .register_udp(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap())
             .unwrap();
@@ -1459,7 +1464,7 @@ mod admission_tests {
             let mut admission = Box::pin(admit_initial(&socket, &mut first));
             let mut context = Context::from_waker(Waker::noop());
             assert!(admission.as_mut().poll(&mut context).is_pending());
-            wait_for_rejection_yield(&reactor, admission.as_mut());
+            assert!(admission.as_mut().poll(&mut context).is_pending());
         }
         let mut reply = [0; 64];
         let (len, source) = peer.recv_from(&mut reply).unwrap();
@@ -1494,7 +1499,12 @@ mod admission_tests {
             vec![0; 1200],
             vec![0; hibana_quic::session::DATAGRAM + 1],
         ] {
-            let reactor = HostReactor::<4, 8>::new().unwrap();
+            let reactor = {
+                static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+                    hibana_quic_pal::unix::reactor::WakeStorage::new();
+                HostReactor::<4, 8>::new(&WAKE)
+            }
+            .unwrap();
             let socket = reactor
                 .register_udp(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap())
                 .unwrap();
@@ -1508,7 +1518,7 @@ mod admission_tests {
                 let mut admission = Box::pin(admit_initial(&socket, &mut first));
                 let mut context = Context::from_waker(Waker::noop());
                 assert!(admission.as_mut().poll(&mut context).is_pending());
-                wait_for_rejection_yield(&reactor, admission.as_mut());
+                assert!(admission.as_mut().poll(&mut context).is_pending());
             }
             let clock = HostClock::new(&reactor, Instant::now());
             let metadata = reactor

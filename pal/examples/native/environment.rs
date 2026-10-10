@@ -2,7 +2,7 @@ use hibana_quic::{entropy::Entropy, io::DatagramSocket};
 use hibana_quic_pal::unix::{reactor::Reactor, entropy::KernelEntropy, UdpSocket};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let reactor = Reactor::<2, 1>::new()?;
+    let reactor = { static WAKE: hibana_quic_pal::unix::reactor::WakeStorage = hibana_quic_pal::unix::reactor::WakeStorage::new(); Reactor::<2, 1>::new(&WAKE) }?;
     let server = reactor.register_udp(UdpSocket::bind("127.0.0.1:0".parse()?)?)?;
     let client = reactor.register_udp(UdpSocket::bind("127.0.0.1:0".parse()?)?)?;
     let path = hibana_quic::io::Address {

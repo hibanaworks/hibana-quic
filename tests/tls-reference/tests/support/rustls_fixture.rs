@@ -99,9 +99,9 @@ pub fn handshake_observe(
         .rendezvous(&mut slab, carrier.bind(id).unwrap())
         .unwrap();
     let projection = if client {
-        { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) }
+        { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) }
     } else {
-        { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) }
+        { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) }
     };
     let mut verify = rv.enter(id, &projection.1).unwrap();
     let mut wire = rv.enter(id, &projection.0).unwrap();

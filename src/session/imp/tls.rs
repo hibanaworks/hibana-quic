@@ -1,18 +1,17 @@
-use alloc::{vec, vec::Vec};
 use hibana_tls::handshake::Storage as TlsStorage;
 pub(crate) struct TlsBuffers {
-    rx: Vec<u8>,
-    tx: Vec<u8>,
-    certificates: Vec<u8>,
-    parameters: Vec<u8>,
+    rx: [u8; 16384],
+    tx: [u8; 16384],
+    certificates: [u8; 16384],
+    parameters: [u8; crate::session::PARAMETERS],
 }
 impl TlsBuffers {
     pub(crate) fn new() -> Self {
         Self {
-            rx: vec![0; 16384],
-            tx: vec![0; 16384],
-            certificates: vec![0; 16384],
-            parameters: vec![0; crate::session::PARAMETERS],
+            rx: [0; 16384],
+            tx: [0; 16384],
+            certificates: [0; 16384],
+            parameters: [0; crate::session::PARAMETERS],
         }
     }
     pub(crate) fn storage(&mut self) -> TlsStorage<'_> {

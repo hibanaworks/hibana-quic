@@ -1,49 +1,75 @@
-//! Bounded host datagram routing. This owns only received bytes, never QUIC
-//! progress, keys, completion permission, or a connection's retirement decision.
-//! A single physical reader dispatches to independently owned receivers.
-use crate::io::Address;
-use alloc::{collections::VecDeque, rc::Rc, vec::Vec};
+//! Caller-owned, bounded datagram queues for independently owned receivers.
+//! The physical reader copies only the initialized datagram prefix into a queue;
+//! receiving copies that prefix into the connection's supplied buffer. No heap
+//! storage, reference counting, protocol progress, or key ownership is involved.
+use crate::io::{Address, Codepoint};
 use core::{
     cell::RefCell,
     future::poll_fn,
     task::{Poll, Waker},
 };
 
-struct Entry<const BYTES: usize> {
+struct Identity {
     address: Address,
-    ids: Vec<Vec<u8>>,
-    packets: VecDeque<Packet<BYTES>>,
-    receiver: Option<Waker>,
+    ids: [[u8; 20]; 2],
+    lengths: [u8; 2],
 }
-struct Inner<const BYTES: usize> {
-    entries: Vec<Option<Entry<BYTES>>>,
-    queue_capacity: usize,
+impl Identity {
+    fn contains(&self, id: &[u8]) -> bool {
+        self.lengths
+            .iter()
+            .enumerate()
+            .any(|(i, &len)| len != 0 && &self.ids[i][..len as usize] == id)
+    }
 }
-pub struct Packet<const BYTES: usize> {
-    address: Address,
+struct Buffered<const BYTES: usize> {
     bytes: [u8; BYTES],
     len: usize,
-    ecn: Option<crate::io::Codepoint>,
+    ecn: Option<Codepoint>,
 }
-impl<const BYTES: usize> Packet<BYTES> {
-    pub fn address(&self) -> Address {
-        self.address
-    }
-
-    pub fn ecn(&self) -> Option<crate::io::Codepoint> {
-        self.ecn
-    }
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
+impl<const BYTES: usize> Buffered<BYTES> {
+    const EMPTY: Self = Self {
+        bytes: [0; BYTES],
+        len: 0,
+        ecn: None,
+    };
+}
+struct Queue<const BYTES: usize, const QUEUED: usize> {
+    identity: Option<Identity>,
+    packets: [Buffered<BYTES>; QUEUED],
+    head: usize,
+    len: usize,
+    receiver: Option<Waker>,
+}
+/// One caller-owned connection queue. Capacity is fixed before any I/O.
+pub struct Slot<const BYTES: usize, const QUEUED: usize = 8> {
+    queue: RefCell<Queue<BYTES, QUEUED>>,
+}
+impl<const BYTES: usize, const QUEUED: usize> Default for Slot<BYTES, QUEUED> {
+    fn default() -> Self {
+        Self::new()
     }
 }
-pub struct Dispatcher<const BYTES: usize> {
-    inner: Rc<RefCell<Inner<BYTES>>>,
+impl<const BYTES: usize, const QUEUED: usize> Slot<BYTES, QUEUED> {
+    pub const fn new() -> Self {
+        Self {
+            queue: RefCell::new(Queue {
+                identity: None,
+                packets: [const { Buffered::EMPTY }; QUEUED],
+                head: 0,
+                len: 0,
+                receiver: None,
+            }),
+        }
+    }
 }
-/// A unique receive capability. It is neither Clone nor independently reusable.
-pub struct Receiver<const BYTES: usize> {
-    inner: Rc<RefCell<Inner<BYTES>>>,
-    slot: usize,
+/// Unique physical-reader capability, borrowing the caller's slot array.
+pub struct Dispatcher<'a, const BYTES: usize, const QUEUED: usize = 8> {
+    slots: &'a [Slot<BYTES, QUEUED>],
+}
+/// Unique receive capability; cannot outlive or duplicate its caller-owned slot.
+pub struct Receiver<'a, const BYTES: usize, const QUEUED: usize = 8> {
+    slot: &'a Slot<BYTES, QUEUED>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -59,26 +85,18 @@ pub enum Delivery {
     Full,
     Oversized,
 }
-impl<const BYTES: usize> Dispatcher<BYTES> {
-    pub fn new(connections: usize, queued_per_connection: usize) -> Result<Self, Error> {
-        if BYTES == 0
-            || connections == 0
-            || connections > 64
-            || queued_per_connection == 0
-            || queued_per_connection > 32
-        {
+impl<'a, const BYTES: usize, const QUEUED: usize> Dispatcher<'a, BYTES, QUEUED> {
+    pub fn new(slots: &'a mut [Slot<BYTES, QUEUED>]) -> Result<Self, Error> {
+        if BYTES == 0 || slots.is_empty() || slots.len() > 64 || QUEUED == 0 || QUEUED > 32 {
             return Err(Error::Capacity);
         }
-        Ok(Self {
-            inner: Rc::new(RefCell::new(Inner {
-                entries: (0..connections).map(|_| None).collect(),
-                queue_capacity: queued_per_connection,
-            })),
-        })
+        Ok(Self { slots })
     }
-    /// Register the original destination CID and the issued local CID together.
-    /// Exact path matching prevents foreign packets from crediting a connection.
-    pub fn register(&mut self, address: Address, ids: &[&[u8]]) -> Result<Receiver<BYTES>, Error> {
+    pub fn register(
+        &mut self,
+        address: Address,
+        ids: &[&[u8]],
+    ) -> Result<Receiver<'a, BYTES, QUEUED>, Error> {
         if ids.is_empty()
             || ids.len() > 2
             || ids.iter().any(|id| id.is_empty() || id.len() > 20)
@@ -86,98 +104,125 @@ impl<const BYTES: usize> Dispatcher<BYTES> {
         {
             return Err(Error::InvalidIdentity);
         }
-        let mut inner = self.inner.borrow_mut();
-        if inner.entries.iter().flatten().any(|entry| {
-            entry.address == address && entry.ids.iter().any(|old| ids.contains(&old.as_slice()))
-        }) {
-            return Err(Error::DuplicateIdentity);
+        for slot in self.slots {
+            if slot
+                .queue
+                .borrow()
+                .identity
+                .as_ref()
+                .is_some_and(|old| old.address == address && ids.iter().any(|id| old.contains(id)))
+            {
+                return Err(Error::DuplicateIdentity);
+            }
         }
-        let slot = inner
-            .entries
+        let slot = self
+            .slots
             .iter()
-            .position(Option::is_none)
+            .find(|slot| slot.queue.borrow().identity.is_none())
             .ok_or(Error::Capacity)?;
-        let queue_capacity = inner.queue_capacity;
-        inner.entries[slot] = Some(Entry {
+        let mut identity = Identity {
             address,
-            ids: ids.iter().map(|id| id.to_vec()).collect(),
-            packets: VecDeque::with_capacity(queue_capacity),
-            receiver: None,
-        });
-        Ok(Receiver {
-            inner: self.inner.clone(),
-            slot,
-        })
+            ids: [[0; 20]; 2],
+            lengths: [0; 2],
+        };
+        for (i, id) in ids.iter().enumerate() {
+            identity.ids[i][..id.len()].copy_from_slice(id);
+            identity.lengths[i] = id.len() as u8;
+        }
+        let previous = {
+            let mut queue = slot.queue.borrow_mut();
+            queue.identity = Some(identity);
+            queue.head = 0;
+            queue.len = 0;
+            queue.receiver.take()
+        };
+        drop(previous);
+        Ok(Receiver { slot })
     }
-    /// The physical reader supplies the parsed destination CID. Authentication
-    /// and every QUIC decision remain with the receiving Hibana connection.
     pub fn deliver(
         &mut self,
         address: Address,
         destination: &[u8],
         bytes: &[u8],
-        ecn: Option<crate::io::Codepoint>,
+        ecn: Option<Codepoint>,
     ) -> Delivery {
         if bytes.len() > BYTES {
             return Delivery::Oversized;
         }
-        let wake = {
-            let mut inner = self.inner.borrow_mut();
-            let capacity = inner.queue_capacity;
-            let Some(entry) = inner.entries.iter_mut().flatten().find(|entry| {
-                entry.address == address && entry.ids.iter().any(|id| id == destination)
-            }) else {
-                return Delivery::Unknown;
+        for slot in self.slots {
+            let wake = {
+                let mut queue = slot.queue.borrow_mut();
+                if !queue
+                    .identity
+                    .as_ref()
+                    .is_some_and(|id| id.address == address && id.contains(destination))
+                {
+                    continue;
+                }
+                if queue.len == QUEUED {
+                    return Delivery::Full;
+                }
+                let index = (queue.head + queue.len) % QUEUED;
+                let packet = &mut queue.packets[index];
+                packet.bytes[..bytes.len()].copy_from_slice(bytes);
+                packet.len = bytes.len();
+                packet.ecn = ecn;
+                queue.len += 1;
+                queue.receiver.take()
             };
-            if entry.packets.len() == capacity {
-                return Delivery::Full;
+            if let Some(waker) = wake {
+                waker.wake();
             }
-            let mut packet = Packet {
-                address,
-                bytes: [0; BYTES],
-                len: bytes.len(),
-                ecn,
-            };
-            packet.bytes[..bytes.len()].copy_from_slice(bytes);
-            entry.packets.push_back(packet);
-            entry.receiver.take()
-        };
-        if let Some(waker) = wake {
-            waker.wake();
+            return Delivery::Queued;
         }
-        Delivery::Queued
+        Delivery::Unknown
     }
 }
-impl<const BYTES: usize> Drop for Dispatcher<BYTES> {
+impl<const BYTES: usize, const QUEUED: usize> Drop for Dispatcher<'_, BYTES, QUEUED> {
     fn drop(&mut self) {
-        let released: Vec<_> = self
-            .inner
-            .borrow_mut()
-            .entries
-            .iter_mut()
-            .filter_map(Option::take)
-            .collect();
-        for mut entry in released {
-            if let Some(waker) = entry.receiver.take() {
+        // Close every queue before invoking any reentrant wake callback.
+        for slot in self.slots {
+            let mut queue = slot.queue.borrow_mut();
+            queue.identity = None;
+            queue.len = 0;
+        }
+        for slot in self.slots {
+            let wake = slot.queue.borrow_mut().receiver.take();
+            if let Some(waker) = wake {
                 waker.wake();
             }
         }
     }
 }
-impl<const BYTES: usize> Receiver<BYTES> {
-    pub async fn receive(&mut self) -> Result<Packet<BYTES>, Error> {
+impl<const BYTES: usize, const QUEUED: usize> Receiver<'_, BYTES, QUEUED> {
+    pub async fn receive(
+        &mut self,
+        bytes: &mut [u8],
+    ) -> Result<crate::quic::ReceivedDatagram, Error> {
         poll_fn(|cx| {
-            // Clone/drop callbacks execute outside the interior borrow.
             let replacement = cx.waker().clone();
             let previous = {
-                let mut inner = self.inner.borrow_mut();
-                let Some(entry) = inner.entries[self.slot].as_mut() else {
+                let mut queue = self.slot.queue.borrow_mut();
+                let Some(identity) = &queue.identity else {
                     return Poll::Ready(Err(Error::Closed));
                 };
-                if let Some(packet) = entry.packets.pop_front() {
-                    return Poll::Ready(Ok(packet));
+                let address = identity.address;
+                if queue.len != 0 {
+                    let packet = &queue.packets[queue.head];
+                    if packet.len > bytes.len() {
+                        return Poll::Ready(Err(Error::Capacity));
+                    }
+                    bytes[..packet.len].copy_from_slice(&packet.bytes[..packet.len]);
+                    let result = crate::quic::ReceivedDatagram {
+                        path: Some(address),
+                        len: packet.len,
+                        ecn: packet.ecn,
+                    };
+                    queue.head = (queue.head + 1) % QUEUED;
+                    queue.len -= 1;
+                    return Poll::Ready(Ok(result));
                 }
-                entry.receiver.replace(replacement)
+                queue.receiver.replace(replacement)
             };
             drop(previous);
             Poll::Pending
@@ -185,17 +230,22 @@ impl<const BYTES: usize> Receiver<BYTES> {
         .await
     }
 }
-impl<const BYTES: usize> Drop for Receiver<BYTES> {
+impl<const BYTES: usize, const QUEUED: usize> Drop for Receiver<'_, BYTES, QUEUED> {
     fn drop(&mut self) {
-        let released = self.inner.borrow_mut().entries[self.slot].take();
-        drop(released);
+        let previous = {
+            let mut queue = self.slot.queue.borrow_mut();
+            queue.identity = None;
+            queue.len = 0;
+            queue.receiver.take()
+        };
+        drop(previous);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::format;
+    use std::format;
     use std::{future::Future, pin::pin, task::Context};
     fn address(port: u16) -> Address {
         Address {
@@ -205,14 +255,16 @@ mod tests {
     }
     #[test]
     fn waiting_old_receiver_does_not_block_new_connection() {
-        let mut routes = Dispatcher::<32>::new(2, 2).unwrap();
+        let mut slots = [const { Slot::<32, 2>::new() }; 2];
+        let mut routes = Dispatcher::new(&mut slots).unwrap();
         let mut old = routes
             .register(address(1), &[b"old-original", b"old-local"])
             .unwrap();
         let mut new = routes
             .register(address(1), &[b"new-original", b"new-local"])
             .unwrap();
-        let mut old_read = pin!(old.receive());
+        let mut old_bytes = [0; 32];
+        let mut old_read = pin!(old.receive(&mut old_bytes));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(old_read.as_mut().poll(&mut cx).is_pending());
         assert_eq!(
@@ -224,19 +276,25 @@ mod tests {
             ),
             Delivery::Queued
         );
-        let mut new_read = pin!(new.receive());
-        let Poll::Ready(Ok(packet)) = new_read.as_mut().poll(&mut cx) else {
-            panic!("new owner did not receive");
+        let mut new_bytes = [0; 32];
+        let packet = {
+            let mut new_read = pin!(new.receive(&mut new_bytes));
+            let Poll::Ready(Ok(packet)) = new_read.as_mut().poll(&mut cx) else {
+                panic!("new owner did not receive");
+            };
+            packet
         };
-        assert_eq!(packet.bytes(), b"new packet");
-        assert_eq!(packet.ecn(), Some(crate::io::Codepoint::Ect1));
+        assert_eq!(&new_bytes[..packet.len], b"new packet");
+        assert_eq!(packet.ecn, Some(crate::io::Codepoint::Ect1));
         assert!(old_read.as_mut().poll(&mut cx).is_pending());
     }
     #[test]
     fn physical_reader_closure_wakes_and_closes_receivers() {
-        let mut routes = Dispatcher::<8>::new(1, 1).unwrap();
+        let mut slots = [Slot::<8, 1>::new()];
+        let mut routes = Dispatcher::new(&mut slots).unwrap();
         let mut receiver = routes.register(address(1), &[b"cid"]).unwrap();
-        let mut read = pin!(receiver.receive());
+        let mut bytes = [0; 8];
+        let mut read = pin!(receiver.receive(&mut bytes));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(read.as_mut().poll(&mut cx).is_pending());
         drop(routes);
@@ -247,7 +305,8 @@ mod tests {
     }
     #[test]
     fn queue_identity_and_lifetime_are_bounded() {
-        let mut routes = Dispatcher::<8>::new(1, 1).unwrap();
+        let mut slots = [Slot::<8, 1>::new()];
+        let mut routes = Dispatcher::new(&mut slots).unwrap();
         let receiver = routes.register(address(1), &[b"cid"]).unwrap();
         assert!(matches!(
             routes.register(address(1), &[b"cid"]),

@@ -1,14 +1,14 @@
-//! Explicit allocator-backed storage for one bounded direct-role connection. No file
+//! Caller-owned storage for one bounded direct-role connection. No file
 //! body is stored here: streams use rolling receive windows and send chunks.
 use crate::quic::Config;
 use crate::quic::Side;
 use crate::quic::application;
+use crate::quic::application::Error;
 use crate::quic::imp::crypto_buffer::CryptoBuffer;
 use crate::quic::imp::kernel::streams::Limits;
 use crate::quic::imp::kernel::streams::PacketReference;
 use crate::quic::imp::kernel::streams::SendChunk;
 use crate::quic::imp::kernel::streams::StreamSlot;
-use alloc::{format, string::String, vec, vec::Vec};
 /// Datagram capacity shared by the host IO and buffer profile.
 pub const DATAGRAM: usize = 1536;
 pub const STREAMS: usize = crate::quic::application::imp::stream::MAX_LIVE_STREAMS;
@@ -58,60 +58,63 @@ pub fn local_limits<const RX: usize>(
         max_streams_uni: if reserved == 0 { 0 } else { 3 },
     }
 }
-pub struct Storage<const RX: usize> {
+pub struct Storage<'a, const RX: usize> {
     protocol: crate::http3::Protocol,
-    cid_slots: Vec<crate::quic::imp::kernel::connection_id::LocalCidSlot>,
-    peer_cid_slots: Vec<crate::quic::imp::kernel::connection_id::PeerCidSlot<4>>,
+    cid_slots: [crate::quic::imp::kernel::connection_id::LocalCidSlot; 16],
+    peer_cid_slots: [crate::quic::imp::kernel::connection_id::PeerCidSlot<4>; 16],
     cid_seed: hibana_tls::secret::Secret<[u8; 32]>,
-    initial: Vec<u8>,
-    handshake: Vec<u8>,
-    application: Vec<u8>,
-    initial_bitmap: Vec<u8>,
-    handshake_bitmap: Vec<u8>,
-    application_bitmap: Vec<u8>,
-    streams: Vec<StreamSlot<RX>>,
-    chunks: Vec<SendChunk<CHUNK_BYTES>>,
-    references: Vec<PacketReference>,
+    initial: [u8; 8192],
+    handshake: [u8; 16384],
+    application: [u8; 8192],
+    initial_bitmap: [u8; 1024],
+    handshake_bitmap: [u8; 2048],
+    application_bitmap: [u8; 1024],
+    streams: &'a mut [StreamSlot<RX>],
+    chunks: [SendChunk<CHUNK_BYTES>; SEND_CHUNKS],
+    references: [PacketReference; PACKET_REFERENCES],
 }
-impl<const RX: usize> Storage<RX> {
+impl<'a, const RX: usize> Storage<'a, RX> {
     pub fn new(
-        stream_capacity: usize,
+        streams: &'a mut [StreamSlot<RX>],
         protocol: crate::http3::Protocol,
         entropy: &mut impl crate::entropy::Entropy,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, Error> {
+        let stream_capacity = streams.len();
         if stream_capacity == 0 || stream_capacity > STREAMS {
-            return Err("stream storage capacity must be 1..=64".into());
+            return Err(Error::Capacity);
         }
         let mut cid_seed = hibana_tls::secret::Secret::new([0u8; 32]);
         entropy
             .try_fill_bytes(&mut *cid_seed)
-            .map_err(|_| "CID entropy unavailable")?;
+            .map_err(|_| Error::Entropy)?;
         if protocol == crate::http3::Protocol::Http3 && stream_capacity <= 6 {
-            return Err("HTTP/3 needs backed file and critical-stream slots".into());
+            return Err(Error::Capacity);
         }
         Ok(Self {
             protocol,
-            cid_slots: vec![crate::quic::imp::kernel::connection_id::LocalCidSlot::EMPTY; 16],
-            peer_cid_slots: (0..16)
-                .map(|_| crate::quic::imp::kernel::connection_id::PeerCidSlot::EMPTY)
-                .collect(),
+            cid_slots: [crate::quic::imp::kernel::connection_id::LocalCidSlot::EMPTY; 16],
+            peer_cid_slots: [const { crate::quic::imp::kernel::connection_id::PeerCidSlot::EMPTY };
+                16],
             cid_seed,
-            initial: vec![0; 8192],
-            handshake: vec![0; 16384],
-            application: vec![0; 8192],
-            initial_bitmap: vec![0; 1024],
-            handshake_bitmap: vec![0; 2048],
-            application_bitmap: vec![0; 1024],
-            streams: (0..stream_capacity).map(|_| StreamSlot::EMPTY).collect(),
-            chunks: (0..SEND_CHUNKS).map(|_| SendChunk::EMPTY).collect(),
-            references: vec![PacketReference::EMPTY; PACKET_REFERENCES],
+            initial: [0; 8192],
+            handshake: [0; 16384],
+            application: [0; 8192],
+            initial_bitmap: [0; 1024],
+            handshake_bitmap: [0; 2048],
+            application_bitmap: [0; 1024],
+            streams,
+            chunks: [const { SendChunk::EMPTY }; SEND_CHUNKS],
+            references: [PacketReference::EMPTY; PACKET_REFERENCES],
         })
     }
-    pub fn setup<'a>(
-        &'a mut self,
-        config: Config<'a>,
+    pub fn stream_capacity(&self) -> usize {
+        self.streams.len()
+    }
+    pub fn setup<'s>(
+        &'s mut self,
+        config: Config<'s>,
         local_idle_timeout_ms: u64,
-    ) -> Result<application::Setup<'a, RX, CHUNK_BYTES>, String> {
+    ) -> Result<application::Setup<'s, RX, CHUNK_BYTES>, Error> {
         Ok(application::Setup {
             peer_ids: Some(crate::quic::path::imp::peer_ids::Storage {
                 slots: &mut self.peer_cid_slots,
@@ -129,37 +132,40 @@ impl<const RX: usize> Storage<RX> {
             local_limits: local_limits::<RX>(config.side, self.streams.len(), self.protocol),
             handshake_crypto: [
                 CryptoBuffer::new(&mut self.initial, &mut self.initial_bitmap)
-                    .map_err(|e| format!("Initial CRYPTO storage: {e:?}"))?,
+                    .map_err(|e| Error::Connection(crate::quic::Error::Reassembly(e)))?,
                 CryptoBuffer::new(&mut self.handshake, &mut self.handshake_bitmap)
-                    .map_err(|e| format!("Handshake CRYPTO storage: {e:?}"))?,
+                    .map_err(|e| Error::Connection(crate::quic::Error::Reassembly(e)))?,
             ],
             application: application::Buffers {
-                streams: &mut self.streams,
+                streams: self.streams,
                 chunks: &mut self.chunks,
                 references: &mut self.references,
                 crypto: CryptoBuffer::new(&mut self.application, &mut self.application_bitmap)
-                    .map_err(|e| format!("application CRYPTO storage: {e:?}"))?,
+                    .map_err(|e| Error::Connection(crate::quic::Error::Reassembly(e)))?,
             },
         })
     }
 }
 
-/// The same explicit allocation is checked by TLS opt-in and handed to the
+/// Caller-owned bounded storage is checked by TLS opt-in and handed to the
 /// connected quarantine owner; it is never substituted by an unbacked limit.
-pub struct EarlyStorage {
-    bytes: Vec<u8>,
-    ends: Vec<crate::quic::imp::early_wire::PacketEnd>,
-    pub slots: Vec<crate::quic::early_data::imp::QuarantineSlot<RECEIVE_BYTES>>,
+pub struct EarlyStorage<'a> {
+    bytes: [u8; STREAMS * DATAGRAM],
+    ends: [crate::quic::imp::early_wire::PacketEnd; STREAMS],
+    pub slots: &'a mut [crate::quic::early_data::imp::QuarantineSlot<RECEIVE_BYTES>],
 }
-impl EarlyStorage {
-    pub fn new() -> Self {
-        Self {
-            bytes: vec![0; STREAMS * DATAGRAM],
-            ends: vec![crate::quic::imp::early_wire::PacketEnd::EMPTY; STREAMS],
-            slots: (0..STREAMS)
-                .map(|_| crate::quic::early_data::imp::QuarantineSlot::EMPTY)
-                .collect(),
+impl<'a> EarlyStorage<'a> {
+    pub fn new(
+        slots: &'a mut [crate::quic::early_data::imp::QuarantineSlot<RECEIVE_BYTES>],
+    ) -> Result<Self, Error> {
+        if slots.len() != STREAMS {
+            return Err(Error::Capacity);
         }
+        Ok(Self {
+            bytes: [0; STREAMS * DATAGRAM],
+            ends: [crate::quic::imp::early_wire::PacketEnd::EMPTY; STREAMS],
+            slots,
+        })
     }
     pub fn policy() -> crate::quic::early_data::imp::ServerPolicy {
         crate::quic::early_data::imp::ServerPolicy::BufferedReplaySafeRequests {
@@ -173,15 +179,9 @@ impl EarlyStorage {
                 &mut self.bytes,
                 &mut self.ends,
             ),
-            slots: &mut self.slots,
+            slots: self.slots,
             policy: Self::policy(),
         }
-    }
-}
-
-impl Default for EarlyStorage {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -200,8 +200,10 @@ mod tests {
     fn finite_server_credit_matches_owned_slots() {
         for count in [1, 2, STREAMS] {
             let capacity = server_capacity(core::num::NonZeroUsize::new(count));
+            let mut slots = [const { StreamSlot::EMPTY }; STREAMS];
             let storage =
-                Storage::<1024>::new(capacity, Default::default(), &mut TestEntropy).unwrap();
+                Storage::<1024>::new(&mut slots[..capacity], Default::default(), &mut TestEntropy)
+                    .unwrap();
             let limits = local_limits::<1024>(Side::Server, capacity, Default::default());
             assert_eq!(storage.streams.len(), count);
             assert_eq!(limits.max_streams_bidi, count as u64);
@@ -216,8 +218,10 @@ mod tests {
     #[test]
     fn client_limits_are_backed_by_exact_requested_slot_count() {
         for count in [1, 2, 40, STREAMS] {
+            let mut slots = [const { StreamSlot::EMPTY }; STREAMS];
             let storage =
-                Storage::<1024>::new(count, Default::default(), &mut TestEntropy).unwrap();
+                Storage::<1024>::new(&mut slots[..count], Default::default(), &mut TestEntropy)
+                    .unwrap();
             assert_eq!(storage.streams.len(), count);
             let limits =
                 local_limits::<1024>(Side::Client, storage.streams.len(), Default::default());
@@ -230,7 +234,9 @@ mod tests {
 
     #[test]
     fn server_keeps_its_actual_full_stream_capacity() {
-        let storage = Storage::<1024>::new(STREAMS, Default::default(), &mut TestEntropy).unwrap();
+        let mut slots = [const { StreamSlot::EMPTY }; STREAMS];
+        let storage =
+            Storage::<1024>::new(&mut slots, Default::default(), &mut TestEntropy).unwrap();
         let limits = local_limits::<1024>(Side::Server, storage.streams.len(), Default::default());
         assert_eq!(limits.max_streams_bidi, STREAMS as u64);
         assert_eq!(limits.max_data, (STREAMS * 1024) as u64);
@@ -254,7 +260,14 @@ mod tests {
 
     #[test]
     fn invalid_slot_counts_are_rejected_before_allocation() {
-        assert!(Storage::<1024>::new(0, Default::default(), &mut TestEntropy).is_err());
-        assert!(Storage::<1024>::new(STREAMS + 1, Default::default(), &mut TestEntropy).is_err());
+        assert!(Storage::<1024>::new(&mut [], Default::default(), &mut TestEntropy).is_err());
+        assert!(
+            Storage::<1024>::new(
+                &mut [const { StreamSlot::EMPTY }; STREAMS + 1],
+                Default::default(),
+                &mut TestEntropy
+            )
+            .is_err()
+        );
     }
 }

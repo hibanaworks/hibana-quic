@@ -8,9 +8,6 @@
 //! Start with each protocol's global and direct locals; numerical mechanisms
 //! live with their owning domain. Storage is bounded and caller-owned.
 
-#[cfg(feature = "alloc")]
-extern crate alloc;
-
 #[cfg(test)]
 extern crate self as hibana_quic;
 #[cfg(test)]
@@ -36,3 +33,19 @@ pub(crate) mod tls_fixture;
 
 /// OS-independent application session attachment and stream framing.
 pub mod session;
+
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: actor_test_allocator::Counting = actor_test_allocator::Counting;
+
+#[cfg(test)]
+mod allocator_instrumentation {
+    #[test]
+    #[should_panic(expected = "allocated")]
+    fn counter_rejects_a_real_allocation() {
+        let guard = actor_test_allocator::NoAlloc::start();
+        let bytes = std::vec![core::hint::black_box(7_u8); 64];
+        core::hint::black_box(&bytes);
+        guard.finish();
+    }
+}

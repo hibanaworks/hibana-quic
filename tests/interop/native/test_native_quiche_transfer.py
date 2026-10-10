@@ -95,7 +95,9 @@ def main():
       else:
        # Upstream apps/run_endpoint.sh: for req in $REQUESTS, run one client
        # to completion. Fifty simultaneous processes are a separate stress.
-       for n in names:clients.append(run([n]))
+       for n in names:
+        client=run([n]);clients.append(client)
+        if client.returncode != 0:break
      elif early:
       session=['--session-file',str(root/'session.bin'),'--early-data']
       clients=[run(names[:1],session),run(names[1:],session)]

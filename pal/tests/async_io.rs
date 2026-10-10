@@ -23,7 +23,7 @@ use std::{
 };
 
 // Unsafe exists only in this test's conventional allocator instrumentation;
-// the product host crate forbids unsafe code.
+// native ABI and wake-vtable safety boundaries are separately confined in sys.
 struct Counting;
 thread_local! {
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
@@ -93,8 +93,8 @@ async fn watchdog<F: Future>(reactor: &Reactor<2, 4>, future: F) -> F::Output {
     .await
 }
 
-fn metadata_roundtrip(v6: bool) {
-    let reactor = Reactor::<2, 4>::new().unwrap();
+fn metadata_roundtrip(v6: bool, wake: &'static hibana_quic_pal::unix::reactor::WakeStorage) {
+    let reactor = Reactor::<2, 4>::new(wake).unwrap();
     let receiver = reactor.register_udp(bind(v6)).unwrap();
     let sender = reactor.register_udp(bind(v6)).unwrap();
     let received_at = receiver.local_addr().unwrap();
@@ -140,16 +140,25 @@ fn metadata_roundtrip(v6: bool) {
 }
 #[test]
 fn ipv4_uses_actual_poll_readiness_and_preserves_metadata() {
-    metadata_roundtrip(false);
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    metadata_roundtrip(false, &WAKE);
 }
 #[test]
 fn ipv6_uses_actual_poll_readiness_and_preserves_metadata() {
-    metadata_roundtrip(true);
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    metadata_roundtrip(true, &WAKE);
 }
 
 #[test]
 fn idle_timer_sleeps_and_does_not_expire_early() {
-    let reactor = Reactor::<0, 1>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<0, 1>::new(&WAKE)
+    }
+    .unwrap();
     let started = Instant::now();
     let deadline = started + Duration::from_millis(25) + Duration::from_micros(123);
     reactor
@@ -166,7 +175,12 @@ fn idle_timer_sleeps_and_does_not_expire_early() {
 
 #[test]
 fn cross_thread_waker_interrupts_a_blocking_wait() {
-    let reactor = Reactor::<2, 4>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<2, 4>::new(&WAKE)
+    }
+    .unwrap();
     let (send, receive) = mpsc::sync_channel::<Waker>(1);
     let ready = Arc::new(AtomicBool::new(false));
     let worker_ready = Arc::clone(&ready);
@@ -201,7 +215,12 @@ fn cross_thread_waker_interrupts_a_blocking_wait() {
 
 #[test]
 fn wake_between_condition_check_and_pending_is_not_lost() {
-    let reactor = Reactor::<2, 4>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<2, 4>::new(&WAKE)
+    }
+    .unwrap();
     let (send, receive) = mpsc::sync_channel::<Waker>(1);
     let barrier = Arc::new(Barrier::new(2));
     let worker_barrier = Arc::clone(&barrier);
@@ -239,7 +258,12 @@ fn wake_between_condition_check_and_pending_is_not_lost() {
 
 #[test]
 fn cancelled_receive_releases_interest_and_allows_reuse() {
-    let reactor = Reactor::<2, 4>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<2, 4>::new(&WAKE)
+    }
+    .unwrap();
     let socket = reactor.register_udp(bind(false)).unwrap();
     let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let mut first_bytes = [0; 8];
@@ -266,7 +290,12 @@ fn cancelled_receive_releases_interest_and_allows_reuse() {
 
 #[test]
 fn socket_and_timer_capacity_cancel_and_reuse_are_bounded() {
-    let reactor = Reactor::<1, 1>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<1, 1>::new(&WAKE)
+    }
+    .unwrap();
     let socket = reactor.register_udp(bind(false)).unwrap();
     assert!(
         matches!(reactor.register_udp(bind(false)), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
@@ -291,7 +320,12 @@ fn socket_and_timer_capacity_cancel_and_reuse_are_bounded() {
 
 #[test]
 fn source_validation_and_truncation_survive_async_adapter() {
-    let reactor = Reactor::<2, 4>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<2, 4>::new(&WAKE)
+    }
+    .unwrap();
     let sender = reactor.register_udp(bind(false)).unwrap();
     let receiver = reactor.register_udp(bind(false)).unwrap();
     let mut wrong = sender.local_addr().unwrap();
@@ -325,7 +359,12 @@ fn source_validation_and_truncation_survive_async_adapter() {
 
 #[test]
 fn self_waking_actor_does_not_starve_socket_readiness() {
-    let reactor = Reactor::<2, 4>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<2, 4>::new(&WAKE)
+    }
+    .unwrap();
     let socket = reactor.register_udp(bind(false)).unwrap();
     let local = socket.local_addr().unwrap();
     let worker = thread::spawn(move || {
@@ -368,14 +407,24 @@ fn self_waking_actor_does_not_starve_socket_readiness() {
 
 #[test]
 fn explicit_setup_allocations_and_zero_allocation_scheduling() {
-    let (reactor, allocations) = measured(|| Reactor::<2, 4>::new().unwrap());
+    let (reactor, allocations) = measured(|| {
+        {
+            static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+                hibana_quic_pal::unix::reactor::WakeStorage::new();
+            Reactor::<2, 4>::new(&WAKE)
+        }
+        .unwrap()
+    });
     assert_eq!(
-        allocations, 1,
-        "one explicit Arc for safe thread-capable Wake"
+        allocations, 0,
+        "caller-owned wake storage needs no heap allocation"
     );
     let receiver = bind(false);
     let (receiver, allocations) = measured(|| reactor.register_udp(receiver).unwrap());
-    assert_eq!(allocations, 1, "one existing UDP ancillary receive buffer");
+    assert_eq!(
+        allocations, 0,
+        "socket-owned ancillary storage needs no heap allocation"
+    );
     let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     sender
         .send_to(b"allocation", receiver.local_addr().unwrap())
@@ -424,7 +473,12 @@ fn explicit_setup_allocations_and_zero_allocation_scheduling() {
 
 #[test]
 fn nested_executor_entry_is_rejected_without_poisoning_next_run() {
-    let reactor = Reactor::<0, 0>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<0, 0>::new(&WAKE)
+    }
+    .unwrap();
     let nested = reactor
         .block_on(async { reactor.block_on(async {}) })
         .unwrap();

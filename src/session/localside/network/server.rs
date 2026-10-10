@@ -1,4 +1,5 @@
 use crate::io::{Clock, DatagramSocket};
+use crate::quic::application::Error;
 use crate::quic::application::{
     ServerHandler, StreamSink, imp::owned as storage, localside::owned as application,
 };
@@ -14,16 +15,14 @@ use crate::{
         },
     },
 };
-use alloc::{
-    format,
-    string::{String, ToString},
-    vec,
-};
 use hibana_tls::handshake::BoundedTls;
-type Result<T> = core::result::Result<T, String>;
+type Result<T> = core::result::Result<T, Error>;
 /// Accept one integrity-checked QUIC v1 Initial on a caller-owned listener.
 /// Unknown versions and malformed input are ignored; the caller supplies a deadline.
+#[allow(clippy::too_many_arguments)]
 pub async fn accept(
+    streams: &mut [crate::quic::streams::StreamSlot<{ storage::RECEIVE_BYTES }>],
+    slab: &mut [u8],
     socket: &impl DatagramSocket,
     clock: &impl Clock,
     entropy: &mut impl Entropy,
@@ -32,15 +31,17 @@ pub async fn accept(
     input: &mut impl StreamSink,
 ) -> Result<crate::quic::application::Report> {
     use crate::quic::imp::kernel::packet::{Header, LongType, PacketIter};
-    let mut first = vec![0; connection::DATAGRAM];
+    let mut first = [0; connection::DATAGRAM];
+    let mut original_bytes = [0; 20];
+    let mut peer_bytes = [0; 20];
     let (metadata, original, peer) = loop {
         crate::runtime::yield_now().await;
         let metadata = socket
             .receive_from(&mut first)
             .await
-            .map_err(|e| format!("receive: {e:?}"))?;
+            .map_err(|e| Error::Connection(crate::quic::Error::Io(e)))?;
         if metadata.len > first.len() {
-            return Err("receive length exceeds storage".into());
+            return Err(Error::Capacity);
         }
         if metadata.len < 1200 {
             continue;
@@ -67,14 +68,23 @@ pub async fn accept(
             )
             .is_some()
         {
-            break (metadata, destination_id.to_vec(), source_id.to_vec());
+            if destination_id.len() > 20 || source_id.len() > 20 {
+                continue;
+            }
+            original_bytes[..destination_id.len()].copy_from_slice(destination_id);
+            peer_bytes[..source_id.len()].copy_from_slice(source_id);
+            break (
+                metadata,
+                &original_bytes[..destination_id.len()],
+                &peer_bytes[..source_id.len()],
+            );
         }
     };
-    let address = metadata.path.ok_or("Initial has no path")?;
+    let address = metadata.path.ok_or(Error::Binding)?;
     let mut local = [0; 8];
     let mut generation = [0; 8];
     for bytes in [&mut local, &mut generation] {
-        entropy.try_fill_bytes(bytes).map_err(|e| e.to_string())?;
+        entropy.try_fill_bytes(bytes).map_err(|_| Error::Entropy)?;
     }
     let limits = storage::local_limits::<{ storage::RECEIVE_BYTES }>(
         Side::Server,
@@ -85,14 +95,14 @@ pub async fn accept(
     let parameter_len = crate::quic::imp::parameters::advertisement::Advertisement {
         version: Version::V1,
         local: &local,
-        original: Some(&original),
+        original: Some(original),
         application_limits: Some(limits),
         retry_source: None,
         idle_timeout_ms: options.idle_timeout_ms,
         max_datagram_size: crate::quic::application::imp::owned::DATAGRAM as u64,
     }
     .encode(&mut parameter_storage)
-    .map_err(|e| format!("parameters: {e:?}"))?;
+    .map_err(Error::Packet)?;
     let parameters = &parameter_storage[..parameter_len];
     let mut buffers = TlsBuffers::new();
     let tls = BoundedTls::server(
@@ -106,34 +116,35 @@ pub async fn accept(
         buffers.storage(),
         entropy,
     )
-    .map_err(|e| format!("server TLS: {e:?}"))?;
+    .map_err(|e| {
+        Error::Connection(crate::quic::Error::Transcript(
+            hibana_tls::handshake::Error::Crypto(e),
+        ))
+    })?;
     let config = Config {
         local_preferred: None,
         initial_path: Some(address),
         version: Version::V1,
         side: Side::Server,
         local_connection_id: &local,
-        original_destination_id: &original,
+        original_destination_id: original,
         retry_source_id: None,
         initial_token: &[],
-        peer_connection_id: &peer,
+        peer_connection_id: peer,
     };
     let generation = u64::from_be_bytes(generation);
     let mut scope = ApplicationKeyScope::new(generation);
-    let mut identity = scope.claim().map_err(|e| format!("scope: {e:?}"))?;
-    let recovery = identity
-        .take_recovery()
-        .map_err(|e| format!("recovery: {e:?}"))?;
-    let mut gate = PublicationGate::new(
-        identity
-            .take_publication_gate()
-            .map_err(|e| format!("publication: {e:?}"))?,
-    );
-    let (mut issuer, stop) = gate.split().map_err(|e| format!("publication: {e:?}"))?;
-    let mut source = Transcript::new(
-        tls.into_key_source(identity)
-            .map_err(|e| format!("TLS source: {e:?}"))?,
-    );
+    let mut identity = scope.claim().map_err(Error::Crypto)?;
+    let recovery = identity.take_recovery().map_err(Error::Crypto)?;
+    let mut gate = PublicationGate::new(identity.take_publication_gate().map_err(Error::Crypto)?);
+    let (mut issuer, stop) = gate
+        .split()
+        .map_err(|e| Error::Connection(crate::quic::Error::Gate(e)))?;
+    let mut source = Transcript::new(tls.into_key_source(identity).map_err(|e| {
+        Error::Connection(crate::quic::Error::Transcript(
+            hibana_tls::handshake::Error::Crypto(e),
+        ))
+    })?);
     let mut book = Recovery::<{ connection::DATAGRAM }>::new(
         recovery,
         config.side,
@@ -141,7 +152,7 @@ pub async fn accept(
         connection::DATAGRAM as u64,
         3,
     )
-    .map_err(|e| format!("recovery: {e:?}"))?;
+    .map_err(Error::Recovery)?;
     let mut receive = crate::session::imp::socket::Receive {
         socket,
         address,
@@ -152,7 +163,9 @@ pub async fn accept(
         address,
         clock,
     };
-    application::server(
+    core::pin::pin!(application::server(
+        streams,
+        slab,
         entropy,
         &mut source,
         config,
@@ -172,6 +185,6 @@ pub async fn accept(
         handler,
         Some(input),
         None,
-    )
+    ))
     .await
 }

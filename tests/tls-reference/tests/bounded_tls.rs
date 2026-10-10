@@ -335,8 +335,8 @@ fn bounded_case(case: Case) {
         let sk = sk.init();
         let cr = ck.rendezvous(&mut cslab, cc.bind(cid).unwrap()).unwrap();
         let sr = sk.rendezvous(&mut sslab, sc.bind(sid).unwrap()).unwrap();
-        let cp = { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) };
-        let sp = { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) };
+        let cp = { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) };
+        let sp = { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) };
         let mut cinput = cr.enter(cid, &cp.0).unwrap();
         let mut cverify = cr.enter(cid, &cp.1).unwrap();
         let mut sinput = sr.enter(sid, &sp.0).unwrap();
@@ -666,9 +666,9 @@ fn reference_case(candidate_client: bool, retry: bool) {
         .rendezvous(&mut slab, carrier.bind(id).unwrap())
         .unwrap();
     let projection = if candidate_client {
-        { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) }
+        { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) }
     } else {
-        { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) }
+        { let graph = global::server(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) }
     };
     let mut verify = rendezvous.enter(id, &projection.1).unwrap();
     let mut wire = rendezvous.enter(id, &projection.0).unwrap();

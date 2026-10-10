@@ -1,4 +1,5 @@
 use crate::io::{Clock, DatagramSocket};
+use crate::quic::application::Error;
 use crate::quic::application::{
     ClientRequests, StreamSink, imp::owned as storage, localside::owned as application,
 };
@@ -14,15 +15,14 @@ use crate::{
         },
     },
 };
-use alloc::{
-    format,
-    string::{String, ToString},
-};
 use hibana_tls::handshake::BoundedTls;
-type Result<T> = core::result::Result<T, String>;
+type Result<T> = core::result::Result<T, Error>;
 /// Connect one authenticated QUIC connection and run caller-owned stream effects.
 /// The caller joins its application locals with this future on the Host reactor.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect(
+    streams: &mut [crate::quic::streams::StreamSlot<{ storage::RECEIVE_BYTES }>],
+    slab: &mut [u8],
     socket: &impl DatagramSocket,
     clock: &impl Clock,
     entropy: &mut impl Entropy,
@@ -35,7 +35,7 @@ pub async fn connect(
     let mut original = [0; 8];
     let mut generation = [0; 8];
     for bytes in [&mut local, &mut original, &mut generation] {
-        entropy.try_fill_bytes(bytes).map_err(|e| e.to_string())?;
+        entropy.try_fill_bytes(bytes).map_err(|_| Error::Entropy)?;
     }
     let limits = storage::local_limits::<{ storage::RECEIVE_BYTES }>(
         Side::Client,
@@ -53,7 +53,7 @@ pub async fn connect(
         max_datagram_size: crate::quic::application::imp::owned::DATAGRAM as u64,
     }
     .encode(&mut parameter_storage)
-    .map_err(|e| format!("parameters: {e:?}"))?;
+    .map_err(Error::Packet)?;
     let parameters = &parameter_storage[..parameter_len];
     let mut buffers = TlsBuffers::new();
     let tls = BoundedTls::client(
@@ -69,7 +69,11 @@ pub async fn connect(
         buffers.storage(),
         entropy,
     )
-    .map_err(|e| format!("client TLS: {e:?}"))?;
+    .map_err(|e| {
+        Error::Connection(crate::quic::Error::Transcript(
+            hibana_tls::handshake::Error::Crypto(e),
+        ))
+    })?;
     let config = Config {
         local_preferred: None,
         initial_path: Some(address),
@@ -83,20 +87,17 @@ pub async fn connect(
     };
     let generation = u64::from_be_bytes(generation);
     let mut scope = ApplicationKeyScope::new(generation);
-    let mut identity = scope.claim().map_err(|e| format!("scope: {e:?}"))?;
-    let recovery = identity
-        .take_recovery()
-        .map_err(|e| format!("recovery: {e:?}"))?;
-    let mut gate = PublicationGate::new(
-        identity
-            .take_publication_gate()
-            .map_err(|e| format!("publication: {e:?}"))?,
-    );
-    let (mut issuer, stop) = gate.split().map_err(|e| format!("publication: {e:?}"))?;
-    let mut source = Transcript::new(
-        tls.into_key_source(identity)
-            .map_err(|e| format!("TLS source: {e:?}"))?,
-    );
+    let mut identity = scope.claim().map_err(Error::Crypto)?;
+    let recovery = identity.take_recovery().map_err(Error::Crypto)?;
+    let mut gate = PublicationGate::new(identity.take_publication_gate().map_err(Error::Crypto)?);
+    let (mut issuer, stop) = gate
+        .split()
+        .map_err(|e| Error::Connection(crate::quic::Error::Gate(e)))?;
+    let mut source = Transcript::new(tls.into_key_source(identity).map_err(|e| {
+        Error::Connection(crate::quic::Error::Transcript(
+            hibana_tls::handshake::Error::Crypto(e),
+        ))
+    })?);
     let mut book = Recovery::<{ connection::DATAGRAM }>::new(
         recovery,
         config.side,
@@ -104,7 +105,7 @@ pub async fn connect(
         connection::DATAGRAM as u64,
         3,
     )
-    .map_err(|e| format!("recovery: {e:?}"))?;
+    .map_err(Error::Recovery)?;
     let mut receive = crate::session::imp::socket::Receive {
         socket,
         address,
@@ -116,6 +117,9 @@ pub async fn connect(
         clock,
     };
     application::client::<{ storage::RECEIVE_BYTES }>(
+        streams,
+        &mut [],
+        slab,
         entropy,
         &mut source,
         config,

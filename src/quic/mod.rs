@@ -23,7 +23,6 @@ pub use imp::kernel::{
 pub use imp::publication_gate as publication;
 pub use imp::tls as transcript;
 pub use imp::{application_wire, early_requests, early_wire};
-#[cfg(feature = "alloc")]
 pub use imp::{datagram, receive_routes as routing};
 pub mod localside;
 pub use imp::parameters;

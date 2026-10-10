@@ -1,4 +1,4 @@
-//! Allocator-backed resources and direct projected client composition.
+//! Caller-owned resources and direct projected client composition.
 use super::ClientProfile;
 use super::{DATAGRAM, PARAMETERS};
 use crate::quic::Config;
@@ -11,10 +11,12 @@ use crate::{
     io::{Clock, DatagramRx, DatagramTx},
     quic::application::imp::owned as storage,
 };
-use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 use hibana::runtime::ids::SessionId;
 #[allow(clippy::too_many_arguments)]
 pub async fn client<'scope, const RX: usize>(
+    streams: &mut [crate::quic::imp::kernel::streams::StreamSlot<RX>],
+    early_slots: &mut [crate::quic::imp::early_requests::RequestSlot],
+    slab: &mut [u8],
     entropy: &mut impl crate::entropy::Entropy,
     source: &mut Transcript<'scope, '_, '_>,
     config: Config<'_>,
@@ -27,23 +29,21 @@ pub async fn client<'scope, const RX: usize>(
     profile: ClientProfile,
     requests: &mut impl application::ClientRequests,
     sink: &mut impl application::StreamSink,
-) -> Result<application::Report, String> {
+) -> Result<application::Report, application::Error> {
     if profile.early_request_capacity > application::MAX_REQUESTS {
-        return Err("early request capacity exceeds the application admission bound".into());
+        return Err(application::Error::Capacity);
     }
-    let mut slab = vec![0; 256 * 1024];
-    let mut storage =
-        storage::Storage::<RX>::new(profile.stream_capacity, profile.protocol, entropy)?;
-    let mut setup = storage.setup(config, profile.idle_timeout_ms)?;
-    setup.key_update_target = profile.key_update_target;
+    let mut storage = storage::Storage::<RX>::new(streams, profile.protocol, entropy)?;
     let early_capacity = match source.early_status() {
         crate::quic::early_data::imp::EarlyStatus::Offered => profile.early_request_capacity,
         _ => 0,
     };
-    let mut early_slots = (0..early_capacity)
-        .map(|_| crate::quic::imp::early_requests::RequestSlot::EMPTY)
-        .collect::<Vec<_>>();
-    Box::pin(application::localside::borrowed::client::<
+    if profile.stream_capacity != storage.stream_capacity() || early_slots.len() < early_capacity {
+        return Err(application::Error::Capacity);
+    }
+    let mut setup = storage.setup(config, profile.idle_timeout_ms)?;
+    setup.key_update_target = profile.key_update_target;
+    core::pin::pin!(application::localside::borrowed::client::<
         DATAGRAM,
         PARAMETERS,
         RX,
@@ -58,11 +58,10 @@ pub async fn client<'scope, const RX: usize>(
         stop,
         book,
         SessionId::new(profile.generation as u32),
-        &mut slab,
+        slab,
         requests,
         sink,
-        &mut early_slots,
+        &mut early_slots[..early_capacity],
     ))
     .await
-    .map_err(|e| format!("application: {e:?}"))
 }

@@ -1,6 +1,5 @@
 //! Descriptor-relative native file operations, confined to one child name.
 use crate::unix::{AsRawFd, OwnedFd, error as io};
-use alloc::ffi::CString;
 use core::ffi::c_char;
 #[cfg(target_os = "linux")]
 mod abi {
@@ -36,11 +35,19 @@ unsafe extern "C" {
     ) -> i32;
     fn unlinkat(parent: i32, name: *const c_char, flags: i32) -> i32;
 }
-fn child(name: &str) -> io::Result<CString> {
-    if name.is_empty() || matches!(name, "." | "..") || name.contains(['/', '\\']) {
+fn child(name: &str) -> io::Result<[c_char; 256]> {
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.contains(['/', '\\', '\0'])
+        || name.len() > 255
+    {
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    CString::new(name).map_err(|_| io::ErrorKind::InvalidInput.into())
+    let mut bytes = [0; 256];
+    for (target, source) in bytes.iter_mut().zip(name.bytes()) {
+        *target = source as c_char;
+    }
+    Ok(bytes)
 }
 fn checked(value: i32) -> io::Result<()> {
     if value == 0 {

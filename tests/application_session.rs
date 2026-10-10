@@ -51,7 +51,7 @@ async fn client(endpoint: &mut Endpoint<'_, CLIENT>) -> Result<(), ()> {
 fn projected_endpoint_rejects_reply_injected_on_the_outbound_route() {
     let mut storage = session::Storage::new();
     let mut slab = [0; 65536];
-    let program = hibana::runtime::program::project::<CLIENT, _>(&global());
+    let program = hibana::runtime::program::project::<CLIENT>(&global());
     let result = drive(session::localside::run(
         &mut storage,
         &mut slab,
@@ -91,7 +91,7 @@ fn raw_and_http3_streams_carry_multiple_messages_with_single_byte_fragments() {
     for protocol in [Protocol::Quic, Protocol::Http3] {
         let mut storage = session::Storage::new();
         let mut slab = [0; 65536];
-        let program = hibana::runtime::program::project::<CLIENT, _>(&global());
+        let program = hibana::runtime::program::project::<CLIENT>(&global());
         drive(session::localside::run(
             &mut storage,
             &mut slab,
@@ -103,7 +103,7 @@ fn raw_and_http3_streams_carry_multiple_messages_with_single_byte_fragments() {
                 // The remote side has its own runtime and the very same global.
                 let mut remote = session::Storage::new();
                 let mut remote_slab = [0; 65536];
-                let remote_program = hibana::runtime::program::project::<SERVER, _>(&global());
+                let remote_program = hibana::runtime::program::project::<SERVER>(&global());
                 session::localside::run(
                     &mut remote,
                     &mut remote_slab,
@@ -137,7 +137,14 @@ fn raw_and_http3_streams_carry_multiple_messages_with_single_byte_fragments() {
                                 let mut prefix = [0; 1024];
                                 let n = request.next(&mut prefix).await?.ok_or(())?;
                                 for byte in &prefix[..n] {
-                                    input.write(0, core::slice::from_ref(byte)).await?;
+                                    async {
+                                        let bytes: &[u8] = core::slice::from_ref(byte);
+                                        let n =
+                                            poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
+                                        assert_eq!(n, bytes.len());
+                                        input.flush(0).await
+                                    }
+                                    .await?;
                                 }
                                 loop {
                                     let mut byte = [0; 1];
@@ -145,7 +152,14 @@ fn raw_and_http3_streams_carry_multiple_messages_with_single_byte_fragments() {
                                     if n == 0 {
                                         break;
                                     }
-                                    input.write(0, &byte[..n]).await?;
+                                    async {
+                                        let bytes: &[u8] = &byte[..n];
+                                        let n =
+                                            poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
+                                        assert_eq!(n, bytes.len());
+                                        input.flush(0).await
+                                    }
+                                    .await?;
                                 }
                                 input.finish(0).await?;
                                 assert_eq!(request.next(&mut prefix).await?, None);
@@ -158,7 +172,14 @@ fn raw_and_http3_streams_carry_multiple_messages_with_single_byte_fragments() {
                                     if n == 0 {
                                         break;
                                     }
-                                    output.write(0, &byte[..n]).await?;
+                                    async {
+                                        let bytes: &[u8] = &byte[..n];
+                                        let n =
+                                            poll_fn(|cx| output.poll_write(0, bytes, cx)).await?;
+                                        assert_eq!(n, bytes.len());
+                                        output.flush(0).await
+                                    }
+                                    .await?;
                                 }
                                 output.finish(0).await
                             },
@@ -188,38 +209,60 @@ fn framed_input_rejects_truncated_wrong_peer_and_oversized_messages() {
                     Protocol::Quic => b"HBN1",
                     Protocol::Http3 => &[1, 3, 0, 0, 0xd9],
                 };
-                input.write(0, prefix).await?;
+                async {
+                    let bytes: &[u8] = prefix;
+                    let n = poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
+                    assert_eq!(n, bytes.len());
+                    input.flush(0).await
+                }
+                .await?;
                 match malformed {
                     0 => {
-                        input.write(0, &[0]).await?;
+                        async {
+                            let bytes: &[u8] = &[0];
+                            let n = poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
+                            assert_eq!(n, bytes.len());
+                            input.flush(0).await
+                        }
+                        .await?;
                         input.finish(0).await
                     }
-                    1 => input.write(4, &[0]).await,
+                    1 => {
+                        async {
+                            let bytes: &[u8] = &[0];
+                            let n = poll_fn(|cx| input.poll_write(4, bytes, cx)).await?;
+                            assert_eq!(n, bytes.len());
+                            input.flush(4).await
+                        }
+                        .await
+                    }
                     2 => {
                         let raw = [0, 0, 0, 8, 0, 0, 0, 9, 0, 2, CLIENT, 1];
                         let framed = [0, 12, 0, 0, 0, 8, 0, 0, 0, 9, 0, 2, CLIENT, 1];
-                        input
-                            .write(
-                                0,
-                                match protocol {
-                                    Protocol::Quic => &raw,
-                                    Protocol::Http3 => &framed,
-                                },
-                            )
-                            .await
+                        async {
+                            let bytes: &[u8] = match protocol {
+                                Protocol::Quic => &raw,
+                                Protocol::Http3 => &framed,
+                            };
+                            let n = poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
+                            assert_eq!(n, bytes.len());
+                            input.flush(0).await
+                        }
+                        .await
                     }
                     _ => {
                         let raw = [0, 0, 1, 9];
                         let framed = [0, 4, 0, 0, 1, 9];
-                        input
-                            .write(
-                                0,
-                                match protocol {
-                                    Protocol::Quic => &raw,
-                                    Protocol::Http3 => &framed,
-                                },
-                            )
-                            .await
+                        async {
+                            let bytes: &[u8] = match protocol {
+                                Protocol::Quic => &raw,
+                                Protocol::Http3 => &framed,
+                            };
+                            let n = poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
+                            assert_eq!(n, bytes.len());
+                            input.flush(0).await
+                        }
+                        .await
                     }
                 }
             };

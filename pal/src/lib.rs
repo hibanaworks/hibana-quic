@@ -2,8 +2,6 @@
 //! The same no_std capability contracts apply with or without an OS.
 #![no_std]
 #![deny(unsafe_code)]
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-extern crate alloc;
 #[cfg(test)]
 #[macro_use]
 extern crate std;

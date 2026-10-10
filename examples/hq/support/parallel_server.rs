@@ -2,7 +2,7 @@
 //! The scheduler joins futures; it does not implement QUIC protocol phases.
 use super::*;
 use hibana_quic::quic::Clock as _;
-use hibana_quic::quic::routing::{Delivery, Dispatcher, Receiver};
+use hibana_quic::quic::routing::{Delivery, Dispatcher, Receiver, Slot};
 use hibana_quic::{
     runtime::mailbox::Mailbox,
     runtime::{Task, TaskSet},
@@ -64,7 +64,7 @@ impl ticket::ServerTicketStore for TicketAccess<'_, '_> {
             .check(bytes, request)
     }
 }
-struct Admission {
+struct Admission<'a> {
     address: Address,
     original: Vec<u8>,
     peer: Vec<u8>,
@@ -72,7 +72,7 @@ struct Admission {
     first: Vec<u8>,
     ecn: Option<hibana_quic::io::Codepoint>,
     new_token: [u8; hibana_quic::quic::new_token::TOKEN_LEN],
-    receiver: Receiver<BYTES>,
+    receiver: Receiver<'a, BYTES>,
 }
 
 // Explicit independent reactor, clock, transport and application inputs.
@@ -92,9 +92,12 @@ pub async fn run<const S: usize, const T: usize>(
         return Err("parallel connection capacity".into());
     }
     let (cert, key_path) = credentials;
-    let certificates = pem::certificates(cert)?;
-    let key = signing_key(&pem::private_key(key_path)?)?;
-    let chain: Vec<&[u8]> = certificates.iter().map(|cert| cert.as_ref()).collect();
+    let mut certificate_bytes = [0; 16384];
+    let mut certificates: [&[u8]; 16] = [&[]; 16];
+    let certificate_count = pem::certificates(cert, &mut certificate_bytes, &mut certificates)?;
+    let mut key_bytes = [0; 4096];
+    let key = signing_key(&pem::private_key(key_path, &mut key_bytes)?)?;
+    let chain = &certificates[..certificate_count];
     let raw = UdpSocket::bind(listen).map_err(|e| format!("UDP bind: {e}"))?;
     let socket = reactor
         .register_udp(raw.try_clone().map_err(|e| format!("UDP clone: {e}"))?)
@@ -103,7 +106,10 @@ pub async fn run<const S: usize, const T: usize>(
         "direct Hibana server listening on {}",
         socket.local_addr().map_err(|e| e.to_string())?
     );
-    let mut slots: [[Option<Admission>; 1]; MAX] = std::array::from_fn(|_| [None]);
+    let mut routing_slots = [const { Slot::<BYTES>::new() }; MAX];
+    let mut routes =
+        Dispatcher::new(&mut routing_slots[..count]).map_err(|e| format!("routes: {e:?}"))?;
+    let mut slots: [[Option<Admission<'_>>; 1]; MAX] = std::array::from_fn(|_| [None]);
     let mailboxes = slots
         .each_mut()
         .map(|slot| Mailbox::new(slot).expect("one empty assignment slot"));
@@ -248,8 +254,6 @@ pub async fn run<const S: usize, const T: usize>(
     };
     let mut joined = Box::pin(TaskSet::new(refs));
     let mut ingress = Box::pin(async {
-        let mut routes =
-            Dispatcher::<BYTES>::new(count, 8).map_err(|e| format!("routes: {e:?}"))?;
         let mut seen: Vec<(Address, Vec<u8>)> = Vec::with_capacity(count);
         let mut tokens = hibana_quic::quic::new_token::Issuer::<MAX>::new();
         let mut bytes = [0; BYTES];

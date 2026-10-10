@@ -130,5 +130,4 @@ pub(crate) mod initial;
 pub mod early_client;
 
 /// Allocator-backed handshake resource owner.
-#[cfg(feature = "alloc")]
 pub mod owned;

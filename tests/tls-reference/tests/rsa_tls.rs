@@ -274,7 +274,7 @@ fn exchange(
     let rv = kit
         .rendezvous(&mut slab, carrier.bind(sid).unwrap())
         .unwrap();
-    let projection = { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}, _>(&graph), hibana::runtime::program::project::<{global::VERIFY}, _>(&graph)) };
+    let projection = { let graph = global::client(); (hibana::runtime::program::project::<{global::INPUT}>(&graph), hibana::runtime::program::project::<{global::VERIFY}>(&graph)) };
     let mut owner = rv.enter(sid, &projection.1).unwrap();
     let mut receiver = rv.enter(sid, &projection.0).unwrap();
     let reactor = hibana_quic_pal::unix::reactor::Reactor::<0, 0>::new().unwrap();

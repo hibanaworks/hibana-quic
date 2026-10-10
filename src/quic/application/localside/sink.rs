@@ -46,7 +46,6 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
     reclaim: &crate::quic::application::imp::reclaim::Exchange<'book>,
     auxiliary: Option<&crate::http3::imp::control::Ingress>,
 ) -> Result<(), Error> {
-    let mut bytes = [0; RX];
     loop {
         let offered = endpoint.offer().await?;
         match offered.label() {
@@ -61,15 +60,33 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                         use crate::http3::global as h3;
                         let auxiliary = auxiliary.ok_or(Error::Application)?;
                         let stream = ready_handle(app, stream_id)?;
-                        let read = app
-                            .try_borrow_mut()
-                            .map_err(|_| Error::Binding)?
-                            .read(stream, &mut bytes)?;
+                        let mut appended = Ok(());
+                        let read = app.try_borrow_mut().map_err(|_| Error::Binding)?.consume(
+                            stream,
+                            |view| {
+                                let len = view.first.len() + view.second.len();
+                                appended = if view.reset.is_some() {
+                                    Err(Error::Application)
+                                } else {
+                                    auxiliary
+                                        .append(
+                                            stream,
+                                            view.first,
+                                            view.fin && view.second.is_empty(),
+                                        )
+                                        .and_then(|()| {
+                                            if view.second.is_empty() {
+                                                Ok(())
+                                            } else {
+                                                auxiliary.append(stream, view.second, view.fin)
+                                            }
+                                        })
+                                };
+                                Ok(if appended.is_ok() { len } else { 0 })
+                            },
+                        )?;
+                        appended?;
                         control.changed()?;
-                        if read.reset.is_some() {
-                            return Err(Error::Application);
-                        }
-                        auxiliary.append(stream, &bytes[..read.len], read.fin)?;
                         while let Some(frame) = auxiliary.next_frame(stream)? {
                             auxiliary
                                 .frame
@@ -97,7 +114,7 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                     }
                     .await
                 } else {
-                    deliver(control, state, app, sink, stream_id, &mut bytes).await
+                    deliver(control, state, app, sink, stream_id).await
                 };
                 if !matches!(delivery, Ok(Delivery::More)) {
                     let receipt = if state.is_complete(stream_id) {
@@ -159,28 +176,58 @@ pub(super) async fn deliver<const RX: usize, const CHUNK: usize, B>(
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
     sink: &mut impl StreamSink,
     stream_id: u64,
-    bytes: &mut [u8],
 ) -> Result<Delivery, Error> {
+    use core::task::Poll;
     let stream = ready_handle(app, stream_id)?;
-    // The SINK role retains this scratch storage across deliveries. Only the
-    // prefix returned by read is exposed, including after a shorter read.
-    let read = app
-        .try_borrow_mut()
-        .map_err(|_| Error::Binding)?
-        .read(stream, bytes)?;
+    let read = match control
+        .until_stop(2, async {
+            let read = core::future::poll_fn(|cx| {
+                let mut readiness = Poll::Ready(Ok(()));
+                let result =
+                    app.try_borrow_mut()
+                        .map_err(|_| Error::Binding)?
+                        .consume(stream, |view| {
+                            if view.reset.is_some() {
+                                readiness = Poll::Ready(Err(Error::Application));
+                                return Ok(0);
+                            }
+                            let bytes = if view.first.is_empty() {
+                                view.second
+                            } else {
+                                view.first
+                            };
+                            if bytes.is_empty() {
+                                return Ok(0);
+                            }
+                            match sink.poll_write(stream_id, bytes, cx) {
+                                Poll::Pending => {
+                                    readiness = Poll::Pending;
+                                    Ok(0)
+                                }
+                                Poll::Ready(Ok(n)) if n != 0 && n <= bytes.len() => Ok(n),
+                                Poll::Ready(_) => {
+                                    readiness = Poll::Ready(Err(Error::Application));
+                                    Ok(0)
+                                }
+                            }
+                        });
+                match result {
+                    Err(error) => Poll::Ready(Err(Error::from(error))),
+                    Ok(read) => readiness.map(|result| result.map(|()| read)),
+                }
+            })
+            .await?;
+            sink.flush(stream_id)
+                .await
+                .map_err(|_| Error::Application)?;
+            Ok::<_, Error>(read)
+        })
+        .await
+    {
+        Some(read) => read?,
+        None => return Ok(Delivery::Interrupted),
+    };
     control.changed()?;
-    if read.reset.is_some() {
-        return Err(Error::Application);
-    }
-    if read.len != 0 {
-        match control
-            .until_stop(2, sink.write(stream_id, &bytes[..read.len]))
-            .await
-        {
-            Some(result) => result.map_err(|_| Error::Application)?,
-            None => return Ok(Delivery::Interrupted),
-        }
-    }
     if read.fin {
         match control.until_stop(2, sink.finish(stream_id)).await {
             Some(result) => result.map_err(|_| Error::Application)?,
@@ -207,7 +254,6 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
     reclaim: &crate::quic::application::imp::reclaim::Exchange<'book>,
     auxiliary: Option<&crate::http3::imp::control::Ingress>,
 ) -> Result<(), Error> {
-    let mut bytes = [0; RX];
     let mut pending: [Option<PendingRequest>; MAX_LIVE_STREAMS] =
         [const { None }; MAX_LIVE_STREAMS];
     loop {
@@ -224,15 +270,33 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                         use crate::http3::global as h3;
                         let auxiliary = auxiliary.ok_or(Error::Application)?;
                         let stream = ready_handle(app, stream_id)?;
-                        let read = app
-                            .try_borrow_mut()
-                            .map_err(|_| Error::Binding)?
-                            .read(stream, &mut bytes)?;
+                        let mut appended = Ok(());
+                        let read = app.try_borrow_mut().map_err(|_| Error::Binding)?.consume(
+                            stream,
+                            |view| {
+                                let len = view.first.len() + view.second.len();
+                                appended = if view.reset.is_some() {
+                                    Err(Error::Application)
+                                } else {
+                                    auxiliary
+                                        .append(
+                                            stream,
+                                            view.first,
+                                            view.fin && view.second.is_empty(),
+                                        )
+                                        .and_then(|()| {
+                                            if view.second.is_empty() {
+                                                Ok(())
+                                            } else {
+                                                auxiliary.append(stream, view.second, view.fin)
+                                            }
+                                        })
+                                };
+                                Ok(if appended.is_ok() { len } else { 0 })
+                            },
+                        )?;
+                        appended?;
                         control.changed()?;
-                        if read.reset.is_some() {
-                            return Err(Error::Application);
-                        }
-                        auxiliary.append(stream, &bytes[..read.len], read.fin)?;
                         while let Some(frame) = auxiliary.next_frame(stream)? {
                             auxiliary
                                 .frame
@@ -278,7 +342,7 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                                     None => return Ok(Delivery::Interrupted),
                                 }
                             }
-                            deliver(control, state, app, sink, stream_id, &mut bytes).await
+                            deliver(control, state, app, sink, stream_id).await
                         }
                         .await
                     } else {

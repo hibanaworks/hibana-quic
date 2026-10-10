@@ -180,15 +180,15 @@ fn try_handshake_observe<const MESSAGE: usize>(
     let cp = {
         let graph = global::client();
         (
-            hibana::runtime::program::project::<{ global::INPUT }, _>(&graph),
-            hibana::runtime::program::project::<{ global::VERIFY }, _>(&graph),
+            hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+            hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
         )
     };
     let sp = {
         let graph = global::server();
         (
-            hibana::runtime::program::project::<{ global::INPUT }, _>(&graph),
-            hibana::runtime::program::project::<{ global::VERIFY }, _>(&graph),
+            hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+            hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
         )
     };
     let mut cv = cr.enter(cid, &cp.1).unwrap();
@@ -267,8 +267,8 @@ pub fn probe_server_message<R>(
     let projection = {
         let graph = global::server();
         (
-            hibana::runtime::program::project::<{ global::INPUT }, _>(&graph),
-            hibana::runtime::program::project::<{ global::VERIFY }, _>(&graph),
+            hibana::runtime::program::project::<{ global::INPUT }>(&graph),
+            hibana::runtime::program::project::<{ global::VERIFY }>(&graph),
         )
     };
     let mut owner = rv.enter(sid, &projection.1).unwrap();
@@ -437,13 +437,13 @@ pub fn handshake_key_sources_observe<'client, 'server>(
     let cp = {
         let graph = hibana_tls::handshake::global::owned::choreography();
         (
-            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::INPUT }, _>(
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::INPUT }>(
                 &graph,
             ),
-            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::VERIFY }, _>(
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::VERIFY }>(
                 &graph,
             ),
-            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::HANDOFF }, _>(
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::HANDOFF }>(
                 &graph,
             ),
         )
@@ -451,13 +451,13 @@ pub fn handshake_key_sources_observe<'client, 'server>(
     let sp = {
         let graph = hibana_tls::handshake::global::owned::choreography();
         (
-            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::INPUT }, _>(
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::INPUT }>(
                 &graph,
             ),
-            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::VERIFY }, _>(
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::VERIFY }>(
                 &graph,
             ),
-            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::HANDOFF }, _>(
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::HANDOFF }>(
                 &graph,
             ),
         )

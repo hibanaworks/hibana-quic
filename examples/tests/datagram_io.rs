@@ -18,7 +18,12 @@ use hibana_quic_pal::unix::{
 use std::net::UdpSocket;
 #[test]
 fn accepted_send_has_real_bytes_address_and_monotonic_receipt() {
-    let reactor = Reactor::<4, 8>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<4, 8>::new(&WAKE)
+    }
+    .unwrap();
     let socket = reactor
         .register_udp(
             hibana_quic_pal::unix::UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap(),
@@ -53,7 +58,12 @@ fn accepted_send_has_real_bytes_address_and_monotonic_receipt() {
 #[test]
 fn actual_transmit_marks_each_datagram_and_rejects_ce_before_send() {
     for bind in ["127.0.0.1:0", "[::1]:0"] {
-        let reactor = Reactor::<4, 8>::new().unwrap();
+        let reactor = {
+            static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+                hibana_quic_pal::unix::reactor::WakeStorage::new();
+            Reactor::<4, 8>::new(&WAKE)
+        }
+        .unwrap();
         let socket = reactor
             .register_udp(hibana_quic_pal::unix::UdpSocket::bind(bind.parse().unwrap()).unwrap())
             .unwrap();
@@ -106,7 +116,12 @@ fn actual_transmit_marks_each_datagram_and_rejects_ce_before_send() {
 #[test]
 fn actual_native_receive_preserves_ecn_with_its_datagram() {
     for bind in ["127.0.0.1:0", "[::1]:0"] {
-        let reactor = Reactor::<4, 8>::new().unwrap();
+        let reactor = {
+            static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+                hibana_quic_pal::unix::reactor::WakeStorage::new();
+            Reactor::<4, 8>::new(&WAKE)
+        }
+        .unwrap();
         let socket = reactor
             .register_udp(hibana_quic_pal::unix::UdpSocket::bind(bind.parse().unwrap()).unwrap())
             .unwrap();
@@ -154,7 +169,12 @@ fn actual_native_receive_preserves_ecn_with_its_datagram() {
 
 #[test]
 fn receive_preserves_each_physical_path_for_core_admission() {
-    let reactor = Reactor::<4, 8>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<4, 8>::new(&WAKE)
+    }
+    .unwrap();
     let socket = reactor
         .register_udp(
             hibana_quic_pal::unix::UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap(),
@@ -214,7 +234,12 @@ fn receive_preserves_each_physical_path_for_core_admission() {
 }
 #[test]
 fn expired_hard_deadline_never_polls_ready_submission() {
-    let reactor = Reactor::<4, 8>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<4, 8>::new(&WAKE)
+    }
+    .unwrap();
     let clock = Clock::new(&reactor, Instant::now());
     let attempted = Cell::new(false);
     let result = reactor
@@ -228,7 +253,12 @@ fn expired_hard_deadline_never_polls_ready_submission() {
 }
 #[test]
 fn idle_timeout_parks_and_cancels_the_registered_receive() {
-    let reactor = Reactor::<4, 8>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<4, 8>::new(&WAKE)
+    }
+    .unwrap();
     let socket = reactor
         .register_udp(
             hibana_quic_pal::unix::UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap(),
@@ -277,7 +307,12 @@ fn idle_timeout_parks_and_cancels_the_registered_receive() {
 }
 #[test]
 fn rejected_send_never_records_acceptance() {
-    let reactor = Reactor::<4, 8>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        Reactor::<4, 8>::new(&WAKE)
+    }
+    .unwrap();
     let socket = reactor
         .register_udp(
             hibana_quic_pal::unix::UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap(),

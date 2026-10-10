@@ -187,7 +187,6 @@ pub mod run;
 pub use run::{client, client_early, server, server_stream};
 
 /// Own and attach bounded resources using any executor-neutral I/O capability.
-#[cfg(feature = "alloc")]
 pub mod owned;
 
 /// Allocation-free connection attachment with caller-owned memory.

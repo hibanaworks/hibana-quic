@@ -95,8 +95,8 @@ fn waker() -> (Arc<Calls>, Waker) {
     };
     (calls, waker)
 }
-fn reactor() -> (Rc<TestReactor>, Hook) {
-    let reactor = Rc::new(TestReactor::new().unwrap());
+fn reactor(wake: &'static hibana_quic_pal::unix::reactor::WakeStorage) -> (Rc<TestReactor>, Hook) {
+    let reactor = Rc::new(TestReactor::new(wake).unwrap());
     let hook = Hook::install(&reactor);
     (reactor, hook)
 }
@@ -106,7 +106,9 @@ fn bind() -> UdpSocket {
 
 #[test]
 fn socket_waker_clone_replace_cancel_and_competing_error_release_registry() {
-    let (reactor, _hook) = reactor();
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    let (reactor, _hook) = reactor(&WAKE);
     let socket = reactor.register_udp(bind()).unwrap();
     let (calls, waker) = waker();
     let mut cx = Context::from_waker(&waker);
@@ -131,7 +133,9 @@ fn socket_waker_clone_replace_cancel_and_competing_error_release_registry() {
 
 #[test]
 fn timer_waker_clone_replace_cancel_and_ready_release_registry() {
-    let (reactor, _hook) = reactor();
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    let (reactor, _hook) = reactor(&WAKE);
     let (calls, old) = waker();
     let (_, new) = waker();
     {
@@ -169,7 +173,9 @@ fn timer_waker_clone_replace_cancel_and_ready_release_registry() {
 
 #[test]
 fn timer_dispatch_calls_waker_after_releasing_registry() {
-    let (reactor, _hook) = reactor();
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    let (reactor, _hook) = reactor(&WAKE);
     let (calls, waker) = waker();
     let mut timer = reactor.sleep(Duration::from_millis(20)).unwrap();
     reactor
@@ -183,7 +189,9 @@ fn timer_dispatch_calls_waker_after_releasing_registry() {
 
 #[test]
 fn socket_dispatch_and_success_call_waker_after_releasing_registry() {
-    let (reactor, _hook) = reactor();
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    let (reactor, _hook) = reactor(&WAKE);
     let socket = reactor.register_udp(bind()).unwrap();
     let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let address = socket.local_addr().unwrap();
@@ -221,7 +229,9 @@ fn socket_dispatch_and_success_call_waker_after_releasing_registry() {
 
 #[test]
 fn socket_removal_drops_forgotten_operation_waker_outside_registry() {
-    let (reactor, _hook) = reactor();
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
+    let (reactor, _hook) = reactor(&WAKE);
     let socket = reactor.register_udp(bind()).unwrap();
     let (calls, waker) = waker();
     let mut bytes = [0; 8];

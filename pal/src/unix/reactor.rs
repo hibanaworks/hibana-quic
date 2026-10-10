@@ -7,81 +7,24 @@
 //! Socket interests exist only while an operation actually returned WouldBlock;
 //! timers use the nearest monotonic deadline, rounded UP to milliseconds.
 //!
-//! Resource boundary: construction allocates exactly one Arc for Wake ownership
-//! and creates two kernel descriptors. Each registered socket uses the existing
-//! UDP adapter's one ancillary-buffer allocation. The fixed arrays, operation
-//! futures, waker clones, timer dispatch, and executor polls allocate nothing.
-//! Native sendmsg ancillary storage is on the stack, so sending does not allocate.
-//! Socket setup still allocates; this is not a no_alloc transport boundary.
-//! No unsafe code, additional threads, or hidden protocol state machines live
-//! here. Always-ready actors must use the core runtime's cooperative yield at a
-//! bounded work boundary; a single Future::poll cannot be preempted.
+//! The caller supplies static wake storage and a pinned root future. Wake clones
+//! retain native descriptor ownership without heap allocation and may safely
+//! outlive the reactor. All socket/timer registries are bounded.
 
+use crate::sys::wake::Signal;
+pub use crate::sys::wake::WakeStorage;
 use crate::sys::{self, PollBatch, PollFd};
 use crate::unix::udp::{Codepoint, Received, UdpMetadataSocket};
-use crate::unix::{AsRawFd, Instant, UdpSocket, UnixStream, error as io};
-use alloc::{sync::Arc, task::Wake};
+use crate::unix::{AsRawFd, Instant, UdpSocket, error as io};
 use core::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},
     net::SocketAddr,
     pin::{Pin, pin},
-    sync::atomic::{AtomicI32, Ordering},
     task::{Context, Poll, Waker},
     time::Duration,
 };
 use hibana_quic::io::Address;
-
-struct Signal {
-    reader: UnixStream,
-    writer: UnixStream,
-    error: AtomicI32,
-}
-impl Signal {
-    fn notify(&self) {
-        loop {
-            match self.writer.write(&[1]) {
-                Ok(_) => return,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => {
-                    self.error
-                        .store(error.raw_os_error().unwrap_or(5), Ordering::Release);
-                    return;
-                }
-            }
-        }
-    }
-    fn drain(&self) -> io::Result<()> {
-        let error = self.error.swap(0, Ordering::AcqRel);
-        if error != 0 {
-            return Err(io::Error::from_raw_os_error(error));
-        }
-        // One read drains the entire non-semaphore counter. Do not loop until
-        // EAGAIN: a continuously waking producer must not starve socket work.
-        match self.reader.read(&mut [0; 256]) {
-            Ok(0) => Err(io::ErrorKind::BrokenPipe.into()),
-            Ok(_) => Ok(()),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) =>
-            {
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
-    }
-}
-impl Wake for Signal {
-    fn wake(self: Arc<Self>) {
-        self.notify();
-    }
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.notify();
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Statistics {
@@ -148,25 +91,18 @@ struct State<const S: usize, const T: usize> {
 /// Futures may be borrowed, `!Send`, and `!Unpin`; its Waker is Send + Sync.
 /// Socket and timer exhaustion returns WouldBlock without allocating a queue.
 pub struct Reactor<const S: usize, const T: usize> {
-    signal: Arc<Signal>,
+    signal: Signal,
     state: RefCell<State<S, T>>,
     running: Cell<bool>,
     statistics: Cell<Statistics>,
 }
 impl<const S: usize, const T: usize> Reactor<S, T> {
-    pub fn new() -> io::Result<Self> {
+    pub fn new(wake: &'static WakeStorage) -> io::Result<Self> {
         if S >= u32::MAX as usize {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let (reader, writer) = UnixStream::pair()?;
-        reader.set_nonblocking(true)?;
-        writer.set_nonblocking(true)?;
         Ok(Self {
-            signal: Arc::new(Signal {
-                reader,
-                writer,
-                error: AtomicI32::new(0),
-            }),
+            signal: Signal::new(wake)?,
             state: RefCell::new(State {
                 sockets: core::array::from_fn(|_| SocketSlot {
                     generation: 0,
@@ -271,7 +207,7 @@ impl<const S: usize, const T: usize> Reactor<S, T> {
         }
         let _running = Running(&self.running);
         let mut future = pin!(future);
-        let waker = Waker::from(Arc::clone(&self.signal));
+        let waker = self.signal.waker();
         let mut context = Context::from_waker(&waker);
         loop {
             // Drain BEFORE polling, never after Pending. Wakes during or after
@@ -304,7 +240,7 @@ impl<const S: usize, const T: usize> Reactor<S, T> {
         let timeout = self.timeout(Instant::now());
         let mut batch = PollBatch {
             wake: PollFd {
-                fd: self.signal.reader.as_raw_fd(),
+                fd: self.signal.descriptor(),
                 events: sys::READ,
                 revents: 0,
             },
@@ -742,7 +678,9 @@ impl<const S: usize, const T: usize> hibana_quic::io::DatagramSocket for AsyncUd
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::Ordering;
     use std::sync::atomic::AtomicUsize;
+    use std::{sync::Arc, task::Wake};
 
     #[derive(Default)]
     struct CountWake(AtomicUsize);
@@ -760,7 +698,12 @@ mod tests {
 
     #[test]
     fn stale_socket_event_cannot_wake_reused_slot() {
-        let reactor = Reactor::<1, 1>::new().unwrap();
+        let reactor = {
+            static WAKE: crate::unix::reactor::WakeStorage =
+                crate::unix::reactor::WakeStorage::new();
+            Reactor::<1, 1>::new(&WAKE)
+        }
+        .unwrap();
         let old = reactor.register_udp(bind()).unwrap();
         let old_key = old.key;
         drop(old);
@@ -786,7 +729,12 @@ mod tests {
 
     #[test]
     fn expired_timer_drop_cannot_cancel_reused_slot() {
-        let reactor = Reactor::<0, 1>::new().unwrap();
+        let reactor = {
+            static WAKE: crate::unix::reactor::WakeStorage =
+                crate::unix::reactor::WakeStorage::new();
+            Reactor::<0, 1>::new(&WAKE)
+        }
+        .unwrap();
         let mut expired = reactor.sleep(Duration::from_millis(1)).unwrap();
         let mut cx = Context::from_waker(Waker::noop());
         assert!(Pin::new(&mut expired).poll(&mut cx).is_pending());
@@ -803,7 +751,12 @@ mod tests {
 
     #[test]
     fn generation_exhaustion_retires_slots_instead_of_wrapping() {
-        let reactor = Reactor::<1, 1>::new().unwrap();
+        let reactor = {
+            static WAKE: crate::unix::reactor::WakeStorage =
+                crate::unix::reactor::WakeStorage::new();
+            Reactor::<1, 1>::new(&WAKE)
+        }
+        .unwrap();
         {
             let mut state = reactor.state.borrow_mut();
             state.sockets[0].generation = u32::MAX;
@@ -821,7 +774,12 @@ mod tests {
 
     #[test]
     fn backpressure_registration_uses_actual_poll_writable_event() {
-        let reactor = Reactor::<1, 1>::new().unwrap();
+        let reactor = {
+            static WAKE: crate::unix::reactor::WakeStorage =
+                crate::unix::reactor::WakeStorage::new();
+            Reactor::<1, 1>::new(&WAKE)
+        }
+        .unwrap();
         let socket = reactor.register_udp(bind()).unwrap();
         let count = Arc::new(CountWake::default());
         let waker = Waker::from(Arc::clone(&count));
@@ -886,7 +844,12 @@ mod tests {
 
     #[test]
     fn cancelled_write_preserves_concurrent_read_interest() {
-        let reactor = Reactor::<1, 1>::new().unwrap();
+        let reactor = {
+            static WAKE: crate::unix::reactor::WakeStorage =
+                crate::unix::reactor::WakeStorage::new();
+            Reactor::<1, 1>::new(&WAKE)
+        }
+        .unwrap();
         let socket = reactor.register_udp(bind()).unwrap();
         let mut cx = Context::from_waker(Waker::noop());
         let mut read_owner = None;

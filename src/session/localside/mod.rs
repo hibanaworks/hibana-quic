@@ -34,16 +34,13 @@ pub async fn run<const ROLE: u8, E>(
         bridge.finish();
         Ok(())
     };
-    join2(local, async {
-        network(&bridge).await.map_err(Error::Network)
-    })
-    .await
+    let local = core::pin::pin!(local);
+    let network = core::pin::pin!(network(&bridge));
+    join2(local, async { network.await.map_err(Error::Network) }).await
 }
 
 /// Common connection startup using injected datagram, clock and entropy capabilities.
-#[cfg(feature = "alloc")]
 pub mod network;
 
-/// Allocator-backed application and connection resource owner.
-#[cfg(feature = "alloc")]
+/// Application and connection execution borrowing caller-owned storage.
 pub mod owned;

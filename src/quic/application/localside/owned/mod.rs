@@ -1,4 +1,4 @@
-//! Allocator-backed execution for the canonical QUIC application graph.
+//! Caller-storage execution for the canonical QUIC application graph.
 //! Applications supply their own request, body and sink effects; no CLI file types.
 mod client;
 mod server;

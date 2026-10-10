@@ -49,8 +49,7 @@ jobs:
       - name: Core, TLS, integration and compile-fail contracts
         run: |
           cargo +1.95.0 test --locked
-          cargo +1.95.0 test --locked --features alloc --lib
-          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --features alloc
+          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml
       - name: Embedded no_std sources
         run: |
           cargo +1.95.0 check --locked --lib --target thumbv6m-none-eabi
@@ -64,8 +63,7 @@ jobs:
       - name: Strict Clippy for QUIC, TLS and Host
         run: |
           cargo +1.95.0 clippy --locked --lib --tests -- -D warnings
-          cargo +1.95.0 clippy --locked --features alloc --lib --tests -- -D warnings
-          cargo +1.95.0 clippy --locked --manifest-path ../hibana-tls/Cargo.toml --all-targets --features alloc -- -D warnings
+          cargo +1.95.0 clippy --locked --manifest-path ../hibana-tls/Cargo.toml --all-targets -- -D warnings
           cargo +1.95.0 clippy --locked --manifest-path pal/Cargo.toml --all-targets -- -D warnings
           cargo +1.95.0 clippy --locked --manifest-path examples/Cargo.toml --all-targets -- -D warnings
       - name: Exact runner nine-certificate chain including zero-allocation assertion
@@ -109,9 +107,11 @@ jobs:
           persist-credentials: false
       - name: Install the specified Miri and rust-src
         run: rustup toolchain install nightly-2026-10-08 --profile minimal --component miri --component rust-src
-      - name: Five secret memory boundary contracts
+      - name: Secret memory, borrowed PEM and native wake ownership
         run: |
-          cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --features alloc --lib secret::
+          cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --lib secret::
+          cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --lib certificate::pem::
+          cargo +nightly-2026-10-08 miri test --locked --manifest-path pal/Cargo.toml --lib sys::wake::tests::
   ack-delay-faults:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -186,6 +186,7 @@ jobs:
       - name: Compile and test the application localsides
         run: |
           cargo +1.95.0 test --locked --manifest-path examples/Cargo.toml --examples
+          cargo +1.95.0 build --locked --manifest-path examples/Cargo.toml --examples
           cargo +1.95.0 build --locked --release --manifest-path examples/Cargo.toml --examples
       - name: Authenticated raw QUIC and HTTP/3 exchanges
         run: |
@@ -198,4 +199,5 @@ jobs:
           openssl req -config "$certs/request.cnf" -new -key "$certs/server.key" -out "$certs/server.csr" -subj /CN=localhost
           printf 'subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' > "$certs/extensions"
           openssl x509 -req -sha256 -set_serial 2 -in "$certs/server.csr" -CA "$certs/ca.pem" -CAkey "$certs/ca.key" -out "$certs/server.pem" -days 1 -extfile "$certs/extensions"
+          python3 examples/check-transfers.py "$CARGO_TARGET_DIR/debug/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem"
           python3 examples/check-transfers.py "$CARGO_TARGET_DIR/release/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem"

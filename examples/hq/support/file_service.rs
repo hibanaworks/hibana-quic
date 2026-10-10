@@ -383,25 +383,32 @@ impl ClientRequests for Requests {
     }
 }
 impl StreamSink for Downloads {
-    async fn write(&mut self, stream_id: u64, bytes: &[u8]) -> Result<(), ()> {
-        let mut files = self.0.borrow_mut();
-        let Some(download) = files.streams.get_mut(&stream_id) else {
-            return files
-                .diagnostics
-                .fail("response for unknown or completed stream");
-        };
-        if let Err(error) = download.file.write_all(bytes) {
-            return files
-                .diagnostics
-                .fail(format!("write bounded response chunk: {error}"));
-        }
-        if files.protocol == Protocol::Http09 {
-            files
-                .observations
-                .body_bytes
-                .set(files.observations.body_bytes.get() + bytes.len() as u64);
-        }
-        Ok(())
+    fn poll_write(
+        &mut self,
+        stream_id: u64,
+        bytes: &[u8],
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<usize, ()>> {
+        core::task::Poll::Ready((|| {
+            let mut files = self.0.borrow_mut();
+            let Some(download) = files.streams.get_mut(&stream_id) else {
+                return files
+                    .diagnostics
+                    .fail("response for unknown or completed stream");
+            };
+            if let Err(error) = download.file.write_all(bytes) {
+                return files
+                    .diagnostics
+                    .fail(format!("write bounded response chunk: {error}"));
+            }
+            if files.protocol == Protocol::Http09 {
+                files
+                    .observations
+                    .body_bytes
+                    .set(files.observations.body_bytes.get() + bytes.len() as u64);
+            }
+            Ok(bytes.len())
+        })())
     }
     async fn finish(&mut self, stream_id: u64) -> Result<(), ()> {
         let (mut download, protocol, observations, diagnostics) = {
@@ -510,8 +517,14 @@ mod tests {
             client.requests.started(stream).unwrap();
         }
         assert_eq!(ready(client.requests.next(&mut get)).unwrap(), None);
-        ready(client.downloads.write(4, b"second")).unwrap();
-        ready(client.downloads.write(0, b"first")).unwrap();
+        ready(core::future::poll_fn(|cx| {
+            client.downloads.poll_write(4, b"second", cx)
+        }))
+        .unwrap();
+        ready(core::future::poll_fn(|cx| {
+            client.downloads.poll_write(0, b"first", cx)
+        }))
+        .unwrap();
         assert!(!root.0.join("one").exists());
         assert!(!root.0.join("two").exists());
         ready(client.downloads.finish(8)).unwrap();
@@ -521,7 +534,12 @@ mod tests {
         assert_eq!(fs::read(root.0.join("two")).unwrap(), b"second");
         assert!(fs::read(root.0.join("empty")).unwrap().is_empty());
         assert_eq!(client.observations.files_finished.get(), 3);
-        assert!(ready(client.downloads.write(0, b"late")).is_err());
+        assert!(
+            ready(core::future::poll_fn(|cx| client
+                .downloads
+                .poll_write(0, b"late", cx)))
+            .is_err()
+        );
     }
     #[test]
     fn duplicate_decoded_destinations_and_cancelled_partial_downloads_are_safe() {
@@ -540,7 +558,10 @@ mod tests {
             .unwrap();
             ready(client.requests.next(&mut [0; 128])).unwrap();
             client.requests.started(0).unwrap();
-            ready(client.downloads.write(0, b"not finished")).unwrap();
+            ready(core::future::poll_fn(|cx| {
+                client.downloads.poll_write(0, b"not finished", cx)
+            }))
+            .unwrap();
         }
         assert_eq!(fs::read_dir(&root.0).unwrap().count(), 0);
     }
@@ -562,10 +583,18 @@ mod tests {
             if n == 0 {
                 break;
             }
-            ready(client.downloads.write(0, &chunk[..n])).unwrap();
+            ready(core::future::poll_fn(|cx| {
+                client.downloads.poll_write(0, &chunk[..n], cx)
+            }))
+            .unwrap();
         }
         assert!(!destination.0.join("item").exists());
-        let reactor = hibana_quic_pal::unix::reactor::Reactor::<1, 1>::new().unwrap();
+        let reactor = {
+            static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+                hibana_quic_pal::unix::reactor::WakeStorage::new();
+            hibana_quic_pal::unix::reactor::Reactor::<1, 1>::new(&WAKE)
+        }
+        .unwrap();
         reactor
             .block_on(client.downloads.finish(0))
             .unwrap()

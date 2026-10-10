@@ -1,4 +1,4 @@
-//! Caller-selected limits for allocator-backed connections.
+//! Caller-selected limits for caller-storage connections.
 use crate::http3::Protocol;
 /// Resource limits and caller-supplied parameters, never protocol progress.
 pub struct ClientProfile {

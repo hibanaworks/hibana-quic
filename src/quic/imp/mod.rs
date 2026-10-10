@@ -13,7 +13,6 @@ pub(crate) mod wire;
 pub mod crypto_buffer;
 
 /// Bounded routing of actual received datagrams to owned connections.
-#[cfg(feature = "alloc")]
 pub mod receive_routes;
 
 pub(crate) mod initial;
@@ -22,7 +21,6 @@ pub(crate) mod transcript;
 
 pub mod early_requests;
 
-#[cfg(feature = "alloc")]
 pub mod datagram;
 
 pub(crate) mod handshake_wire;

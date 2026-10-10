@@ -90,7 +90,7 @@ fn run_publications(publications: &[u8], combined: bool) {
         (
             project(&projection),
             project(&projection),
-            Some(project::<{ p::TLS_TX }, _>(&projection)),
+            Some(project::<{ p::TLS_TX }>(&projection)),
         )
     } else {
         let (sender, receiver) = minimal_programs();

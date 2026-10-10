@@ -844,16 +844,23 @@ struct Sink {
     finished: [usize; STREAMS],
 }
 impl StreamSink for Sink {
-    async fn write(&mut self, stream_id: u64, bytes: &[u8]) -> Result<(), ()> {
-        if self.failure == FileFailure::Write {
-            return Err(());
-        }
-        assert_eq!(stream_id % 4, 0);
-        let stream = (stream_id / 4) as usize;
-        assert_eq!(self.finished[stream], 0, "body bytes arrived after FIN");
-        self.bytes[stream].extend_from_slice(bytes);
-        assert!(self.bytes[stream].len() <= BODY_SIZES[stream]);
-        Ok(())
+    fn poll_write(
+        &mut self,
+        stream_id: u64,
+        bytes: &[u8],
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<usize, ()>> {
+        core::task::Poll::Ready((|| {
+            if self.failure == FileFailure::Write {
+                return Err(());
+            }
+            assert_eq!(stream_id % 4, 0);
+            let stream = (stream_id / 4) as usize;
+            assert_eq!(self.finished[stream], 0, "body bytes arrived after FIN");
+            self.bytes[stream].extend_from_slice(bytes);
+            assert!(self.bytes[stream].len() <= BODY_SIZES[stream]);
+            Ok(bytes.len())
+        })())
     }
     async fn finish(&mut self, stream_id: u64) -> Result<(), ()> {
         if self.failure == FileFailure::Finish {

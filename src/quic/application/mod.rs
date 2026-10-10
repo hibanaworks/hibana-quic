@@ -2,7 +2,6 @@
 //! bounded stream IO, ordinary retirement, closing and draining.
 
 pub(crate) mod imp;
-#[cfg(feature = "alloc")]
 pub use imp::owned as storage;
 pub use imp::stream;
 
@@ -76,7 +75,20 @@ pub trait ClientRequests {
     fn started(&mut self, stream_id: u64) -> Result<(), ()>;
 }
 pub trait StreamSink {
-    fn write(&mut self, stream_id: u64, bytes: &[u8]) -> impl Future<Output = Result<(), ()>>;
+    /// Consume a prefix directly from authenticated receive storage. Pending
+    /// consumes nothing and must register the supplied waker. A successful
+    /// nonempty write returns 1..=bytes.len(); no borrow survives this call.
+    fn poll_write(
+        &mut self,
+        stream_id: u64,
+        bytes: &[u8],
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<usize, ()>>;
+    /// Complete accepted input effects before the next delivery. This may await
+    /// without holding the transport receive storage or its numeric ledger.
+    fn flush(&mut self, _stream_id: u64) -> impl Future<Output = Result<(), ()>> {
+        async { Ok(()) }
+    }
     fn finish(&mut self, stream_id: u64) -> impl Future<Output = Result<(), ()>>;
 }
 
@@ -165,6 +177,7 @@ pub struct Report {
 
 #[derive(Debug)]
 pub enum Error {
+    Entropy,
     Transport(hibana::runtime::transport::TransportError),
     Attach(hibana::runtime::AttachError),
     Attachment(super::AttachmentError),
@@ -342,5 +355,4 @@ impl From<crate::quic::early_data::Failure> for Error {
     }
 }
 
-#[cfg(feature = "alloc")]
 pub use imp::profile::{ClientProfile, ServerProfile};

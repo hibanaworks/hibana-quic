@@ -33,7 +33,7 @@ mod tests {
     };
 
     #[test]
-    fn reusable_sink_storage_delivers_only_each_initialized_prefix() {
+    fn borrowed_sink_delivers_only_each_initialized_prefix() {
         use crate::crypto::directional::ApplicationKeyScope;
         use crate::quic::application::imp::stream::{Facets, StreamNumbers};
         use crate::quic::imp::kernel::packet::Frame;
@@ -45,13 +45,31 @@ mod tests {
             data: [u8; 10],
             len: usize,
             finished: usize,
+            expected: usize,
+            pending_once: bool,
         }
         impl StreamSink for Sink {
-            async fn write(&mut self, id: u64, bytes: &[u8]) -> Result<(), ()> {
+            fn poll_write(
+                &mut self,
+                id: u64,
+                bytes: &[u8],
+                cx: &mut Context<'_>,
+            ) -> Poll<Result<usize, ()>> {
                 assert_eq!(id, 0);
-                self.data[self.len..self.len + bytes.len()].copy_from_slice(bytes);
-                self.len += bytes.len();
-                Ok(())
+                assert_eq!(
+                    bytes.as_ptr() as usize,
+                    self.expected,
+                    "delivery must borrow the actual ring span"
+                );
+                if self.pending_once {
+                    self.pending_once = false;
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                let n = bytes.len().min(5);
+                self.data[self.len..self.len + n].copy_from_slice(&bytes[..n]);
+                self.len += n;
+                Poll::Ready(Ok(n))
             }
             async fn finish(&mut self, id: u64) -> Result<(), ()> {
                 assert_eq!(id, 0);
@@ -92,8 +110,9 @@ mod tests {
             data: [0; 10],
             len: 0,
             finished: 0,
+            expected: 0,
+            pending_once: true,
         };
-        let mut storage = [0xa5; 16];
         rx.apply(&Frame::Stream {
             id: 0,
             offset: 0,
@@ -101,11 +120,69 @@ mod tests {
             data: b"abcdefgh",
         })
         .unwrap();
+        let stream = ready_handle(&app, 0).unwrap();
+        struct InvalidSink(Result<usize, ()>);
+        impl StreamSink for InvalidSink {
+            fn poll_write(
+                &mut self,
+                _: u64,
+                _: &[u8],
+                _: &mut Context<'_>,
+            ) -> Poll<Result<usize, ()>> {
+                Poll::Ready(self.0)
+            }
+            async fn finish(&mut self, _: u64) -> Result<(), ()> {
+                panic!("invalid delivery must not finish")
+            }
+        }
+        for response in [Ok(0), Ok(9), Err(())] {
+            let mut invalid = InvalidSink(response);
+            assert!(matches!(
+                ready(deliver(&control, &state, &app, &mut invalid, 0)),
+                Err(Error::Application)
+            ));
+            app.borrow_mut()
+                .consume(stream, |view| {
+                    assert_eq!(view.first, b"abcdefgh");
+                    Ok(0)
+                })
+                .unwrap();
+        }
+        app.borrow_mut()
+            .consume(stream, |view| {
+                sink.expected = view.first.as_ptr() as usize;
+                Ok(0)
+            })
+            .unwrap();
+        {
+            let mut future = pin!(deliver(&control, &state, &app, &mut sink, 0));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(future.as_mut().poll(&mut cx).is_pending());
+            // Pending retains no RefCell borrow and consumes no input credit.
+            app.borrow_mut()
+                .consume(stream, |view| {
+                    assert_eq!(view.first, b"abcdefgh");
+                    Ok(0)
+                })
+                .unwrap();
+            assert!(matches!(
+                future.as_mut().poll(&mut cx),
+                Poll::Ready(Ok(Delivery::More))
+            ));
+        }
+        assert_eq!(sink.len, 5);
+        app.borrow_mut()
+            .consume(stream, |view| {
+                assert_eq!(view.first, b"fgh");
+                sink.expected = view.first.as_ptr() as usize;
+                Ok(0)
+            })
+            .unwrap();
         assert_eq!(
-            ready(deliver(&control, &state, &app, &mut sink, 0, &mut storage)).unwrap(),
+            ready(deliver(&control, &state, &app, &mut sink, 0)).unwrap(),
             Delivery::More
         );
-        assert_eq!(&storage[8..], &[0xa5; 8]);
+        assert_eq!(sink.len, 8);
         rx.apply(&Frame::Stream {
             id: 0,
             offset: 8,
@@ -113,14 +190,19 @@ mod tests {
             data: b"ij",
         })
         .unwrap();
+        app.borrow_mut()
+            .consume(stream, |view| {
+                sink.expected = view.first.as_ptr() as usize;
+                Ok(0)
+            })
+            .unwrap();
         assert_eq!(
-            ready(deliver(&control, &state, &app, &mut sink, 0, &mut storage)).unwrap(),
+            ready(deliver(&control, &state, &app, &mut sink, 0)).unwrap(),
             Delivery::Fin
         );
         assert_eq!(sink.data, *b"abcdefghij");
         assert_eq!(sink.len, 10);
         assert_eq!(sink.finished, 1);
-        assert_eq!(&storage[2..8], b"cdefgh");
     }
 
     #[test]
@@ -769,7 +851,12 @@ mod interrupted_delivery_tests {
     };
     struct NeverSink;
     impl StreamSink for NeverSink {
-        async fn write(&mut self, _: u64, _: &[u8]) -> Result<(), ()> {
+        fn poll_write(
+            &mut self,
+            _: u64,
+            _: &[u8],
+            _: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Result<usize, ()>> {
             panic!("cancelled sink must not write")
         }
         async fn finish(&mut self, _: u64) -> Result<(), ()> {

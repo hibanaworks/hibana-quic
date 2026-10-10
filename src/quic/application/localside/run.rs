@@ -195,8 +195,13 @@ impl ServerHandler for Unused {
     }
 }
 impl StreamSink for Unused {
-    async fn write(&mut self, _: u64, _: &[u8]) -> Result<(), ()> {
-        Err(())
+    fn poll_write(
+        &mut self,
+        _: u64,
+        _: &[u8],
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<usize, ()>> {
+        core::task::Poll::Ready(Err(()))
     }
     async fn finish(&mut self, _: u64) -> Result<(), ()> {
         Err(())

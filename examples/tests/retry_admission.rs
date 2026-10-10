@@ -39,7 +39,12 @@ fn initial(destination: &[u8], token: &[u8], pn: u64) -> Vec<u8> {
 
 #[test]
 fn native_retry_admits_only_the_actual_valid_token_and_joins_output() {
-    let reactor = HostReactor::<4, 8>::new().unwrap();
+    let reactor = {
+        static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+            hibana_quic_pal::unix::reactor::WakeStorage::new();
+        HostReactor::<4, 8>::new(&WAKE)
+    }
+    .unwrap();
     let server = reactor
         .register_udp(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap())
         .unwrap();

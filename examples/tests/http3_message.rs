@@ -15,7 +15,10 @@ fn frame(kind: u64, bytes: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(&header[..n]);
     out.extend_from_slice(bytes);
 }
-fn decode(bytes: &[u8]) -> Result<Vec<u8>> {
+fn decode(
+    bytes: &[u8],
+    wake: &'static hibana_quic_pal::unix::reactor::WakeStorage,
+) -> Result<Vec<u8>> {
     let path = std::env::temp_dir().join(format!(
         "hibana-h3-file-{:016x}",
         u64::from_le_bytes({
@@ -33,7 +36,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<u8>> {
     // The open file remains usable; no persistent test artifact is needed.
     std::fs::remove_file(path).unwrap();
     file.write_all(bytes).unwrap();
-    let reactor = hibana_quic_pal::unix::reactor::Reactor::<1, 1>::new().unwrap();
+    let reactor = hibana_quic_pal::unix::reactor::Reactor::<1, 1>::new(wake).unwrap();
     let mut slab = vec![0; 65536];
     reactor
         .block_on(decode_response(&FileStorage(&file), &mut slab))
@@ -46,6 +49,8 @@ fn decode(bytes: &[u8]) -> Result<Vec<u8>> {
 }
 #[test]
 fn projected_response_consumes_actual_headers_chunks_and_trailers() {
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
     let mut wire = Vec::new();
     frame(1, &[0, 0, 0xd8], &mut wire); // 103 informational
     frame(1, &[0, 0, 0xd9], &mut wire); // 200
@@ -55,37 +60,41 @@ fn projected_response_consumes_actual_headers_chunks_and_trailers() {
     frame(0x21, b"unknown extension", &mut wire);
     frame(1, &[0, 0], &mut wire); // empty trailers
     frame(0x21, b"trailing extension", &mut wire);
-    assert_eq!(decode(&wire).unwrap(), body);
+    assert_eq!(decode(&wire, &WAKE).unwrap(), body);
 }
 #[test]
 fn projected_response_rejects_missing_headers_and_data_after_trailers() {
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
     let mut wire = Vec::new();
     frame(0, b"body", &mut wire);
-    assert!(decode(&wire).is_err());
+    assert!(decode(&wire, &WAKE).is_err());
     wire.clear();
     frame(1, &[0, 0, 0xd9], &mut wire);
     frame(1, &[0, 0], &mut wire);
     frame(0, b"body", &mut wire);
-    assert!(decode(&wire).is_err());
+    assert!(decode(&wire, &WAKE).is_err());
     wire.clear();
     frame(1, &[0, 0, 0xd9], &mut wire);
     frame(4, b"", &mut wire);
-    assert!(decode(&wire).is_err());
+    assert!(decode(&wire, &WAKE).is_err());
 }
 #[test]
 fn projected_response_requires_actual_fin_length_and_content_length() {
+    static WAKE: hibana_quic_pal::unix::reactor::WakeStorage =
+        hibana_quic_pal::unix::reactor::WakeStorage::new();
     let mut wire = Vec::new();
     // Static-name reference #4 content-length with literal value 3.
     frame(1, &[0, 0, 0xd9, 0x54, 1, b'3'], &mut wire);
     frame(0, b"abc", &mut wire);
-    assert_eq!(decode(&wire).unwrap(), b"abc");
+    assert_eq!(decode(&wire, &WAKE).unwrap(), b"abc");
     wire.pop();
-    assert!(decode(&wire).is_err());
+    assert!(decode(&wire, &WAKE).is_err());
     wire.clear();
     frame(1, &[0, 0, 0xd9, 0x54, 1, b'3'], &mut wire);
     frame(0, b"ab", &mut wire);
-    assert!(decode(&wire).is_err());
+    assert!(decode(&wire, &WAKE).is_err());
     wire.clear();
     frame(1, &[0, 0, 0xd9], &mut wire);
-    assert_eq!(decode(&wire).unwrap(), b"");
+    assert_eq!(decode(&wire, &WAKE).unwrap(), b"");
 }

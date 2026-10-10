@@ -1,7 +1,10 @@
 # hibana-quic-pal
 
 Platform access for hibana-quic. The library is no_std with and without an OS.
-The Linux/macOS implementation uses core and alloc, plus confined native ABI calls.
+The Linux/macOS implementation uses core and confined native ABI calls, without
+the alloc crate. The caller provides static WakeStorage to Reactor::new. Cloned
+wakers keep the native wake writer alive until their last owner drops; storage
+cannot be reused while old wake handles remain. Socket and timer registries are bounded.
 There are no Rust libc or nix dependencies.
 
 ## Common capabilities
@@ -23,6 +26,7 @@ Applications use the same projected Hibana localsides on each platform.
 - [unix/clock.rs](src/unix/clock.rs): monotonic clock and physical deadline waiting.
 - [unix/entropy.rs](src/unix/entropy.rs): kernel randomness without a weak fallback.
 - [unix/files.rs](src/unix/files.rs): descriptor-relative file operations.
+- [sys/wake.rs](src/sys/wake.rs): counted ownership of native wake descriptors in caller-provided static storage.
 - [sys/os.rs](src/sys/os.rs) and [sys/udp.rs](src/sys/udp.rs): native descriptors and ABI layouts.
 
 The native ABI implementation currently covers x86_64 and aarch64 Linux/macOS.

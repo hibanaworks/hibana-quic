@@ -19,9 +19,9 @@ use hibana_quic::{quic::retry::global as p, runtime::carrier::CarrierStorage, ru
 fn run(outcomes: &[Option<bool>], wrong_reply: bool) {
     let verdict = Cell::new(None);
     let graph = p::choreography();
-    let input_program = hibana::runtime::program::project::<{ p::INPUT }, _>(&graph);
-    let owner_program = hibana::runtime::program::project::<{ p::OWNER }, _>(&graph);
-    let output_program = hibana::runtime::program::project::<{ p::OUTPUT }, _>(&graph);
+    let input_program = hibana::runtime::program::project::<{ p::INPUT }>(&graph);
+    let owner_program = hibana::runtime::program::project::<{ p::OWNER }>(&graph);
+    let output_program = hibana::runtime::program::project::<{ p::OUTPUT }>(&graph);
     let carrier = CarrierStorage::<1, 16, 8>::new();
     let mut slab = [0; 65536];
     let mut kit = SessionKitStorage::uninit();

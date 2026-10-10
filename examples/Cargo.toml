@@ -11,10 +11,10 @@ license = "MIT OR Apache-2.0"
 resolver = "3"
 
 [dependencies]
-hibana-quic = { path = "..", default-features = false, features = ["alloc"] }
+hibana-quic = { path = "..", default-features = false }
 hibana-quic-pal = { path = "../pal" }
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "b938af7d4490e9898d869b3bf38c1ce237c4d62c", default-features = false, features = ["alloc"] }
-hibana = { git = "https://github.com/hibanaworks/hibana", rev = "5aa9ac1ad7b28ca05896dbed9270641b865d8b9d", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "573d9053dca1d9a73e803ad2569f224420b69c3f", default-features = false }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "6ed1923c9447e48cfd3e4bb0f2d6f12126e2b452", default-features = false }
 
 [[bin]]
 name = "hq"
@@ -52,3 +52,5 @@ path = "hello-http3/client.rs"
 [[example]]
 name = "http3-server"
 path = "hello-http3/server.rs"
+
+

@@ -39,7 +39,7 @@ pub async fn client<'scope, const N: usize, const P: usize, const RX: usize, con
     let mut endpoints = Endpoints::attach(&rendezvous, session, &projection, &outcomes)
         .map_err(Error::Attachment)?;
     let result = if source.early_status() == crate::quic::early_data::imp::EarlyStatus::Offered {
-        application::client_early::<N, P, RX, CHUNK>(
+        core::pin::pin!(application::client_early::<N, P, RX, CHUNK>(
             &mut endpoints,
             source,
             setup,
@@ -53,10 +53,10 @@ pub async fn client<'scope, const N: usize, const P: usize, const RX: usize, con
             requests,
             sink,
             early_slots,
-        )
+        ))
         .await
     } else {
-        application::client::<N, P, RX, CHUNK>(
+        core::pin::pin!(application::client::<N, P, RX, CHUNK>(
             &mut endpoints,
             source,
             setup,
@@ -69,7 +69,7 @@ pub async fn client<'scope, const N: usize, const P: usize, const RX: usize, con
             &outcomes,
             requests,
             sink,
-        )
+        ))
         .await
     };
     if result.is_ok() && queues.queued() != 0 {
@@ -104,7 +104,7 @@ pub async fn server<'scope, const N: usize, const P: usize, const RX: usize, con
         .map_err(Error::Attachment)?;
     let result = match input {
         Some(input) => {
-            application::server_stream::<N, P, RX, CHUNK>(
+            core::pin::pin!(application::server_stream::<N, P, RX, CHUNK>(
                 &mut endpoints,
                 source,
                 setup,
@@ -117,11 +117,11 @@ pub async fn server<'scope, const N: usize, const P: usize, const RX: usize, con
                 &outcomes,
                 handler,
                 input,
-            )
+            ))
             .await
         }
         None => {
-            application::server::<N, P, RX, CHUNK>(
+            core::pin::pin!(application::server::<N, P, RX, CHUNK>(
                 &mut endpoints,
                 source,
                 setup,
@@ -133,7 +133,7 @@ pub async fn server<'scope, const N: usize, const P: usize, const RX: usize, con
                 book,
                 &outcomes,
                 handler,
-            )
+            ))
             .await
         }
     };

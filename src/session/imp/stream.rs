@@ -98,27 +98,37 @@ impl<'a, 's> Input<'a, 's> {
     }
 }
 impl StreamSink for Input<'_, '_> {
-    async fn write(&mut self, stream: u64, mut input: &[u8]) -> Result<(), ()> {
-        if stream != 0 {
-            return Err(());
-        }
-        while !input.is_empty() {
+    fn poll_write(
+        &mut self,
+        stream: u64,
+        input: &[u8],
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<usize, ()>> {
+        core::task::Poll::Ready((|| {
+            if stream != 0 {
+                return Err(());
+            }
             let n = input.len().min(CAPACITY - self.decoder.len);
             if n == 0 {
                 return Err(());
             }
             self.decoder.bytes[self.decoder.len..self.decoder.len + n].copy_from_slice(&input[..n]);
             self.decoder.len += n;
-            input = &input[n..];
-            if !self.decoder.prefix()? {
-                continue;
-            }
-            while let Some(frame) = self.decoder.next()? {
-                poll_fn(|cx| self.peer.poll_incoming(frame.header, frame.payload, cx))
-                    .await
-                    .map_err(|_| ())?;
-                self.decoder.consume(frame.consumed)?;
-            }
+            Ok(n)
+        })())
+    }
+    async fn flush(&mut self, stream: u64) -> Result<(), ()> {
+        if stream != 0 {
+            return Err(());
+        }
+        if !self.decoder.prefix()? {
+            return Ok(());
+        }
+        while let Some(frame) = self.decoder.next()? {
+            poll_fn(|cx| self.peer.poll_incoming(frame.header, frame.payload, cx))
+                .await
+                .map_err(|_| ())?;
+            self.decoder.consume(frame.consumed)?;
         }
         Ok(())
     }

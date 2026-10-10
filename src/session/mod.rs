@@ -48,7 +48,6 @@ pub enum Error<E> {
     Network(E),
 }
 
-#[cfg(feature = "alloc")]
 pub const DATAGRAM: usize = crate::quic::application::imp::owned::DATAGRAM;
 pub const PARAMETERS: usize = 2048;
 

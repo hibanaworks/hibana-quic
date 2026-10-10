@@ -3,6 +3,7 @@
 compile_error!("The native ABI implementation currently supports x86_64 and aarch64.");
 use crate::unix::error as io;
 pub(crate) mod os;
+pub(crate) mod wake;
 #[cfg(target_os = "linux")]
 type Count = usize;
 #[cfg(target_os = "macos")]

@@ -1,7 +1,6 @@
 //! Connection datagram admission and acceptance accounting over physical I/O.
 use crate::io::{Address, Codepoint};
 use crate::io::{Clock, DatagramRx, DatagramSocket, DatagramTx, IoError};
-use alloc::vec::Vec;
 use core::cell::Cell;
 #[derive(Default)]
 pub struct Statistics {
@@ -10,15 +9,15 @@ pub struct Statistics {
     pub foreign: Cell<u64>,
     pub last_accepted: Cell<Option<u64>>,
 }
-pub struct Receive<'a, S, const N: usize> {
-    pub alternate: Option<(&'a S, Vec<u8>)>,
+pub struct Receive<'a, 'storage, S, const N: usize> {
+    pub alternate: Option<(&'a S, &'a mut [u8])>,
     pub socket: &'a S,
     pub address: Address,
     pub first: Option<(&'a [u8], Option<Codepoint>)>,
-    pub routed: Option<&'a mut crate::quic::imp::receive_routes::Receiver<N>>,
+    pub routed: Option<&'a mut crate::quic::imp::receive_routes::Receiver<'storage, N>>,
     pub statistics: &'a Statistics,
 }
-impl<S: DatagramSocket, const N: usize> DatagramRx for Receive<'_, S, N> {
+impl<S: DatagramSocket, const N: usize> DatagramRx for Receive<'_, '_, S, N> {
     async fn receive(
         &mut self,
         bytes: &mut [u8],
@@ -38,19 +37,14 @@ impl<S: DatagramSocket, const N: usize> DatagramRx for Receive<'_, S, N> {
             });
         }
         if let Some(route) = self.routed.as_mut() {
-            let packet = route.receive().await.map_err(|_| IoError::Closed)?;
-            if packet.bytes().len() > bytes.len() {
-                return Err(IoError::Rejected);
-            }
-            bytes[..packet.bytes().len()].copy_from_slice(packet.bytes());
+            let packet = route.receive(bytes).await.map_err(|error| match error {
+                crate::quic::imp::receive_routes::Error::Capacity => IoError::Rejected,
+                _ => IoError::Closed,
+            })?;
             self.statistics
                 .received
                 .set(self.statistics.received.get() + 1);
-            return Ok(crate::quic::ReceivedDatagram {
-                path: Some(packet.address()),
-                len: packet.bytes().len(),
-                ecn: packet.ecn(),
-            });
+            return Ok(packet);
         }
         {
             let physical = if let Some((alternate, storage)) = self.alternate.as_mut() {

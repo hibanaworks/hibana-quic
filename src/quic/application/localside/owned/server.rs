@@ -1,4 +1,4 @@
-//! Allocator-backed resources and direct projected server composition.
+//! Caller-owned resources and direct projected server composition.
 use super::ServerProfile;
 use super::{DATAGRAM, PARAMETERS};
 use crate::quic::Config;
@@ -11,10 +11,11 @@ use crate::{
     io::{Clock, DatagramRx, DatagramTx},
     quic::application::imp::owned as storage,
 };
-use alloc::{boxed::Box, format, string::String, vec};
 use hibana::runtime::ids::SessionId;
 #[allow(clippy::too_many_arguments)]
 pub async fn server<'scope>(
+    streams: &mut [crate::quic::imp::kernel::streams::StreamSlot<{ storage::RECEIVE_BYTES }>],
+    slab: &mut [u8],
     entropy: &mut impl crate::entropy::Entropy,
     source: &mut Transcript<'scope, '_, '_>,
     config: Config<'_>,
@@ -27,18 +28,17 @@ pub async fn server<'scope>(
     profile: ServerProfile<'_>,
     handler: &mut impl application::ServerHandler,
     input: Option<&mut impl application::StreamSink>,
-    mut early: Option<storage::EarlyStorage>,
-) -> Result<application::Report, String> {
-    let mut slab = vec![0; 256 * 1024];
-    let mut storage = storage::Storage::<{ storage::RECEIVE_BYTES }>::new(
-        profile.stream_capacity,
-        profile.protocol,
-        entropy,
-    )?;
+    mut early: Option<storage::EarlyStorage<'_>>,
+) -> Result<application::Report, application::Error> {
+    if streams.len() != profile.stream_capacity {
+        return Err(application::Error::Capacity);
+    }
+    let mut storage =
+        storage::Storage::<{ storage::RECEIVE_BYTES }>::new(streams, profile.protocol, entropy)?;
     let mut setup = storage.setup(config, profile.idle_timeout_ms)?;
     setup.server_token = profile.server_token;
     setup.early = early.as_mut().map(storage::EarlyStorage::borrow);
-    Box::pin(application::localside::borrowed::server::<
+    core::pin::pin!(application::localside::borrowed::server::<
         DATAGRAM,
         PARAMETERS,
         { storage::RECEIVE_BYTES },
@@ -53,10 +53,9 @@ pub async fn server<'scope>(
         stop,
         book,
         SessionId::new(profile.generation as u32),
-        &mut slab,
+        slab,
         handler,
         input,
     ))
     .await
-    .map_err(|e| format!("application: {e:?}"))
 }

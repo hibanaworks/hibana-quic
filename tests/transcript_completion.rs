@@ -50,10 +50,10 @@ fn run_completion_exchange(order: [usize; 4], peer_delay: usize) {
     let rv = kit
         .rendezvous(&mut slab, carrier.bind(id).unwrap())
         .unwrap();
-    let rx_program = project::<0, _>(&graph);
-    let verify_program = project::<1, _>(&graph);
-    let source_program = project::<2, _>(&graph);
-    let tx_program = project::<3, _>(&graph);
+    let rx_program = project::<0>(&graph);
+    let verify_program = project::<1>(&graph);
+    let source_program = project::<2>(&graph);
+    let tx_program = project::<3>(&graph);
     let mut rx = rv.enter(id, &rx_program).unwrap();
     let mut verify = rv.enter(id, &verify_program).unwrap();
     let mut source = rv.enter(id, &source_program).unwrap();
