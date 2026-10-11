@@ -1230,7 +1230,7 @@ async fn run_async<const S: usize, const T: usize>(
                     )
                 }
                 .map_err(|e| format!("server TLS: {e:?}"))?;
-                let report = Box::pin(connected(
+                let result = Box::pin(connected(
                     &socket,
                     alternate.as_ref(),
                     clock,
@@ -1255,7 +1255,38 @@ async fn run_async<const S: usize, const T: usize>(
                     None,
                     idle_timeout_ms,
                 ))
-                .await?;
+                .await;
+                if std::env::var_os("HIBANA_QUIC_DIAGNOSTICS").is_some() {
+                    match &result {
+                        Ok(report) => eprintln!(
+                            "connection-terminal index={} idle={} confirmed={} completed={} submitted={} acked={} closed={} elapsed_ms={}",
+                            connection_index,
+                            report.idle_expired_connections,
+                            report.application.as_ref().is_some_and(|a| a.confirmed),
+                            report
+                                .application
+                                .as_ref()
+                                .map_or(0, |a| a.completed_streams),
+                            report
+                                .application
+                                .as_ref()
+                                .map_or(0, |a| a.submitted_streams),
+                            report
+                                .application
+                                .as_ref()
+                                .is_some_and(|a| a.all_streams_acked),
+                            report
+                                .application
+                                .as_ref()
+                                .is_some_and(|a| a.close_completed),
+                            report.elapsed
+                        ),
+                        Err(_) => eprintln!(
+                            "endpoint execution failed: connection-index={connection_index}"
+                        ),
+                    }
+                }
+                let report = result?;
                 if resumption && previous.is_some() && !report.resumed {
                     return Err("second connection did not actually resume TLS".into());
                 }

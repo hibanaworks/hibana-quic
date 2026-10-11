@@ -162,6 +162,12 @@ else
   REFERENCE_IMAGE=$(docker image inspect cloudflare/quiche-qns:latest --format '{{index .RepoDigests 0}}')
   [[ $REFERENCE_IMAGE =~ ^cloudflare/quiche-qns@sha256:[a-f0-9]{64}$ ]]
 fi
+reference_revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$REFERENCE_IMAGE" 2>/dev/null) || reference_revision=
+if [[ $reference_revision =~ ^[a-f0-9]{40}$ ]]; then
+  printf '{"revision":"%s"}\n' "$reference_revision" > ci-safe-results/reference-source.json
+else
+  printf '{"revision":null}\n' > ci-safe-results/reference-source.json
+fi
 echo 'Building bounded endpoint from audited source'
 # The candidate uses the immutable TLS revision checked out beside QUIC.
 # CI must restore that paired snapshot before this job; never silently fetch HEAD.
