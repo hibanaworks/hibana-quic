@@ -473,6 +473,7 @@ class Diagnostics(unittest.TestCase):
                     with patch.dict(os.environ, {'RUNNER_REVISION':'pinned'}), \
                          patch.object(self.module.subprocess, 'check_output', side_effect=checked_output), \
                          patch.object(self.module, 'docker_metadata'), \
+                         patch.object(self.module, 'verify_runner_patch', return_value={'base_revision':'pinned'}), \
                          patch.object(self.module, 'phase', side_effect=phase):
                         self.assertEqual(self.module.main(), 0 if ok else 1)
                     self.assertEqual(calls, ['bounded-' + d for d in sorted(directions)])

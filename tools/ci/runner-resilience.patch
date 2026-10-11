@@ -1,0 +1,199 @@
+--- a/interop.py
++++ b/interop.py
+@@ -351,9 +351,19 @@
+                     )
+                 out["measurements"].append(measurements)
+ 
+-        f = open(self._output, "w")
+-        json.dump(out, f)
+-        f.close()
++        # Keep the previous checkpoint intact until its replacement is complete.
++        f = tempfile.NamedTemporaryFile(
++            mode="w", dir=os.path.dirname(os.path.abspath(self._output)), delete=False
++        )
++        try:
++            with f:
++                json.dump(out, f)
++                f.flush()
++                os.fsync(f.fileno())
++            os.replace(f.name, self._output)
++        finally:
++            if os.path.exists(f.name):
++                os.unlink(f.name)
+ 
+     def _copy_logs(self, container: str, dir: tempfile.TemporaryDirectory):
+         cmd = (
+@@ -475,6 +485,7 @@
+         self._copy_logs("client", client_log_dir)
+         self._copy_logs("server", server_log_dir)
+ 
++        analysis_error = None
+         if not expired:
+             lines = output.splitlines()
+             exit_lines = [
+@@ -496,43 +507,68 @@
+                 except FileNotFoundError as e:
+                     logging.error(f"testcase.check() threw FileNotFoundError: {e}")
+                     status = TestResult.FAILED
++                except BaseException as exception:
++                    # Preserve evidence, but never turn an analyzer error into a verdict.
++                    analysis_error = exception
+ 
+         # save logs
+-        logging.getLogger().removeHandler(log_handler)
+-        log_handler.close()
+-        if status == TestResult.FAILED or status == TestResult.SUCCEEDED:
+-            log_dir = self._log_dir + "/" + server + "_" + client + "/" + str(test)
+-            if log_dir_prefix:
+-                log_dir += "/" + log_dir_prefix
+-            shutil.copytree(server_log_dir.name, log_dir + "/server")
+-            shutil.copytree(client_log_dir.name, log_dir + "/client")
+-            shutil.copytree(sim_log_dir.name, log_dir + "/sim")
+-            shutil.copyfile(log_file.name, log_dir + "/output.txt")
+-            if self._save_files and status == TestResult.FAILED:
++        try:
++            logging.getLogger().removeHandler(log_handler)
++            log_handler.close()
++            if status == TestResult.FAILED or status == TestResult.SUCCEEDED:
++                log_dir = self._log_dir + "/" + server + "_" + client + "/" + str(test)
++                if log_dir_prefix:
++                    log_dir += "/" + log_dir_prefix
++                shutil.copytree(server_log_dir.name, log_dir + "/server")
++                shutil.copytree(client_log_dir.name, log_dir + "/client")
++                shutil.copytree(sim_log_dir.name, log_dir + "/sim")
++                shutil.copyfile(log_file.name, log_dir + "/output.txt")
++                if self._save_files and status == TestResult.FAILED:
++                    try:
++                        shutil.copytree(test.server_www_dir(), log_dir + "/server_www")
++                    except Exception as exception:
++                        logging.info("Could not copy server www files: %s", exception)
++                    try:
++                        shutil.copytree(
++                            test.client_download_dir(), log_dir + "/client_downloads"
++                        )
++                    except Exception as exception:
++                        logging.info(
++                            "Could not copy client downloaded files: %s", exception
++                        )
++                    try:
++                        shutil.copytree(test.client_www_dir(), log_dir + "/client_www")
++                    except Exception as exception:
++                        logging.info("Could not copy client www files: %s", exception)
++                    try:
++                        shutil.copytree(
++                            test.server_download_dir(), log_dir + "/server_downloads"
++                        )
++                    except Exception as exception:
++                        logging.info(
++                            "Could not copy server downloaded files: %s", exception
++                        )
++
++        except BaseException:
++            if analysis_error is None:
++                raise
++            logging.exception("Could not save logs after analyzer exception")
++        finally:
++            if analysis_error is not None:
+                 try:
+-                    shutil.copytree(test.server_www_dir(), log_dir + "/server_www")
+-                except Exception as exception:
+-                    logging.info("Could not copy server www files: %s", exception)
+-                try:
+-                    shutil.copytree(
+-                        test.client_download_dir(), log_dir + "/client_downloads"
+-                    )
+-                except Exception as exception:
+-                    logging.info(
+-                        "Could not copy client downloaded files: %s", exception
+-                    )
+-                try:
+-                    shutil.copytree(test.client_www_dir(), log_dir + "/client_www")
+-                except Exception as exception:
+-                    logging.info("Could not copy client www files: %s", exception)
+-                try:
+-                    shutil.copytree(
+-                        test.server_download_dir(), log_dir + "/server_downloads"
+-                    )
+-                except Exception as exception:
+-                    logging.info(
+-                        "Could not copy server downloaded files: %s", exception
+-                    )
++                    for cleanup in (
++                        test.cleanup,
++                        server_log_dir.cleanup,
++                        client_log_dir.cleanup,
++                        sim_log_dir.cleanup,
++                        log_file.close,
++                    ):
++                        try:
++                            cleanup()
++                        except BaseException:
++                            logging.exception("Could not clean up after analyzer exception")
++                finally:
++                    raise analysis_error.with_traceback(analysis_error.__traceback__)
+ 
+         test.cleanup()
+         server_log_dir.cleanup()
+@@ -578,6 +614,8 @@
+         """run the interop test suite and output the table"""
+ 
+         nr_failed = 0
++        # Unfinished cases remain null, including if the first analyzer raises.
++        self._export_results()
+         for client, server in self._client_server_pairs:
+             logging.debug(
+                 "Running with server %s (%s) and client %s (%s)",
+@@ -597,6 +635,7 @@
+             for testcase in self._tests:
+                 status = self._run_testcase(server, client, testcase)
+                 self.test_results[server][client][testcase] = status
++                self._export_results()
+                 if status == TestResult.FAILED:
+                     nr_failed += 1
+ 
+@@ -604,6 +643,7 @@
+             for measurement in self._measurements:
+                 res = self._run_measurement(server, client, measurement)
+                 self.measurement_results[server][client][measurement] = res
++                self._export_results()
+ 
+         self._postprocess_results()
+         self._print_results()
+--- a/trace.py
++++ b/trace.py
+@@ -109,17 +109,29 @@
+             decode_as={"udp.port==443": "quic"},
+         )
+         packets = []
+-        # If the pcap has been cut short in the middle of the packet, pyshark will crash.
+-        # See https://github.com/KimiNewt/pyshark/issues/390.
++        # Own the actual iterator: PyShark creates a new generator in __iter__.
++        # An incomplete analysis or cleanup error must never yield partial data.
++        iterator = iter(cap)
++        failure = None
+         try:
+-            for p in cap:
++            for p in iterator:
+                 if "quic" not in p:
+                     logging.info("Captured packet without quic layer: %r", p)
+                     continue
+                 packets.append(p)
+-        except Exception as e:
+-            logging.debug(e)
+-        cap.close()
++        except BaseException as error:
++            failure = error
++        finally:
++            for close in (iterator.close, cap.close):
++                try:
++                    close()
++                except BaseException as error:
++                    if failure is None:
++                        failure = error
++                    else:
++                        logging.error("Additional capture cleanup failure", exc_info=True)
++        if failure is not None:
++            raise failure
+ 
+         if self._keylog_file is not None:
+             for p in packets:

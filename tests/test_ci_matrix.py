@@ -51,7 +51,7 @@ class Matrix(unittest.TestCase):
                     non_null_case_results=len(rows), unexecuted_case_results=0, original_json_sha256='d' * 64))
             count = len(group['cases']) * 2
             self.put(group, 'summary.json', dict(status='PASSED', reference_self_tests='omitted', interop_group=group['name'],
-                reference_implementation=reference, runner_source_unchanged=True, phases=phases,
+                reference_implementation=reference, runner_source_unchanged=False, runner_patch=self.module.runner_patch_manifest(), phases=phases,
                 selected_cases=sorted(group['cases']), candidate_directions=['client', 'server'],
                 case_results=count, non_null_case_results=count, unexecuted_case_results=0))
 
@@ -181,7 +181,7 @@ class Matrix(unittest.TestCase):
                  ('simulator-shutdown.json', 'change', 'other'),
                  ('source-pair.json', 'tls_revision', 'e' * 40),
                  ('pins.json', 'SIM_IMAGE', 'martenseemann/quic-network-simulator@sha256:' + 'e' * 64),
-                 ('summary.json', 'runner_source_unchanged', False), ('summary.json', 'candidate_directions', ['client'])]
+                 ('summary.json', 'runner_source_unchanged', True), ('summary.json', 'runner_patch', {}), ('summary.json', 'candidate_directions', ['client'])]
         for filename, key, value in cases:
             with self.subTest(key=key):
                 original = self.get(group, filename)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unchanged pinned runner; separate implementation config, bounded safe evidence."""
+"""Disclosed hash-pinned runner resilience patch; bounded safe evidence."""
 import hashlib
 import json
 import math
@@ -123,7 +123,8 @@ RUNNER_PATTERNS = {
 SAFE_VALIDATION_ERRORS = {'wrong QUIC version', 'wrong matrix direction', 'missing result row', 'unexpected/duplicate case', 'case abbreviation mismatch', 'missing case', 'unknown case result', 'invalid result file', 'invalid result schema'}
 SAFE_EXCEPTION_TYPES = {'RuntimeError', 'ValueError', 'TypeError', 'FileNotFoundError',
     'PermissionError', 'OSError', 'TimeoutError', 'TimeoutExpired', 'CalledProcessError',
-    'KeyError', 'AttributeError', 'ModuleNotFoundError', 'JSONDecodeError', 'RecursionError'}
+    'KeyError', 'AttributeError', 'ModuleNotFoundError', 'JSONDecodeError', 'RecursionError',
+    'TSharkCrashException', 'pyshark.capture.capture.TSharkCrashException'}
 CONSOLE_CLASSES = {'ModuleNotFoundError': 'python-dependency', 'unrecognized arguments:': 'runner-cli-arguments', 'No such file or directory': 'missing-tool-or-file', 'Cannot connect to the Docker daemon': 'docker-daemon-unavailable', 'Error response from daemon': 'docker-environment', 'no matching manifest': 'container-image-platform', 'permission denied': 'permission-denied', 'tshark not found': 'tshark-unavailable',
     'not compliant.': 'implementation-compliance-failed',
     'pull access denied': 'image-pull-denied', 'no such image': 'image-unavailable',
@@ -279,7 +280,7 @@ def strict_json(raw, allow_floats=False):
             for child in value:
                 check(child, depth + 1)
         elif isinstance(value, float) and (not allow_floats or not math.isfinite(value)):
-            # Endpoint reports are integer-only. The unchanged runner also has
+            # Endpoint reports are integer-only. The upstream runner also has
             # finite start/end timestamps, which are parsed but never exported.
             raise ValueError('JSON noninteger or nonfinite number')
     check(data)
@@ -719,6 +720,15 @@ def traceback_evidence(text):
             if error:
                 value = error.group(1)
                 current['exception_type'] = value if value in SAFE_EXCEPTION_TYPES else withheld(value)
+                # Pyshark Capture cleanup reports a fixed first-line grammar.
+                # Export only the bounded return code, never PID or stderr text.
+                if value in ('TSharkCrashException', 'pyshark.capture.capture.TSharkCrashException'):
+                    crash = re.fullmatch(
+                        r'(?:pyshark\.capture\.capture\.)?TSharkCrashException: '
+                        r'TShark \(pid [0-9]{1,10}\) seems to have crashed '
+                        r'\(retcode: ([0-9]{1,3})\)\.', line)
+                    if crash and 1 <= int(crash.group(1)) <= 255:
+                        current['analyzer_exit_code'] = int(crash.group(1))
                 records.append(current)
                 current = None
     if current and current['frames']:
@@ -756,6 +766,20 @@ def require(test, message):
     if not test:
         raise RuntimeError(message)
 
+def runner_patch_manifest():
+    path = Path(__file__).with_name('runner-patch.json')
+    identity = json.loads(path.read_text())
+    patch = path.with_name('runner-resilience.patch')
+    require(hashlib.sha256(patch.read_bytes()).hexdigest() == identity['patch_sha256'], 'runner patch digest mismatch')
+    return identity
+
+def verify_runner_patch(root):
+    identity = json.loads(subprocess.check_output([
+        str(ROOT / '.ci-work/runner-patch'), 'verify', str(root),
+        str(Path(__file__).with_name('runner-resilience.patch'))], text=True))
+    require(identity == runner_patch_manifest(), 'runner patch identity mismatch')
+    return identity
+
 def checked_result(path, client, server):
     metadata, raw = diagnostic_file(path.parent, (path.name,), limit=MAX_JSON_BYTES)
     require(raw is not None, 'invalid result file')
@@ -784,7 +808,7 @@ def checked_result(path, client, server):
 def setup_workdir(name, candidate):
     work = ROOT / '.ci-work' / name
     work.mkdir()
-    # Only registration/config lives outside the untouched source checkout.
+    # Only registration/config lives outside the verified patched source checkout.
     for path in RUNNER.iterdir():
         if path.name not in ('.git', 'implementations_quic.json'):
             (work / path.name).symlink_to(path)
@@ -818,7 +842,8 @@ def phase(name, client, server, candidate):
             proc = subprocess.run(cmd, cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=600)
         record['exit_code'] = proc.returncode
         record.update(checked_result(output, client, server))
-        record['status'] = 'PASSED' if proc.returncode == 0 and record['passed'] else 'FAILED'
+        record['status'] = ('INFRASTRUCTURE_OR_RESULT_FAILURE' if record['unexecuted_case_results']
+                            else 'PASSED' if proc.returncode == 0 and record['passed'] else 'FAILED')
     except subprocess.TimeoutExpired:
         record['status'] = 'TIMEOUT'
     except Exception as error:
@@ -854,6 +879,11 @@ def phase(name, client, server, candidate):
                 'server_compliance_passed': server + ' server compliant.' in text,
                 'client_compliance_passed': client + ' client compliant.' in text,
                 'announced_cases': sorted(name for name in EXPECTED if 'Running test case: ' + name in text)}
+        # A traceback with a failing runner exit is infrastructure failure even
+        # when earlier atomic checkpoints contain complete case verdicts.
+        terminal_tracebacks = record.get('runner_tracebacks', []) or record.get('console_tail', {}).get('tracebacks', [])
+        if record.get('exit_code', 0) != 0 and terminal_tracebacks:
+            record['status'] = 'INFRASTRUCTURE_OR_RESULT_FAILURE'
         record['duration_seconds'] = round(time.monotonic() - started, 3)
         # Fixed paths only; keys, certificates, tickets, qlogs, raw messages and
         # filenames are never copied. Application bodies stay in the raw tree.
@@ -1020,7 +1050,7 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
         expected = requested_cases(group['cases'])
         require(summary.get('selected_cases') == sorted(expected), 'matrix case scope mismatch')
         require(summary.get('candidate_directions') == ['client', 'server'], 'matrix direction scope mismatch')
-        require(summary.get('reference_implementation') == reference and summary.get('runner_source_unchanged') is True, 'matrix runner or reference mismatch')
+        require(summary.get('reference_implementation') == reference and summary.get('runner_source_unchanged') is False and summary.get('runner_patch') == runner_patch_manifest(), 'matrix runner or reference mismatch')
         phases = ['bounded-client', 'bounded-server']
         require(summary.get('phases') == phases, 'matrix missing execution phase')
         phase_passed, non_null = [], 0
@@ -1062,7 +1092,7 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
               'candidate_passed': sum(cell['result'] == 'succeeded' for cell in cells),
               'candidate_unexecuted': sum(cell['result'] is None for cell in cells),
               'reference_self_tests': 'omitted', 'control_results': 0, 'control_passed': 0,
-              'runner_source_unchanged': True, 'simulator_image': simulator, 'simulator_shutdown': simulator_shutdown, 'source_pair_trees': source_pair, 'groups': verified_groups,
+              'runner_source_unchanged': False, 'runner_patch': runner_patch_manifest(), 'simulator_image': simulator, 'simulator_shutdown': simulator_shutdown, 'source_pair_trees': source_pair, 'groups': verified_groups,
               'candidate_cells': cells, 'control_cells': [], 'full_44_case_direction_matrix': True}
     output = SAFE
     output.mkdir(exist_ok=True)
@@ -1086,23 +1116,23 @@ def main():
         'compose': subprocess.check_output(['docker', 'compose', 'version'], text=True).strip(),
         'python_packages': subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'], text=True).splitlines()})
     require(subprocess.check_output(['git', '-C', str(RUNNER), 'rev-parse', 'HEAD'], text=True).strip() == os.environ['RUNNER_REVISION'], 'runner pin mismatch')
-    require(not subprocess.check_output(['git', '-C', str(RUNNER), 'status', '--porcelain'], text=True).strip(), 'runner checkout changed')
+    patch_identity = verify_runner_patch(RUNNER)
     docker_metadata()
     records = []
     if 'client' in directions:
         records.append(phase('bounded-client', 'hibana-quic', REFERENCE, True))
     if 'server' in directions:
         records.append(phase('bounded-server', REFERENCE, 'hibana-quic', True))
-    clean = not subprocess.check_output(['git', '-C', str(RUNNER), 'status', '--porcelain'], text=True).strip()
-    passed = len(records) == len(directions) and all(r['status'] == 'PASSED' for r in records) and clean
+    verified = verify_runner_patch(RUNNER) == patch_identity
+    passed = len(records) == len(directions) and all(r['status'] == 'PASSED' for r in records) and verified
     write('summary.json', {'status': 'PASSED' if passed else 'NOT_PASSED',
-        'scope': 'one unmodified runner pilot: explicitly selected candidate cases and directions; reference self-tests omitted',
+        'scope': 'one disclosed patched runner pilot: explicitly selected candidate cases and directions; reference self-tests omitted',
         'reference_implementation': REFERENCE,
         'interop_group': os.environ.get('INTEROP_GROUP'),
         'candidate_directions': sorted(directions),
         'reference_self_tests': 'omitted',
         'selected_cases': sorted(EXPECTED),
-        'runner_source_unchanged': clean, 'phases': [r['phase'] for r in records],
+        'runner_source_unchanged': False, 'runner_patch': patch_identity, 'phases': [r['phase'] for r in records],
         'case_results': sum(len(r.get('results', [])) for r in records),
         'non_null_case_results': sum(r.get('non_null_case_results', 0) for r in records),
         'unexecuted_case_results': sum(r.get('unexecuted_case_results', 0) for r in records),

@@ -145,6 +145,17 @@ docker pull --platform linux/amd64 "$RUST_IMAGE"
 docker pull --platform linux/amd64 "$ENDPOINT_IMAGE"
 docker pull --platform linux/amd64 "$UBUNTU_IMAGE"
 docker pull --platform linux/amd64 "$PYTHON_IMAGE"
+# Build the private verifier with the already-pinned compiler; no crate downloads.
+docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+  -v "$ROOT:$ROOT" -w "$ROOT" "$RUST_IMAGE" \
+  rustc --edition=2024 -D warnings -C target-feature=+crt-static tools/ci/runner_patch.rs -o .ci-work/runner-patch
+docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+  -v "$ROOT:$ROOT" -w "$ROOT" "$RUST_IMAGE" \
+  rustc --edition=2024 -D warnings -C target-feature=+crt-static --test tools/ci/runner_patch.rs -o .ci-work/runner-patch-tests
+.ci-work/runner-patch-tests
+.ci-work/runner-patch apply .ci-work/runner tools/ci/runner-resilience.patch > ci-safe-results/runner-patch.json
+RUNNER_SOURCE="$PWD/.ci-work/runner/interop.py" RUNNER_TRACE_SOURCE="$PWD/.ci-work/runner/trace.py" \
+  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/ci/runner-tests -p 'test_*.py'
 echo 'Building and smoke-testing analysis tools before endpoint compilation'
 docker build --platform linux/amd64 --build-arg UBUNTU_IMAGE="$UBUNTU_IMAGE" --build-arg PYTHON_IMAGE="$PYTHON_IMAGE" -f tools/ci/runner-tools.Dockerfile -t hibana-pilot-tools .ci-work/runner
 if [[ $REFERENCE_IMPLEMENTATION == neqo ]]; then
@@ -155,7 +166,7 @@ if [[ $REFERENCE_IMPLEMENTATION == neqo ]]; then
   docker build --platform linux/amd64 --build-arg CARGO_BUILD_JOBS=2 -f .ci-work/neqo/qns/Dockerfile -t hibana-pilot-neqo .ci-work/neqo
   REFERENCE_IMAGE=$(docker image inspect hibana-pilot-neqo --format '{{.Id}}')
 else
-  # The unchanged runner registers this official Cloudflare QNS image. Resolve
+  # The pinned upstream registry names this official Cloudflare QNS image. Resolve
   # its digest once; the control and every candidate phase use that exact image.
   [[ $(python3 -c 'import json; print(json.load(open(".ci-work/runner/implementations_quic.json"))["quiche"]["image"])') == cloudflare/quiche-qns:latest ]]
   docker pull --platform linux/amd64 cloudflare/quiche-qns:latest
@@ -188,7 +199,8 @@ if os.environ['REFERENCE_IMPLEMENTATION'] != 'neqo':
 Path('ci-safe-results/pins.json').write_text(json.dumps(pins,indent=2)+'\n')
 PY
 # Keep /tmp at the identical path: upstream explicitly creates Docker bind
-# mount sources there. The reference source and its verdicts are not patched.
+# mount sources there. Reference endpoints are unchanged; the runner cleanup
+# and result-persistence patch is explicitly recorded in runner-patch.json.
 # Match the checkout owner's host identity, preserving Git's ownership guard.
 # The supplementary group grants this process only the Docker socket access
 # already provided by the authorized mount; no host groups or modes are changed.
