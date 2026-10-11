@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(&*output.0.borrow(), &body);
     }
     #[test]
-    fn cancellation_returns_borrowed_header_and_body_storage() {
+    fn cancellation_releases_caller_storage_for_a_fresh_exchange() {
         struct Park<'a>(&'a core::cell::Cell<bool>);
         impl Consumer for Park<'_> {
             async fn headers(&mut self, _: FieldSection<'_>) -> Result<()> {
@@ -328,7 +328,8 @@ mod tests {
             }
             assert!(entered.get());
         }
-        // Dropping the real projected run releases every outstanding borrow.
+        // Dropping the entire projected run retires its Exchange and releases
+        // caller storage for a fresh exchange; the old slots are not reused.
         body.fill(0xa5);
         headers.fill(0xa5);
         slab.fill(0);
@@ -593,5 +594,226 @@ mod tests {
             );
             assert_eq!(&decoded.body[..payload.len()], payload);
         }
+    }
+    #[test]
+    fn owned_slices_restore_after_delayed_input_and_callback_errors_without_copying() {
+        struct Input<'a, 'e, 's> {
+            wire: &'a [u8],
+            offset: usize,
+            fail_at: Option<usize>,
+            exchange: &'e Exchange<'s>,
+            headers: usize,
+            body: usize,
+        }
+        impl BodyReader for Input<'_, '_, '_> {
+            async fn read(&mut self, output: &mut [u8]) -> core::result::Result<usize, ()> {
+                if (2..5).contains(&self.offset) {
+                    assert!(self.exchange.headers.borrow().is_empty());
+                    assert_eq!(output.as_ptr() as usize, self.headers + self.offset - 2);
+                } else if (7..9).contains(&self.offset) {
+                    assert!(self.exchange.bytes.borrow().is_empty());
+                    assert_eq!(output.as_ptr() as usize, self.body + self.offset - 7);
+                }
+                crate::runtime::yield_now().await;
+                if self.fail_at == Some(self.offset) {
+                    return Err(());
+                }
+                if self.offset == self.wire.len() {
+                    return Ok(0);
+                }
+                output[0] = self.wire[self.offset];
+                self.offset += 1;
+                Ok(1)
+            }
+        }
+        struct Output<'e, 's> {
+            exchange: &'e Exchange<'s>,
+            fail_body: Option<bool>,
+            headers: usize,
+            body: usize,
+        }
+        impl Consumer for Output<'_, '_> {
+            async fn headers(&mut self, fields: FieldSection<'_>) -> Result<()> {
+                assert_eq!(fields.encoded.as_ptr() as usize, self.headers);
+                assert!(self.exchange.headers.borrow().is_empty());
+                crate::runtime::yield_now().await;
+                if self.fail_body == Some(false) {
+                    return Err("callback failed".into());
+                }
+                Ok(())
+            }
+            async fn data(&mut self, _: u64, bytes: &[u8]) -> Result<()> {
+                assert_eq!(bytes.as_ptr() as usize, self.body);
+                assert!(self.exchange.bytes.borrow().is_empty());
+                crate::runtime::yield_now().await;
+                if self.fail_body == Some(true) {
+                    return Err("callback failed".into());
+                }
+                Ok(())
+            }
+            async fn complete(&mut self, _: u64) -> Result<()> {
+                panic!("failed exchange cannot complete")
+            }
+        }
+        for (fail_at, fail_body) in [
+            (Some(3), None),
+            (Some(8), None),
+            (None, Some(false)),
+            (None, Some(true)),
+        ] {
+            let global = response::<READER, CONSUMER>();
+            let read_program = project::<READER>(&global);
+            let consume_program = project::<CONSUMER>(&global);
+            let carrier = CarrierStorage::<1, 16, 128>::new();
+            let mut slab = [0; 65536];
+            let mut kit = SessionKitStorage::uninit();
+            let sid = SessionId::new(71);
+            let rendezvous = kit
+                .init()
+                .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+                .unwrap();
+            let mut reader = rendezvous.enter(sid, &read_program).unwrap();
+            let mut consumer = rendezvous.enter(sid, &consume_program).unwrap();
+            let mut body = [0; 2];
+            let mut headers = [0; 64];
+            let body_address = body.as_ptr() as usize;
+            let header_address = headers.as_ptr() as usize;
+            let exchange = Exchange::new(&mut body, &mut headers);
+            let mut input = Input {
+                wire: &[1, 3, 0, 0, 0xd9, 0, 3, b'a', b'b', b'c'],
+                offset: 0,
+                fail_at,
+                exchange: &exchange,
+                headers: header_address,
+                body: body_address,
+            };
+            let mut output = Output {
+                exchange: &exchange,
+                fail_body,
+                headers: header_address,
+                body: body_address,
+            };
+            let guard = actor_test_allocator::NoAlloc::start();
+            let result = run(crate::runtime::join::values2(
+                localside::reader::run(&mut reader, &mut input, &exchange),
+                localside::consumer::run(&mut consumer, &mut output, b"GET", &exchange),
+            ));
+            assert!(result.is_err());
+            assert_eq!(exchange.headers.borrow().len(), 64);
+            assert_eq!(exchange.bytes.borrow().len(), 2);
+            assert_eq!(exchange.headers.borrow().as_ptr() as usize, header_address);
+            assert_eq!(exchange.bytes.borrow().as_ptr() as usize, body_address);
+            guard.finish();
+        }
+    }
+
+    #[test]
+    fn body_callback_cancellation_releases_caller_storage_for_a_fresh_exchange() {
+        struct Park<'a>(&'a core::cell::Cell<bool>);
+        impl Consumer for Park<'_> {
+            async fn headers(&mut self, _: FieldSection<'_>) -> Result<()> {
+                Ok(())
+            }
+            async fn data(&mut self, _: u64, _: &[u8]) -> Result<()> {
+                self.0.set(true);
+                core::future::pending().await
+            }
+            async fn complete(&mut self, _: u64) -> Result<()> {
+                panic!("parked body cannot complete")
+            }
+        }
+        let wire = [1, 3, 0, 0, 0xd9, 0, 1, b'a'];
+        let mut body = [0; 2];
+        let mut headers = [0; 64];
+        let mut slab = [0; 65536];
+        let entered = core::cell::Cell::new(false);
+        let guard = actor_test_allocator::NoAlloc::start();
+        {
+            let mut input = Fragments(&wire);
+            let mut consumer = Park(&entered);
+            let mut receive = pin!(receive_response(
+                &mut input,
+                b"GET",
+                ResponseStorage {
+                    body: &mut body,
+                    headers: &mut headers,
+                    slab: &mut slab,
+                },
+                &mut consumer
+            ));
+            let mut cx = Context::from_waker(Waker::noop());
+            for _ in 0..128 {
+                assert!(receive.as_mut().poll(&mut cx).is_pending());
+                if entered.get() {
+                    break;
+                }
+            }
+            assert!(entered.get());
+        }
+        body.fill(0xa5);
+        headers.fill(0xa5);
+        slab.fill(0);
+        let mut consumer = Inspect::default();
+        assert_eq!(
+            run(receive_response(
+                &mut Fragments(&wire),
+                b"GET",
+                ResponseStorage {
+                    body: &mut body,
+                    headers: &mut headers,
+                    slab: &mut slab,
+                },
+                &mut consumer
+            ))
+            .unwrap(),
+            1
+        );
+        assert_eq!(consumer.body[0], b'a');
+        guard.finish();
+    }
+    #[test]
+    fn request_writer_restores_owned_headers_after_delayed_output_failure() {
+        struct Fail<'e, 's>(&'e Exchange<'s>);
+        impl localside::writer::BodyWriter for Fail<'_, '_> {
+            async fn write(&mut self, _: &[u8]) -> core::result::Result<(), ()> {
+                assert!(self.0.headers.borrow().is_empty());
+                crate::runtime::yield_now().await;
+                Err(())
+            }
+            async fn finish(&mut self) -> core::result::Result<(), ()> {
+                panic!("failed output cannot finish")
+            }
+        }
+        let global = request::<0, 1>();
+        let app_program = project::<0>(&global);
+        let writer_program = project::<1>(&global);
+        let carrier = CarrierStorage::<1, 16, 128>::new();
+        let mut slab = [0; 65536];
+        let mut kit = SessionKitStorage::uninit();
+        let sid = SessionId::new(72);
+        let rendezvous = kit
+            .init()
+            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+            .unwrap();
+        let mut app = rendezvous.enter(sid, &app_program).unwrap();
+        let mut writer = rendezvous.enter(sid, &writer_program).unwrap();
+        let mut body = [0; 2];
+        let mut headers = [0; 256];
+        let address = headers.as_ptr() as usize;
+        let exchange = Exchange::new(&mut body, &mut headers);
+        let mut request = localside::outgoing::Request::new(&exchange);
+        let mut output = Fail(&exchange);
+        let guard = actor_test_allocator::NoAlloc::start();
+        let result = run(crate::runtime::join::values2(
+            request.headers(&mut app, b"GET", b"example.com", b"/", &[]),
+            localside::writer::request(&mut writer, &mut output, 4096, &exchange),
+        ));
+        assert!(matches!(
+            result,
+            Err(Error::Invalid("HTTP/3 output failed"))
+        ));
+        assert_eq!(exchange.headers.borrow().len(), 256);
+        assert_eq!(exchange.headers.borrow().as_ptr() as usize, address);
+        guard.finish();
     }
 }

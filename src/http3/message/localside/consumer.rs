@@ -1,4 +1,9 @@
 //! CONSUMER: consume headers, body chunks and trailers before acknowledging completion.
+//!
+//! Cancelling a localside retires the entire exchange: drop all of its role
+//! futures and borrowed receipts. Do not resume peers or reuse the old Exchange;
+//! an owned slice may no longer occupy its slot. Caller storage can be reused
+//! in a fresh Exchange after the entire cancelled exchange has been dropped.
 use crate::http3::message::{Error, Exchange, Result, global::*};
 use hibana::Endpoint;
 pub async fn run<const ROLE: u8>(
@@ -21,14 +26,18 @@ pub async fn run<const ROLE: u8>(
                     return Err("informational content-length".into());
                 }
                 {
-                    let encoded = exchange.headers.borrow();
-                    crate::http3::message::imp::request::without_te(&encoded[..length])?;
-                    consumer
+                    crate::http3::message::imp::request::without_te(
+                        &exchange.headers.borrow()[..length],
+                    )?;
+                    let encoded = exchange.headers.take();
+                    let result = consumer
                         .information(FieldSection {
                             metadata: &fields,
                             encoded: &encoded[..length],
                         })
-                        .await?;
+                        .await;
+                    *exchange.headers.borrow_mut() = encoded;
+                    result?;
                 }
                 endpoint.send::<Stored>(&()).await.map_err(Error::from)?;
             }
@@ -49,14 +58,18 @@ pub async fn run<const ROLE: u8>(
                     return Err("successful CONNECT requires a tunnel consumer".into());
                 }
                 {
-                    let encoded = exchange.headers.borrow();
-                    crate::http3::message::imp::request::without_te(&encoded[..length])?;
-                    consumer
+                    crate::http3::message::imp::request::without_te(
+                        &exchange.headers.borrow()[..length],
+                    )?;
+                    let encoded = exchange.headers.take();
+                    let result = consumer
                         .headers(FieldSection {
                             metadata: &fields,
                             encoded: &encoded[..length],
                         })
-                        .await?;
+                        .await;
+                    *exchange.headers.borrow_mut() = encoded;
+                    result?;
                 }
                 endpoint.send::<Stored>(&()).await.map_err(Error::from)?;
                 break (
@@ -85,13 +98,15 @@ pub async fn request<const ROLE: u8>(
         .ok_or("missing request fields")?;
     let expected = fields.content_length;
     {
-        let encoded = exchange.headers.borrow();
-        consumer
+        let encoded = exchange.headers.take();
+        let result = consumer
             .headers(FieldSection {
                 metadata: &fields,
                 encoded: &encoded[..length],
             })
-            .await?;
+            .await;
+        *exchange.headers.borrow_mut() = encoded;
+        result?;
     }
     endpoint.send::<Stored>(&()).await.map_err(Error::from)?;
     content(endpoint, consumer, expected, false, exchange).await
@@ -121,10 +136,13 @@ pub(in crate::http3) async fn content<const ROLE: u8>(
                     return Err("body exceeds content-length".into());
                 }
                 {
-                    let bytes = exchange.bytes.borrow();
-                    consumer
-                        .data(offset, bytes.get(..count).ok_or("body chunk capacity")?)
-                        .await?;
+                    let bytes = exchange.bytes.take();
+                    let result = match bytes.get(..count) {
+                        Some(chunk) => consumer.data(offset, chunk).await,
+                        None => Err("body chunk capacity".into()),
+                    };
+                    *exchange.bytes.borrow_mut() = bytes;
+                    result?;
                 }
                 offset = end;
                 endpoint.send::<Stored>(&()).await.map_err(Error::from)?;
@@ -149,14 +167,18 @@ pub(in crate::http3) async fn content<const ROLE: u8>(
                 return Err("invalid response trailers".into());
             }
             {
-                let encoded = exchange.headers.borrow();
-                crate::http3::message::imp::request::without_te(&encoded[..length])?;
-                consumer
+                crate::http3::message::imp::request::without_te(
+                    &exchange.headers.borrow()[..length],
+                )?;
+                let encoded = exchange.headers.take();
+                let result = consumer
                     .trailers(FieldSection {
                         metadata: &fields,
                         encoded: &encoded[..length],
                     })
-                    .await?;
+                    .await;
+                *exchange.headers.borrow_mut() = encoded;
+                result?;
             }
             endpoint.send::<Stored>(&()).await.map_err(Error::from)?;
         }

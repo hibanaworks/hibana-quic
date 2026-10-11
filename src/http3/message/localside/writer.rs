@@ -1,4 +1,9 @@
 //! Encode the writer projection into ordinary HTTP/3 stream bytes.
+//!
+//! Cancelling a localside retires the entire exchange: drop all of its role
+//! futures and borrowed receipts. Do not resume peers or reuse the old Exchange;
+//! an owned slice may no longer occupy its slot. Caller storage can be reused
+//! in a fresh Exchange after the entire cancelled exchange has been dropped.
 use crate::http3::message::{Consumer, Error, Exchange, FieldSection, Result};
 use core::future::Future;
 use hibana::Endpoint;
@@ -163,14 +168,19 @@ async fn request_head<const ROLE: u8>(
     let method = fields.method.ok_or("request has no method")? as u8;
     let expected = fields.content_length;
     {
-        let encoded = exchange.headers.borrow();
-        crate::http3::message::imp::request::ordinary(&encoded[..length], &fields)?;
-        encode
+        crate::http3::message::imp::request::ordinary(
+            &exchange.headers.borrow()[..length],
+            &fields,
+        )?;
+        let encoded = exchange.headers.take();
+        let result = encode
             .headers(FieldSection {
                 metadata: &fields,
                 encoded: &encoded[..length],
             })
-            .await?;
+            .await;
+        *exchange.headers.borrow_mut() = encoded;
+        result?;
     }
     Ok((method, expected))
 }

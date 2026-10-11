@@ -1,4 +1,9 @@
 //! READER: parse incoming response frames and transfer each owned chunk.
+//!
+//! Cancelling a localside retires the entire exchange: drop all of its role
+//! futures and borrowed receipts. Do not resume peers or reuse the old Exchange;
+//! an owned slice may no longer occupy its slot. Caller storage can be reused
+//! in a fresh Exchange after the entire cancelled exchange has been dropped.
 use crate::http3::message::{
     Error, Exchange, Result,
     global::*,
@@ -36,8 +41,10 @@ pub async fn run<const ROLE: u8>(
             skip(reader, frame.length).await?;
             continue;
         }
-        let (decoded, length) =
-            fields(reader, frame.length, &mut exchange.headers.borrow_mut()).await?;
+        let storage = exchange.headers.take();
+        let result = fields(reader, frame.length, storage).await;
+        *exchange.headers.borrow_mut() = storage;
+        let (decoded, length) = result?;
         let status = decoded.status.ok_or("response has no status")?;
         if decoded.method.is_some()
             || decoded.https.is_some()
@@ -102,8 +109,10 @@ async fn request_head(
             skip(reader, frame.length).await?;
             continue;
         }
-        let (decoded, length) =
-            fields(reader, frame.length, &mut exchange.headers.borrow_mut()).await?;
+        let storage = exchange.headers.take();
+        let result = fields(reader, frame.length, storage).await;
+        *exchange.headers.borrow_mut() = storage;
+        let (decoded, length) = result?;
         crate::http3::message::imp::request::ordinary(
             &exchange.headers.borrow()[..length],
             &decoded,
@@ -135,7 +144,10 @@ async fn content<const ROLE: u8>(
             break None;
         };
         if frame.kind == 1 {
-            break Some(fields(reader, frame.length, &mut exchange.headers.borrow_mut()).await?);
+            let storage = exchange.headers.take();
+            let result = fields(reader, frame.length, storage).await;
+            *exchange.headers.borrow_mut() = storage;
+            break Some(result?);
         }
         if frame.kind != 0 {
             unknown(frame.kind)?;
@@ -149,7 +161,10 @@ async fn content<const ROLE: u8>(
             if count == 0 {
                 return Err("empty HTTP/3 body storage".into());
             }
-            exact(reader, &mut exchange.bytes.borrow_mut()[..count]).await?;
+            let storage = exchange.bytes.take();
+            let result = exact(reader, &mut storage[..count]).await;
+            *exchange.bytes.borrow_mut() = storage;
+            result?;
             remaining -= count as u64;
             endpoint
                 .send::<Data>(&(count as u64))

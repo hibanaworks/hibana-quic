@@ -2,14 +2,14 @@ name: QUIC interoperability pilot
 
 on:
   push:
-    branches: [development/rolled-route-runtime, ci/parallel-client-retirement]
+    branches: [main]
     paths: ['src/**', 'examples/**', 'pal/src/**', 'Cargo.toml', 'Cargo.lock', 'pal/Cargo.toml', 'pal/Cargo.lock', 'tests/tls-reference/Cargo.toml', 'tests/tls-reference/Cargo.lock', tools/ci/stage-paired-source.py, tools/ci/pins.env, tools/ci/interop-request.json, tools/ci/run-interop.sh, tools/ci/run_in_tools.py, .github/workflows/interop-pilot.yml]
   workflow_dispatch:
     inputs:
       source_ref:
         description: Audited test branch or exact commit to test
         required: true
-        default: ci/parallel-client-retirement
+        default: main
         type: string
       diagnostic_cases:
         description: Comma-separated registered cases to inspect; empty runs all 44 cells
