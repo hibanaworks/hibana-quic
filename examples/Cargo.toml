@@ -13,7 +13,7 @@ resolver = "3"
 [dependencies]
 hibana-quic = { path = "..", default-features = false }
 hibana-quic-pal = { path = "../pal" }
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "7c06688e0e90841d1760b7ef95f22080c30ce493", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "4ffd99de9cd2e3e9426e4f08a7249df45f4f88c2", default-features = false }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "66a28e86e0a27de408bc62c0d20a6ead0e3d9a70", default-features = false }
 
 [profile.release]

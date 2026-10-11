@@ -185,6 +185,27 @@ jobs:
           persist-credentials: false
       - run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/examples-target" >> "$GITHUB_ENV"
       - run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Read the immutable TLS revision for ARM tests
+        if: runner.os == 'macOS'
+        id: arm_tls
+        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+      - name: Check out the exact TLS source for ARM tests
+        if: runner.os == 'macOS'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: hibanaworks/hibana-tls
+          ref: ${{ steps.arm_tls.outputs.revision }}
+          path: hibana-tls
+          persist-credentials: false
+      - name: Execute the Apple ARM AES and GCM contracts
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128::tests::apple_aarch64_baseline_selects_hardware_aes -- --exact | tee "$RUNNER_TEMP/arm-aes-dispatch.log"
+          grep -F 'test result: ok. 1 passed; 0 failed;' "$RUNNER_TEMP/arm-aes-dispatch.log"
+          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128
+          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128gcm
       - name: Verify native environment capabilities
         run: |
           cargo +1.95.0 test --locked --manifest-path pal/Cargo.toml
