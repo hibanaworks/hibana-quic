@@ -3,10 +3,7 @@ use crate::{
     entropy::Entropy,
     http3::{
         Settings,
-        message::{
-            self, Exchange,
-            localside::{producer::Response, request::Request},
-        },
+        message::{self, Exchange},
     },
     io::{Clock, DatagramSocket},
     quic::application::{self, ServerHandler},
@@ -94,8 +91,8 @@ pub async fn run<const S: usize, const C: usize, const B: usize, const H: usize>
     storage: &mut Storage<B, H>,
     application: impl for<'a, 'r, 'exchange, 'storage> AsyncFnOnce(
         &'a mut Endpoint<'r, APP>,
-        Request<'exchange, 'storage, APP>,
-        Response<'exchange, 'storage, APP>,
+        &'exchange Exchange<'storage>,
+        &'exchange Exchange<'storage>,
     ) -> message::Result<()>,
 ) -> Result<(), Error> {
     if config.protocol != crate::http3::Protocol::Http3 {
@@ -196,7 +193,7 @@ pub async fn run<const S: usize, const C: usize, const B: usize, const H: usize>
 /// Drives the three admitted locals. Endpoints stay owned by the caller until
 /// the network has consumed the final output and completed connection close.
 #[allow(clippy::too_many_arguments)]
-async fn execute<'buffers>(
+pub async fn execute<'buffers>(
     reader: &mut Endpoint<'_, READ>,
     app: &mut Endpoint<'_, APP>,
     writer: &mut Endpoint<'_, WRITE>,
@@ -207,8 +204,8 @@ async fn execute<'buffers>(
     settings: Settings,
     application: impl for<'a, 'r, 'exchange, 'storage> AsyncFnOnce(
         &'a mut Endpoint<'r, APP>,
-        Request<'exchange, 'storage, APP>,
-        Response<'exchange, 'storage, APP>,
+        &'exchange Exchange<'storage>,
+        &'exchange Exchange<'storage>,
     ) -> message::Result<()>,
 ) -> Result<(), Error> {
     crate::runtime::join::values3(
@@ -218,7 +215,7 @@ async fn execute<'buffers>(
                 .map_err(Error::from)
         },
         async {
-            application(app, Request::new(request), Response::new(response))
+            application(app, request, response)
                 .await
                 .map_err(Error::from)
         },
@@ -386,7 +383,9 @@ mod tests {
                 &request,
                 &response,
                 crate::http3::decode_settings(&[]).unwrap(),
-                async |app, mut request, mut response| {
+                async |app, request, response| {
+                    let mut request = message::localside::request::Request::new(request);
+                    let mut response = message::localside::producer::Response::new(response);
                     request.headers(app).await?.release(app).await?;
                     response.headers(app, 200, &[]).await?;
                     assert!(request.chunk(app).await?.is_none());

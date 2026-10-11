@@ -318,12 +318,8 @@ fn client_writer_transfers_actual_head_method_to_independent_download_role() {
                     .await
                     .map_err(Error::from)?;
                 assert_eq!(method, crate::http3::Method::Head as u8);
-                let method = request_method(method)?;
-                download
-                    .send::<global::MethodStored>(&())
-                    .await
-                    .map_err(Error::from)?;
-                localside::consumer::run(&mut download, &mut consume, method, &inbound).await
+                let method_bytes = request_method(method)?;
+                localside::consumer::run(&mut download, &mut consume, method_bytes, &inbound).await
             },
         ));
         if peer_limit == 4096 {

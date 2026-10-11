@@ -1,43 +1,17 @@
-//! A native HTTP/3 streaming echo application. No application-message tunnel.
+//! Ordinary HTTP/3: GET/HEAD /hello, streaming POST /echo, and 404.
+//! Native credentials, sockets and execution stay in ../environment.rs.
 #[path = "../environment.rs"]
 mod environment;
-use hibana_quic::{
-    http3::{
-        Storage,
-        localside::server::{APP, READ, WRITE},
-        message,
-    },
-    session::Protocol,
-};
+mod server_app;
+
+use hibana_quic::{http3::Storage, session::Protocol};
 
 fn main() -> Result<(), String> {
+    let global = server_app::choreography();
+    let mut storage = const { Storage::<4096>::new() };
     environment::server(Protocol::Http3, async |server| {
-        let global = message::global::server::<READ, APP, WRITE>();
-        let mut storage = const { Storage::<4096>::new() };
-        server
-            .http3(
-                &global,
-                &mut storage,
-                async |app, mut request, mut response| {
-                    let headers = request.headers(app).await?;
-                    let method = headers.fields().metadata.method;
-                    headers.release(app).await?;
-                    response
-                        .headers(app, 200, &[(b"content-type", b"application/octet-stream")])
-                        .await?;
-                    while let Some(chunk) = request.chunk(app).await? {
-                        if method != Some(hibana_quic::http3::Method::Head) {
-                            response.write(app, chunk.bytes()).await?;
-                        }
-                        chunk.release(app).await?;
-                    }
-                    request.trailers(app, |_| Ok(())).await?;
-                    request.finish(app).await?;
-                    response.finish(app).await
-                },
-            )
-            .await
+        server.http3(&global, &mut storage, server_app::serve).await
     })?;
-    println!("served HTTP/3 echo");
+    println!("served HTTP/3 request");
     Ok(())
 }

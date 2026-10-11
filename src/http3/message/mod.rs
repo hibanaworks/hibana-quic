@@ -71,3 +71,11 @@ impl From<core::num::TryFromIntError> for Error {
 pub use imp::buffer::Exchange;
 
 pub use localside::consumer::{Consumer, FieldSection};
+
+pub mod storage;
+
+#[cfg(test)]
+mod direct_tests;
+
+#[cfg(test)]
+mod validation_tests;

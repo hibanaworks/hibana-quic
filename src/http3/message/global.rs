@@ -20,10 +20,6 @@ pub type Done = g::Msg<9, ()>;
 /// response writer before it can emit response bytes. This is local metadata,
 /// not another HTTP field or a readiness notification.
 pub type RequestMethod = g::Msg<10, u8>;
-/// Receipt that the response consumer owns its validated request method. The
-/// response reader waits for this causal handoff before publishing fields.
-pub type MethodStored = g::Msg<11, ()>;
-
 /// One server exchange with a genuine request-metadata handoff. The application
 /// may interleave request consumption and response production on the same role;
 /// only the reader supplies the method that governs response semantics.
@@ -35,16 +31,17 @@ pub fn server<const READ: u8, const APP: u8, const WRITE: u8>() -> impl Projecta
 }
 
 /// Independent upload and download roles for one full-duplex client exchange.
-/// The request writer transfers the actual method to the response consumer;
+/// The request writer transfers the actual method to the reader, which relays
+/// it to the response consumer before publishing fields;
 /// neither application role supplies a separate response-semantics flag.
 pub fn client<const UPLOAD: u8, const WRITE: u8, const READ: u8, const DOWNLOAD: u8>()
 -> impl Projectable {
     g::par(
         request::<UPLOAD, WRITE>(),
         g::seq(
-            g::send::<WRITE, DOWNLOAD, RequestMethod>(),
+            g::send::<WRITE, READ, RequestMethod>(),
             g::seq(
-                g::send::<DOWNLOAD, READ, MethodStored>(),
+                g::send::<READ, DOWNLOAD, RequestMethod>(),
                 response::<READ, DOWNLOAD>(),
             ),
         ),

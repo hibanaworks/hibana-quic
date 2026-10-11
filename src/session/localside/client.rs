@@ -28,20 +28,12 @@ impl<
         storage: &mut crate::http3::Storage<B, H>,
         upload: impl for<'a, 'r, 'exchange, 'storage> AsyncFnOnce(
             &'a mut Endpoint<'r, { crate::http3::localside::client::UPLOAD }>,
-            crate::http3::message::localside::outgoing::Request<
-                'exchange,
-                'storage,
-                { crate::http3::localside::client::UPLOAD },
-            >,
+            &'exchange crate::http3::message::Exchange<'storage>,
         )
             -> crate::http3::message::Result<()>,
         download: impl for<'a, 'r, 'exchange, 'storage> AsyncFnOnce(
             &'a mut Endpoint<'r, { crate::http3::localside::client::DOWNLOAD }>,
-            crate::http3::localside::client::Response<
-                'exchange,
-                'storage,
-                { crate::http3::localside::client::DOWNLOAD },
-            >,
+            &'exchange crate::http3::message::Exchange<'storage>,
         )
             -> crate::http3::message::Result<()>,
     ) -> core::result::Result<(), crate::http3::localside::client::Error> {

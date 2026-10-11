@@ -21,24 +21,18 @@ impl<
 > session::Server<'_, '_, Socket, Timer, Random, S, C, A>
 {
     /// Serve a native HTTP/3 request with the caller's composed message graph.
-    /// The application closure receives its inferred endpoint and borrowed
-    /// request/response actions. Platform capabilities remain in the binding.
+    /// The application localside receives its real endpoint and storage-only
+    /// request/response loans. It executes every endpoint operation itself.
+    /// This convenience binding admits the documented READ/APP/WRITE roles;
+    /// custom role owners can instead use the public message codec localsides.
     pub async fn http3<const B: usize, const H: usize>(
         self,
         global: &impl hibana::runtime::program::Projectable,
         storage: &mut crate::http3::Storage<B, H>,
         application: impl for<'a, 'r, 'exchange, 'storage> AsyncFnOnce(
             &'a mut Endpoint<'r, { crate::http3::localside::server::APP }>,
-            crate::http3::message::localside::request::Request<
-                'exchange,
-                'storage,
-                { crate::http3::localside::server::APP },
-            >,
-            crate::http3::message::localside::producer::Response<
-                'exchange,
-                'storage,
-                { crate::http3::localside::server::APP },
-            >,
+            &'exchange crate::http3::message::Exchange<'storage>,
+            &'exchange crate::http3::message::Exchange<'storage>,
         )
             -> crate::http3::message::Result<
             (),

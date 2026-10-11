@@ -5,7 +5,7 @@ use crate::{
     entropy::Entropy,
     http3::{
         Settings,
-        message::{self, Consumer, Exchange, localside::outgoing::Request},
+        message::{self, Exchange},
     },
     io::{Clock, DatagramSocket},
     quic::application::{self, ClientRequests},
@@ -41,32 +41,6 @@ pub enum Error {
 impl From<message::Error> for Error {
     fn from(error: message::Error) -> Self {
         Self::Message(error)
-    }
-}
-
-/// Response actions on the download projection. The request writer supplies
-/// the validated method; the application cannot supply a different HEAD fact.
-pub struct Response<'a, 'storage, const ROLE: u8> {
-    exchange: &'a Exchange<'storage>,
-}
-impl<const ROLE: u8> Response<'_, '_, ROLE> {
-    /// Consume one response, including informational fields, body and trailers.
-    /// The returned length is a local consumption receipt, not transport ACK.
-    pub async fn receive(
-        self,
-        endpoint: &mut Endpoint<'_, ROLE>,
-        consumer: &mut impl Consumer,
-    ) -> message::Result<u64> {
-        let method = endpoint
-            .recv::<message::global::RequestMethod>()
-            .await
-            .map_err(message::Error::from)?;
-        let method = message::localside::writer::request_method(method)?;
-        endpoint
-            .send::<message::global::MethodStored>(&())
-            .await
-            .map_err(message::Error::from)?;
-        message::localside::consumer::run(endpoint, consumer, method, self.exchange).await
     }
 }
 
@@ -157,11 +131,11 @@ pub async fn run<const S: usize, const C: usize, const B: usize, const H: usize>
     storage: &mut Storage<B, H>,
     upload: impl for<'a, 'r, 'exchange, 'storage> AsyncFnOnce(
         &'a mut Endpoint<'r, UPLOAD>,
-        Request<'exchange, 'storage, UPLOAD>,
+        &'exchange Exchange<'storage>,
     ) -> message::Result<()>,
     download: impl for<'a, 'r, 'exchange, 'storage> AsyncFnOnce(
         &'a mut Endpoint<'r, DOWNLOAD>,
-        Response<'exchange, 'storage, DOWNLOAD>,
+        &'exchange Exchange<'storage>,
     ) -> message::Result<()>,
 ) -> Result<(), Error> {
     if config.protocol != crate::http3::Protocol::Http3 {
@@ -272,7 +246,7 @@ pub async fn run<const S: usize, const C: usize, const B: usize, const H: usize>
 /// Join the actual message locals through their projected End/Done exchanges.
 /// Network failure or cancellation terminates an unfinished exchange.
 #[allow(clippy::too_many_arguments)]
-async fn execute(
+pub async fn execute(
     reader: &mut Endpoint<'_, READ>,
     up: &mut Endpoint<'_, UPLOAD>,
     writer: &mut Endpoint<'_, WRITE>,
@@ -284,11 +258,11 @@ async fn execute(
     settings: Settings,
     upload: impl for<'a, 'r, 'exchange, 'storage> AsyncFnOnce(
         &'a mut Endpoint<'r, UPLOAD>,
-        Request<'exchange, 'storage, UPLOAD>,
+        &'exchange Exchange<'storage>,
     ) -> message::Result<()>,
     download: impl for<'a, 'r, 'exchange, 'storage> AsyncFnOnce(
         &'a mut Endpoint<'r, DOWNLOAD>,
-        Response<'exchange, 'storage, DOWNLOAD>,
+        &'exchange Exchange<'storage>,
     ) -> message::Result<()>,
 ) -> Result<(), Error> {
     crate::runtime::join::values4(
@@ -297,7 +271,7 @@ async fn execute(
                 .await
                 .map_err(Error::from)
         },
-        async { upload(up, Request::new(request)).await.map_err(Error::from) },
+        async { upload(up, request).await.map_err(Error::from) },
         async {
             message::localside::writer::client(
                 writer,
@@ -308,11 +282,7 @@ async fn execute(
             .await
             .map_err(Error::from)
         },
-        async {
-            download(down, Response { exchange: response })
-                .await
-                .map_err(Error::from)
-        },
+        async { download(down, response).await.map_err(Error::from) },
     )
     .await?;
 

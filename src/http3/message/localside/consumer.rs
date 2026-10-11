@@ -22,21 +22,28 @@ pub async fn run<const ROLE: u8>(
                     .borrow_mut()
                     .take()
                     .ok_or("missing informational fields")?;
-                if fields.content_length.is_some() {
+                if !fields
+                    .status
+                    .is_some_and(|status| (100..200).contains(&status) && status != 101)
+                    || fields.content_length.is_some()
+                {
                     return Err("informational content-length".into());
                 }
                 {
                     crate::http3::message::imp::request::without_te(
-                        &exchange.headers.borrow()[..length],
+                        &exchange
+                            .headers
+                            .try_borrow()
+                            .map_err(|_| Error::Invalid("HTTP storage is loaned"))?[..length],
                     )?;
-                    let encoded = exchange.headers.take();
+                    let encoded = exchange.headers.take()?;
                     let result = consumer
                         .information(FieldSection {
                             metadata: &fields,
                             encoded: &encoded[..length],
                         })
                         .await;
-                    *exchange.headers.borrow_mut() = encoded;
+                    exchange.headers.put(encoded)?;
                     result?;
                 }
                 endpoint.send::<Stored>(&()).await.map_err(Error::from)?;
@@ -49,6 +56,9 @@ pub async fn run<const ROLE: u8>(
                     .take()
                     .ok_or("missing response fields")?;
                 let status = fields.status.ok_or("missing final response status")?;
+                if !(200..=599).contains(&status) {
+                    return Err("invalid final response status".into());
+                }
                 if (status == 204 && fields.content_length.is_some())
                     || (status == 205 && fields.content_length.is_some_and(|n| n != 0))
                 {
@@ -59,16 +69,19 @@ pub async fn run<const ROLE: u8>(
                 }
                 {
                     crate::http3::message::imp::request::without_te(
-                        &exchange.headers.borrow()[..length],
+                        &exchange
+                            .headers
+                            .try_borrow()
+                            .map_err(|_| Error::Invalid("HTTP storage is loaned"))?[..length],
                     )?;
-                    let encoded = exchange.headers.take();
+                    let encoded = exchange.headers.take()?;
                     let result = consumer
                         .headers(FieldSection {
                             metadata: &fields,
                             encoded: &encoded[..length],
                         })
                         .await;
-                    *exchange.headers.borrow_mut() = encoded;
+                    exchange.headers.put(encoded)?;
                     result?;
                 }
                 endpoint.send::<Stored>(&()).await.map_err(Error::from)?;
@@ -98,14 +111,14 @@ pub async fn request<const ROLE: u8>(
         .ok_or("missing request fields")?;
     let expected = fields.content_length;
     {
-        let encoded = exchange.headers.take();
+        let encoded = exchange.headers.take()?;
         let result = consumer
             .headers(FieldSection {
                 metadata: &fields,
                 encoded: &encoded[..length],
             })
             .await;
-        *exchange.headers.borrow_mut() = encoded;
+        exchange.headers.put(encoded)?;
         result?;
     }
     endpoint.send::<Stored>(&()).await.map_err(Error::from)?;
@@ -136,12 +149,12 @@ pub(in crate::http3) async fn content<const ROLE: u8>(
                     return Err("body exceeds content-length".into());
                 }
                 {
-                    let bytes = exchange.bytes.take();
+                    let bytes = exchange.bytes.take()?;
                     let result = match bytes.get(..count) {
                         Some(chunk) => consumer.data(offset, chunk).await,
                         None => Err("body chunk capacity".into()),
                     };
-                    *exchange.bytes.borrow_mut() = bytes;
+                    exchange.bytes.put(bytes)?;
                     result?;
                 }
                 offset = end;
@@ -168,16 +181,19 @@ pub(in crate::http3) async fn content<const ROLE: u8>(
             }
             {
                 crate::http3::message::imp::request::without_te(
-                    &exchange.headers.borrow()[..length],
+                    &exchange
+                        .headers
+                        .try_borrow()
+                        .map_err(|_| Error::Invalid("HTTP storage is loaned"))?[..length],
                 )?;
-                let encoded = exchange.headers.take();
+                let encoded = exchange.headers.take()?;
                 let result = consumer
                     .trailers(FieldSection {
                         metadata: &fields,
                         encoded: &encoded[..length],
                     })
                     .await;
-                *exchange.headers.borrow_mut() = encoded;
+                exchange.headers.put(encoded)?;
                 result?;
             }
             endpoint.send::<Stored>(&()).await.map_err(Error::from)?;

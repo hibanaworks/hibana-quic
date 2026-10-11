@@ -303,144 +303,76 @@ pub enum ApplicationError {
 }
 ```
 
-### HTTP/3: native request and response choreography
+### HTTP/3: application globals and direct localsides
 
-HTTP/3 applications consume ordinary headers, body chunks and trailers. The
-[message global](src/http3/message/global.rs) describes their storage ownership
-and receipt order. The server's request reader, application and response writer
-project that same global. The client uses distinct upload and download roles so
-either direction can progress independently under backpressure.
+The application defines its `g` choreography and executes real Hibana
+`Endpoint::send`, `recv`, and `offer` operations. The HTTP codecs implement
+ordinary HEADERS, DATA, trailers and stream FIN. No application-message envelope
+is added to the HTTP/3 wire.
 
-The global is a value returning `impl Projectable`; it can be composed with
-`g::seq` and `g::par`. Each application closure gets its inferred real endpoint.
-The supplied graph must include the corresponding HTTP message fragment, and
-its localsides must execute any additional projected steps. The existing End/Done
-messages complete the HTTP fragments. Endpoints stay alive until role and network
-work drains; transport failures and cancellation terminate unfinished exchanges.
-A closure returning success is not a separate proof that arbitrary additional
-projected steps were executed.
-
-The reader transfers the actual validated request method to the response writer.
-On the client, the request writer transfers it to response consumption. Peer
-SETTINGS arrive with authenticated admission and bound decoded field-section
-sizes. The application does not supply a separate HEAD flag or negotiated limit.
-
-These native bindings currently run one exchange on stream zero. The buffers
-bound in-flight storage, not total body length. They do not implement a router
-or an independent multi-request application scheduler. Local body loans are
-borrowed; outgoing data is copied into bounded exchange/transport storage, so
-this API does not claim end-to-end zero-copy.
-
-### HTTP/3 client
-
-[Complete executable](examples/hello-http3/client.rs).
+The [server application](examples/hello-http3/server_app.rs) composes:
 
 ```rust
-//! A native HTTP/3 request with independent upload and response localsides.
-#[path = "../environment.rs"]
-mod environment;
-use hibana_quic::{
-    http3::{
-        Storage,
-        localside::client::{DOWNLOAD, READ, UPLOAD, WRITE},
-        message::{self, Consumer, FieldSection},
-    },
-    session::Protocol,
-};
-
-struct Print;
-impl Consumer for Print {
-    async fn headers(&mut self, fields: FieldSection<'_>) -> message::Result<()> {
-        println!("HTTP/3 {}", fields.metadata.status.ok_or("missing status")?);
-        Ok(())
-    }
-    async fn data(&mut self, _: u64, bytes: &[u8]) -> message::Result<()> {
-        use std::io::Write;
-        std::io::stdout()
-            .write_all(bytes)
-            .map_err(|_| "stdout failed")?;
-        Ok(())
-    }
-    async fn complete(&mut self, length: u64) -> message::Result<()> {
-        println!("\n{length} response bytes");
-        Ok(())
-    }
-}
-
-fn main() -> Result<(), String> {
-    environment::client(Protocol::Http3, async |client| {
-        let global = message::global::client::<UPLOAD, WRITE, READ, DOWNLOAD>();
-        let mut storage = const { Storage::<4096>::new() };
-        client
-            .http3(
-                &global,
-                &mut storage,
-                async |upload, mut request| {
-                    request
-                        .headers(upload, b"POST", b"localhost", b"/echo", &[])
-                        .await?;
-                    request.write(upload, b"hello from Hibana").await?;
-                    request.finish(upload).await
-                },
-                async |download, response| {
-                    response.receive(download, &mut Print).await?;
-                    Ok(())
-                },
-            )
-            .await
-    })
+pub fn choreography() -> impl Projectable {
+    g::seq(
+        g::send::<READ, WRITE, RequestMethod>(),
+        g::par(request::<READ, APP>(), response::<APP, WRITE>()),
+    )
 }
 ```
 
-### HTTP/3 server
-
-[Complete executable](examples/hello-http3/server.rs).
+Its localside receives actual HTTP fields and selects GET/HEAD `/hello`, streaming
+POST `/echo`, or 404. For example, header publication is explicit:
 
 ```rust
-//! A native HTTP/3 streaming echo application. No application-message tunnel.
-#[path = "../environment.rs"]
-mod environment;
-use hibana_quic::{
-    http3::{
-        Storage,
-        localside::server::{APP, READ, WRITE},
-        message,
-    },
-    session::Protocol,
-};
+app.recv::<Headers>().await?;
+let fields = request.fields()?;
+let metadata = fields.section().metadata;
+// Inspect method/path and select the application's response.
+drop(fields);
+app.send::<Stored>(&()).await?;
 
-fn main() -> Result<(), String> {
-    environment::server(Protocol::Http3, async |server| {
-        let global = message::global::server::<READ, APP, WRITE>();
-        let mut storage = const { Storage::<4096>::new() };
-        server
-            .http3(
-                &global,
-                &mut storage,
-                async |app, mut request, mut response| {
-                    let headers = request.headers(app).await?;
-                    let method = headers.fields().metadata.method;
-                    headers.release(app).await?;
-                    response
-                        .headers(app, 200, &[(b"content-type", b"application/octet-stream")])
-                        .await?;
-                    while let Some(chunk) = request.chunk(app).await? {
-                        if method != Some(hibana_quic::http3::Method::Head) {
-                            response.write(app, chunk.bytes()).await?;
-                        }
-                        chunk.release(app).await?;
-                    }
-                    request.trailers(app, |_| Ok(())).await?;
-                    request.finish(app).await?;
-                    response.finish(app).await
-                },
-            )
-            .await
-    })?;
-    println!("served HTTP/3 echo");
-    Ok(())
-}
+response.response(200, &[(b"content-type", b"text/plain")])?;
+app.send::<Headers>(&()).await?;
+app.recv::<Stored>().await?;
 ```
+
+Every operation on `Exchange` is synchronous storage access only. `fields()` and
+`body(length)` return owned slice loans; dropping a loan returns that actual
+resource, but does not send a message. `write(bytes)` copies one bounded chunk
+into the existing output slot and returns the length to send as `Data`. The
+application explicitly drops each incoming loan before sending `Stored`, and
+waits for outgoing `Stored` before reusing output storage. Attempting to reuse storage while its loan is outstanding fails the exchange; Hibana orders the messages, while Rust and
+storage ownership protect the bytes. A receipt is not a peer acknowledgment.
+
+The [client application](examples/hello-http3/client_app.rs) likewise defines
+its global and independent upload/download localsides, including informational
+headers and trailers. Its actual writer-derived request method goes directly
+to the response reader and then to the application. The application cannot
+replace the reader's HEAD/CONNECT semantics. Native readers and writers validate
+content lengths, bodyless responses, trailers and peer field-section limits.
+
+Client and server globals coordinate their own local participants. They are not
+presented as projections of one shared distributed application global. The
+`.http3` convenience binding admits exactly its documented client or server
+roles. Additional application roles require an explicit rendezvous owner using
+the public reader/writer codec localsides. The test suite demonstrates a result
+role after the HTTP fragment. Merely passing an arbitrary graph does not make
+this fixed binding execute its other roles. Compositions must preserve each
+codec's fragment and Hibana's causal handoff requirements; serializing arbitrary
+fragments is not automatically valid.
+
+These bindings run one exchange on stream zero. Storage bounds in-flight chunks,
+not total body size. The local carrier still carries only unit/length control
+messages, so the direct API adds no body-payload copies. It does not claim
+end-to-end zero-copy. All streaming output remains provisional until message and
+connection completion. Errors or cancellation retire every role of the exchange;
+never resume a partially cancelled exchange.
+
+The native [client](examples/hello-http3/client.rs) and
+[server](examples/hello-http3/server.rs) launchers contain only environment and
+binding setup; credentials, sockets, clocks and entropy remain in the shared
+environment module.
 
 ### Run both sides
 
@@ -458,7 +390,9 @@ examples/target/release/examples/http3-client 127.0.0.1:4433 ca.pem
 ```
 
 Use the actual target directory when setting `CARGO_TARGET_DIR`. The raw example
-calculates two squares; HTTP/3 echoes `hello from Hibana` through a streaming POST.
+calculates two squares; HTTP/3 defaults to a streaming POST to `/echo`. Set
+`HTTP_METHOD=GET` or `HEAD` for `/hello`; `HTTP_PATH=/missing` demonstrates 404.
+`HTTP_BODY` sets the POST body, which is streamed through bounded storage.
 Both bindings require normal connection termination, separately from local
 message completion. A 30-second launcher deadline bounds each demonstration.
 

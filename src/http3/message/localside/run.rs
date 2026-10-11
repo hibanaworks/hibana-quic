@@ -57,7 +57,7 @@ pub async fn receive_response(
         .map_err(Error::from)?;
     let exchange = Exchange::new(storage.body, storage.headers);
     let ((), written) = crate::runtime::join::values2(
-        localside::reader::run(&mut reader, input, &exchange),
+        localside::reader::run(&mut reader, input, &exchange, request_method),
         localside::consumer::run(&mut endpoint, consumer, request_method, &exchange),
     )
     .await?;
@@ -257,11 +257,7 @@ mod tests {
         let output = Output(RefCell::new(std::vec::Vec::new()));
         let mut bytes = [0; 7];
         let mut headers = [0; crate::http3::FIELD_LIMIT];
-        let exchange = Exchange {
-            fields: RefCell::new(None),
-            bytes: RefCell::new(&mut bytes),
-            headers: RefCell::new(&mut headers),
-        };
+        let exchange = Exchange::new(&mut bytes, &mut headers);
         let graph = response::<READER, CONSUMER>();
         let reader_program = project::<READER>(&graph);
         let writer_program = project::<CONSUMER>(&graph);
@@ -277,7 +273,7 @@ mod tests {
         let mut writer = rendezvous.enter(sid, &writer_program).unwrap();
         let mut download = crate::http3::message::imp::download::Download(&output);
         let ((), written) = run(crate::runtime::join::values2(
-            localside::reader::run(&mut reader, &mut input, &exchange),
+            localside::reader::run(&mut reader, &mut input, &exchange, b"GET"),
             localside::consumer::run(&mut writer, &mut download, b"GET", &exchange),
         ))
         .unwrap();
@@ -381,7 +377,7 @@ mod tests {
         let exchange = Exchange::new(&mut bytes, &mut headers);
         let mut consumer = Inspect::default();
         let (_, (), length) = run(crate::runtime::join::values3(
-            localside::reader::run(&mut input_endpoint, &mut input, &exchange),
+            localside::reader::run(&mut input_endpoint, &mut input, &exchange, b"GET"),
             async {
                 let length =
                     localside::consumer::run(&mut app_endpoint, &mut consumer, b"GET", &exchange)
@@ -608,10 +604,10 @@ mod tests {
         impl BodyReader for Input<'_, '_, '_> {
             async fn read(&mut self, output: &mut [u8]) -> core::result::Result<usize, ()> {
                 if (2..5).contains(&self.offset) {
-                    assert!(self.exchange.headers.borrow().is_empty());
+                    assert!(self.exchange.headers.try_borrow().is_err());
                     assert_eq!(output.as_ptr() as usize, self.headers + self.offset - 2);
                 } else if (7..9).contains(&self.offset) {
-                    assert!(self.exchange.bytes.borrow().is_empty());
+                    assert!(self.exchange.bytes.try_borrow().is_err());
                     assert_eq!(output.as_ptr() as usize, self.body + self.offset - 7);
                 }
                 crate::runtime::yield_now().await;
@@ -635,7 +631,7 @@ mod tests {
         impl Consumer for Output<'_, '_> {
             async fn headers(&mut self, fields: FieldSection<'_>) -> Result<()> {
                 assert_eq!(fields.encoded.as_ptr() as usize, self.headers);
-                assert!(self.exchange.headers.borrow().is_empty());
+                assert!(self.exchange.headers.try_borrow().is_err());
                 crate::runtime::yield_now().await;
                 if self.fail_body == Some(false) {
                     return Err("callback failed".into());
@@ -644,7 +640,7 @@ mod tests {
             }
             async fn data(&mut self, _: u64, bytes: &[u8]) -> Result<()> {
                 assert_eq!(bytes.as_ptr() as usize, self.body);
-                assert!(self.exchange.bytes.borrow().is_empty());
+                assert!(self.exchange.bytes.try_borrow().is_err());
                 crate::runtime::yield_now().await;
                 if self.fail_body == Some(true) {
                     return Err("callback failed".into());
@@ -695,7 +691,7 @@ mod tests {
             };
             let guard = actor_test_allocator::NoAlloc::start();
             let result = run(crate::runtime::join::values2(
-                localside::reader::run(&mut reader, &mut input, &exchange),
+                localside::reader::run(&mut reader, &mut input, &exchange, b"GET"),
                 localside::consumer::run(&mut consumer, &mut output, b"GET", &exchange),
             ));
             assert!(result.is_err());
@@ -776,7 +772,7 @@ mod tests {
         struct Fail<'e, 's>(&'e Exchange<'s>);
         impl localside::writer::BodyWriter for Fail<'_, '_> {
             async fn write(&mut self, _: &[u8]) -> core::result::Result<(), ()> {
-                assert!(self.0.headers.borrow().is_empty());
+                assert!(self.0.headers.try_borrow().is_err());
                 crate::runtime::yield_now().await;
                 Err(())
             }

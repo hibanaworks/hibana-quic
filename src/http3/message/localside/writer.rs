@@ -169,17 +169,20 @@ async fn request_head<const ROLE: u8>(
     let expected = fields.content_length;
     {
         crate::http3::message::imp::request::ordinary(
-            &exchange.headers.borrow()[..length],
+            &exchange
+                .headers
+                .try_borrow()
+                .map_err(|_| Error::Invalid("HTTP storage is loaned"))?[..length],
             &fields,
         )?;
-        let encoded = exchange.headers.take();
+        let encoded = exchange.headers.take()?;
         let result = encode
             .headers(FieldSection {
                 metadata: &fields,
                 encoded: &encoded[..length],
             })
             .await;
-        *exchange.headers.borrow_mut() = encoded;
+        exchange.headers.put(encoded)?;
         result?;
     }
     Ok((method, expected))
