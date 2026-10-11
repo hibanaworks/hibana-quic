@@ -1,0 +1,15 @@
+[package]
+name = "hibana-quic-pal"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Environment access for hibana-quic: native UDP, readiness, clock, entropy and files"
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+hibana-quic = { path = "..", default-features = false }
+

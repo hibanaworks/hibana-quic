@@ -1,0 +1,39 @@
+[package]
+name = "hibana-quic"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+autoexamples = false
+license = "MIT OR Apache-2.0"
+description = "Experimental bounded QUIC v1 transport driven by Hibana choreography"
+
+[dependencies]
+# The owned TLS repository is pinned to the same source checked out by CI.
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "3365f129fe17a0ac5cd81f104387f27226be5805", default-features = false }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "3d9193e127be7e0bb332953197e1d5e752a73883", default-features = false }
+
+[features]
+default = []
+hq = ["hibana-tls/hq"]
+target-link-smoke = []
+
+[[example]]
+name = "thumb_link"
+path = "tests/embedded/thumb_link.rs"
+required-features = ["target-link-smoke"]
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+
+[package.metadata.hibana-source]
+repository = "https://github.com/hibanaworks/hibana"
+branch = "main"
+revision = "6ed1923c9447e48cfd3e4bb0f2d6f12126e2b452"
+local-patches = false
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+actor-test-allocator = { path = "tests/support/actor-test-allocator" }
+

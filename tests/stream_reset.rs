@@ -1,0 +1,308 @@
+//! The real publication choreography rejects applying a reset while a datagram
+//! is unresolved. An adapter result alone does not replace the Settled edge.
+use core::{
+    cell::Cell,
+    future::Future,
+    pin::pin,
+    task::{Context, Poll, Waker},
+};
+use hibana::{
+    EndpointError,
+    runtime::{
+        SessionKitStorage,
+        ids::SessionId,
+        program::{RoleProgram, project},
+        resolver::{DecisionArm, ResolverError, ResolverRef},
+    },
+};
+use hibana_quic::{
+    quic::application::global as p, runtime::carrier::CarrierStorage, runtime::join2,
+};
+
+#[global_allocator]
+static ALLOCATOR: actor_test_allocator::Counting = actor_test_allocator::Counting;
+
+fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
+    let global = p::publication_choreography();
+    let tx: RoleProgram<{ p::TRANSMIT }> = project(&global);
+    let adapter: RoleProgram<{ p::ADAPTER }> = project(&global);
+    let carrier = CarrierStorage::<1, 16, 8>::new();
+    let mut slab = [0; 65536];
+    let reset_decision = Cell::new(if illegal_at == 4 {
+        None
+    } else {
+        Some(if reset_failed {
+            DecisionArm::Right
+        } else {
+            DecisionArm::Left
+        })
+    });
+    let mut storage = SessionKitStorage::uninit();
+    let id = SessionId::new(908);
+    let rv = storage
+        .init()
+        .rendezvous(&mut slab, carrier.bind(id).unwrap())
+        .unwrap();
+    rv.set_resolver(
+        &adapter,
+        ResolverRef::<{ p::STOP_RESULT }>::decision_state(&reset_decision, |state| {
+            state.get().ok_or_else(ResolverError::reject)
+        }),
+    )
+    .unwrap();
+    let mut tx = rv.enter(id, &tx).unwrap();
+    let mut adapter = rv.enter(id, &adapter).unwrap();
+    let forbidden_rejected = Cell::new(false);
+    let allocation = actor_test_allocator::NoAlloc::start();
+    let mut all = pin!(join2(
+        async {
+            tx.send::<p::Datagram>(&()).await?;
+            if illegal_at == 1 {
+                assert!(
+                    tx.send::<p::ApplyStop>(&4).await.is_err(),
+                    "reset entered before adapter outcome"
+                );
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            if illegal_at == 12 {
+                assert!(tx.send::<p::ReclaimStream>(&4).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            if illegal_at == 9 {
+                assert!(tx.send::<p::ApplyLoss>(&0).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            if illegal_at == 5 {
+                assert!(tx.send::<p::ApplyAcknowledgments>(&()).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            let outcome = tx.offer().await?;
+            if rejected {
+                outcome.recv::<p::Rejected>().await?;
+            } else {
+                outcome.recv::<p::Accepted>().await?;
+            }
+            if illegal_at == 2 {
+                assert!(
+                    tx.send::<p::ApplyStop>(&4).await.is_err(),
+                    "reset entered before Settled"
+                );
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            if illegal_at == 13 {
+                assert!(tx.send::<p::ReclaimStream>(&4).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            if illegal_at == 10 {
+                assert!(tx.send::<p::ApplyLoss>(&0).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            if illegal_at == 6 {
+                assert!(tx.send::<p::ApplyAcknowledgments>(&()).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            tx.send::<p::Settled>(&()).await?;
+            tx.send::<p::ApplyStop>(&4).await?;
+            let outcome = tx.offer().await?;
+            if reset_failed {
+                assert_eq!(outcome.recv::<p::StopFailed>().await?, 4);
+            } else {
+                assert_eq!(outcome.recv::<p::StopApplied>().await?, 4);
+            }
+            tx.send::<p::StopSettled>(&4).await?;
+            tx.send::<p::ApplyAcknowledgments>(&()).await?;
+            tx.recv::<p::AcknowledgmentsApplied>().await?;
+            if illegal_at == 7 {
+                assert!(tx.send::<p::Datagram>(&()).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            assert_eq!(tx.offer().await?.recv::<p::StreamDelivered>().await?, 4);
+            if illegal_at == 8 {
+                return Ok(());
+            }
+            tx.send::<p::StreamDeliverySeen>(&4).await?;
+            tx.offer().await?.recv::<p::DeliveriesDone>().await?;
+            tx.send::<p::AcknowledgmentsSettled>(&()).await?;
+            tx.send::<p::ApplyLoss>(&7).await?;
+            assert_eq!(tx.recv::<p::LossApplied>().await?, 7);
+            if illegal_at == 11 {
+                assert!(tx.send::<p::Datagram>(&()).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            tx.send::<p::LossSettled>(&7).await?;
+            tx.send::<p::ReclaimStream>(&4).await?;
+            assert_eq!(tx.recv::<p::StreamReclaimed>().await?, 4);
+            if illegal_at == 14 {
+                assert!(tx.send::<p::Datagram>(&()).await.is_err());
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            tx.send::<p::ReclaimSettled>(&4).await?;
+            tx.send::<p::StopPublication>(&()).await?;
+            tx.recv::<p::PublicationStopped>().await?;
+            Ok::<_, EndpointError>(())
+        },
+        async {
+            adapter.offer().await?.recv::<p::Datagram>().await?;
+            if illegal_at == 1 || illegal_at == 5 || illegal_at == 9 || illegal_at == 12 {
+                return Ok(());
+            }
+            if rejected {
+                adapter.send::<p::Rejected>(&()).await?;
+            } else {
+                adapter.send::<p::Accepted>(&()).await?;
+            }
+            if illegal_at == 2 || illegal_at == 6 || illegal_at == 10 || illegal_at == 13 {
+                return Ok(());
+            }
+            adapter.recv::<p::Settled>().await?;
+            assert_eq!(adapter.offer().await?.recv::<p::ApplyStop>().await?, 4);
+            if illegal_at == 3 || illegal_at == 4 {
+                let wrong = if reset_failed {
+                    adapter.send::<p::StopApplied>(&4).await
+                } else {
+                    adapter.send::<p::StopFailed>(&4).await
+                };
+                assert!(
+                    wrong.is_err(),
+                    "the local sender bypassed the reset resolver verdict"
+                );
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            if reset_failed {
+                adapter.send::<p::StopFailed>(&4).await?;
+            } else {
+                adapter.send::<p::StopApplied>(&4).await?;
+            }
+            assert_eq!(adapter.recv::<p::StopSettled>().await?, 4);
+            adapter
+                .offer()
+                .await?
+                .recv::<p::ApplyAcknowledgments>()
+                .await?;
+            adapter.send::<p::AcknowledgmentsApplied>(&()).await?;
+            if illegal_at == 7 {
+                return Ok(());
+            }
+            adapter.send::<p::StreamDelivered>(&4).await?;
+            if illegal_at == 8 {
+                assert!(
+                    adapter.send::<p::DeliveriesDone>(&()).await.is_err(),
+                    "completion batch bypassed the receiver's actual receipt edge"
+                );
+                forbidden_rejected.set(true);
+                return Ok(());
+            }
+            assert_eq!(adapter.recv::<p::StreamDeliverySeen>().await?, 4);
+            adapter.send::<p::DeliveriesDone>(&()).await?;
+            adapter.recv::<p::AcknowledgmentsSettled>().await?;
+            assert_eq!(adapter.offer().await?.recv::<p::ApplyLoss>().await?, 7);
+            adapter.send::<p::LossApplied>(&7).await?;
+            if illegal_at == 11 {
+                return Ok(());
+            }
+            assert_eq!(adapter.recv::<p::LossSettled>().await?, 7);
+            assert_eq!(adapter.offer().await?.recv::<p::ReclaimStream>().await?, 4);
+            adapter.send::<p::StreamReclaimed>(&4).await?;
+            if illegal_at == 14 {
+                return Ok(());
+            }
+            assert_eq!(adapter.recv::<p::ReclaimSettled>().await?, 4);
+            adapter.offer().await?.recv::<p::StopPublication>().await?;
+            adapter.send::<p::PublicationStopped>(&()).await?;
+            Ok(())
+        }
+    ));
+    for _ in 0..1000 {
+        if let Poll::Ready(result) = all.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            if illegal_at == 0 {
+                result.unwrap();
+            } else {
+                // A rejected operation poisons the session; the peer may see
+                // that fault before consuming the preceding datagram marker.
+                assert!(forbidden_rejected.get());
+            }
+            allocation.finish();
+            return;
+        }
+    }
+    panic!("publication/reset fragment stalled");
+}
+
+#[test]
+fn actual_global_forbids_reset_before_outcome_and_settlement() {
+    for rejected in [false, true] {
+        for at in [1, 2] {
+            run(at, rejected, false);
+        }
+    }
+}
+#[test]
+fn actual_global_allows_reset_only_after_complete_publication() {
+    for rejected in [false, true] {
+        for reset_failed in [false, true] {
+            run(0, rejected, reset_failed);
+        }
+    }
+}
+
+#[test]
+fn independent_reset_resolver_rejects_a_fabricated_opposite_outcome() {
+    for rejected in [false, true] {
+        for reset_failed in [false, true] {
+            run(3, rejected, reset_failed);
+        }
+    }
+}
+
+#[test]
+fn missing_reset_verdict_is_not_authorized_by_publication_result() {
+    for rejected in [false, true] {
+        run(4, rejected, false);
+    }
+}
+
+#[test]
+fn acknowledgment_effects_cannot_cross_an_unsettled_publication() {
+    for at in [5, 6, 7] {
+        for rejected in [false, true] {
+            run(at, rejected, false);
+        }
+    }
+}
+
+#[test]
+fn delivery_batch_cannot_finish_before_the_consumer_receives_completion() {
+    for rejected in [false, true] {
+        run(8, rejected, false);
+    }
+}
+
+#[test]
+fn loss_application_cannot_bypass_publication_or_its_own_settlement() {
+    for at in [9, 10, 11] {
+        for rejected in [false, true] {
+            run(at, rejected, false);
+        }
+    }
+}
+
+#[test]
+fn stream_reclaim_cannot_bypass_datagram_or_reclaim_settlement() {
+    for rejected in [false, true] {
+        for point in [12, 13, 14] {
+            run(point, rejected, false);
+        }
+    }
+}

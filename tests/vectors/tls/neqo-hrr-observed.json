@@ -1,0 +1,22 @@
+{
+  "neqo_revision": "ff4f4c61d14d1ee689b8ee1fdfab236f67c9bd95",
+  "neqo_version": "0.32.0",
+  "nss_version": "3.126",
+  "peer_wrapper_revision": "2",
+  "group_configuration": "default (no --group flag)",
+  "source": "localhost public Initial capture, exact CRYPTO-offset reassembly with byte-coverage checks",
+  "security": "no private keys, TLS traffic secrets or key logs",
+  "observation": "CH2 has requested P256 plus second GREASE group 0x1a1a; strict retry validator rejects",
+  "fixtures": [
+    {
+      "file": "neqo-hrr-observed-clienthello1.bin",
+      "bytes": 1550,
+      "sha256": "d6d7e069cc03f73823ba2b897ed453546404c7af7c5048166a3b4f302414b3c1"
+    },
+    {
+      "file": "neqo-hrr-observed-clienthello2.bin",
+      "bytes": 512,
+      "sha256": "f9ac49869cdd825128a8db181deb43888d2c02522c920a4e8976be1b9e7ae40e"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+**/target
+**/__pycache__
+.git
+artifacts
+inputs
+**/*.key
+**/*.p12
+**/*.pfx
+.ci-work
+ci-safe-results

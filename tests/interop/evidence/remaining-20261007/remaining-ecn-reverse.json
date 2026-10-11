@@ -1,0 +1,78 @@
+{
+  "scope": "native-peer-diagnostics",
+  "official_interop_pass": false,
+  "scenario": "clean",
+  "server_retry": false,
+  "client_retry": false,
+  "impairment": null,
+  "ordinary_files": 3,
+  "migration_ipv6": false,
+  "migration_preferred_ip": "127.0.0.1",
+  "coverage_gaps": [
+    "not ns-3 topology or exact stochastic impairment",
+    "no packet-trace verdicts",
+    "forward ordinary-Neqo generated-zero payloads"
+  ],
+  "binaries": {
+    "hq": "47292fc548e160ee3389a2747ba3eba56d59d45cd4b0c658ffb7a323c9416dfe",
+    "neqo-client": "495378d2bc27d2f7134602b9b470722f85a41b1800d6dc43ff888fc9938f7df9",
+    "neqo-server": "0b90c1315966f972b45b6cd4cc325b5bc99e73ecd01e09328bccb2b154e20c7e"
+  },
+  "runs": [
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 14.51,
+      "post_client_verification_and_retirement_seconds": 0.073,
+      "elapsed_seconds": 14.583,
+      "files": [
+        {
+          "name": "2097152",
+          "bytes": 2097152,
+          "expected_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a",
+          "received_sha256": "b2b319a671a9a8f6cdbd7d47594f67859f5c8c83c51ea3edb672835cc4de7d6a"
+        },
+        {
+          "name": "3145728",
+          "bytes": 3145728,
+          "expected_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7",
+          "received_sha256": "17e7b1fdb8839a786f2fdb59059e882875847f1537d216c4963188a834a328e7"
+        },
+        {
+          "name": "5242880",
+          "bytes": 5242880,
+          "expected_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0",
+          "received_sha256": "d03558146d94d5f502db29eace6ad57e4466191e6643fb424bbc818ff4482be0"
+        }
+      ],
+      "proxy": null,
+      "connections": null,
+      "resources_retired": null,
+      "idle_expired_connections": null,
+      "lifecycle_closed": null,
+      "resumed_connections": null,
+      "resumed_two_connections": false,
+      "early_accepted_packets": 0,
+      "early_stream_bytes": 0,
+      "early_finished_streams": 0,
+      "ecn_observation": {
+        "ecn_accepted_packets": 10244,
+        "ecn_validated_packets": 10244,
+        "ecn_received_packets": 6355,
+        "ecn_acknowledgments_sent": 280,
+        "ecn_feedback_error": null,
+        "peer_reported_capable": true
+      }
+    }
+  ],
+  "transfer_observations": [
+    {
+      "direction": "reverse",
+      "client_exit": 0,
+      "client_elapsed_seconds": 14.51,
+      "expected_files": 3,
+      "matching_files": 3,
+      "retirement_verified": true
+    }
+  ]
+}

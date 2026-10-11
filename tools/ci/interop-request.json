@@ -1,0 +1,86 @@
+{
+  "candidate_directions": [
+    "client",
+    "server"
+  ],
+  "formal_models": true,
+  "candidate_case_direction_results": 44,
+  "groups": [
+    {
+      "name": "neqo-basic",
+      "reference_implementation": "neqo",
+      "cases": [
+        "handshake",
+        "transfer",
+        "longrtt",
+        "chacha20",
+        "ipv6"
+      ]
+    },
+    {
+      "name": "neqo-recovery",
+      "reference_implementation": "neqo",
+      "cases": [
+        "transferloss",
+        "transfercorruption",
+        "resumption",
+        "blackhole",
+        "keyupdate"
+      ]
+    },
+    {
+      "name": "quiche-loss-early",
+      "reference_implementation": "quiche",
+      "cases": [
+        "handshakeloss",
+        "handshakecorruption",
+        "multiplexing",
+        "zerortt"
+      ]
+    },
+    {
+      "name": "quiche-amplification",
+      "reference_implementation": "quiche",
+      "cases": [
+        "amplificationlimit"
+      ]
+    },
+    {
+      "name": "neqo-retry",
+      "reference_implementation": "neqo",
+      "cases": [
+        "retry"
+      ]
+    },
+    {
+      "name": "neqo-ecn",
+      "reference_implementation": "neqo",
+      "cases": [
+        "ecn"
+      ]
+    },
+    {
+      "name": "neqo-v2-rebinding",
+      "reference_implementation": "neqo",
+      "cases": [
+        "v2",
+        "rebind-port",
+        "rebind-addr"
+      ]
+    },
+    {
+      "name": "neqo-migration",
+      "reference_implementation": "neqo",
+      "cases": [
+        "connectionmigration"
+      ]
+    },
+    {
+      "name": "neqo-http3",
+      "reference_implementation": "neqo",
+      "cases": [
+        "http3"
+      ]
+    }
+  ]
+}

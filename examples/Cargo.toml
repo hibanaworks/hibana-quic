@@ -1,0 +1,52 @@
+[package]
+name = "hibana-quic-examples"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+autoexamples = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+hibana-quic = { path = "..", default-features = false }
+hibana-quic-pal = { path = "../pal" }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "3365f129fe17a0ac5cd81f104387f27226be5805", default-features = false }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "3d9193e127be7e0bb332953197e1d5e752a73883", default-features = false }
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+
+[[example]]
+name = "quic-client"
+path = "hello-quic/client.rs"
+
+[[example]]
+name = "quic-server"
+path = "hello-quic/server.rs"
+
+[[example]]
+name = "http3-client"
+path = "hello-http3/client.rs"
+
+[[example]]
+name = "http3-server"
+path = "hello-http3/server.rs"
+
+[features]
+default = []
+hq = ["hibana-quic/hq", "hibana-tls/hq"]
+
+[[example]]
+name = "hq-client"
+path = "hello-hq/client.rs"
+required-features = ["hq"]
+
+[[example]]
+name = "hq-server"
+path = "hello-hq/server.rs"
+required-features = ["hq"]

@@ -1,0 +1,109 @@
+{
+  "revision": "3fa63dd0344abb611f1fb1d77e119938603ea230",
+  "corpora": [
+    {
+      "file": "rsa_pss_2048_sha256_mgf1_32_test.bin",
+      "upstream_url": "https://raw.githubusercontent.com/C2SP/wycheproof/3fa63dd0344abb611f1fb1d77e119938603ea230/testvectors_v1/rsa_pss_2048_sha256_mgf1_32_test.json",
+      "upstream_sha256": "7f6efafc160f4816b96cbf1c12188a31051d7e3f001e27505d9edb5f2a0e325c",
+      "packed_sha256": "17b0e43b52453a4a31406b7ac6fd19579d9af011fcb4f73a54e12e9bad067e29",
+      "cases": 108,
+      "upstream_results": {
+        "valid": 63,
+        "invalid": 45,
+        "acceptable": 0
+      },
+      "expected_policy": "valid only; PSS requires SHA256/MGF1-SHA256/salt32"
+    },
+    {
+      "file": "rsa_pss_3072_sha256_mgf1_32_test.bin",
+      "upstream_url": "https://raw.githubusercontent.com/C2SP/wycheproof/3fa63dd0344abb611f1fb1d77e119938603ea230/testvectors_v1/rsa_pss_3072_sha256_mgf1_32_test.json",
+      "upstream_sha256": "cca48433e6d1accb57f65b3396c4f4dd93c776467101c3f0948e74c283fd4749",
+      "packed_sha256": "165ed19ffc320955198ca0658f736f5358d6699d73503a9e45741d70e0df952a",
+      "cases": 108,
+      "upstream_results": {
+        "valid": 63,
+        "invalid": 45,
+        "acceptable": 0
+      },
+      "expected_policy": "valid only; PSS requires SHA256/MGF1-SHA256/salt32"
+    },
+    {
+      "file": "rsa_pss_4096_sha256_mgf1_32_test.bin",
+      "upstream_url": "https://raw.githubusercontent.com/C2SP/wycheproof/3fa63dd0344abb611f1fb1d77e119938603ea230/testvectors_v1/rsa_pss_4096_sha256_mgf1_32_test.json",
+      "upstream_sha256": "e627cbf5139a01e0a446c4fe15911f6268224fdd3ef4a1eb714b3942b5686410",
+      "packed_sha256": "a0f4566c1ed7ebfca7357413ca7495f38d6af4bde6220647c731deb2a5b38637",
+      "cases": 108,
+      "upstream_results": {
+        "valid": 63,
+        "invalid": 45,
+        "acceptable": 0
+      },
+      "expected_policy": "valid only; PSS requires SHA256/MGF1-SHA256/salt32"
+    },
+    {
+      "file": "rsa_signature_2048_sha256_test.bin",
+      "upstream_url": "https://raw.githubusercontent.com/C2SP/wycheproof/3fa63dd0344abb611f1fb1d77e119938603ea230/testvectors_v1/rsa_signature_2048_sha256_test.json",
+      "upstream_sha256": "94a917b01ff50fb874cfc05bf29b4af44868d944a6558201cf18380da93fb393",
+      "packed_sha256": "6a9ba0f04de0cbaf62eb2396635207f3730228b850e022dd7766a51fcf9f8e16",
+      "cases": 259,
+      "upstream_results": {
+        "valid": 9,
+        "invalid": 249,
+        "acceptable": 1
+      },
+      "expected_policy": "valid only; PKCS1-v1_5 requires canonical SHA256 DigestInfo including NULL parameters; acceptable noncanonical encodings reject"
+    },
+    {
+      "file": "rsa_signature_3072_sha256_test.bin",
+      "upstream_url": "https://raw.githubusercontent.com/C2SP/wycheproof/3fa63dd0344abb611f1fb1d77e119938603ea230/testvectors_v1/rsa_signature_3072_sha256_test.json",
+      "upstream_sha256": "0f5f18cabfaad3e2792e82f7e9882f8999049b456714de924b8a5e202f61ca43",
+      "packed_sha256": "aedc5fc1fe29360b70c889fc6a1c788eacaa11c51bb73fd366a862b45259855a",
+      "cases": 259,
+      "upstream_results": {
+        "valid": 8,
+        "invalid": 250,
+        "acceptable": 1
+      },
+      "expected_policy": "valid only; PKCS1-v1_5 requires canonical SHA256 DigestInfo including NULL parameters; acceptable noncanonical encodings reject"
+    },
+    {
+      "file": "rsa_signature_4096_sha256_test.bin",
+      "upstream_url": "https://raw.githubusercontent.com/C2SP/wycheproof/3fa63dd0344abb611f1fb1d77e119938603ea230/testvectors_v1/rsa_signature_4096_sha256_test.json",
+      "upstream_sha256": "957aca128e30bd02c8982f8ca482d6521d16683f4bbc3f193cdfd4c8f04bc667",
+      "packed_sha256": "3bf078b05848c7402172fe338655c016ff52cd596d8b20d1f0c6478344029c62",
+      "cases": 258,
+      "upstream_results": {
+        "valid": 7,
+        "invalid": 250,
+        "acceptable": 1
+      },
+      "expected_policy": "valid only; PKCS1-v1_5 requires canonical SHA256 DigestInfo including NULL parameters; acceptable noncanonical encodings reject"
+    },
+    {
+      "file": "rsa_pss_2048_sha256_mgf1_0_test.bin",
+      "upstream_url": "https://raw.githubusercontent.com/C2SP/wycheproof/3fa63dd0344abb611f1fb1d77e119938603ea230/testvectors_v1/rsa_pss_2048_sha256_mgf1_0_test.json",
+      "upstream_sha256": "b22a8d9a2e7e47f681d0ff1d1a55455daaf325d989c64ad005f848bd50b9b4c0",
+      "packed_sha256": "dac12f04cc0dbc5af71b6e8817202acbb0fb70cef43445afa25e110c6275fc3b",
+      "cases": 61,
+      "upstream_results": {
+        "valid": 61,
+        "invalid": 42,
+        "acceptable": 0
+      },
+      "expected_policy": "select upstream VALID signatures only, all must reject because TLS requires MGF1-SHA256/salt32; invalid under another parameter set has no TLS verdict"
+    },
+    {
+      "file": "rsa_pss_2048_sha256_mgf1sha1_20_test.bin",
+      "upstream_url": "https://raw.githubusercontent.com/C2SP/wycheproof/3fa63dd0344abb611f1fb1d77e119938603ea230/testvectors_v1/rsa_pss_2048_sha256_mgf1sha1_20_test.json",
+      "upstream_sha256": "8099d28e300c86cf1cac2ab09cd777186b5ecc0f555d7c178c665b4ff3c08307",
+      "packed_sha256": "4b83398fc154fe8becc06208b657d915f62d6f1030ebb6974c7091e8b5fb23f8",
+      "cases": 63,
+      "upstream_results": {
+        "valid": 63,
+        "invalid": 45,
+        "acceptable": 0
+      },
+      "expected_policy": "select upstream VALID signatures only, all must reject because TLS requires MGF1-SHA256/salt32; invalid under another parameter set has no TLS verdict"
+    }
+  ]
+}
