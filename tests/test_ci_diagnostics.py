@@ -30,6 +30,22 @@ class Diagnostics(unittest.TestCase):
         self.case = self.logs / 'neqo_hibana-quic/transfer'
         self.case.mkdir(parents=True)
 
+    def test_typed_error_allowlists_retain_only_fixed_variants(self):
+        fields = ('error_scope', 'application_error', 'connection_error',
+                  'recovery_error', 'accounting_error')
+        for field in fields:
+            for value in self.module.ENDPOINT_ENUMS[field]:
+                with self.subTest(field=field, value=value):
+                    record = self.module.endpoint_json(json.dumps({'status': 'failure', field: value}))
+                    self.assertEqual(record[field], value)
+                    self.assertEqual(record['status'], 'failure')
+            for value in ('SECRET_TOKEN_ADDRESS_KEY', 'Capacity SECRET_TOKEN_ADDRESS_KEY',
+                          'UnexpectedLabel(SECRET_TOKEN_ADDRESS_KEY)', 42, None, {}, []):
+                with self.subTest(field=field, unknown=value):
+                    record = self.module.endpoint_json(json.dumps({field: value}))
+                    self.assertTrue(record[field]['withheld'])
+                    self.assertNotIn('SECRET_TOKEN_ADDRESS_KEY', json.dumps(record))
+
     def test_requested_multiplexing_is_registered_and_unknown_cases_still_fail(self):
         self.assertEqual(self.module.requested_cases(['multiplexing']), {'multiplexing'})
         self.assertEqual(self.module.CASE_ABBREVIATIONS['multiplexing'], 'M')

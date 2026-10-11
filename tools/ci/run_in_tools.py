@@ -37,6 +37,12 @@ MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 MAX_BYTES = 1 << 40
 MAX_COUNT = 1000000
 ENDPOINT_ENUMS = {
+    'error_scope': {'driver', 'application'},
+    'application_error': {'Connection', 'Attachment', 'Attach', 'Endpoint', 'Transport', 'Application', 'Capacity', 'Streams', 'Crypto', 'KeyControlRetired', 'Incomplete', 'Early', 'KeyControlBinding', 'Recovery', 'UnexpectedLabel', 'Entropy', 'Binding', 'Parameters', 'Packet'},
+    'connection_error': {'Slot', 'Tls', 'EndpointAt', 'UnsupportedFrame', 'Gate', 'Binding', 'Transcript', 'UnexpectedLabel', 'Endpoint', 'UnsupportedLevel', 'Packet', 'Resolver', 'none', 'Capacity', 'Recovery', 'Io', 'Reassembly', 'Crypto'},
+    'recovery_error': {'UnsupportedFrame', 'Binding', 'Ecn', 'PendingInitialPublication', 'Accounting', 'Packet', 'CongestionLimited', 'Flight', 'none', 'Capacity', 'Recovery', 'StaleDeadline', 'UnsupportedLevel'},
+    'accounting_error': {'AmplificationLimited', 'ReservationIdExhausted', 'InvalidAckRange', 'HistoryUnavailable', 'InvalidClassification', 'Overflow', 'InvalidReservation', 'Retired', 'PacketNumberExhausted', 'InvalidState', 'OutstandingPackets', 'Full', 'UnsentPacket', 'none', 'TooManyAckRanges'},
+
     'event': {'hq_progress'}, 'stage': {'listener', 'connection'},
     'lifecycle': {'Listening', 'Active', 'Closing', 'Draining', 'Closed'},
     'status': {'success', 'failure', 'idle-expired'}, 'role': {'client', 'server'},

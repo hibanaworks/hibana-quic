@@ -5,6 +5,8 @@
 use hibana_quic::quic::application::storage as application_storage;
 #[path = "imp/cli.rs"]
 mod cli;
+#[path = "imp/error_diagnostics.rs"]
+mod error_diagnostics;
 #[path = "imp/files.rs"]
 mod files;
 #[path = "imp/file_service.rs"]
@@ -459,9 +461,14 @@ async fn connected<const S: usize, const T: usize>(
             }
         })
         .await
-        .map_err(|error| match diagnostics.take() {
-            Some(detail) => format!("{error:?}: {detail}"),
-            None => format!("{error:?}"),
+        .map_err(|error| {
+            if std::env::var_os("HIBANA_QUIC_DIAGNOSTICS").is_some() {
+                eprintln!("{}", error_diagnostics::application_record(&error));
+            }
+            match diagnostics.take() {
+                Some(detail) => format!("{error:?}: {detail}"),
+                None => format!("{error:?}"),
+            }
         })?;
         if report.key_generation < key_update_target {
             return Err("requested key generation was not actually installed".into());
@@ -1353,6 +1360,9 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
+            if std::env::var_os("HIBANA_QUIC_DIAGNOSTICS").is_some() {
+                eprintln!("{}", error_diagnostics::DRIVER_FAILURE);
+            }
             eprintln!("hq: {error}");
             ExitCode::FAILURE
         }
