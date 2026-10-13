@@ -27,6 +27,10 @@ class SourcePair(unittest.TestCase):
         self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
                  'commit', '-qm', 'Synthetic TLS source')
         self.revision = self.git('rev-parse', 'HEAD').stdout.strip()
+        (self.quic / 'Cargo.lock').write_text(
+            'version = 4\n\n[[package]]\nname = "hibana"\nversion = "0.0.1"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+            f'checksum = "{"a" * 64}"\n')
         self.manifest(self.revision)
 
     def git(self, *args):
@@ -35,6 +39,7 @@ class SourcePair(unittest.TestCase):
 
     def manifest(self, revision):
         (self.quic / 'Cargo.toml').write_text(
+            '[package.metadata.hibana-source]\nversion = "0.0.1"\n\n'
             '[dependencies]\nhibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", '
             f'rev = "{revision}" }}\n')
 
@@ -43,17 +48,22 @@ class SourcePair(unittest.TestCase):
                                '--output', str(self.root / 'output')], text=True, capture_output=True)
 
     def test_exact_clean_source_is_recorded_in_a_bounded_public_identity(self):
-        self.assertEqual(self.stage().returncode, 0)
+        result = self.stage()
+        self.assertEqual(result.returncode, 0, result.stderr)
         identity = self.root / 'output/source-pair.json'
         self.assertLess(identity.stat().st_size, 16384)
         pair = json.loads(identity.read_text())
         self.assertEqual(pair['tls_revision'], self.revision)
+        self.assertEqual(pair['hibana_version'], '0.0.1')
+        self.assertEqual(pair['hibana_checksum'], 'a' * 64)
         self.assertEqual(set(pair['trees']), {'hibana-quic', 'hibana-tls'})
         self.assertFalse((self.root / 'output/hibana-tls/.git').exists())
 
     def test_wrong_commit_is_rejected(self):
         self.manifest('0' * 40)
-        self.assertNotEqual(self.stage().returncode, 0)
+        result = self.stage()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('sibling TLS checkout differs from the dependency revision', result.stderr)
 
     def test_modified_or_untracked_tls_is_rejected(self):
         for name in ('Cargo.toml', 'extra.rs'):
@@ -61,7 +71,9 @@ class SourcePair(unittest.TestCase):
                 path = self.tls / name
                 original = path.read_text() if path.exists() else None
                 path.write_text('unexpected source\n')
-                self.assertNotEqual(self.stage().returncode, 0)
+                result = self.stage()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('TLS checkout must be clean', result.stderr)
                 if original is None:
                     path.unlink()
                 else:
