@@ -185,7 +185,7 @@ def main():
                   unsupported=counts['unsupported'], not_run=counts[None], total=len(cells))
     full_passed = bool(cells) and all(c['result'] == 'succeeded' for c in cells)
     summary = dict(source_commit=source, runner_revision=pins['RUNNER_REVISION'],
-        neqo_revision=pins['NEQO_REVISION'], hibana_revision=pins['HIBANA_REVISION'],
+        neqo_revision=pins['NEQO_REVISION'], hibana_version=pins['HIBANA_VERSION'], hibana_checksum=pins['HIBANA_CHECKSUM'],
         image_ids=image_ids, simulator_image=args.sim_image, docker=server['Version'],
         docker_api=server['ApiVersion'], compose=compose, tshark=tshark,
         scope='hq-interop QUIC v1; 20 upstream cases; excludes http3 and v2',

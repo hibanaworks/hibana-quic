@@ -18,6 +18,11 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     config = tomllib.loads((ROOT / 'Cargo.toml').read_text())
+    core = [p for p in tomllib.loads((ROOT / 'Cargo.lock').read_text())['package'] if p['name'] == 'hibana']
+    assert len(core) == 1, 'paired source requires one Hibana identity'
+    core = core[0]
+    assert core.get('source') == 'registry+https://github.com/rust-lang/crates.io-index'
+    assert core['version'] == config['package']['metadata']['hibana-source']['version']
     tls = (ROOT.parent / 'hibana-tls').resolve(strict=True)
     dependency = config['dependencies']['hibana-tls']
     revision = dependency['rev']
@@ -64,7 +69,7 @@ def main():
         subset = {p: h for p, h in sorted(entries.items()) if p.startswith(name + '/')}
         digests[name] = hashlib.sha256(json.dumps(subset, sort_keys=True).encode()).hexdigest()
     (output / 'source-files.json').write_text(json.dumps(entries, indent=2) + '\n')
-    (output / 'source-pair.json').write_text(json.dumps({'trees': digests, 'file_count': len(entries), 'tls_repository': dependency['git'], 'tls_revision': revision}, indent=2) + '\n')
+    (output / 'source-pair.json').write_text(json.dumps({'trees': digests, 'file_count': len(entries), 'tls_repository': dependency['git'], 'tls_revision': revision, 'hibana_version': core['version'], 'hibana_checksum': core['checksum']}, indent=2) + '\n')
     print(json.dumps({'output': str(output), 'trees': digests, 'files': len(entries)}))
 
 
