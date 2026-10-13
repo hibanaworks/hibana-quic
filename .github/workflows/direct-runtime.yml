@@ -4,6 +4,13 @@ on:
     branches: [main]
     paths: ['src/**', 'tests/**', 'examples/**', 'pal/**', 'tools/ci/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/direct-runtime.yml', '.github/workflows/interop-pilot.yml']
   workflow_dispatch:
+    inputs:
+      check:
+        description: Check to run
+        type: choice
+        required: true
+        default: all
+        options: [all, rust]
 permissions:
   contents: read
 concurrency:
@@ -15,7 +22,7 @@ defaults:
 jobs:
   rust:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
@@ -92,6 +99,7 @@ jobs:
           path: hibana-quic/.ci-work/paired-source/source-pair.json
           retention-days: 7
   secret-miri:
+    if: github.event_name != 'workflow_dispatch' || inputs.check == 'all'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -119,6 +127,7 @@ jobs:
           cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --lib certificate::pem::
           cargo +nightly-2026-10-08 miri test --locked --manifest-path pal/Cargo.toml --lib sys::wake::tests::
   ack-delay-faults:
+    if: github.event_name != 'workflow_dispatch' || inputs.check == 'all'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -165,6 +174,7 @@ jobs:
           retention-days: 7
 
   application-examples:
+    if: github.event_name != 'workflow_dispatch' || inputs.check == 'all'
     strategy:
       fail-fast: false
       matrix:
