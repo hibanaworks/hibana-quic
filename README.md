@@ -2,7 +2,7 @@
 
 QUIC v1/v2 and HTTP/3 for Rust, using [Hibana](https://github.com/hibanaworks/hibana)
 to express protocol order and transfer ownership between roles.
-Both libraries use [Hibana 0.9.8 from crates.io](https://crates.io/crates/hibana/0.9.8).
+Both libraries use [Hibana 0.9.9 from crates.io](https://crates.io/crates/hibana/0.9.9).
 TLS is provided by [hibana-tls](https://github.com/hibanaworks/hibana-tls).
 
 The library is `no_std`, forbids unsafe Rust, and does not link the `alloc` crate.
