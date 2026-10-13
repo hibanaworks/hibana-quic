@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "hibana"
-version = "0.9.7"
+version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27ff398d955acf5afa48ba3218be4816d15377d9a9053eee53d9dec01ab52d99"
+checksum = "90f5a7c4a3a359126267eefef31e0a43bddd2211dcc2b73012c83f03b264c055"
 
 [[package]]
 name = "hibana-quic"
@@ -26,7 +26,7 @@ dependencies = [
 [[package]]
 name = "hibana-tls"
 version = "0.1.0"
-source = "git+https://github.com/hibanaworks/hibana-tls?rev=51ba20900c69041e4cb88b009104b76ddbfabce8#51ba20900c69041e4cb88b009104b76ddbfabce8"
+source = "git+https://github.com/hibanaworks/hibana-tls?rev=1fc0e03ebe022339787332dc03c75abca6aac8be#1fc0e03ebe022339787332dc03c75abca6aac8be"
 dependencies = [
  "hibana",
 ]

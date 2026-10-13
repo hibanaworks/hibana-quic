@@ -14,8 +14,8 @@ categories = ["asynchronous", "network-programming", "embedded"]
 
 [dependencies]
 # The owned TLS repository is pinned to the same source checked out by CI.
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "51ba20900c69041e4cb88b009104b76ddbfabce8", default-features = false }
-hibana = { version = "=0.9.7", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "1fc0e03ebe022339787332dc03c75abca6aac8be", default-features = false }
+hibana = { version = "=0.9.8", default-features = false }
 
 [features]
 default = []
@@ -35,7 +35,7 @@ codegen-units = 1
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"
 registry = "crates-io"
-version = "0.9.7"
+version = "0.9.8"
 local-patches = false
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
