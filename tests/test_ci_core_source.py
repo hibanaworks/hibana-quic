@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 
 SOURCE = Path(__file__).resolve().parents[1]
-REVISION = "40b544895081c952d719444b5fadcd2e953e165e"
+REVISION = "54403707874b13f4d03b13c88fa874d81e7a9753"
 TLS_REVISION = "6e5ece518c30a1478f75f17d23aec72b10208fd8"
 REPOSITORY = "https://github.com/hibanaworks/hibana"
 CORE_SOURCE = "git+" + REPOSITORY + "?rev=" + REVISION + "#" + REVISION
