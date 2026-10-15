@@ -36,9 +36,11 @@ jobs:
         run: |
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component clippy --target thumbv6m-none-eabi
       - name: Read the immutable TLS revision
         id: tls
-        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+        run: cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --tls-revision >> "$GITHUB_OUTPUT"
       - name: Check out the exact owned TLS source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -46,12 +48,9 @@ jobs:
           ref: ${{ steps.tls.outputs.revision }}
           path: hibana-tls
           persist-credentials: false
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install 1.95.0 --profile minimal --component clippy --target thumbv6m-none-eabi
       - name: Verify both sources and dependency identities
         run: |
-          python3 tools/ci/audit_source.py --check
-          python3 tools/ci/check_dependencies.py
+          cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --audit
           cargo +1.95.0 test --locked --manifest-path tools/ci/source-pair/Cargo.toml
           cargo +1.95.0 clippy --locked --manifest-path tools/ci/source-pair/Cargo.toml --all-targets -- -D warnings
           cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --output .ci-work/paired-source
@@ -118,8 +117,9 @@ jobs:
         run: |
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
+      - run: rustup toolchain install 1.95.0 --profile minimal
       - id: tls
-        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+        run: cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --tls-revision >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: hibanaworks/hibana-tls
@@ -149,8 +149,9 @@ jobs:
         run: |
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
+      - run: rustup toolchain install 1.95.0 --profile minimal
       - id: tls
-        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+        run: cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --tls-revision >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: hibanaworks/hibana-tls
@@ -205,7 +206,7 @@ jobs:
       - name: Read the immutable TLS revision for ARM tests
         if: runner.os == 'macOS'
         id: arm_tls
-        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+        run: cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --tls-revision >> "$GITHUB_OUTPUT"
       - name: Check out the exact TLS source for ARM tests
         if: runner.os == 'macOS'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

@@ -1,4 +1,6 @@
 use regex::Regex;
+mod audit;
+mod layout;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
@@ -413,9 +415,35 @@ fn stage(root: &Path, requested_output: &Path) -> Result<serde_json::Value> {
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let root = std::env::current_dir()?;
+    if args.len() == 2
+        && (args[0] == "--legacy-target-budget" || args[0] == "--legacy-async-budget")
+    {
+        let symbol = if args[0] == "--legacy-target-budget" {
+            "HIBANA_QUIC_TARGET_BUDGET"
+        } else {
+            "HIBANA_QUIC_ASYNC_STORAGE_BUDGET"
+        };
+        let result = layout::read(&fs::read(&args[1])?, symbol)?;
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+    if args.len() == 1 {
+        if args[0] == "--tls-revision" {
+            println!("revision={}", audit::tls_revision(&root)?);
+            return Ok(());
+        }
+        if args[0] == "--audit-sources" {
+            return audit::sources(&root);
+        }
+        if args[0] == "--audit" {
+            audit::sources(&root)?;
+            return audit::dependencies(&root);
+        }
+    }
     require(
         args.len() == 2 && args[0] == "--output",
-        "usage: stage-paired-source --output DIRECTORY",
+        "usage: stage-paired-source --output DIRECTORY | --tls-revision | --audit-sources | --audit",
     )?;
     let result = stage(&std::env::current_dir()?, &PathBuf::from(&args[1]))?;
     println!("{result}");
