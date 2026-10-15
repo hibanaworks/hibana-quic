@@ -5,8 +5,7 @@ version = 4
 [[package]]
 name = "hibana"
 version = "0.9.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19756b94acd833fe2989ab1d9b9510b71a8886d56c776d9cf0ce362d4b9f4fdc"
+source = "git+https://github.com/hibanaworks/hibana?rev=f86451b3fa65508e351fd48db32af5129a0539b6#f86451b3fa65508e351fd48db32af5129a0539b6"
 
 [[package]]
 name = "hibana-quic"

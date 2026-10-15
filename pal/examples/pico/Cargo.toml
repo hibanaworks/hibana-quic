@@ -11,3 +11,7 @@ hibana = { version = "=0.9.9", default-features = false }
 [features]
 default = []
 hq = ["hibana-quic/hq"]
+
+# Qualify the projection repair before releasing a new crate.
+[patch.crates-io]
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "f86451b3fa65508e351fd48db32af5129a0539b6" }

@@ -19,3 +19,6 @@ rustls = { version = "=0.23.45", default-features = false, features = ["std", "r
 der = { version = "=0.7.10", default-features = false }
 rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"] }
 
+# Qualify the projection repair before releasing a new crate.
+[patch.crates-io]
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "f86451b3fa65508e351fd48db32af5129a0539b6" }

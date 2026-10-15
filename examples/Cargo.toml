@@ -50,3 +50,7 @@ required-features = ["hq"]
 name = "hq-server"
 path = "hello-hq/server.rs"
 required-features = ["hq"]
+
+# Qualify the projection repair before releasing a new crate.
+[patch.crates-io]
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "f86451b3fa65508e351fd48db32af5129a0539b6" }

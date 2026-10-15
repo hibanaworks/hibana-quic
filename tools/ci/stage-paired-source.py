@@ -21,8 +21,25 @@ def main():
     core = [p for p in tomllib.loads((ROOT / 'Cargo.lock').read_text())['package'] if p['name'] == 'hibana']
     assert len(core) == 1, 'paired source requires one Hibana identity'
     core = core[0]
-    assert core.get('source') == 'registry+https://github.com/rust-lang/crates.io-index'
-    assert core['version'] == config['package']['metadata']['hibana-source']['version']
+    identity = config['package']['metadata']['hibana-source']
+    assert identity['repository'] == 'https://github.com/hibanaworks/hibana'
+    core_revision = identity['revision']
+    assert re.fullmatch(r'[0-9a-f]{40}', core_revision), 'core requires an immutable commit'
+    expected_source = 'git+' + identity['repository'] + '?rev=' + core_revision + '#' + core_revision
+    assert core.get('source') == expected_source, 'root lock selected a different core'
+    assert core['version'] == identity['version']
+    pins = dict(line.split('=', 1) for line in (ROOT / 'tools/ci/pins.env').read_text().splitlines()
+                if line and not line.startswith('#'))
+    assert pins['HIBANA_VERSION'] == core['version'] and pins['HIBANA_REVISION'] == core_revision
+    for parent, dirs, files in os.walk(ROOT):
+        dirs[:] = [directory for directory in dirs if directory not in SKIP]
+        if 'Cargo.lock' not in files:
+            continue
+        lock = tomllib.loads((Path(parent) / 'Cargo.lock').read_text())
+        selected = [package for package in lock['package'] if package['name'] == 'hibana']
+        assert len(selected) == 1 and selected[0].get('source') == expected_source, 'consumer lock selected a different core: ' + parent
+        manifest = tomllib.loads((Path(parent) / 'Cargo.toml').read_text())
+        assert manifest['patch']['crates-io']['hibana'] == {'git': identity['repository'], 'rev': core_revision}, 'consumer patch differs from the core pin'
     tls = (ROOT.parent / 'hibana-tls').resolve(strict=True)
     dependency = config['dependencies']['hibana-tls']
     revision = dependency['rev']
@@ -69,7 +86,7 @@ def main():
         subset = {p: h for p, h in sorted(entries.items()) if p.startswith(name + '/')}
         digests[name] = hashlib.sha256(json.dumps(subset, sort_keys=True).encode()).hexdigest()
     (output / 'source-files.json').write_text(json.dumps(entries, indent=2) + '\n')
-    (output / 'source-pair.json').write_text(json.dumps({'trees': digests, 'file_count': len(entries), 'tls_repository': dependency['git'], 'tls_revision': revision, 'hibana_version': core['version'], 'hibana_checksum': core['checksum']}, indent=2) + '\n')
+    (output / 'source-pair.json').write_text(json.dumps({'trees': digests, 'file_count': len(entries), 'tls_repository': dependency['git'], 'tls_revision': revision, 'hibana_version': core['version'], 'hibana_revision': core_revision}, indent=2) + '\n')
     print(json.dumps({'output': str(output), 'trees': digests, 'files': len(entries)}))
 
 
