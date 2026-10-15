@@ -2,20 +2,26 @@
 """Verify Hibana identity and prevent eliminated packages returning transitively."""
 from pathlib import Path
 import tomllib
+import re
 ROOT = Path(__file__).resolve().parents[2]
 pins = dict(line.split('=', 1) for line in (ROOT/'tools/ci/pins.env').read_text().splitlines() if line and not line.startswith('#'))
 version = pins['HIBANA_VERSION']
 checksum = pins['HIBANA_CHECKSUM']
 registry = 'registry+https://github.com/rust-lang/crates.io-index'
 assert len(checksum) == 64 and all(c in '0123456789abcdef' for c in checksum)
+core_url = 'https://github.com/hibanaworks/hibana'
+core_revision = pins['HIBANA_REVISION']
+assert re.fullmatch(r'[0-9a-f]{40}', core_revision)
+core_source = f'git+{core_url}?rev={core_revision}#{core_revision}'
+core_patch = {'git': core_url, 'rev': core_revision}
 
 def check_core_dependency(dependency):
     assert dependency == {'version': '=' + version, 'default-features': False}, dependency
 
 def check_core_package(package):
     assert package['version'] == version, package
-    assert package.get('source') == registry, package
-    assert package.get('checksum') == checksum, package
+    assert package.get('source') == core_source, package
+    assert 'checksum' not in package, package
 
 # This ratchet grows as replacement implementations are qualified.
 # It is not a claim that all remaining third-party packages are eliminated.
@@ -32,8 +38,7 @@ for relative in ('Cargo.toml', 'pal/Cargo.toml', 'examples/Cargo.toml', 'tests/i
     dependency = (cargo['dependencies'].get('hibana') or cargo.get('dev-dependencies', {}).get('hibana'))
     if dependency is not None:
         check_core_dependency(dependency)
-    for overrides in cargo.get('patch', {}).values():
-        assert 'hibana' not in overrides, (relative, 'Hibana source override')
+    assert cargo.get('patch') == {'crates-io': {'hibana': core_patch}}, (relative, 'Hibana patch differs from the candidate pin')
     lock = tomllib.loads(path.with_name('Cargo.lock').read_text())
     names = {p['name'] for p in lock['package']}
     assert not names & eliminated, (relative, names & eliminated)
@@ -44,7 +49,7 @@ for relative in ('Cargo.toml', 'pal/Cargo.toml', 'examples/Cargo.toml', 'tests/i
     assert len(matches) == 1, (relative, 'multiple Hibana package identities')
     package = matches[0]
     check_core_package(package)
-print('Exact crates.io version and checksum verified:', version, checksum)
+print('Exact candidate version and Git identity verified:', version, core_revision)
 
 print('Eliminated packages absent from all complete locks:', ', '.join(sorted(eliminated)))
 
@@ -81,7 +86,10 @@ for overrides in tls_cargo.get('patch', {}).values():
 tls_lock = tomllib.loads((material/'Cargo.lock').read_text())
 tls_core = [p for p in tls_lock['package'] if p['name'] == 'hibana']
 assert len(tls_core) == 1, 'TLS lock must contain one Hibana identity'
-check_core_package(tls_core[0])
+assert tls_core[0]['version'] == version
+assert tls_core[0].get('source') == registry
+assert tls_core[0].get('checksum') == checksum
+print('Unchanged TLS standalone lock retains published core:', version, checksum)
 print('Exact TLS Git source and all consumer locks verified:', tls_revision)
 
 pico_lock = tomllib.loads((ROOT/'pal/examples/pico/Cargo.lock').read_text())
