@@ -50,7 +50,7 @@ dependencies = [
 [[package]]
 name = "hibana"
 version = "0.9.9"
-source = "git+https://github.com/hibanaworks/hibana?rev=ef65f0956104441a7bcf2dc4eabbc62930e4c30d#ef65f0956104441a7bcf2dc4eabbc62930e4c30d"
+source = "git+https://github.com/hibanaworks/hibana?rev=594cac066d8b99b5caf852d061b8ee7121dd8698#594cac066d8b99b5caf852d061b8ee7121dd8698"
 
 [[package]]
 name = "hibana-quic"

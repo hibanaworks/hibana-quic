@@ -35,11 +35,11 @@ codegen-units = 1
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"
 version = "0.9.9"
-revision = "ef65f0956104441a7bcf2dc4eabbc62930e4c30d"
+revision = "594cac066d8b99b5caf852d061b8ee7121dd8698"
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 actor-test-allocator = { path = "tests/support/actor-test-allocator" }
 
 # Qualify the projection repair before releasing a new crate.
 [patch.crates-io]
-hibana = { git = "https://github.com/hibanaworks/hibana", rev = "ef65f0956104441a7bcf2dc4eabbc62930e4c30d" }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "594cac066d8b99b5caf852d061b8ee7121dd8698" }
