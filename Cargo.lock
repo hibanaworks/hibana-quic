@@ -9,7 +9,7 @@ version = "0.0.0"
 [[package]]
 name = "hibana"
 version = "0.9.9"
-source = "git+https://github.com/hibanaworks/hibana?rev=f86451b3fa65508e351fd48db32af5129a0539b6#f86451b3fa65508e351fd48db32af5129a0539b6"
+source = "git+https://github.com/hibanaworks/hibana?rev=1e55aabe38c8bfa8e07c061b41d0aa906533a933#1e55aabe38c8bfa8e07c061b41d0aa906533a933"
 
 [[package]]
 name = "hibana-quic"
