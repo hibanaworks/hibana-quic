@@ -21,4 +21,4 @@ rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "
 
 # Qualify the projection repair before releasing a new crate.
 [patch.crates-io]
-hibana = { git = "https://github.com/hibanaworks/hibana", rev = "54403707874b13f4d03b13c88fa874d81e7a9753" }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "c2001ec06944d7f3b299e16b5b3efb5b0ba0366a" }
