@@ -47,13 +47,14 @@ jobs:
           path: hibana-tls
           persist-credentials: false
       - name: Install the pinned Rust toolchain
-        if: inputs.check != 'diagnostics'
         run: rustup toolchain install 1.95.0 --profile minimal --component clippy --target thumbv6m-none-eabi
       - name: Verify both sources and dependency identities
         run: |
           python3 tools/ci/audit_source.py --check
           python3 tools/ci/check_dependencies.py
-          python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
+          cargo +1.95.0 test --locked --manifest-path tools/ci/source-pair/Cargo.toml
+          cargo +1.95.0 clippy --locked --manifest-path tools/ci/source-pair/Cargo.toml --all-targets -- -D warnings
+          cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --output .ci-work/paired-source
       - name: Core, TLS, integration and compile-fail contracts
         if: inputs.check != 'diagnostics'
         run: |
@@ -159,7 +160,7 @@ jobs:
       - run: rustup toolchain install 1.95.0 --profile minimal
       - name: Build one exact candidate for all fault cases
         run: |
-          python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
+          cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --output .ci-work/paired-source
           mkdir -p ci-safe-results
           cp .ci-work/paired-source/source-pair.json ci-safe-results/
           cargo +1.95.0 build --locked --release --manifest-path tests/interop/driver/Cargo.toml --features hq --bin hq
