@@ -15,4 +15,4 @@ hibana-quic = { path = "..", default-features = false }
 
 # Qualify the projection repair before releasing a new crate.
 [patch.crates-io]
-hibana = { git = "https://github.com/hibanaworks/hibana", rev = "64d4f4966403c967f2b80393acec2c36556bfc5c" }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "c03c7af337de6d00c150039450ddb0825b39e3a8" }
