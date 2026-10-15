@@ -9,6 +9,8 @@ import unittest
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'tools/ci/stage-paired-source.py'
+CORE_REPOSITORY = 'https://github.com/hibanaworks/hibana'
+CORE_REVISION = '1' * 40
 
 
 class SourcePair(unittest.TestCase):
@@ -29,8 +31,9 @@ class SourcePair(unittest.TestCase):
         self.revision = self.git('rev-parse', 'HEAD').stdout.strip()
         (self.quic / 'Cargo.lock').write_text(
             'version = 4\n\n[[package]]\nname = "hibana"\nversion = "0.0.1"\n'
-            'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
-            f'checksum = "{"a" * 64}"\n')
+            f'source = "git+{CORE_REPOSITORY}?rev={CORE_REVISION}#{CORE_REVISION}"\n')
+        (self.quic / 'tools/ci/pins.env').write_text(
+            f'HIBANA_VERSION=0.0.1\nHIBANA_REVISION={CORE_REVISION}\n')
         self.manifest(self.revision)
 
     def git(self, *args):
@@ -39,7 +42,10 @@ class SourcePair(unittest.TestCase):
 
     def manifest(self, revision):
         (self.quic / 'Cargo.toml').write_text(
-            '[package.metadata.hibana-source]\nversion = "0.0.1"\n\n'
+            '[package.metadata.hibana-source]\nversion = "0.0.1"\n'
+            f'repository = "{CORE_REPOSITORY}"\nrevision = "{CORE_REVISION}"\n\n'
+            '[patch.crates-io]\n'
+            f'hibana = {{ git = "{CORE_REPOSITORY}", rev = "{CORE_REVISION}" }}\n\n'
             '[dependencies]\nhibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", '
             f'rev = "{revision}" }}\n')
 
@@ -55,7 +61,7 @@ class SourcePair(unittest.TestCase):
         pair = json.loads(identity.read_text())
         self.assertEqual(pair['tls_revision'], self.revision)
         self.assertEqual(pair['hibana_version'], '0.0.1')
-        self.assertEqual(pair['hibana_checksum'], 'a' * 64)
+        self.assertEqual(pair['hibana_revision'], CORE_REVISION)
         self.assertEqual(set(pair['trees']), {'hibana-quic', 'hibana-tls'})
         self.assertFalse((self.root / 'output/hibana-tls/.git').exists())
 
