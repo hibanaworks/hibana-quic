@@ -23,18 +23,18 @@ pub fn now() -> UnixTime {
     UnixTime::since_unix_epoch(Duration::from_secs(1_800_000_000))
 }
 pub struct Buffers {
-    rx: [u8; 8192],
-    tx: [u8; 8192],
-    certificates: [u8; 8192],
-    parameters: [u8; 512],
+    rx: Box<[u8]>,
+    tx: Box<[u8]>,
+    certificates: Box<[u8]>,
+    parameters: Box<[u8]>,
 }
 impl Buffers {
     pub fn new() -> Self {
         Self {
-            rx: [0; 8192],
-            tx: [0; 8192],
-            certificates: [0; 8192],
-            parameters: [0; 512],
+            rx: vec![0; 8192].into_boxed_slice(),
+            tx: vec![0; 8192].into_boxed_slice(),
+            certificates: vec![0; 8192].into_boxed_slice(),
+            parameters: vec![0; 512].into_boxed_slice(),
         }
     }
     pub fn storage(&mut self) -> Storage<'_> {

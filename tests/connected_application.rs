@@ -1229,10 +1229,10 @@ fn connection_case_with_failure(
     let trace_polls = std::env::var_os("HIBANA_TRACE_POLLS").is_some();
     let client_future_storage = Box::<_>::new_uninit();
     let server_future_storage = Box::<_>::new_uninit();
+    let mut client_tls_buffers = fixture::Buffers::new();
+    let mut server_tls_buffers = fixture::Buffers::new();
     let measured = actor_test_allocator::NoAlloc::start();
     'protocol: {
-        let mut client_tls_buffers = fixture::Buffers::new();
-        let mut server_tls_buffers = fixture::Buffers::new();
         let client_tls = BoundedTls::client(
             ClientConfig {
                 protocol: Default::default(),
