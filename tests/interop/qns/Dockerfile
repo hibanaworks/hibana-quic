@@ -1,4 +1,4 @@
-# Build context: output of tools/ci/stage-paired-source.py, not QUIC alone.
+# Build context: the Rust stage-paired-source export of both owned repositories.
 ARG RUST_IMAGE
 ARG ENDPOINT_IMAGE
 FROM ${RUST_IMAGE} AS builder

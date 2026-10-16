@@ -18,7 +18,9 @@ REFERENCE
 )
 export REFERENCE_IMPLEMENTATION
 mkdir -p ci-safe-results .ci-work/raw
-python3 tools/ci/audit_source.py --check
+rustup toolchain install 1.95.0 --profile minimal
+export CARGO_TARGET_DIR="$PWD/.ci-work/source-pair-target"
+cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --audit-sources
 if [[ -f tools/ci/recovery-diagnostics ]]; then
   exec bash tools/ci/compile-recovery.sh
 fi
@@ -182,17 +184,17 @@ fi
 echo 'Building bounded endpoint from audited source'
 # The candidate uses the immutable TLS revision checked out beside QUIC.
 # CI must restore that paired snapshot before this job; never silently fetch HEAD.
-python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
-python3 .ci-work/paired-source/hibana-quic/tools/ci/audit_source.py --check
+cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --output .ci-work/paired-source
+(cd .ci-work/paired-source/hibana-quic && "$CARGO_TARGET_DIR/debug/stage-paired-source" --audit-sources)
 cp .ci-work/paired-source/source-pair.json ci-safe-results/source-pair.json
 docker build --platform linux/amd64 --build-arg RUST_IMAGE="$RUST_IMAGE" --build-arg ENDPOINT_IMAGE="$ENDPOINT_IMAGE" -f tests/interop/qns/Dockerfile -t hibana-pilot-bounded .ci-work/paired-source
 BOUNDED_IMAGE=$(docker image inspect hibana-pilot-bounded --format '{{.Id}}')
 TOOLS_IMAGE=$(docker image inspect hibana-pilot-tools --format '{{.Id}}')
-export REFERENCE_IMAGE BOUNDED_IMAGE TOOLS_IMAGE RUNNER_REVISION NEQO_REVISION HIBANA_VERSION HIBANA_CHECKSUM HIBANA_TLS_REVISION RUST_IMAGE ENDPOINT_IMAGE UBUNTU_IMAGE PYTHON_IMAGE
+export REFERENCE_IMAGE BOUNDED_IMAGE TOOLS_IMAGE RUNNER_REVISION NEQO_REVISION HIBANA_VERSION HIBANA_REVISION HIBANA_TLS_REVISION RUST_IMAGE ENDPOINT_IMAGE UBUNTU_IMAGE PYTHON_IMAGE
 python3 - <<'PY'
 import json,os
 from pathlib import Path
-keys=['RUNNER_REVISION','NEQO_REVISION','HIBANA_VERSION','HIBANA_CHECKSUM','HIBANA_TLS_REVISION','SIM_IMAGE','REFERENCE_IMPLEMENTATION','REFERENCE_IMAGE','BOUNDED_IMAGE','TOOLS_IMAGE','RUST_IMAGE','ENDPOINT_IMAGE','UBUNTU_IMAGE','PYTHON_IMAGE','DOCKER_ENGINE_VERSION','DOCKER_CLI_DEB_SHA256','DOCKER_ENGINE_DEB_SHA256']
+keys=['RUNNER_REVISION','NEQO_REVISION','HIBANA_VERSION','HIBANA_REVISION','HIBANA_TLS_REVISION','SIM_IMAGE','REFERENCE_IMPLEMENTATION','REFERENCE_IMAGE','BOUNDED_IMAGE','TOOLS_IMAGE','RUST_IMAGE','ENDPOINT_IMAGE','UBUNTU_IMAGE','PYTHON_IMAGE','DOCKER_ENGINE_VERSION','DOCKER_CLI_DEB_SHA256','DOCKER_ENGINE_DEB_SHA256']
 pins={k:os.environ[k] for k in keys}
 if os.environ['REFERENCE_IMPLEMENTATION'] != 'neqo':
     del pins['NEQO_REVISION']

@@ -1,0 +1,29 @@
+name: Owned source export
+on:
+  push:
+    paths: ['tools/ci/source-pair/**', '.github/workflows/source-pair.yml']
+  pull_request:
+    paths: ['tools/ci/source-pair/**', '.github/workflows/source-pair.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-pair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install stable Rust
+        run: rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+      - name: Keep host build outputs outside the source
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/source-pair-target" >> "$GITHUB_ENV"
+      - name: Check actual Git behavior and exported bytes
+        run: |
+          cargo +1.95.0 fmt --manifest-path tools/ci/source-pair/Cargo.toml --check
+          cargo +1.95.0 test --locked --manifest-path tools/ci/source-pair/Cargo.toml
+          cargo +1.95.0 clippy --locked --manifest-path tools/ci/source-pair/Cargo.toml --all-targets -- -D warnings

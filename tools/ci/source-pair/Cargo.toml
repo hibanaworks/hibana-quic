@@ -1,0 +1,19 @@
+[package]
+name = "hibana-quic-source-pair"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[[bin]]
+name = "stage-paired-source"
+path = "src/main.rs"
+
+[dependencies]
+regex = "=1.12.3"
+serde_json = "=1.0.154"
+sha2 = "=0.10.9"
+toml = "=0.8.23"
+
+[lints.rust]
+unsafe_code = "forbid"

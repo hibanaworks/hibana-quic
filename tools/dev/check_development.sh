@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 cargo test --locked
 cargo clippy --locked --lib --tests -- -D warnings
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-python3 tools/ci/check_dependencies.py
+cargo +1.95.0 run --locked --manifest-path tools/ci/source-pair/Cargo.toml -- --audit
 cargo test --locked --release --manifest-path tests/interop/driver/Cargo.toml --features hq --bin hq
 cargo test --locked --manifest-path tests/tls-reference/Cargo.toml --test bounded_tls --test certificate_depth
 if [[ -n "${HIBANA_RUNNER_CERTS_DIR:-}" ]]; then

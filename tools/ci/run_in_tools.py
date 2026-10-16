@@ -1018,7 +1018,7 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
         require(pair.get('tls_repository') == 'https://github.com/hibanaworks/hibana-tls'
                 and pair.get('tls_revision') == expected_pins['HIBANA_TLS_REVISION']
                 and pair.get('hibana_version') == expected_pins['HIBANA_VERSION']
-                and pair.get('hibana_checksum') == expected_pins['HIBANA_CHECKSUM'], 'matrix core or TLS source mismatch')
+                and pair.get('hibana_revision') == expected_pins['HIBANA_REVISION'], 'matrix core or TLS source mismatch')
         trees = pair.get('trees')
         require(isinstance(trees, dict) and set(trees) == {'hibana-quic', 'hibana-tls'}
                 and all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value)
@@ -1031,7 +1031,7 @@ def verify_matrix(directory, source_commit, run_id, run_attempt):
         require(environment.get('interop_group') == group['name'] and summary.get('interop_group') == group['name'], 'matrix group identity mismatch')
         reference = group['reference_implementation']
         require(pins.get('REFERENCE_IMPLEMENTATION') == reference, 'matrix reference mismatch')
-        for key in ('RUNNER_REVISION', 'HIBANA_VERSION', 'HIBANA_CHECKSUM', 'HIBANA_TLS_REVISION', 'RUST_IMAGE', 'ENDPOINT_IMAGE', 'UBUNTU_IMAGE',
+        for key in ('RUNNER_REVISION', 'HIBANA_VERSION', 'HIBANA_REVISION', 'HIBANA_TLS_REVISION', 'RUST_IMAGE', 'ENDPOINT_IMAGE', 'UBUNTU_IMAGE',
                     'PYTHON_IMAGE', 'DOCKER_ENGINE_VERSION', 'DOCKER_CLI_DEB_SHA256', 'DOCKER_ENGINE_DEB_SHA256'):
             require(pins.get(key) == expected_pins[key], 'matrix pin mismatch')
         if reference == 'neqo':

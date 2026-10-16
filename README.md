@@ -398,8 +398,14 @@ Both bindings require normal connection termination, separately from local
 message completion. A 30-second launcher deadline bounds each demonstration.
 
 ```sh
-python3 tests/check_examples.py examples/target/release/examples chain.pem key.pem ca.pem
+cargo +1.95.0 build --locked --release --manifest-path examples/Cargo.toml --features hq --examples
+rustc +1.95.0 --edition=2024 -D warnings -O tests/check_examples.rs -o /tmp/hibana-check-examples
+/tmp/hibana-check-examples examples/target/release/examples chain.pem key.pem ca.pem /tmp/hibana-example-results all
 ```
+
+Each exchange saves its verdict and process output under the evidence directory.
+Use a fresh evidence directory for each attempt. Replace `all` with a case such
+as `hq-1048576` to rerun that case alone.
 
 ### Completion and guarantee boundaries
 

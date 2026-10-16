@@ -1341,6 +1341,22 @@ fn run_sized<const S: usize, const T: usize>(options: Options) -> Result<String>
     }
     let report = result.map_err(|e| e.to_string())?;
     if require_clean_client && report.idle_expired_connections != 0 {
+        if std::env::var_os("HIBANA_QUIC_DIAGNOSTICS").is_some() {
+            eprintln!(
+                "driver-idle-expiration idle_connections={} elapsed_ms={}",
+                report.idle_expired_connections, report.elapsed
+            );
+            if let Some(application) = report.application.as_ref() {
+                eprintln!(
+                    "driver-last-application confirmed={} completed={} submitted={} acked={} closed={}",
+                    application.confirmed,
+                    application.completed_streams,
+                    application.submitted_streams,
+                    application.all_streams_acked,
+                    application.close_completed,
+                );
+            }
+        }
         return Err("connection idle-expired after resource retirement".into());
     }
     Ok(report.json(&reactor))
