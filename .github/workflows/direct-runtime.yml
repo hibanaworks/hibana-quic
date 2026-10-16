@@ -10,7 +10,7 @@ on:
         type: choice
         required: true
         default: all
-        options: [all, rust, diagnostics, macos]
+        options: [all, rust, diagnostics, macos, macos-exchanges]
 permissions:
   contents: read
 concurrency:
@@ -21,7 +21,7 @@ defaults:
     working-directory: hibana-quic
 jobs:
   rust:
-    if: github.event_name != 'workflow_dispatch' || inputs.check != 'macos'
+    if: github.event_name != 'workflow_dispatch' || !startsWith(inputs.check, 'macos')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -183,11 +183,11 @@ jobs:
           retention-days: 7
 
   application-examples:
-    if: github.event_name != 'workflow_dispatch' || inputs.check == 'all' || inputs.check == 'macos'
+    if: github.event_name != 'workflow_dispatch' || inputs.check == 'all' || startsWith(inputs.check, 'macos')
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.check == 'macos' && '[{"os":"macos-15","example":"macos"}]' || '[{"os":"ubuntu-24.04","example":"linux"},{"os":"macos-15","example":"macos"}]') }}
+        include: ${{ fromJSON(startsWith(inputs.check, 'macos') && '[{"os":"macos-15","example":"macos"}]' || '[{"os":"ubuntu-24.04","example":"linux"},{"os":"macos-15","example":"macos"}]') }}
     runs-on: ${{ matrix.os }}
     # Cold debug and release builds exceed thirty minutes on Apple ARM runners.
     timeout-minutes: 60
@@ -214,7 +214,7 @@ jobs:
           path: hibana-tls
           persist-credentials: false
       - name: Execute the Apple ARM AES and GCM contracts
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && inputs.check != 'macos-exchanges'
         run: |
           set -euo pipefail
           test "$(uname -m)" = arm64
@@ -223,16 +223,26 @@ jobs:
           cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128
           cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128gcm
       - name: Verify native environment capabilities
+        if: inputs.check != 'macos-exchanges'
         run: |
           cargo +1.95.0 test --locked --manifest-path pal/Cargo.toml
           cargo +1.95.0 run --locked --manifest-path pal/Cargo.toml --example ${{ matrix.example }}
       - name: Compile and test the application localsides
+        if: inputs.check != 'macos-exchanges'
         run: |
           cargo +1.95.0 test --locked --manifest-path examples/Cargo.toml --features hq --examples
           cargo +1.95.0 build --locked --manifest-path examples/Cargo.toml --features hq --examples
           cargo +1.95.0 build --locked --release --manifest-path examples/Cargo.toml --features hq --examples
-      - name: Authenticated raw QUIC and HTTP/3 exchanges
+      - name: Rebuild binaries for the failed debug case and unexecuted release suite
+        if: inputs.check == 'macos-exchanges'
         run: |
+          cargo +1.95.0 build --locked --manifest-path examples/Cargo.toml --features hq --example hq-client --example hq-server
+          cargo +1.95.0 build --locked --release --manifest-path examples/Cargo.toml --features hq --examples
+      - name: Authenticated raw QUIC and HTTP/3 exchanges
+        env:
+          EXCHANGE_CHECK: ${{ inputs.check }}
+        run: |
+          set -euo pipefail
           certs="$RUNNER_TEMP/example-certificates"
           mkdir -p "$certs"
           printf '[req]\ndistinguished_name=dn\n[dn]\n[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n' > "$certs/request.cnf"
@@ -242,5 +252,17 @@ jobs:
           openssl req -config "$certs/request.cnf" -new -key "$certs/server.key" -out "$certs/server.csr" -subj /CN=localhost
           printf 'subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' > "$certs/extensions"
           openssl x509 -req -sha256 -set_serial 2 -in "$certs/server.csr" -CA "$certs/ca.pem" -CAkey "$certs/ca.key" -out "$certs/server.pem" -days 1 -extfile "$certs/extensions"
-          python3 tests/check_examples.py "$CARGO_TARGET_DIR/debug/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" --hq
-          python3 tests/check_examples.py "$CARGO_TARGET_DIR/release/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" --hq
+          rustc +1.95.0 --edition=2024 -D warnings -O tests/check_examples.rs -o "$RUNNER_TEMP/check-examples"
+          debug_case=all
+          if [[ "$EXCHANGE_CHECK" = macos-exchanges ]]; then
+            debug_case=hq-1048576
+          fi
+          "$RUNNER_TEMP/check-examples" "$CARGO_TARGET_DIR/debug/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" "$RUNNER_TEMP/exchange-evidence/debug" "$debug_case"
+          "$RUNNER_TEMP/check-examples" "$CARGO_TARGET_DIR/release/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" "$RUNNER_TEMP/exchange-evidence/release" all
+      - name: Save each exchange verdict and process output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: application-exchanges-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/exchange-evidence/
+          retention-days: 7
