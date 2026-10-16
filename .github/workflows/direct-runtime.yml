@@ -26,7 +26,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
-      RUSTUP_TOOLCHAIN: 1.95.0
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -46,9 +46,9 @@ jobs:
           ref: ${{ steps.tls.outputs.revision }}
           path: hibana-tls
           persist-credentials: false
-      - name: Install the pinned Rust toolchain
+      - name: Install stable Rust
         if: inputs.check != 'diagnostics'
-        run: rustup toolchain install 1.95.0 --profile minimal --component clippy --target thumbv6m-none-eabi
+        run: rustup toolchain install stable --profile minimal --component clippy --target thumbv6m-none-eabi
       - name: Verify both sources and dependency identities
         run: |
           python3 tools/ci/audit_source.py --check
@@ -57,33 +57,33 @@ jobs:
       - name: Core, TLS, integration and compile-fail contracts
         if: inputs.check != 'diagnostics'
         run: |
-          cargo +1.95.0 test --locked
-          cargo +1.95.0 test --locked --features hq
-          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml
-          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --features hq
+          cargo +stable test --locked
+          cargo +stable test --locked --features hq
+          cargo +stable test --locked --manifest-path ../hibana-tls/Cargo.toml
+          cargo +stable test --locked --manifest-path ../hibana-tls/Cargo.toml --features hq
       - name: Embedded no_std sources
         if: inputs.check != 'diagnostics'
         run: |
-          cargo +1.95.0 check --locked --lib --target thumbv6m-none-eabi
-          cargo +1.95.0 check --locked --lib --features hq --target thumbv6m-none-eabi
-          cargo +1.95.0 check --locked --manifest-path pal/examples/pico/Cargo.toml --target thumbv6m-none-eabi
-          cargo +1.95.0 check --locked --manifest-path pal/examples/pico/Cargo.toml --features hq --target thumbv6m-none-eabi
-          cargo +1.95.0 check --locked --manifest-path ../hibana-tls/Cargo.toml --lib --target thumbv6m-none-eabi
+          cargo +stable check --locked --lib --target thumbv6m-none-eabi
+          cargo +stable check --locked --lib --features hq --target thumbv6m-none-eabi
+          cargo +stable check --locked --manifest-path pal/examples/pico/Cargo.toml --target thumbv6m-none-eabi
+          cargo +stable check --locked --manifest-path pal/examples/pico/Cargo.toml --features hq --target thumbv6m-none-eabi
+          cargo +stable check --locked --manifest-path ../hibana-tls/Cargo.toml --lib --target thumbv6m-none-eabi
       - name: Independent reference workspace and Host tests
         if: inputs.check != 'diagnostics'
         run: |
-          cargo +1.95.0 test --locked --manifest-path tests/tls-reference/Cargo.toml
-          cargo +1.95.0 test --locked --manifest-path pal/Cargo.toml
-          cargo +1.95.0 test --locked --manifest-path examples/Cargo.toml --features hq
-          cargo +1.95.0 test --locked --manifest-path tests/interop/driver/Cargo.toml --features hq
+          cargo +stable test --locked --manifest-path tests/tls-reference/Cargo.toml
+          cargo +stable test --locked --manifest-path pal/Cargo.toml
+          cargo +stable test --locked --manifest-path examples/Cargo.toml --features hq
+          cargo +stable test --locked --manifest-path tests/interop/driver/Cargo.toml --features hq
       - name: Strict Clippy for QUIC, TLS and Host
         if: inputs.check != 'diagnostics'
         run: |
-          cargo +1.95.0 clippy --locked --lib --tests -- -D warnings
-          cargo +1.95.0 clippy --locked --manifest-path ../hibana-tls/Cargo.toml --all-targets -- -D warnings
-          cargo +1.95.0 clippy --locked --manifest-path pal/Cargo.toml --all-targets -- -D warnings
-          cargo +1.95.0 clippy --locked --manifest-path examples/Cargo.toml --features hq --all-targets -- -D warnings
-          cargo +1.95.0 clippy --locked --manifest-path tests/interop/driver/Cargo.toml --features hq --all-targets -- -D warnings
+          cargo +stable clippy --locked --lib --tests -- -D warnings
+          cargo +stable clippy --locked --manifest-path ../hibana-tls/Cargo.toml --all-targets -- -D warnings
+          cargo +stable clippy --locked --manifest-path pal/Cargo.toml --all-targets -- -D warnings
+          cargo +stable clippy --locked --manifest-path examples/Cargo.toml --features hq --all-targets -- -D warnings
+          cargo +stable clippy --locked --manifest-path tests/interop/driver/Cargo.toml --features hq --all-targets -- -D warnings
       - name: Exact runner nine-certificate chain including zero-allocation assertion
         if: inputs.check != 'diagnostics'
         run: |
@@ -92,7 +92,7 @@ jobs:
           git -C "$RUNNER_TEMP/runner" checkout --detach "$RUNNER_REVISION"
           mkdir -p "$RUNNER_TEMP/chain9"
           (cd "$RUNNER_TEMP/runner" && bash certs.sh "$RUNNER_TEMP/chain9" 9)
-          HIBANA_RUNNER_CERTS_DIR="$RUNNER_TEMP/chain9" cargo +1.95.0 test --locked --manifest-path tests/tls-reference/Cargo.toml --test certificate_depth exact_runner_nine_chain_full_tls_handshake_allocate_zero -- --ignored --exact
+          HIBANA_RUNNER_CERTS_DIR="$RUNNER_TEMP/chain9" cargo +stable test --locked --manifest-path tests/tls-reference/Cargo.toml --test certificate_depth exact_runner_nine_chain_full_tls_handshake_allocate_zero -- --ignored --exact
       - name: Bounded diagnostics, source pairing and impairment fixtures
         run: |
           python3 -m unittest discover -s tests -p 'test_*.py'
@@ -156,13 +156,13 @@ jobs:
           ref: ${{ steps.tls.outputs.revision }}
           path: hibana-tls
           persist-credentials: false
-      - run: rustup toolchain install 1.95.0 --profile minimal
+      - run: rustup toolchain install stable --profile minimal
       - name: Build one exact candidate for all fault cases
         run: |
           python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
           mkdir -p ci-safe-results
           cp .ci-work/paired-source/source-pair.json ci-safe-results/
-          cargo +1.95.0 build --locked --release --manifest-path tests/interop/driver/Cargo.toml --features hq --bin hq
+          cargo +stable build --locked --release --manifest-path tests/interop/driver/Cargo.toml --features hq --bin hq
           sha256sum "$CARGO_TARGET_DIR/release/hq" > ci-safe-results/binary.sha256
       - name: Finite seven Handshake plus three short packet losses
         run: python3 tests/interop/native/reproduce_key_wait.py 3 --binary "$CARGO_TARGET_DIR/release/hq" --connections 1 --impairment loss --loss-scope global --timeout-seconds 120 --trace-routes --output ci-safe-results/key-wait.json
@@ -200,7 +200,7 @@ jobs:
           path: hibana-quic
           persist-credentials: false
       - run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/examples-target" >> "$GITHUB_ENV"
-      - run: rustup toolchain install 1.95.0 --profile minimal
+      - run: rustup toolchain install stable --profile minimal
       - name: Read the immutable TLS revision for ARM tests
         if: runner.os == 'macOS'
         id: arm_tls
@@ -218,19 +218,19 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = arm64
-          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128::tests::apple_aarch64_baseline_selects_hardware_aes -- --exact | tee "$RUNNER_TEMP/arm-aes-dispatch.log"
+          cargo +stable test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128::tests::apple_aarch64_baseline_selects_hardware_aes -- --exact | tee "$RUNNER_TEMP/arm-aes-dispatch.log"
           grep -F 'test result: ok. 1 passed; 0 failed;' "$RUNNER_TEMP/arm-aes-dispatch.log"
-          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128
-          cargo +1.95.0 test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128gcm
+          cargo +stable test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128
+          cargo +stable test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128gcm
       - name: Verify native environment capabilities
         run: |
-          cargo +1.95.0 test --locked --manifest-path pal/Cargo.toml
-          cargo +1.95.0 run --locked --manifest-path pal/Cargo.toml --example ${{ matrix.example }}
+          cargo +stable test --locked --manifest-path pal/Cargo.toml
+          cargo +stable run --locked --manifest-path pal/Cargo.toml --example ${{ matrix.example }}
       - name: Compile and test the application localsides
         run: |
-          cargo +1.95.0 test --locked --manifest-path examples/Cargo.toml --features hq --examples
-          cargo +1.95.0 build --locked --manifest-path examples/Cargo.toml --features hq --examples
-          cargo +1.95.0 build --locked --release --manifest-path examples/Cargo.toml --features hq --examples
+          cargo +stable test --locked --manifest-path examples/Cargo.toml --features hq --examples
+          cargo +stable build --locked --manifest-path examples/Cargo.toml --features hq --examples
+          cargo +stable build --locked --release --manifest-path examples/Cargo.toml --features hq --examples
       - name: Authenticated raw QUIC and HTTP/3 exchanges
         run: |
           certs="$RUNNER_TEMP/example-certificates"

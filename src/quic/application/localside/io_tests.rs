@@ -297,7 +297,9 @@ mod tests {
                 assert!(
                     request
                         .bytes
-                        .chunks_exact(8)
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
                         .all(|bytes| bytes == b"abcdefgh")
                 );
             } else {

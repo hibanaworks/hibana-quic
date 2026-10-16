@@ -191,6 +191,10 @@ mod tests {
     }
     std::thread_local! {static REVOKE_HOOK:RefCell<Option<std::boxed::Box<dyn Fn()>>>=RefCell::new(None);}
     struct RevokeOnDrop;
+    #[allow(
+        clippy::manual_noop_waker,
+        reason = "The regression requires reentrant Drop; Waker::noop has no destructor."
+    )]
     impl std::task::Wake for RevokeOnDrop {
         fn wake(self: std::sync::Arc<Self>) {}
     }

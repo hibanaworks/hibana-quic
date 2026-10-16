@@ -21,8 +21,13 @@ def main():
     core = [p for p in tomllib.loads((ROOT / 'Cargo.lock').read_text())['package'] if p['name'] == 'hibana']
     assert len(core) == 1, 'paired source requires one Hibana identity'
     core = core[0]
-    assert core.get('source') == 'registry+https://github.com/rust-lang/crates.io-index'
+    core_dependency = config['dependencies']['hibana']
+    core_revision = core_dependency['rev']
+    assert core_dependency['git'] == 'https://github.com/hibanaworks/hibana'
+    assert re.fullmatch(r'[0-9a-f]{40}', core_revision), 'Hibana requires an immutable commit'
+    assert core.get('source') == f'git+https://github.com/hibanaworks/hibana?rev={core_revision}#{core_revision}'
     assert core['version'] == config['package']['metadata']['hibana-source']['version']
+    assert core_revision == config['package']['metadata']['hibana-source']['revision']
     tls = (ROOT.parent / 'hibana-tls').resolve(strict=True)
     dependency = config['dependencies']['hibana-tls']
     revision = dependency['rev']
@@ -69,7 +74,7 @@ def main():
         subset = {p: h for p, h in sorted(entries.items()) if p.startswith(name + '/')}
         digests[name] = hashlib.sha256(json.dumps(subset, sort_keys=True).encode()).hexdigest()
     (output / 'source-files.json').write_text(json.dumps(entries, indent=2) + '\n')
-    (output / 'source-pair.json').write_text(json.dumps({'trees': digests, 'file_count': len(entries), 'tls_repository': dependency['git'], 'tls_revision': revision, 'hibana_version': core['version'], 'hibana_checksum': core['checksum']}, indent=2) + '\n')
+    (output / 'source-pair.json').write_text(json.dumps({'trees': digests, 'file_count': len(entries), 'tls_repository': dependency['git'], 'tls_revision': revision, 'hibana_version': core['version'], 'hibana_revision': core_revision}, indent=2) + '\n')
     print(json.dumps({'output': str(output), 'trees': digests, 'files': len(entries)}))
 
 

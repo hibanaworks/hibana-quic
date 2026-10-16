@@ -2,7 +2,7 @@
 
 QUIC v1/v2 and HTTP/3 for Rust, using [Hibana](https://github.com/hibanaworks/hibana)
 to express protocol order and transfer ownership between roles.
-Both libraries use [Hibana 0.9.9 from crates.io](https://crates.io/crates/hibana/0.9.9).
+Both libraries use [Hibana at 5ee442ea](https://github.com/hibanaworks/hibana/commit/5ee442ea69f9baf451be832b6040d1eb8c92f24f), pinned in Cargo.toml.
 TLS is provided by [hibana-tls](https://github.com/hibanaworks/hibana-tls).
 
 The library is `no_std`, forbids unsafe Rust, and does not link the `alloc` crate.
@@ -377,7 +377,7 @@ environment module.
 
 ### Run both sides
 
-The native launchers target Linux/macOS with Rust 1.95. Supply a development
+The native launchers target Linux/macOS with stable Rust. Supply a development
 certificate chain/key for `DNS:localhost` and its CA. Verification stays enabled.
 
 ```sh

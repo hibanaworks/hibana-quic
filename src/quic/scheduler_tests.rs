@@ -6,6 +6,10 @@ std::thread_local! {
  static DROPS: Cell<usize> = const {Cell::new(0)};
 }
 struct ReenterOnDrop;
+#[allow(
+    clippy::manual_noop_waker,
+    reason = "The regression requires reentrant Drop; Waker::noop has no destructor."
+)]
 impl Wake for ReenterOnDrop {
     fn wake(self: Arc<Self>) {}
 }

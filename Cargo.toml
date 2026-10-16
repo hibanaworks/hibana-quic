@@ -14,8 +14,8 @@ categories = ["asynchronous", "network-programming", "embedded"]
 
 [dependencies]
 # The owned TLS repository is pinned to the same source checked out by CI.
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "6e5ece518c30a1478f75f17d23aec72b10208fd8", default-features = false }
-hibana = { version = "=0.9.9", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "f3e030f0d3efcd59864e03dc9df537530f6f0107", default-features = false }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "5ee442ea69f9baf451be832b6040d1eb8c92f24f", version = "=0.9.9", default-features = false }
 
 [features]
 default = []
@@ -34,10 +34,8 @@ codegen-units = 1
 
 [package.metadata.hibana-source]
 repository = "https://github.com/hibanaworks/hibana"
-registry = "crates-io"
+revision = "5ee442ea69f9baf451be832b6040d1eb8c92f24f"
 version = "0.9.9"
-local-patches = false
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 actor-test-allocator = { path = "tests/support/actor-test-allocator" }
-

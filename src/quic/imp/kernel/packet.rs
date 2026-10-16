@@ -165,8 +165,10 @@ pub struct Versions<'a> {
 impl<'a> Versions<'a> {
     pub fn iter(self) -> impl Iterator<Item = u32> + 'a {
         self.bytes
-            .chunks_exact(4)
-            .map(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|v| u32::from_be_bytes(*v))
     }
     pub fn as_bytes(self) -> &'a [u8] {
         self.bytes

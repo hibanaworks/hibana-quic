@@ -1110,6 +1110,10 @@ mod tests {
         static CALLBACK_STORAGE: CarrierStorage<1, 8, 4> = const { CarrierStorage::new() };
     }
     struct CloseOnDrop;
+    #[allow(
+        clippy::manual_noop_waker,
+        reason = "The regression requires reentrant Drop; Waker::noop has no destructor."
+    )]
     impl Wake for CloseOnDrop {
         fn wake(self: Arc<Self>) {}
     }

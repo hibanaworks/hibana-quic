@@ -1,4 +1,4 @@
-# The host-built hq must be freshly compiled by Rust 1.95.0 at SOURCE_REVISION.
+# The host-built hq must be freshly compiled by stable Rust at SOURCE_REVISION.
 # Build context contains hq and endpoint.py only; never copy cached TLS material.
 ARG ENDPOINT_IMAGE
 FROM ${ENDPOINT_IMAGE}

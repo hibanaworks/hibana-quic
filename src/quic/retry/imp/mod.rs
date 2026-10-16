@@ -537,7 +537,7 @@ mod tests {
     }
     fn hex<const N: usize>(value: &str) -> [u8; N] {
         let mut out = [0; N];
-        for (i, b) in value.as_bytes().chunks_exact(2).enumerate() {
+        for (i, b) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let digit = |x: u8| {
                 if x.is_ascii_digit() {
                     x - b'0'

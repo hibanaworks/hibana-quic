@@ -5,17 +5,18 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[2]
 pins = dict(line.split('=', 1) for line in (ROOT/'tools/ci/pins.env').read_text().splitlines() if line and not line.startswith('#'))
 version = pins['HIBANA_VERSION']
-checksum = pins['HIBANA_CHECKSUM']
-registry = 'registry+https://github.com/rust-lang/crates.io-index'
-assert len(checksum) == 64 and all(c in '0123456789abcdef' for c in checksum)
+revision = pins['HIBANA_REVISION']
+core_url = 'https://github.com/hibanaworks/hibana'
+core_source = f'git+{core_url}?rev={revision}#{revision}'
+assert len(revision) == 40 and all(c in '0123456789abcdef' for c in revision)
 
 def check_core_dependency(dependency):
-    assert dependency == {'version': '=' + version, 'default-features': False}, dependency
+    assert dependency == {'git': core_url, 'rev': revision, 'version': '=' + version, 'default-features': False}, dependency
 
 def check_core_package(package):
     assert package['version'] == version, package
-    assert package.get('source') == registry, package
-    assert package.get('checksum') == checksum, package
+    assert package.get('source') == core_source, package
+    assert 'checksum' not in package, package
 
 # This ratchet grows as replacement implementations are qualified.
 # It is not a claim that all remaining third-party packages are eliminated.
@@ -44,7 +45,7 @@ for relative in ('Cargo.toml', 'pal/Cargo.toml', 'examples/Cargo.toml', 'tests/i
     assert len(matches) == 1, (relative, 'multiple Hibana package identities')
     package = matches[0]
     check_core_package(package)
-print('Exact crates.io version and checksum verified:', version, checksum)
+print('Exact Hibana Git revision and version verified:', revision, version)
 
 print('Eliminated packages absent from all complete locks:', ', '.join(sorted(eliminated)))
 

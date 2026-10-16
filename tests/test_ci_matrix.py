@@ -37,7 +37,7 @@ class Matrix(unittest.TestCase):
             folder.mkdir()
             reference = group['reference_implementation']
             self.put(group, 'environment.json', dict(source_commit=COMMIT, run_id='101', run_attempt='1', interop_group=group['name']))
-            self.put(group, 'source-pair.json', {'trees': {'hibana-quic': '1' * 64, 'hibana-tls': '2' * 64}, 'tls_repository': 'https://github.com/hibanaworks/hibana-tls', 'tls_revision': self.pins['HIBANA_TLS_REVISION'], 'hibana_version': self.pins['HIBANA_VERSION'], 'hibana_checksum': self.pins['HIBANA_CHECKSUM']})
+            self.put(group, 'source-pair.json', {'trees': {'hibana-quic': '1' * 64, 'hibana-tls': '2' * 64}, 'tls_repository': 'https://github.com/hibanaworks/hibana-tls', 'tls_revision': self.pins['HIBANA_TLS_REVISION'], 'hibana_version': self.pins['HIBANA_VERSION'], 'hibana_revision': self.pins['HIBANA_REVISION']})
             pins = dict(self.pins, REFERENCE_IMPLEMENTATION=reference,
                         SIM_IMAGE='martenseemann/quic-network-simulator@sha256:' + 'b' * 64,
                         REFERENCE_IMAGE=('cloudflare/quiche-qns@sha256:' if reference == 'quiche' else 'sha256:') + 'c' * 64)
@@ -177,9 +177,9 @@ class Matrix(unittest.TestCase):
                  ('pins.json', 'RUNNER_REVISION', 'e' * 40), ('pins.json', 'REFERENCE_IMPLEMENTATION', 'quiche'),
                  ('pins.json', 'HIBANA_TLS_REVISION', 'e' * 40),
                  ('pins.json', 'HIBANA_VERSION', '0.9.6'),
-                 ('pins.json', 'HIBANA_CHECKSUM', 'e' * 64),
+                 ('pins.json', 'HIBANA_REVISION', 'e' * 40),
                  ('source-pair.json', 'hibana_version', '0.9.6'),
-                 ('source-pair.json', 'hibana_checksum', 'e' * 64),
+                 ('source-pair.json', 'hibana_revision', 'e' * 40),
                  ('simulator-shutdown.json', 'original_sha256', 'e' * 64),
                  ('simulator-shutdown.json', 'patched_sha256', 'e' * 64),
                  ('simulator-shutdown.json', 'change', 'other'),
