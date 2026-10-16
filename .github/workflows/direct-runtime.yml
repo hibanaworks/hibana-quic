@@ -10,7 +10,7 @@ on:
         type: choice
         required: true
         default: all
-        options: [all, rust, diagnostics]
+        options: [all, rust, diagnostics, macos]
 permissions:
   contents: read
 concurrency:
@@ -21,6 +21,7 @@ defaults:
     working-directory: hibana-quic
 jobs:
   rust:
+    if: github.event_name != 'workflow_dispatch' || inputs.check != 'macos'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -182,17 +183,14 @@ jobs:
           retention-days: 7
 
   application-examples:
-    if: github.event_name != 'workflow_dispatch' || inputs.check == 'all'
+    if: github.event_name != 'workflow_dispatch' || inputs.check == 'all' || inputs.check == 'macos'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            example: linux
-          - os: macos-15
-            example: macos
+        include: ${{ fromJSON(inputs.check == 'macos' && '[{"os":"macos-15","example":"macos"}]' || '[{"os":"ubuntu-24.04","example":"linux"},{"os":"macos-15","example":"macos"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Cold debug and release builds exceed thirty minutes on Apple ARM runners.
+    timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
