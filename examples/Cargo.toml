@@ -53,4 +53,4 @@ required-features = ["hq"]
 
 # Qualify the projection repair before releasing a new crate.
 [patch.crates-io]
-hibana = { git = "https://github.com/hibanaworks/hibana", rev = "594cac066d8b99b5caf852d061b8ee7121dd8698" }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "b7e77b901a3ca4c1222adffba56c2cf7b5d36e6d" }
