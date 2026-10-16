@@ -7,9 +7,11 @@ import re
 import selectors
 import subprocess
 import tempfile
+import time
 
 
 def exchange(binaries, protocol, certificate, key, ca, files=None, http=None):
+    started = time.monotonic()
     if protocol == 'http3' and http is None:
         http = ('POST', '/echo', 'hello from Hibana\n', 200, 'hello from Hibana\n')
     server = subprocess.Popen(
@@ -37,8 +39,13 @@ def exchange(binaries, protocol, certificate, key, ca, files=None, http=None):
         )
         output, errors = server.communicate(timeout=40)
         if client.returncode or server.returncode:
+            progress = ''
+            if files:
+                received = files[1].stat().st_size if files[1].is_file() else 'missing'
+                progress = f', expected_bytes={files[0].stat().st_size}, received_bytes={received}'
             raise RuntimeError(
-                f'{protocol}: client exit={client.returncode}, server exit={server.returncode}\n'
+                f'{protocol}: client exit={client.returncode}, server exit={server.returncode}, '
+                f'elapsed_seconds={time.monotonic()-started:.3f}{progress}\n'
                 f'{client.stderr}{errors}{output}'
             )
         if files:
@@ -65,22 +72,25 @@ if __name__ == '__main__':
     parser.add_argument('key')
     parser.add_argument('ca')
     parser.add_argument('--hq', action='store_true', help='also check the explicitly built HQ examples')
+    parser.add_argument('--hq-size', type=int, choices=(0, 1, 16385, 1048576),
+                        help='run only this HQ transfer size')
     args = parser.parse_args()
-    exchange(args.binaries.resolve(), 'quic', args.certificate, args.key, args.ca)
-    for case in (
-        ('GET', '/hello', '', 200, 'hello from Hibana\n'),
-        ('HEAD', '/hello', '', 200, ''),
-        ('POST', '/echo', 'hello from Hibana\n', 200, 'hello from Hibana\n'),
-        ('POST', '/echo', 'x' * 8193, 200, 'x' * 8193),
-        ('GET', '/missing', '', 404, 'not found\n'),
-        ('HEAD', '/missing', '', 404, ''),
-    ):
-        exchange(args.binaries.resolve(), 'http3', args.certificate, args.key, args.ca, http=case)
+    if args.hq_size is None:
+        exchange(args.binaries.resolve(), 'quic', args.certificate, args.key, args.ca)
+        for case in (
+            ('GET', '/hello', '', 200, 'hello from Hibana\n'),
+            ('HEAD', '/hello', '', 200, ''),
+            ('POST', '/echo', 'hello from Hibana\n', 200, 'hello from Hibana\n'),
+            ('POST', '/echo', 'x' * 8193, 200, 'x' * 8193),
+            ('GET', '/missing', '', 404, 'not found\n'),
+            ('HEAD', '/missing', '', 404, ''),
+        ):
+            exchange(args.binaries.resolve(), 'http3', args.certificate, args.key, args.ca, http=case)
 
-    if args.hq:
+    if args.hq or args.hq_size is not None:
         with tempfile.TemporaryDirectory(prefix='hibana-hq-example-') as tmp:
             root = Path(tmp)
-            for size in (0, 1, 16385, 1048576):
+            for size in ((args.hq_size,) if args.hq_size is not None else (0, 1, 16385, 1048576)):
                 source = root / 'content'
                 source.write_bytes(bytes((i * 73 + 19) % 256 for i in range(size)))
                 destination = root / f'output-{size}'

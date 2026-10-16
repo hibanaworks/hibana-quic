@@ -10,17 +10,18 @@ on:
         type: choice
         required: true
         default: all
-        options: [all, rust, diagnostics]
+        options: [all, rust, diagnostics, hq-large]
 permissions:
   contents: read
 concurrency:
-  group: direct-runtime-${{ github.ref }}
+  group: direct-runtime-${{ github.ref }}${{ inputs.check == 'hq-large' && '-hq-large' || '' }}
   cancel-in-progress: false
 defaults:
   run:
     working-directory: hibana-quic
 jobs:
   rust:
+    if: inputs.check != 'hq-large'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -180,15 +181,11 @@ jobs:
           retention-days: 7
 
   application-examples:
-    if: github.event_name != 'workflow_dispatch' || inputs.check == 'all'
+    if: github.event_name != 'workflow_dispatch' || inputs.check == 'all' || inputs.check == 'hq-large'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            example: linux
-          - os: macos-15
-            example: macos
+        include: ${{ fromJSON(inputs.check == 'hq-large' && '[{"os":"ubuntu-24.04","example":"linux"}]' || '[{"os":"ubuntu-24.04","example":"linux"},{"os":"macos-15","example":"macos"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -223,15 +220,24 @@ jobs:
           cargo +stable test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128
           cargo +stable test --locked --manifest-path ../hibana-tls/Cargo.toml --lib crypto::aes128gcm
       - name: Verify native environment capabilities
+        if: inputs.check != 'hq-large'
         run: |
           cargo +stable test --locked --manifest-path pal/Cargo.toml
           cargo +stable run --locked --manifest-path pal/Cargo.toml --example ${{ matrix.example }}
       - name: Compile and test the application localsides
+        if: inputs.check != 'hq-large'
         run: |
           cargo +stable test --locked --manifest-path examples/Cargo.toml --features hq --examples
           cargo +stable build --locked --manifest-path examples/Cargo.toml --features hq --examples
           cargo +stable build --locked --release --manifest-path examples/Cargo.toml --features hq --examples
-      - name: Authenticated raw QUIC and HTTP/3 exchanges
+      - name: Build the HQ transfer diagnostic
+        if: inputs.check == 'hq-large'
+        id: hq_build
+        run: |
+          cargo +stable build --locked --manifest-path examples/Cargo.toml --features hq --example hq-client --example hq-server
+          cargo +stable build --locked --release --manifest-path examples/Cargo.toml --features hq --example hq-client --example hq-server
+      - name: Generate ephemeral example certificates
+        id: example_certs
         run: |
           certs="$RUNNER_TEMP/example-certificates"
           mkdir -p "$certs"
@@ -242,5 +248,19 @@ jobs:
           openssl req -config "$certs/request.cnf" -new -key "$certs/server.key" -out "$certs/server.csr" -subj /CN=localhost
           printf 'subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' > "$certs/extensions"
           openssl x509 -req -sha256 -set_serial 2 -in "$certs/server.csr" -CA "$certs/ca.pem" -CAkey "$certs/ca.key" -out "$certs/server.pem" -days 1 -extfile "$certs/extensions"
+      - name: Authenticated raw QUIC and HTTP/3 exchanges
+        if: inputs.check != 'hq-large'
+        run: |
+          certs="$RUNNER_TEMP/example-certificates"
           python3 tests/check_examples.py "$CARGO_TARGET_DIR/debug/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" --hq
           python3 tests/check_examples.py "$CARGO_TARGET_DIR/release/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" --hq
+      - name: Debug HQ 1-MiB transfer
+        if: inputs.check == 'hq-large'
+        run: |
+          certs="$RUNNER_TEMP/example-certificates"
+          python3 tests/check_examples.py "$CARGO_TARGET_DIR/debug/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" --hq-size 1048576
+      - name: Release HQ 1-MiB transfer
+        if: always() && inputs.check == 'hq-large' && steps.hq_build.outcome == 'success' && steps.example_certs.outcome == 'success'
+        run: |
+          certs="$RUNNER_TEMP/example-certificates"
+          python3 tests/check_examples.py "$CARGO_TARGET_DIR/release/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" --hq-size 1048576
