@@ -194,7 +194,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.check == 'hq-large' && '[{"os":"ubuntu-24.04","example":"linux"}]' || '[{"os":"ubuntu-24.04","example":"linux"},{"os":"macos-15","example":"macos"}]') }}
+        include: ${{ fromJSON(inputs.check == 'hq-large' && '[{"os":"ubuntu-24.04","example":"linux","profile":"both"}]' || '[{"os":"ubuntu-24.04","example":"linux","profile":"debug"},{"os":"ubuntu-24.04","example":"linux","profile":"release"},{"os":"macos-15","example":"macos","profile":"debug"},{"os":"macos-15","example":"macos","profile":"release"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -208,11 +208,11 @@ jobs:
       - run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/examples-target" >> "$GITHUB_ENV"
       - run: rustup toolchain install stable --profile minimal
       - name: Read the immutable TLS revision for ARM tests
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.profile == 'debug'
         id: arm_tls
         run: CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- tls-revision . >> "$GITHUB_OUTPUT"
       - name: Check out the exact TLS source for ARM tests
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.profile == 'debug'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: hibanaworks/hibana-tls
@@ -220,7 +220,7 @@ jobs:
           path: hibana-tls
           persist-credentials: false
       - name: Execute the Apple ARM AES and GCM contracts
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.profile == 'debug'
         run: |
           set -euo pipefail
           test "$(uname -m)" = arm64
@@ -234,11 +234,12 @@ jobs:
           cargo +stable test --locked --manifest-path pal/Cargo.toml
           cargo +stable run --locked --manifest-path pal/Cargo.toml --example ${{ matrix.example }}
       - name: Compile and test the application localsides
-        if: inputs.check != 'hq-large'
+        if: inputs.check != 'hq-large' && matrix.profile == 'debug'
         run: |
           cargo +stable test --locked --manifest-path examples/Cargo.toml --features hq --examples
-          cargo +stable build --locked --manifest-path examples/Cargo.toml --features hq --examples
-          cargo +stable build --locked --release --manifest-path examples/Cargo.toml --features hq --examples
+      - name: Build every application for this profile
+        if: inputs.check != 'hq-large'
+        run: cargo +stable build --locked --manifest-path examples/Cargo.toml --features hq --examples ${{ matrix.profile == 'release' && '--release' || '' }}
       - name: Build the HQ transfer diagnostic
         if: inputs.check == 'hq-large'
         id: hq_build
@@ -261,8 +262,7 @@ jobs:
         if: inputs.check != 'hq-large'
         run: |
           certs="$RUNNER_TEMP/example-certificates"
-          python3 tests/check_examples.py "$CARGO_TARGET_DIR/debug/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" --hq
-          python3 tests/check_examples.py "$CARGO_TARGET_DIR/release/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" --hq
+          python3 tests/check_examples.py "$CARGO_TARGET_DIR/${{ matrix.profile }}/examples" "$certs/server.pem" "$certs/server.key" "$certs/ca.pem" --hq
       - name: Debug HQ 1-MiB transfer
         if: inputs.check == 'hq-large'
         run: |

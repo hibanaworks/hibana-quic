@@ -4,7 +4,7 @@ pub mod stream;
 pub(crate) mod acknowledgments;
 pub(crate) mod io;
 pub(crate) mod keys;
-/// Allocator-backed resource owner; entropy is supplied by the environment.
+/// Caller-owned connection buffers; entropy is supplied by the environment.
 pub mod owned;
 pub(crate) mod publication;
 pub(crate) mod reset;
