@@ -1,7 +1,7 @@
 //! The application receive continuation owns authentication and frame effects.
 //! Plaintext, affine key transitions and stream handles remain local; only the
 //! declared key, delivery and termination edges cross async role boundaries.
-use super::{CloseKind, Control, Error, global as p, keys, reset, termination};
+use super::{Control, Error, global as p, keys, reset};
 use crate::crypto::directional::AuthenticatedRead;
 use crate::crypto::directional::ScopedHandshakeConfirmation;
 use crate::crypto::directional::ValidatedKeyAck;
@@ -39,7 +39,6 @@ pub(crate) async fn run<
     const N: usize,
     const RX: usize,
     const CHUNK: usize,
-    B,
 >(
     receive: &mut Endpoint<'_, { p::RECEIVE }>,
     rx_keys: &mut Endpoint<'_, { p::RX_KEYS }>,
@@ -54,12 +53,10 @@ pub(crate) async fn run<
     reset: &reset::Exchange<'streams>,
     acknowledgments: &super::acknowledgments::Exchange<'scope>,
     app: &RefCell<stream::App<'_, '_, 'scope, RX, CHUNK>>,
-    state: &crate::quic::application::imp::io::Exchange<'_, CHUNK, B>,
     keys: &crate::quic::application::imp::keys::Exchange<'owner, 'scope>,
     control: &Control<'_, 'scope>,
     clock: &impl Clock,
     socket: &mut impl DatagramRx,
-    termination: &termination::Exchange<'_, '_, 'scope>,
     initial_confirmation: Option<recovery::HandshakeConfirmed<'scope>>,
     key_update_target: u64,
     responses: &crate::quic::path::imp::responses::Responses,
@@ -91,7 +88,7 @@ pub(crate) async fn run<
                     Ok(_) => break,
                     Err(recovery::Error::Accounting(AccountingError::OutstandingPackets)) => {
                         control.wait(3, revision).await;
-                        // A concurrent terminal permission makes wait immediately
+                        // A concurrent stop makes wait immediately
                         // ready. The old-space adapter still has to settle its
                         // cancellation before recovery and key retirement can finish.
                         crate::runtime::yield_now().await;
@@ -148,7 +145,7 @@ pub(crate) async fn run<
             // redispatching that same ready stream while that lane is being scheduled.
             while !control.stopping() {
                 let Some(stream) = app.try_borrow().map_err(|_| Error::Binding)?
-                    .find_readable_stream(|stream| !state.is_complete(stream.id()))?
+                    .readable_stream()?
                 else {
                     break;
                 };
@@ -203,7 +200,7 @@ pub(crate) async fn run<
                             // redispatching that same ready stream while that lane is being scheduled.
                             while !control.stopping() {
                                 let Some(stream) = app.try_borrow().map_err(|_| Error::Binding)?
-                    .find_readable_stream(|stream| !state.is_complete(stream.id()))?
+                    .readable_stream()?
                                 else {
                                     break;
                                 };
@@ -431,7 +428,7 @@ pub(crate) async fn run<
                                                     AccountingError::OutstandingPackets,
                                                 )) => {
                                                     control.wait(3, revision).await;
-                                                    // A concurrent terminal permission makes wait immediately
+                                                    // A concurrent stop makes wait immediately
                                                     // ready. The old-space adapter still has to settle its
                                                     // cancellation before recovery and key retirement can finish.
                                                     crate::runtime::yield_now().await;
@@ -699,7 +696,7 @@ pub(crate) async fn run<
                                 // redispatching that same ready stream while that lane is being scheduled.
                                 while !control.stopping() {
                                     let Some(stream) = app.try_borrow().map_err(|_| Error::Binding)?
-                    .find_readable_stream(|stream| !state.is_complete(stream.id()))?
+                    .readable_stream()?
                                     else {
                                         break;
                                     };
@@ -730,20 +727,11 @@ pub(crate) async fn run<
                             }
                             .await?;
 
-                            termination.check_scope(scope)?;
-                            termination
-                                .peer
-                                .put(termination::Permission {
-                                    scope,
-                                    kind: if application {
-                                        CloseKind::PeerApplication { code }
-                                    } else {
-                                        CloseKind::Peer { code }
-                                    },
-                                })
-                                .map_err(|_| Error::Binding)?;
-
-                            peer_event.send::<p::PeerClose>(&()).await?;
+                            if application {
+                                peer_event.send::<p::PeerApplicationClose>(&code).await?;
+                            } else {
+                                peer_event.send::<p::PeerClose>(&code).await?;
+                            }
                             control.revoke()?;
                             peer_event.recv::<p::PeerSeen>().await?;
                             return Ok::<(), Error>(());
@@ -753,19 +741,7 @@ pub(crate) async fn run<
                             let code = protocol_code(&error);
                             control.record_protocol_error(error);
 
-                            termination.check_scope(scope)?;
-                            termination
-                                .peer
-                                .put(termination::Permission {
-                                    scope,
-                                    kind: CloseKind::Local {
-                                        application: false,
-                                        code,
-                                    },
-                                })
-                                .map_err(|_| Error::Binding)?;
-
-                            peer_event.send::<p::PeerFailed>(&()).await?;
+                            peer_event.send::<p::PeerFailed>(&code).await?;
                             control.revoke()?;
                             peer_event.recv::<p::PeerSeen>().await?;
                             return Ok::<(), Error>(());
@@ -782,7 +758,7 @@ pub(crate) async fn run<
                             // redispatching that same ready stream while that lane is being scheduled.
                             while !control.stopping() {
                                 let Some(stream) = app.try_borrow().map_err(|_| Error::Binding)?
-                    .find_readable_stream(|stream| !state.is_complete(stream.id()))?
+                    .readable_stream()?
                                 else {
                                     break;
                                 };
@@ -821,7 +797,7 @@ pub(crate) async fn run<
                         // redispatching that same ready stream while that lane is being scheduled.
                         while !control.stopping() {
                             let Some(stream) = app.try_borrow().map_err(|_| Error::Binding)?
-                    .find_readable_stream(|stream| !state.is_complete(stream.id()))?
+                    .readable_stream()?
                             else {
                                 break;
                             };
@@ -853,10 +829,6 @@ pub(crate) async fn run<
                 }
             }
 
-            if !termination.peer.is_empty() {
-                return Err(Error::Binding);
-            }
-
             peer_event.send::<p::PeerCancelled>(&()).await?;
             peer_event.recv::<p::PeerSeen>().await?;
             Ok::<(), Error>(())
@@ -868,20 +840,6 @@ pub(crate) async fn run<
     match delivery_result {
         Ok(()) => {}
         Err(Error::Application) => {
-            // Only a consumed ReceivedFailed branch reaches this application
-            // close permission. The sink does not fabricate successful FIN.
-            termination.check_scope(scope)?;
-            termination
-                .peer
-                .put(termination::Permission {
-                    scope,
-                    kind: CloseKind::Local {
-                        application: true,
-                        code: termination.protocol.failure_code(),
-                    },
-                })
-                .map_err(|_| Error::Binding)?;
-
             peer_event.send::<p::PeerApplicationFailed>(&()).await?;
             control.revoke()?;
             peer_event.recv::<p::PeerSeen>().await?;

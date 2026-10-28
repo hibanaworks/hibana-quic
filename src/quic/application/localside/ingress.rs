@@ -6,7 +6,7 @@ use hibana::Endpoint;
 use super::{BodyReader, Control, Error, global as p};
 use crate::quic::application::imp::stream;
 use crate::quic::application::imp::stream::App;
-use crate::quic::application::imp::stream::Production;
+use crate::quic::application::imp::stream::Origin;
 use crate::quic::imp::kernel::streams;
 
 use crate::quic::application::imp::io::*;
@@ -31,7 +31,7 @@ pub(crate) async fn ingress<'r, 'book, const RX: usize, const CHUNK: usize, B: B
     endpoint: &mut Endpoint<'r, { p::INGRESS }>,
     mut operations: Endpoint<'r, { p::PRODUCTION }>,
     control: &Control<'_, '_>,
-    state: &Exchange<'book, CHUNK, B>,
+    state: &Exchange<CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     reclaim: &crate::quic::application::imp::reclaim::Exchange<'book>,
 ) -> Result<(), Error> {
@@ -40,8 +40,10 @@ pub(crate) async fn ingress<'r, 'book, const RX: usize, const CHUNK: usize, B: B
         match offered.label() {
             168 => {
                 let stream_id = offered.recv::<p::SourceOpen>().await?;
-                let mut production = state.opened.take().map_err(|_| Error::Binding)?;
-                check(production.id(), stream_id)?;
+                let stream = app
+                    .try_borrow()
+                    .map_err(|_| Error::Binding)?
+                    .origin(stream_id)?;
                 endpoint.send::<p::StreamLoan<'_>>(operations).await?;
                 loop {
                     let offered = endpoint.offer().await?;
@@ -51,7 +53,7 @@ pub(crate) async fn ingress<'r, 'book, const RX: usize, const CHUNK: usize, B: B
                             let input = state.data.take().map_err(|_| Error::Binding)?;
                             let result = match input {
                                 Input::Chunk(chunk) => {
-                                    admit(control, app, &mut production, &chunk, false).await
+                                    admit(control, app, stream, &chunk, false).await
                                 }
                                 // The local owns the actual reader until EOF or interruption.
                                 // No second EOF flag or body-progress dispatcher is needed.
@@ -80,8 +82,7 @@ pub(crate) async fn ingress<'r, 'book, const RX: usize, const CHUNK: usize, B: B
                                             }
                                             chunk.len = len;
                                             let accepted =
-                                                admit(control, app, &mut production, &chunk, false)
-                                                    .await?;
+                                                admit(control, app, stream, &chunk, false).await?;
                                             if accepted != Admission::Accepted {
                                                 return Ok(accepted);
                                             }
@@ -132,7 +133,7 @@ pub(crate) async fn ingress<'r, 'book, const RX: usize, const CHUNK: usize, B: B
                             bytes: [0; CHUNK],
                             len: 0,
                         };
-                        match admit(control, app, &mut production, &terminal, true).await {
+                        match admit(control, app, stream, &terminal, true).await {
                             Ok(outcome) => outcome,
                             Err(_) => Admission::Failed,
                         }
@@ -143,11 +144,7 @@ pub(crate) async fn ingress<'r, 'book, const RX: usize, const CHUNK: usize, B: B
                     }
                     label => return Err(Error::UnexpectedLabel(label)),
                 };
-                let receipt = app
-                    .try_borrow_mut()
-                    .map_err(|_| Error::Binding)?
-                    .release_production(production)?;
-                reclaim.source.put(receipt).map_err(|_| Error::Binding)?;
+                reclaim.source.put(stream).map_err(|_| Error::Binding)?;
                 endpoint.send::<p::ProductionReclaim>(&stream_id).await?;
                 check(endpoint.recv::<p::ProductionStored>().await?, stream_id)?;
                 match outcome {
@@ -177,7 +174,7 @@ pub(crate) async fn ingress<'r, 'book, const RX: usize, const CHUNK: usize, B: B
 pub(super) async fn admit<const RX: usize, const CHUNK: usize>(
     control: &Control<'_, '_>,
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
-    production: &mut Production<'_>,
+    stream: Origin<'_>,
     chunk: &Chunk<CHUNK>,
     fin: bool,
 ) -> Result<Admission, Error> {
@@ -193,7 +190,7 @@ pub(super) async fn admit<const RX: usize, const CHUNK: usize>(
         let result = app
             .try_borrow_mut()
             .map_err(|_| Error::Binding)?
-            .enqueue_prefix(production, &chunk.bytes[offset..chunk.len], fin);
+            .enqueue_prefix(stream, &chunk.bytes[offset..chunk.len], fin);
         match result {
             Ok(count) => {
                 offset = offset.checked_add(count).ok_or(Error::Capacity)?;

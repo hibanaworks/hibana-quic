@@ -15,7 +15,7 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
     }
 
     /// Open a local unidirectional stream with authenticated peer stream credit.
-    /// Its production lease has no fictitious receive-half release capability.
+    /// A send-only stream has no receive-half release receipt.
     pub fn open_local_uni(&mut self) -> Result<StreamHandle, Error> {
         let mut n = self
             .core
@@ -27,62 +27,25 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         Ok(stream)
     }
 
-    pub(crate) fn take_production(
-        &mut self,
-        stream: StreamHandle,
-    ) -> Result<Production<'book>, Error> {
-        let mut numbers = self
+    /// Resolve stream identity within this connection. Permission to submit
+    /// data is carried by the projected production endpoint.
+    pub(crate) fn origin(&self, id: u64) -> Result<Origin<'book>, Error> {
+        let numbers = self
             .core
-            .numbers
-            .try_borrow_mut()
-            .map_err(|_| Error::Borrowed)?;
-        let issued = numbers
-            .state_mut(stream)?
-            .production
-            .take()
-            .ok_or(Error::Binding)?;
-        Ok(Production {
-            identity: &self.core.identity,
-            stream: issued,
-        })
-    }
-
-    pub(in crate::quic) fn take_unissued_production(
-        &mut self,
-        stream: StreamHandle,
-    ) -> Result<Option<Production<'book>>, Error> {
-        let mut numbers = self
-            .core
-            .numbers
-            .try_borrow_mut()
-            .map_err(|_| Error::Borrowed)?;
-        Ok(numbers
-            .state_mut(stream)?
-            .production
-            .take()
-            .map(|issued| Production {
-                identity: &self.core.identity,
-                stream: issued,
-            }))
-    }
-
-    pub(in crate::quic) fn release_production(
-        &mut self,
-        production: Production<'book>,
-    ) -> Result<ProductionReleased<'book>, Error> {
-        let stream = self.production_stream(&production)?;
-        self.core
             .numbers
             .try_borrow()
-            .map_err(|_| Error::Borrowed)?
-            .state(stream)?;
-        Ok(ProductionReleased {
-            origin: Origin {
-                identity: &self.core.identity,
-                stream,
-            },
+            .map_err(|_| Error::Borrowed)?;
+        if !numbers.table.can_send(id) {
+            return Err(streams::Error::StreamState.into());
+        }
+        let stream = numbers.table.lookup(id)?;
+        numbers.state(stream)?;
+        Ok(Origin {
+            identity: &self.core.identity,
+            stream,
         })
     }
+
     pub(in crate::quic) fn release_input(
         &mut self,
         id: u64,
@@ -112,22 +75,39 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
             },
         }))
     }
-    fn production_stream(&self, production: &Production<'_>) -> Result<StreamHandle, Error> {
-        if !core::ptr::eq(production.identity, &self.core.identity) {
+
+    pub(in crate::quic) fn input_released(&self, id: u64) -> Result<bool, Error> {
+        let numbers = self
+            .core
+            .numbers
+            .try_borrow()
+            .map_err(|_| Error::Borrowed)?;
+        let stream = match numbers.table.lookup(id) {
+            Ok(stream) => stream,
+            Err(streams::Error::Retired) => return Ok(true),
+            Err(error) => return Err(error.into()),
+        };
+        if !numbers.table.can_receive(id) {
             return Err(Error::Binding);
         }
-        Ok(production.stream)
+        Ok(numbers.state(stream)?.input_release.is_none())
+    }
+    fn production_stream(&self, origin: Origin<'_>) -> Result<StreamHandle, Error> {
+        if !core::ptr::eq(origin.identity, &self.core.identity) {
+            return Err(Error::Binding);
+        }
+        Ok(origin.stream)
     }
 
     /// Admit at most one chunk and the available peer credit. FIN is attached
     /// only when the complete supplied suffix fits.
     pub(crate) fn enqueue_prefix(
         &mut self,
-        production: &mut Production<'_>,
+        origin: Origin<'_>,
         bytes: &[u8],
         fin: bool,
     ) -> Result<usize, Error> {
-        let stream = self.production_stream(production)?;
+        let stream = self.production_stream(origin)?;
         let mut n = self
             .core
             .numbers
@@ -144,6 +124,16 @@ impl<'book, const RX: usize, const CHUNK: usize> App<'book, '_, '_, RX, CHUNK> {
         let Numbers { table, queue, .. } = &mut *n;
         queue.enqueue(table, stream, &bytes[..len], fin && len == bytes.len())?;
         Ok(len)
+    }
+
+    pub(in crate::quic) fn receive_offset(&self, stream: StreamHandle) -> Result<u64, Error> {
+        let numbers = self
+            .core
+            .numbers
+            .try_borrow()
+            .map_err(|_| Error::Borrowed)?;
+        numbers.state(stream)?;
+        Ok(numbers.table.receive_offset(stream)?)
     }
 
     /// Copy and consume a contiguous prefix without exposing a borrowed view.

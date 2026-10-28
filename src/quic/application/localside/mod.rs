@@ -17,7 +17,7 @@ pub(in crate::quic) mod reclaim;
 mod sink;
 mod source;
 use crate::quic::application::imp::reset;
-mod termination;
+pub(super) mod termination;
 mod timer;
 mod transmit;
 
@@ -69,11 +69,11 @@ pub struct Endpoints<'a> {
     pub adapter: Endpoint<'a, { global::ADAPTER }>,
     /// Peer terminal observation emitted by the receive localside.
     pub peer_event: Endpoint<'a, { global::PEER_EVENT }>,
-    /// Consumes peer terminal permission before retirement.
+    /// Receives the peer terminal outcome before retirement.
     pub peer_close: Endpoint<'a, { global::PEER_CLOSE }>,
     /// Application completion and idle-timeout observation localside.
     pub files_event: Endpoint<'a, { global::FILES_EVENT }>,
-    /// Consumes the actual application terminal permission.
+    /// Receives the application terminal outcome.
     pub files_close: Endpoint<'a, { global::FILES_CLOSE }>,
     /// Joins publication, key and terminal retirement grants before closing.
     pub close_join: Endpoint<'a, { global::CLOSE_JOIN }>,

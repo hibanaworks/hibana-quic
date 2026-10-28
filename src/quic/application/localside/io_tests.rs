@@ -105,7 +105,6 @@ mod tests {
         .unwrap();
         let Facets { app, mut rx, .. } = numbers.split();
         let app = RefCell::new(app);
-        let state = Exchange::<8, EmptyBody>::new();
         let mut sink = Sink {
             data: [0; 10],
             len: 0,
@@ -138,7 +137,7 @@ mod tests {
         for response in [Ok(0), Ok(9), Err(())] {
             let mut invalid = InvalidSink(response);
             assert!(matches!(
-                ready(deliver(&control, &state, &app, &mut invalid, 0)),
+                ready(deliver(&control, &app, &mut invalid, 0)),
                 Err(Error::Application)
             ));
             app.borrow_mut()
@@ -155,7 +154,7 @@ mod tests {
             })
             .unwrap();
         {
-            let mut future = pin!(deliver(&control, &state, &app, &mut sink, 0));
+            let mut future = pin!(deliver(&control, &app, &mut sink, 0));
             let mut cx = Context::from_waker(Waker::noop());
             assert!(future.as_mut().poll(&mut cx).is_pending());
             // Pending retains no RefCell borrow and consumes no input credit.
@@ -179,7 +178,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            ready(deliver(&control, &state, &app, &mut sink, 0)).unwrap(),
+            ready(deliver(&control, &app, &mut sink, 0)).unwrap(),
             Delivery::More
         );
         assert_eq!(sink.len, 8);
@@ -197,7 +196,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            ready(deliver(&control, &state, &app, &mut sink, 0)).unwrap(),
+            ready(deliver(&control, &app, &mut sink, 0)).unwrap(),
             Delivery::Fin
         );
         assert_eq!(sink.data, *b"abcdefghij");
@@ -245,7 +244,6 @@ mod tests {
         .unwrap();
         let Facets { app, mut rx, .. } = numbers.split();
         let app = RefCell::new(app);
-        let state = Exchange::<8, EmptyBody>::new();
         let mut pending = [const { None }; MAX_LIVE_STREAMS];
         let mut queue = [const { None }; REQUEST_CAPACITY];
         let mailbox = crate::runtime::mailbox::Mailbox::new(&mut queue).unwrap();
@@ -262,7 +260,6 @@ mod tests {
                 assert_eq!(
                     ready(receive_request(
                         &control,
-                        &state,
                         &app,
                         &mut sender,
                         &mut pending,
@@ -283,7 +280,6 @@ mod tests {
                 assert_eq!(
                     ready(receive_request(
                         &control,
-                        &state,
                         &app,
                         &mut sender,
                         &mut pending,
@@ -313,7 +309,6 @@ mod tests {
                 assert!(
                     ready(receive_request(
                         &control,
-                        &state,
                         &app,
                         &mut sender,
                         &mut pending,
@@ -329,7 +324,7 @@ mod tests {
                         Ok(0)
                     })
                     .unwrap();
-                assert!(!state.is_complete(id));
+                assert!(!app.borrow().input_released(id).unwrap());
             }
         }
     }
@@ -535,12 +530,10 @@ mod stop_tests {
             ..
         } = numbers.split();
         let first = app.open_local().unwrap();
-        let first_production = app.take_production(first).unwrap();
         effects
             .apply(rx.stop_intent(first.id(), 7).unwrap())
             .unwrap();
         let second = app.open_local().unwrap();
-        let second_production = app.take_production(second).unwrap();
         let app = RefCell::new(app);
         let drops = Cell::new(0);
         let reads = Cell::new(0);
@@ -571,11 +564,7 @@ mod stop_tests {
             async {
                 {
                     let endpoint = &mut source;
-                    let state = &state;
-                    let production = first_production;
-
-                    let id = production.id();
-                    state.opened.put(production).map_err(|_| Error::Binding)?;
+                    let id = first.id();
                     endpoint.send::<p::SourceOpen>(&id).await?;
                 }
                 let mut operations = source.recv::<p::StreamLoan<'_>>().await?;
@@ -671,11 +660,7 @@ mod stop_tests {
                 assert!(!control.stopping());
                 {
                     let endpoint = &mut source;
-                    let state = &state;
-                    let production = second_production;
-
-                    let id = production.id();
-                    state.opened.put(production).map_err(|_| Error::Binding)?;
+                    let id = second.id();
                     endpoint.send::<p::SourceOpen>(&id).await?;
                 }
                 let mut operations = source.recv::<p::StreamLoan<'_>>().await?;
@@ -876,6 +861,156 @@ mod interrupted_delivery_tests {
             panic!("cancelled sink must not finish")
         }
     }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn streaming_requests_dispatch_once_across_pending_chunks_and_empty_fin() {
+        use crate::quic::imp::kernel::packet::Frame;
+        use crate::runtime::mailbox::Mailbox;
+        struct Sink {
+            bytes: std::vec::Vec<u8>,
+            finishes: usize,
+            polls: usize,
+        }
+        impl StreamSink for Sink {
+            fn poll_write(
+                &mut self,
+                id: u64,
+                bytes: &[u8],
+                cx: &mut Context<'_>,
+            ) -> Poll<Result<usize, ()>> {
+                assert_eq!(id, 0);
+                self.polls += 1;
+                if self.polls == 1 {
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                self.bytes.extend_from_slice(bytes);
+                Poll::Ready(Ok(bytes.len()))
+            }
+            async fn finish(&mut self, id: u64) -> Result<(), ()> {
+                assert_eq!(id, 0);
+                self.finishes += 1;
+                Ok(())
+            }
+        }
+        for empty in [false, true] {
+            let mut scope = ApplicationKeyScope::new(919);
+            let mut installation = scope.claim().unwrap();
+            let mut gate = PublicationGate::new(installation.take_publication_gate().unwrap());
+            let (_, stop) = gate.split().unwrap();
+            let control = Control::new(stop);
+            let limits = Limits {
+                max_data: 16,
+                max_streams_bidi: 1,
+                max_streams_uni: 0,
+                stream_data_bidi_local: 8,
+                stream_data_bidi_remote: 8,
+                stream_data_uni: 0,
+            };
+            let mut slots = [StreamSlot::<8>::EMPTY; 2];
+            let mut chunks = [SendChunk::<8>::EMPTY];
+            let mut refs = [PacketReference::EMPTY; 4];
+            let mut numbers = StreamNumbers::new(
+                installation.scope(),
+                Role::Server,
+                limits,
+                limits,
+                &mut slots,
+                &mut chunks,
+                &mut refs,
+            )
+            .unwrap();
+            let Facets { app, mut rx, .. } = numbers.split();
+            let app = RefCell::new(app);
+            let state = Exchange::<8, EmptyBody>::new();
+            let reclaim = crate::quic::application::imp::reclaim::Exchange::new();
+            let global = p::receive_choreography();
+            let rx_role = project::<{ p::RECEIVE }>(&global);
+            let sink_role = project::<{ p::SINK }>(&global);
+            let collector_role = project::<{ p::INPUT_COLLECTOR }>(&global);
+            let carrier = CarrierStorage::<1, 16, 12>::new();
+            let mut slab = [0; 65536];
+            let id = SessionId::new(919);
+            let binding = carrier.bind(id, &[]).unwrap();
+            let mut storage = SessionKitStorage::uninit();
+            let rv = storage.init().rendezvous(&mut slab, &binding).unwrap();
+            let mut receiver = rv.enter(id, &rx_role).unwrap();
+            let mut endpoint = rv.enter(id, &sink_role).unwrap();
+            let mut collector = rv.enter(id, &collector_role).unwrap();
+            let mut request_slots = [const { None }; REQUEST_CAPACITY];
+            let mailbox =
+                Mailbox::<OwnedRequest<'_>, REQUEST_CAPACITY>::new(&mut request_slots).unwrap();
+            let (mut sender, mut requests) = mailbox.split().unwrap();
+            let mut sink = Sink {
+                bytes: std::vec::Vec::new(),
+                finishes: 0,
+                polls: 0,
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::try_join!(
+                    server_sink(
+                        &mut endpoint,
+                        &control,
+                        &state,
+                        &app,
+                        &mut sender,
+                        Some(&mut sink),
+                        &reclaim,
+                        None
+                    ),
+                    super::super::reclaim::input(&mut collector, &reclaim, &control),
+                    async {
+                        if !empty {
+                            rx.apply(&Frame::Stream {
+                                id: 0,
+                                offset: 0,
+                                fin: false,
+                                data: b"ab",
+                            })?;
+                            receiver.send::<p::ReceivedData>(&0).await?;
+                            check(receiver.recv::<p::ReceivedMore>().await?, 0)?;
+                        }
+                        rx.apply(&Frame::Stream {
+                            id: 0,
+                            offset: if empty { 0 } else { 2 },
+                            fin: true,
+                            data: if empty { b"" } else { b"cd" },
+                        })?;
+                        receiver.send::<p::ReceivedData>(&0).await?;
+                        check(receiver.recv::<p::ReceivedFin>().await?, 0)?;
+                        // A retained FIN can be observed again without reopening
+                        // the handler or delivering its bytes a second time.
+                        receiver.send::<p::ReceivedData>(&0).await?;
+                        check(receiver.recv::<p::ReceivedFin>().await?, 0)?;
+                        receiver.send::<p::ReceiveRetire>(&()).await?;
+                        receiver.recv::<p::ReceiveRetired>().await?;
+                        receiver.send::<p::StopClock>(&()).await?;
+                        Ok::<(), Error>(())
+                    },
+                )
+            })
+            .await
+            .expect("streaming localsides stalled")
+            .unwrap();
+            let request = requests.recv().await.unwrap();
+            assert_eq!(request.stream.id(), 0);
+            assert_eq!(request.len, 0);
+            assert!(
+                requests.recv().await.is_err(),
+                "handler was dispatched twice"
+            );
+            assert_eq!(
+                sink.bytes,
+                if empty {
+                    b"".as_slice()
+                } else {
+                    b"abcd".as_slice()
+                }
+            );
+            assert_eq!(sink.finishes, 1);
+            assert_eq!(state.completed_count(), 1);
+        }
+    }
     #[test]
     fn revoked_delivery_consumes_interrupted_branch_without_successful_fin() {
         let mut scope = ApplicationKeyScope::new(914);
@@ -953,7 +1088,7 @@ mod interrupted_delivery_tests {
         for _ in 0..128 {
             if let Poll::Ready(result) = all.as_mut().poll(&mut cx) {
                 result.unwrap();
-                assert!(!state.is_complete(0));
+                assert_eq!(state.completed_count(), 0);
                 return;
             }
         }

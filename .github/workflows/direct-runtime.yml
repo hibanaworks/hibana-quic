@@ -137,6 +137,10 @@ jobs:
         run: |
           cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --lib secret::
           MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly-2026-10-08 miri test --locked --lib quic::application::imp::owned::tests
+          MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly-2026-10-08 miri test --locked --lib quic::application::global::tests::one_returned_stream_can_join_its_source_collector -- --exact
+          MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly-2026-10-08 miri test --locked --lib quic::application::global::tests::source_cannot_reclaim_or_retire_while_its_endpoint_is_lent -- --exact
+          MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly-2026-10-08 miri test --locked --lib quic::application::global::tests::terminal_outcomes_travel_in_their_projected_messages -- --exact
+          MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly-2026-10-08 miri test --locked --lib quic::application::localside::io_tests::interrupted_delivery_tests::streaming_requests_dispatch_once_across_pending_chunks_and_empty_fin -- --exact
           cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --lib certificate::pem::
           MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly-2026-10-08 miri test --locked --test carrier_delegation
           cargo +nightly-2026-10-08 miri test --locked --manifest-path pal/Cargo.toml --lib sys::wake::tests::

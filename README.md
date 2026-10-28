@@ -40,6 +40,13 @@ participants in that choreography.
    sends that endpoint to packet receive, which uses it to request key updates.
    Ingress lends the stream-production endpoint to each source and receives it
    back with FIN or abandonment. Both transfers continue the same session.
+   After return, ingress records the stream for storage reclamation before the
+   next loan. The global requires this order.
+
+QUIC data structures hold byte offsets, ACK ranges and buffered packets. The
+receive role validates packets before recording their contents. Key updates,
+stream submission and storage reclamation run through the corresponding
+endpoint messages.
 
 ### Where are the running roles?
 
@@ -156,9 +163,8 @@ accepted native I/O. A submitted datagram is not evidence of peer delivery.
 ### How the remaining obligations are checked
 
 - **Lean:** abstract invariants for [body ownership and EOF](proofs/owned-body-input/Body.lean),
-  [stream-slot binding](proofs/stream-slot-binding/Binding.lean),
   [cancellation](proofs/tls-input-cancellation/Cancellation.lean) and
-  [reclamation](proofs/stream-reclaim/Reclaim.lean).
+  [resource identity and storage reclamation](proofs/stream-reclaim/Reclaim.lean).
 - **Z3:** counterexample searches over the corresponding constraints, including
   [body completion](proofs/owned-body-input/check_body.py) and
   [resource identity and drain conditions](proofs/stream-reclaim/reclaim.py).
@@ -172,7 +178,7 @@ accepted native I/O. A submitted datagram is not evidence of peer delivery.
 
 The Lean/Z3 models are not an extraction or end-to-end proof of the Rust code.
 Miri checks the executions it runs; it does not prove cryptographic strength or
-constant-time machine code. See [Hibana's guarantee boundary](https://github.com/hibanaworks/hibana/blob/af69def928f498ad474a4d2add238615e175a49b/README.md#guarantees)
+constant-time machine code. See [Hibana's guarantee boundary](https://github.com/hibanaworks/hibana/blob/2f695129ac0c8a8fd12bfe43b75dced33e47087f/README.md#guarantees-and-verification)
 for the underlying runtime and carrier assumptions.
 
 ## Write an application with Hibana

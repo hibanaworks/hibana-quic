@@ -1,10 +1,7 @@
-//! Independent peer and application terminal edges carry actual affine close
-//! permissions. Wire payloads are correlation observations, never authority.
+//! Independent peer and application outcomes follow the projected terminal branches.
 use super::{CloseKind, Control, Error, global as p};
-use crate::crypto::directional::ApplicationKeyScope;
 use crate::quic::Side;
 use crate::quic::application::imp::stream::App;
-use crate::quic::imp::tls::Inbox;
 use core::{
     cell::RefCell,
     future::{Future, poll_fn},
@@ -12,56 +9,18 @@ use core::{
 };
 use hibana::Endpoint;
 
-/// Only these trusted producer continuations construct terminal permission.
-/// It cannot be cloned or reconstructed from a copied error code or sequence.
-pub(crate) struct Permission<'scope> {
-    pub(super) scope: &'scope ApplicationKeyScope,
-    pub(super) kind: CloseKind,
-}
-
-impl<'scope> Permission<'scope> {
-    pub(crate) fn scope(&self) -> &'scope ApplicationKeyScope {
-        self.scope
-    }
-    pub(crate) fn kind(&self) -> CloseKind {
-        self.kind
-    }
-}
-
+/// Terminal observations share the connection's I/O cancellation and protocol.
 pub(crate) struct Exchange<'a, 'gate, 'scope> {
     pub(super) protocol: crate::http3::Protocol,
     control: &'a Control<'gate, 'scope>,
-    scope: &'scope ApplicationKeyScope,
-    pub(super) peer: Inbox<Permission<'scope>>,
-    files: Inbox<Permission<'scope>>,
 }
 
 impl<'a, 'gate, 'scope> Exchange<'a, 'gate, 'scope> {
     pub(crate) const fn new(
         control: &'a Control<'gate, 'scope>,
-        scope: &'scope ApplicationKeyScope,
         protocol: crate::http3::Protocol,
     ) -> Self {
-        Self {
-            protocol,
-            control,
-            scope,
-            peer: Inbox::new(),
-            files: Inbox::new(),
-        }
-    }
-
-    pub(super) fn check_scope(&self, scope: &ApplicationKeyScope) -> Result<(), Error> {
-        if core::ptr::eq(self.scope, scope) {
-            Ok(())
-        } else {
-            Err(Error::Binding)
-        }
-    }
-
-    fn apply(&self, permission: &Permission<'scope>) -> Result<(), Error> {
-        self.check_scope(permission.scope)?;
-        self.control.revoke()
+        Self { protocol, control }
     }
 }
 
@@ -77,7 +36,7 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
     endpoint: &mut Endpoint<'_, { p::FILES_EVENT }>,
     source_join: &mut Endpoint<'_, { p::SOURCE_JOIN }>,
     exchange: &Exchange<'_, '_, '_>,
-    state: &crate::quic::application::imp::io::Exchange<'_, CHUNK, B>,
+    state: &crate::quic::application::imp::io::Exchange<CHUNK, B>,
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
     book: &crate::quic::imp::recovery::CompletionObserver<'_, '_, N>,
     side: Side,
@@ -177,17 +136,6 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
             None => interrupted.await?,
         },
     };
-    if let Some(kind) = reason {
-        exchange
-            .files
-            .put(Permission {
-                scope: exchange.scope,
-                kind,
-            })
-            .map_err(|_| Error::Binding)?;
-    } else if !exchange.files.is_empty() {
-        return Err(Error::Binding);
-    }
     exchange.control.revoke()?;
     match reason {
         Some(CloseKind::Local {
@@ -213,163 +161,85 @@ pub(crate) async fn completion<const N: usize, const RX: usize, const CHUNK: usi
     Ok(())
 }
 
-/// The two terminal facets retain their separate affine results until the
-/// post-ordinary close owner requests and consumes each result.
-pub(crate) struct TerminalOutcomes<'scope> {
-    peer: Option<Permission<'scope>>,
-    files: Option<Permission<'scope>>,
-}
-impl<'scope> TerminalOutcomes<'scope> {
-    pub(crate) fn into_parts(self) -> (Option<Permission<'scope>>, Option<Permission<'scope>>) {
-        (self.peer, self.files)
-    }
-}
-
-/// Consume the two independent projected terminal lanes concurrently. Each
-/// permission is applied only after receiving its declared wire arm. Finishing
-/// one lane does not cancel or impersonate retirement of the other lane.
-pub(crate) async fn receive<'scope>(
+/// Receive both terminal outcomes concurrently and acknowledge each branch.
+pub(crate) async fn receive(
     peer: &mut Endpoint<'_, { p::PEER_CLOSE }>,
     files: &mut Endpoint<'_, { p::FILES_CLOSE }>,
-    exchange: &Exchange<'_, '_, 'scope>,
-) -> Result<TerminalOutcomes<'scope>, Error> {
-    let mut peer_permission = None;
-    let mut files_permission = None;
-    // The two projected terminal locals run independently. Each performs its
-    // actual offer/recv/ack once; the executor joins futures, not protocol flags.
-    crate::runtime::join2(
+    exchange: &Exchange<'_, '_, '_>,
+) -> Result<(Option<CloseKind>, Option<CloseKind>), Error> {
+    crate::runtime::join::values2(
         async {
             let offered = peer.offer().await?;
-            let permission = match offered.label() {
-                44 => {
-                    offered.recv::<p::PeerClose>().await?;
-                    let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
-                    if !matches!(
-                        permission.kind,
-                        CloseKind::Peer { .. } | CloseKind::PeerApplication { .. }
-                    ) {
-                        return Err(Error::Binding);
-                    }
-                    exchange.apply(&permission)?;
-                    Some(permission)
-                }
-                45 => {
-                    offered.recv::<p::PeerFailed>().await?;
-                    let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
-                    if !matches!(
-                        permission.kind,
-                        CloseKind::Local {
-                            application: false,
-                            ..
-                        }
-                    ) {
-                        return Err(Error::Binding);
-                    }
-                    exchange.apply(&permission)?;
-                    Some(permission)
-                }
+            let reason = match offered.label() {
+                44 => Some(CloseKind::Peer {
+                    code: offered.recv::<p::PeerClose>().await?,
+                }),
+                224 => Some(CloseKind::PeerApplication {
+                    code: offered.recv::<p::PeerApplicationClose>().await?,
+                }),
+                45 => Some(CloseKind::Local {
+                    application: false,
+                    code: offered.recv::<p::PeerFailed>().await?,
+                }),
                 218 => {
                     offered.recv::<p::PeerApplicationFailed>().await?;
-                    let permission = exchange.peer.take().map_err(|_| Error::Binding)?;
-                    if !matches!(
-                        permission.kind,
-                        CloseKind::Local {
-                            application: true,
-                            code
-                        } if code == exchange.protocol.failure_code()
-                    ) {
-                        return Err(Error::Binding);
-                    }
-                    exchange.apply(&permission)?;
-                    Some(permission)
+                    Some(CloseKind::Local {
+                        application: true,
+                        code: exchange.protocol.failure_code(),
+                    })
                 }
                 46 => {
                     offered.recv::<p::PeerCancelled>().await?;
-                    if !exchange.peer.is_empty() {
-                        return Err(Error::Binding);
-                    }
                     None
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
             };
-            peer_permission = permission;
+            if reason.is_some() {
+                exchange.control.revoke()?;
+            }
             peer.send::<p::PeerSeen>(&()).await?;
-            Ok::<(), Error>(())
+            Ok::<_, Error>(reason)
         },
         async {
             let offered = files.offer().await?;
-            let permission = match offered.label() {
+            let reason = match offered.label() {
                 220 => {
                     offered.recv::<p::ResponsesComplete>().await?;
-                    let permission = exchange.files.take().map_err(|_| Error::Binding)?;
-                    if !matches!(
-                        permission.kind,
-                        CloseKind::Local {
-                            application: true,
-                            code
-                        } if code == exchange.protocol.success_code()
-                    ) {
-                        return Err(Error::Binding);
-                    }
-                    exchange.apply(&permission)?;
-                    Some(permission)
+                    Some(CloseKind::Local {
+                        application: true,
+                        code: exchange.protocol.success_code(),
+                    })
                 }
                 48 => {
                     offered.recv::<p::FilesComplete>().await?;
-                    let permission = exchange.files.take().map_err(|_| Error::Binding)?;
-                    if !matches!(
-                        permission.kind,
-                        CloseKind::Local {
-                            application: true,
-                            code
-                        } if code == exchange.protocol.success_code()
-                    ) {
-                        return Err(Error::Binding);
-                    }
-                    exchange.apply(&permission)?;
-                    Some(permission)
+                    Some(CloseKind::Local {
+                        application: true,
+                        code: exchange.protocol.success_code(),
+                    })
                 }
                 49 => {
                     offered.recv::<p::ApplicationFailed>().await?;
-                    let permission = exchange.files.take().map_err(|_| Error::Binding)?;
-                    if !matches!(
-                        permission.kind,
-                        CloseKind::Local {
-                            application: true,
-                            code
-                        } if code == exchange.protocol.failure_code()
-                    ) {
-                        return Err(Error::Binding);
-                    }
-                    exchange.apply(&permission)?;
-                    Some(permission)
+                    Some(CloseKind::Local {
+                        application: true,
+                        code: exchange.protocol.failure_code(),
+                    })
                 }
                 52 => {
                     offered.recv::<p::IdleExpired>().await?;
-                    let permission = exchange.files.take().map_err(|_| Error::Binding)?;
-                    if !matches!(permission.kind, CloseKind::IdleExpired) {
-                        return Err(Error::Binding);
-                    }
-                    exchange.apply(&permission)?;
-                    Some(permission)
+                    Some(CloseKind::IdleExpired)
                 }
                 50 => {
                     offered.recv::<p::CompletionCancelled>().await?;
-                    if !exchange.files.is_empty() {
-                        return Err(Error::Binding);
-                    }
                     None
                 }
                 label => return Err(Error::UnexpectedLabel(label)),
             };
-            files_permission = permission;
+            if reason.is_some() {
+                exchange.control.revoke()?;
+            }
             files.send::<p::CompletionSeen>(&()).await?;
-            Ok::<(), Error>(())
+            Ok::<_, Error>(reason)
         },
     )
-    .await?;
-    Ok(TerminalOutcomes {
-        peer: peer_permission,
-        files: files_permission,
-    })
+    .await
 }

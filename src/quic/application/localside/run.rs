@@ -508,7 +508,7 @@ async fn connected<
     let control = Control::new(stop);
     let state = crate::quic::application::imp::io::Exchange::<CHUNK, H::Body>::new();
     let http3_input = crate::http3::imp::control::Ingress::new();
-    let terminal = termination::Exchange::new(&control, scope, application_protocol);
+    let terminal = termination::Exchange::new(&control, application_protocol);
     let reset_exchange = reset::Exchange::new();
     let reclaim_exchange = crate::quic::application::imp::reclaim::Exchange::new();
     early_client::admit::<N, RX, CHUNK, H::Body>(
@@ -558,7 +558,7 @@ async fn connected<
     .map_err(|_| Error::Capacity)?;
     let (mut request_sender, mut request_receiver) =
         requests.split().map_err(|_| Error::Binding)?;
-    let mut permission = None;
+    let mut outcome = None;
     let first_io_error = RefCell::new(None);
 
     let result = {
@@ -696,7 +696,7 @@ async fn connected<
             }
         });
         let mut receiving = core::pin::pin!(async {
-            receive::run::<N, RX, CHUNK, _>(
+            receive::run::<N, RX, CHUNK>(
                 &mut endpoints.receive,
                 &mut rx_keys,
                 &mut endpoints.peer_event,
@@ -710,12 +710,10 @@ async fn connected<
                 &reset_exchange,
                 &acknowledgments,
                 &app,
-                &state,
                 &exchange,
                 &control,
                 clock,
                 receive_io,
-                &terminal,
                 confirmation,
                 key_update_target,
                 &publication_state.responses,
@@ -798,7 +796,7 @@ async fn connected<
             (local_idle_timeout_ms, clock),
         ));
         let mut terminal_receive = core::pin::pin!(async {
-            permission = Some(
+            outcome = Some(
                 termination::receive(
                     &mut endpoints.peer_close,
                     &mut endpoints.files_close,
@@ -862,8 +860,8 @@ async fn connected<
     let all_streams_acked = app.borrow().queued_chunks()? == 0
         && completed_streams == state.submitted_count()
         && (config.side == Side::Client || state.completed_count() == completed_streams);
-    let (peer, files) = permission.ok_or(Error::Binding)?.into_parts();
-    let (_, _, _, permission, _) = crate::runtime::join::values5(
+    let (peer, files) = outcome.ok_or(Error::Binding)?;
+    let (_, _, _, outcome, _) = crate::runtime::join::values5(
         async {
             packet_write.send::<global::PublicationRetired>(&()).await?;
             packet_write.recv::<global::CloseAuthority>().await?;
@@ -890,17 +888,12 @@ async fn connected<
                 .files_close
                 .recv::<global::FilesRetirementGrant>()
                 .await?;
-            for permission in [peer.as_ref(), files.as_ref()].into_iter().flatten() {
-                if !core::ptr::eq(scope, permission.scope()) {
-                    return Err(Error::Binding);
-                }
-            }
-            let permission = peer.or(files).ok_or(Error::Binding)?;
+            let outcome = peer.or(files).ok_or(Error::Binding)?;
             endpoints
                 .files_close
                 .send::<global::FilesOutcome>(&())
                 .await?;
-            Ok::<_, Error>(permission)
+            Ok::<_, Error>(outcome)
         },
         async {
             {
@@ -933,9 +926,9 @@ async fn connected<
     .await?;
     let closing = transmit::Closing {
         ordinary: OrdinaryRetired { scope },
-        permission,
+        reason: outcome,
     };
-    let close_kind = closing.permission.kind();
+    let close_kind = closing.reason;
     let result = crate::runtime::join2(
         transmit::close(
             &mut packet_write,

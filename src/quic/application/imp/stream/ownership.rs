@@ -6,8 +6,7 @@ impl<'book, const RX: usize, const CHUNK: usize> FrameEffects<'book, '_, '_, RX,
         &mut self,
         joined: crate::quic::application::imp::reclaim::Joined<'book>,
     ) -> Result<(), Error> {
-        let (source, input, delivery) = joined.into_parts();
-        let origin = source.origin();
+        let (origin, input, delivery) = joined.into_parts();
         if !origin.same(input.origin())
             || !origin.same(delivery.origin())
             || !core::ptr::eq(origin.identity, &self.core.identity)

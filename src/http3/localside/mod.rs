@@ -4,7 +4,6 @@ use crate::http3;
 use crate::http3::Protocol;
 use crate::http3::global as p;
 use crate::quic::application::imp::stream::App;
-use crate::quic::application::imp::stream::Production;
 use crate::quic::application::{Control, Error};
 use hibana::Endpoint;
 
@@ -37,21 +36,15 @@ pub(crate) async fn owner<'book, const RX: usize, const CHUNK: usize>(
         }
         label => return Err(Error::UnexpectedLabel(label)),
     }
-    // No FIN is sent on critical streams. These actual production resources
-    // remain owned until the ordinary local stops; connection retirement owns
-    // their still-open QUIC halves, without a forged per-stream FIN receipt.
-    let mut productions: [Option<Production<'book>>; 3] = [None, None, None];
-    for (slot, prefix) in productions
-        .iter_mut()
-        .zip([http3::CONTROL_PREFIX, &[2][..], &[3][..]])
-    {
+    // Critical streams remain open until connection retirement. The HTTP/3
+    // endpoint owns their writes; no FIN or per-stream release is fabricated.
+    for prefix in [http3::CONTROL_PREFIX, &[2][..], &[3][..]] {
         let mut app = app.try_borrow_mut().map_err(|_| Error::Binding)?;
         let stream = app.open_local_uni()?;
-        let mut production = app.take_production(stream)?;
-        if app.enqueue_prefix(&mut production, prefix, false)? != prefix.len() {
+        let origin = app.origin(stream.id())?;
+        if app.enqueue_prefix(origin, prefix, false)? != prefix.len() {
             return Err(Error::Capacity);
         }
-        *slot = Some(production);
     }
     control.changed()?;
     endpoint.send::<p::Http3Sink>(&()).await?;

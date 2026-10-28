@@ -36,7 +36,6 @@ impl<const RX: usize, const CHUNK: usize> Numbers<'_, RX, CHUNK> {
         };
         self.streams[stream.slot()] = StreamState {
             handle: Some(stream),
-            production: self.table.can_send(stream.id()).then_some(stream),
             input_release: self.table.can_receive(stream.id()).then_some(stream),
             credit: Credit::new(maximum),
             ..StreamState::EMPTY

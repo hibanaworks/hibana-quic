@@ -124,27 +124,14 @@ pub struct Facets<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> 
 pub struct App<'book, 'storage, 'scope, const RX: usize, const CHUNK: usize> {
     core: &'book StreamNumbers<'storage, 'scope, RX, CHUNK>,
 }
-/// One production lease for one live stream in this exact table. It cannot be
-/// cloned or reissued after FIN/abandon. The projected source continuation owns
-/// it while producing bytes; retransmission uses independent retained chunks.
-pub(crate) struct Production<'book> {
-    identity: &'book Identity,
-    stream: StreamHandle,
-}
-impl Production<'_> {
-    pub(in crate::quic) fn id(&self) -> u64 {
-        self.stream.id()
-    }
-}
-
 /// Copyable correlation data is not a release capability.
 #[derive(Clone, Copy)]
-pub(in crate::quic) struct Origin<'book> {
+pub(crate) struct Origin<'book> {
     identity: &'book Identity,
     stream: StreamHandle,
 }
 impl Origin<'_> {
-    pub(in crate::quic) fn id(self) -> u64 {
+    pub(crate) fn id(self) -> u64 {
         self.stream.id()
     }
     pub(in crate::quic) fn slot(self) -> usize {
@@ -154,19 +141,11 @@ impl Origin<'_> {
         core::ptr::eq(self.identity, other.identity) && self.stream == other.stream
     }
 }
-pub(in crate::quic) struct ProductionReleased<'book> {
-    origin: Origin<'book>,
-}
 pub(in crate::quic) struct InputReleased<'book> {
     origin: Origin<'book>,
 }
 pub(in crate::quic) struct DeliveryReleased<'book> {
     origin: Origin<'book>,
-}
-impl<'book> ProductionReleased<'book> {
-    pub(in crate::quic) fn origin(&self) -> Origin<'book> {
-        self.origin
-    }
 }
 impl<'book> InputReleased<'book> {
     pub(in crate::quic) fn origin(&self) -> Origin<'book> {
@@ -370,7 +349,6 @@ impl Delivered<'_> {
 }
 struct StreamState {
     handle: Option<StreamHandle>,
-    production: Option<StreamHandle>,
     input_release: Option<StreamHandle>,
     credit: Credit,
     reset: Option<streams::Reset>,
@@ -380,7 +358,6 @@ struct StreamState {
 impl StreamState {
     const EMPTY: Self = Self {
         handle: None,
-        production: None,
         input_release: None,
         credit: Credit::new(0),
         reset: None,

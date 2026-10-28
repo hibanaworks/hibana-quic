@@ -21,7 +21,7 @@ fn check(actual: u64, expected: u64) -> Result<(), Error> {
 pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     control: &Control<'_, '_>,
-    state: &Exchange<'book, CHUNK, B>,
+    state: &Exchange<CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut impl ClientRequests,
 ) -> Result<(), Error> {
@@ -67,15 +67,7 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                 .map_err(|_| Error::Application)?;
             state.submitted()?;
             control.changed()?;
-            let production = app
-                .try_borrow_mut()
-                .map_err(|_| Error::Binding)?
-                .take_production(stream)?;
-            {
-                let id = production.id();
-                state.opened.put(production).map_err(|_| Error::Binding)?;
-                endpoint.send::<p::SourceOpen>(&id).await?;
-            }
+            endpoint.send::<p::SourceOpen>(&stream.id()).await?;
             let mut operations = endpoint.recv::<p::StreamLoan<'_>>().await?;
             let result = async {
                 let mut offset = 0;
@@ -246,7 +238,7 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
 /// can end normally. An excess pending request is rejected before opening
 /// an impossible stream or consuming the caller's pending request via started.
 pub(super) async fn next_request<const CHUNK: usize, B>(
-    state: &Exchange<'_, CHUNK, B>,
+    state: &Exchange<CHUNK, B>,
     requests: &mut impl ClientRequests,
     output: &mut [u8],
 ) -> Result<Option<usize>, Error> {
@@ -271,7 +263,7 @@ pub(crate) async fn server_source<
 >(
     endpoint: &mut Endpoint<'_, { p::SOURCE }>,
     control: &Control<'_, '_>,
-    state: &Exchange<'book, CHUNK, B>,
+    state: &Exchange<CHUNK, B>,
     requests: &mut Receiver<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
     handler: &mut H,
 ) -> Result<(), Error> {
@@ -297,7 +289,7 @@ pub(crate) async fn server_source<
             let body = match control
                 .until_stop(
                     0,
-                    handler.open(request.production.id(), &request.bytes[..request.len]),
+                    handler.open(request.stream.id(), &request.bytes[..request.len]),
                 )
                 .await
             {
@@ -306,14 +298,8 @@ pub(crate) async fn server_source<
             };
             state.submitted()?;
             control.changed()?;
-            let stream_id = request.production.id();
-            {
-                let production = request.production;
-
-                let id = production.id();
-                state.opened.put(production).map_err(|_| Error::Binding)?;
-                endpoint.send::<p::SourceOpen>(&id).await?;
-            }
+            let stream_id = request.stream.id();
+            endpoint.send::<p::SourceOpen>(&stream_id).await?;
             let mut operations = endpoint.recv::<p::StreamLoan<'_>>().await?;
             // The actual reader moves once through the Hibana data edge. Ingress
             // alone owns the reader until EOF, failure or cancellation; each packet

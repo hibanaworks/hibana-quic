@@ -23,7 +23,6 @@ lean = str(Path('.ci-work/model-tools/lean/bin/lean').resolve())
 python = str(Path('.ci-work/model-tools/python/bin/python').absolute())
 models = [
     ('owned-body-input/Body.lean', 'owned-body-input/check_body.py'),
-    ('stream-slot-binding/Binding.lean', 'stream-slot-binding/binding.py'),
     ('tls-input-cancellation/Cancellation.lean', 'tls-input-cancellation/cancellation.py'),
     ('direct-recovery-installation/Installation.lean', 'direct-recovery-installation/installation.py'),
     ('stream-reclaim/Reclaim.lean', 'stream-reclaim/reclaim.py'),

@@ -1,12 +1,12 @@
-//! Correlation and affine joining of owned stream release receipts.
+//! Match returned stream identities with released receive and transmit storage.
 use crate::quic::application::Error;
 use crate::quic::application::imp::stream::{
-    DeliveryReleased, InputReleased, MAX_LIVE_STREAMS, Origin, ProductionReleased,
+    DeliveryReleased, InputReleased, MAX_LIVE_STREAMS, Origin,
 };
 use crate::quic::imp::tls::Inbox;
 use core::cell::{Cell, RefCell};
 struct Slot<'book> {
-    source: Option<ProductionReleased<'book>>,
+    source: Option<Origin<'book>>,
     input: Option<InputReleased<'book>>,
     delivery: Option<DeliveryReleased<'book>>,
 }
@@ -17,10 +17,7 @@ impl Slot<'_> {
         delivery: None,
     };
     fn check(&self, origin: Origin<'_>) -> Result<(), Error> {
-        if self
-            .source
-            .as_ref()
-            .is_some_and(|v| !v.origin().same(origin))
+        if self.source.as_ref().is_some_and(|v| !v.same(origin))
             || self
                 .input
                 .as_ref()
@@ -36,17 +33,17 @@ impl Slot<'_> {
     }
 }
 pub(in crate::quic) struct Joined<'book> {
-    source: ProductionReleased<'book>,
+    source: Origin<'book>,
     input: InputReleased<'book>,
     delivery: DeliveryReleased<'book>,
 }
 impl<'book> Joined<'book> {
     pub(in crate::quic) fn new(
-        source: ProductionReleased<'book>,
+        source: Origin<'book>,
         input: InputReleased<'book>,
         delivery: DeliveryReleased<'book>,
     ) -> Result<Self, Error> {
-        if !source.origin().same(input.origin()) || !source.origin().same(delivery.origin()) {
+        if !source.same(input.origin()) || !source.same(delivery.origin()) {
             return Err(Error::Binding);
         }
         Ok(Self {
@@ -57,20 +54,16 @@ impl<'book> Joined<'book> {
     }
 
     pub(in crate::quic::application) fn id(&self) -> u64 {
-        self.source.origin().id()
+        self.source.id()
     }
     pub(in crate::quic) fn into_parts(
         self,
-    ) -> (
-        ProductionReleased<'book>,
-        InputReleased<'book>,
-        DeliveryReleased<'book>,
-    ) {
+    ) -> (Origin<'book>, InputReleased<'book>, DeliveryReleased<'book>) {
         (self.source, self.input, self.delivery)
     }
 }
 pub(in crate::quic::application) struct Exchange<'book> {
-    pub(in crate::quic::application) source: Inbox<ProductionReleased<'book>>,
+    pub(in crate::quic::application) source: Inbox<Origin<'book>>,
     pub(in crate::quic::application) input: Inbox<InputReleased<'book>>,
     pub(in crate::quic::application) delivery: Inbox<DeliveryReleased<'book>>,
     pub(in crate::quic::application) applying: Inbox<Joined<'book>>,
@@ -90,16 +83,15 @@ impl<'book> Exchange<'book> {
     }
     pub(in crate::quic::application) fn source_received(
         &self,
-        receipt: ProductionReleased<'book>,
+        origin: Origin<'book>,
     ) -> Result<(), Error> {
-        let origin = receipt.origin();
         let mut slots = self.slots.try_borrow_mut().map_err(|_| Error::Binding)?;
         let slot = slots.get_mut(origin.slot()).ok_or(Error::Capacity)?;
         slot.check(origin)?;
         if slot.source.is_some() {
             return Err(Error::Binding);
         }
-        slot.source = Some(receipt);
+        slot.source = Some(origin);
         Ok(())
     }
     pub(in crate::quic::application) fn input_received(
@@ -144,7 +136,7 @@ impl<'book> Exchange<'book> {
             let Some(source) = slot.source.as_ref() else {
                 continue;
             };
-            if slot.input.is_none() || slot.delivery.is_none() || !storage_free(source.origin())? {
+            if slot.input.is_none() || slot.delivery.is_none() || !storage_free(*source)? {
                 continue;
             }
             let joined = Joined::new(

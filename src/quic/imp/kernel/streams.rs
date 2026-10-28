@@ -768,6 +768,13 @@ impl<'a, const RX: usize> StreamTable<'a, RX> {
         self.receive_charged = charged;
         Ok(())
     }
+    pub(crate) fn receive_offset(&self, h: StreamHandle) -> Result<u64, Error> {
+        let i = self.validate(h)?;
+        if !self.can_receive(h.id) {
+            return Err(Error::StreamState);
+        }
+        Ok(self.slots[i].state.consumed)
+    }
     pub fn receive(&self, h: StreamHandle) -> Result<ReadView<'_>, Error> {
         let i = self.validate(h)?;
         if !self.can_receive(h.id) {

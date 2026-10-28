@@ -278,7 +278,7 @@ impl From<imp::keys::Error> for Error {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CloseKind {
     Local { application: bool, code: u64 },
     Peer { code: u64 },

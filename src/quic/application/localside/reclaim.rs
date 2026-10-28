@@ -22,7 +22,7 @@ pub(super) async fn source(
             189 => {
                 let id = offered.recv::<p::ProductionReclaim>().await?;
                 let receipt = exchange.source.take().map_err(|_| Error::Binding)?;
-                check(receipt.origin().id(), id)?;
+                check(receipt.id(), id)?;
                 exchange.source_received(receipt)?;
                 endpoint.send::<p::ProductionStored>(&id).await?;
                 control.changed()?;

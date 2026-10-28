@@ -90,8 +90,9 @@ pub type Drained = g::Msg<39, ()>;
 pub type Retire = g::Msg<40, ()>;
 pub type Retired = g::Msg<41, ()>;
 // Parallel terminal observations join before connection retirement.
-pub type PeerClose = g::Msg<44, ()>;
-pub type PeerFailed = g::Msg<45, ()>;
+pub type PeerClose = g::Msg<44, u64>;
+pub type PeerApplicationClose = g::Msg<224, u64>;
+pub type PeerFailed = g::Msg<45, u64>;
 pub type PeerCancelled = g::Msg<46, ()>;
 pub type PeerSeen = g::Msg<47, ()>;
 pub type FilesComplete = g::Msg<48, ()>;
@@ -186,7 +187,7 @@ fn startup() -> impl Projectable {
     )
 }
 
-fn source_base() -> impl Projectable {
+pub fn source_choreography() -> impl Projectable {
     let chunks = g::route(
         g::seq(
             g::send::<PRODUCTION, INGRESS, SourceData>(),
@@ -221,13 +222,19 @@ fn source_base() -> impl Projectable {
                         g::send::<SOURCE, INGRESS, SourceFin<'_>>(),
                         g::send::<SOURCE, INGRESS, SourceAbandon<'_>>(),
                     ),
-                    g::route(
-                        g::send::<INGRESS, SOURCE, SourceEnded>(),
-                        g::route(
-                            g::send::<INGRESS, SOURCE, SourceEndStopped>(),
+                    g::seq(
+                        g::send::<INGRESS, SOURCE_COLLECTOR, ProductionReclaim>(),
+                        g::seq(
+                            g::send::<SOURCE_COLLECTOR, INGRESS, ProductionStored>(),
                             g::route(
-                                g::send::<INGRESS, SOURCE, SourceEndRejected>(),
-                                g::send::<INGRESS, SOURCE, SourceEndFailed>(),
+                                g::send::<INGRESS, SOURCE, SourceEnded>(),
+                                g::route(
+                                    g::send::<INGRESS, SOURCE, SourceEndStopped>(),
+                                    g::route(
+                                        g::send::<INGRESS, SOURCE, SourceEndRejected>(),
+                                        g::send::<INGRESS, SOURCE, SourceEndFailed>(),
+                                    ),
+                                ),
                             ),
                         ),
                     ),
@@ -235,8 +242,15 @@ fn source_base() -> impl Projectable {
             ),
         ),
     );
+    let stopped = g::seq(
+        g::send::<SOURCE, INGRESS, SourceDone>(),
+        g::seq(
+            g::send::<INGRESS, SOURCE_COLLECTOR, ProductionReclaimsDone>(),
+            g::send::<SOURCE_COLLECTOR, INGRESS, ProductionReclaimsClosed>(),
+        ),
+    );
     g::seq(
-        g::route(stream, g::send::<SOURCE, INGRESS, SourceDone>()).roll(),
+        g::route(stream, stopped).roll(),
         g::seq(
             g::send::<INGRESS, SOURCE, SourceRetired>(),
             g::route(
@@ -245,21 +259,6 @@ fn source_base() -> impl Projectable {
             ),
         ),
     )
-}
-
-pub fn source_choreography() -> impl Projectable {
-    let receipts = g::route(
-        g::seq(
-            g::send::<INGRESS, SOURCE_COLLECTOR, ProductionReclaim>(),
-            g::send::<SOURCE_COLLECTOR, INGRESS, ProductionStored>(),
-        ),
-        g::seq(
-            g::send::<INGRESS, SOURCE_COLLECTOR, ProductionReclaimsDone>(),
-            g::send::<SOURCE_COLLECTOR, INGRESS, ProductionReclaimsClosed>(),
-        ),
-    )
-    .roll();
-    g::par(source_base(), receipts)
 }
 pub fn receive_choreography() -> impl Projectable {
     let packets = g::seq(
@@ -444,16 +443,13 @@ fn timer_choreography() -> impl Projectable {
     .roll()
 }
 
-fn ordinary() -> impl Projectable {
-    let source = source_choreography();
-    let receive = receive_choreography();
-    let keys = key_choreography();
-    let timer = timer_choreography();
-    let publication = publication_choreography();
-
+fn terminal_choreography() -> impl Projectable {
     let peer = g::seq(
         g::route(
-            g::send::<PEER_EVENT, PEER_CLOSE, PeerClose>(),
+            g::route(
+                g::send::<PEER_EVENT, PEER_CLOSE, PeerClose>(),
+                g::send::<PEER_EVENT, PEER_CLOSE, PeerApplicationClose>(),
+            ),
             g::route(
                 g::send::<PEER_EVENT, PEER_CLOSE, PeerFailed>(),
                 g::route(
@@ -480,7 +476,17 @@ fn ordinary() -> impl Projectable {
         ),
         g::send::<FILES_CLOSE, FILES_EVENT, CompletionSeen>(),
     );
-    let terminal = g::par(peer, files);
+    g::par(peer, files)
+}
+
+fn ordinary() -> impl Projectable {
+    let source = source_choreography();
+    let receive = receive_choreography();
+    let keys = key_choreography();
+    let timer = timer_choreography();
+    let publication = publication_choreography();
+
+    let terminal = terminal_choreography();
 
     // Run the independent protocol fragments before joining their retirement.
     let ordinary_base = g::par(
@@ -598,6 +604,271 @@ mod tests {
     use super::*;
     use crate::runtime::carrier::CarrierStorage;
     use hibana::runtime::{SessionKitStorage, ids::SessionId, program::project};
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn one_returned_stream_can_join_its_source_collector() {
+        let scope = crate::crypto::directional::ApplicationKeyScope::new(99);
+        let bindings = scope.endpoint_bindings();
+        let global = g::seq(early_admission(), source_choreography());
+        let source_program = project::<SOURCE>(&global);
+        let ingress_program = project::<INGRESS>(&global);
+        let production_program = project::<PRODUCTION>(&global);
+        let collector_program = project::<SOURCE_COLLECTOR>(&global);
+        let joined_program = project::<SOURCE_JOIN>(&global);
+        let session = SessionId::new(99);
+        let queues = CarrierStorage::<1, 16, 16>::new();
+        let carrier = queues.bind(session, &bindings).unwrap();
+        let mut slab = [0; 64 * 1024];
+        let mut storage = SessionKitStorage::uninit();
+        let rv = storage.init().rendezvous(&mut slab, &carrier).unwrap();
+        let mut source = rv.enter(session, &source_program).unwrap();
+        let mut ingress = rv.enter(session, &ingress_program).unwrap();
+        let production = rv.enter(session, &production_program).unwrap();
+        let mut collector = rv.enter(session, &collector_program).unwrap();
+        let mut joined = rv.enter(session, &joined_program).unwrap();
+        tokio::time::timeout(core::time::Duration::from_secs(2), async {
+            tokio::try_join!(
+                async {
+                    source.send::<EarlyRequestsDone>(&0).await?;
+                    source.send::<SourceOpen>(&0).await?;
+                    let mut production = source.recv::<StreamLoan<'_>>().await?;
+                    production.send::<SourceFlush>(&0).await?;
+                    assert_eq!(production.recv::<SourceFlushed>().await?, 0);
+                    source.send::<SourceFin<'_>>(production).await?;
+                    assert_eq!(source.recv::<SourceEnded>().await?, 0);
+                    source.send::<SourceDone>(&()).await?;
+                    source.recv::<SourceRetired>().await?;
+                    source.send::<SourceJoined>(&()).await
+                },
+                async {
+                    assert_eq!(ingress.recv::<EarlyRequestsDone>().await?, 0);
+                    ingress.send::<EarlyReceiptsDone>(&0).await?;
+                    assert_eq!(ingress.recv::<SourceOpen>().await?, 0);
+                    ingress.send::<StreamLoan<'_>>(production).await?;
+                    assert_eq!(ingress.recv::<SourceFlush>().await?, 0);
+                    ingress.send::<SourceFlushed>(&0).await?;
+                    let _production = ingress.recv::<SourceFin<'_>>().await?;
+                    ingress.send::<ProductionReclaim>(&0).await?;
+                    assert_eq!(ingress.recv::<ProductionStored>().await?, 0);
+                    ingress.send::<SourceEnded>(&0).await?;
+                    ingress.recv::<SourceDone>().await?;
+                    ingress.send::<ProductionReclaimsDone>(&()).await?;
+                    ingress.recv::<ProductionReclaimsClosed>().await?;
+                    ingress.send::<SourceRetired>(&()).await
+                },
+                async {
+                    assert_eq!(collector.recv::<EarlyReceiptsDone>().await?, 0);
+                    let branch = collector.offer().await?;
+                    assert_eq!(branch.recv::<ProductionReclaim>().await?, 0);
+                    collector.send::<ProductionStored>(&0).await?;
+                    let branch = collector.offer().await?;
+                    branch.recv::<ProductionReclaimsDone>().await?;
+                    collector.send::<ProductionReclaimsClosed>(&()).await
+                },
+                joined.recv::<SourceJoined>(),
+            )
+        })
+        .await
+        .expect("the returned stream did not join its collector")
+        .unwrap();
+        assert_eq!(queues.queued(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn source_cannot_open_another_stream_before_returning_the_endpoint() {
+        let scope = crate::crypto::directional::ApplicationKeyScope::new(96);
+        let bindings = scope.endpoint_bindings();
+        let global = source_choreography();
+        let source_program = project::<SOURCE>(&global);
+        let ingress_program = project::<INGRESS>(&global);
+        let production_program = project::<PRODUCTION>(&global);
+        let session = SessionId::new(96);
+        let queues = CarrierStorage::<1, 16, 8>::new();
+        let carrier = queues.bind(session, &bindings).unwrap();
+        let mut slab = [0; 32 * 1024];
+        let mut storage = SessionKitStorage::uninit();
+        let rv = storage.init().rendezvous(&mut slab, &carrier).unwrap();
+        let mut source = rv.enter(session, &source_program).unwrap();
+        let mut ingress = rv.enter(session, &ingress_program).unwrap();
+        let production = rv.enter(session, &production_program).unwrap();
+        source.send::<SourceOpen>(&0).await.unwrap();
+        assert_eq!(ingress.recv::<SourceOpen>().await.unwrap(), 0);
+        ingress.send::<StreamLoan<'_>>(production).await.unwrap();
+        let mut production = source.recv::<StreamLoan<'_>>().await.unwrap();
+        production.send::<SourceFlush>(&0).await.unwrap();
+        assert_eq!(ingress.recv::<SourceFlush>().await.unwrap(), 0);
+        ingress.send::<SourceFlushed>(&0).await.unwrap();
+        assert_eq!(production.recv::<SourceFlushed>().await.unwrap(), 0);
+        assert!(source.send::<SourceOpen>(&4).await.is_err());
+        assert_eq!(queues.queued(), 0, "an invalid open reached ingress");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn source_cannot_reclaim_or_retire_while_its_endpoint_is_lent() {
+        for retire in [false, true] {
+            let scope = crate::crypto::directional::ApplicationKeyScope::new(98);
+            let bindings = scope.endpoint_bindings();
+            let global = source_choreography();
+            let source_program = project::<SOURCE>(&global);
+            let ingress_program = project::<INGRESS>(&global);
+            let production_program = project::<PRODUCTION>(&global);
+            let collector_program = project::<SOURCE_COLLECTOR>(&global);
+            let session = SessionId::new(98);
+            let queues = CarrierStorage::<1, 16, 8>::new();
+            let carrier = queues.bind(session, &bindings).unwrap();
+            let mut slab = [0; 32 * 1024];
+            let mut storage = SessionKitStorage::uninit();
+            let rv = storage.init().rendezvous(&mut slab, &carrier).unwrap();
+            let mut source = rv.enter(session, &source_program).unwrap();
+            let mut ingress = rv.enter(session, &ingress_program).unwrap();
+            let production = rv.enter(session, &production_program).unwrap();
+            let _collector = rv.enter(session, &collector_program).unwrap();
+            source.send::<SourceOpen>(&0).await.unwrap();
+            assert_eq!(ingress.recv::<SourceOpen>().await.unwrap(), 0);
+            ingress.send::<StreamLoan<'_>>(production).await.unwrap();
+            let _production = source.recv::<StreamLoan<'_>>().await.unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                if retire {
+                    ingress.send::<ProductionReclaimsDone>(&()).await
+                } else {
+                    ingress.send::<ProductionReclaim>(&0).await
+                }
+            })
+            .await
+            .expect("out-of-order reclamation waited instead of failing");
+            assert!(result.is_err());
+            assert_eq!(queues.queued(), 0, "an early reclaim reached the collector");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn terminal_outcomes_travel_in_their_projected_messages() {
+        use crate::crypto::directional::ApplicationKeyScope;
+        use crate::quic::application::localside::termination;
+        use crate::quic::application::{CloseKind, Control, Error};
+        use crate::quic::imp::publication_gate::PublicationGate;
+        let protocol = crate::http3::Protocol::Http3;
+        for peer_branch in 0..5 {
+            for files_branch in 0..5 {
+                for peer_first in [false, true] {
+                    let mut scope = ApplicationKeyScope::new(97);
+                    let mut installation = scope.claim().unwrap();
+                    let mut gate =
+                        PublicationGate::new(installation.take_publication_gate().unwrap());
+                    let (_, stop) = gate.split().unwrap();
+                    let control = Control::new(stop);
+                    let exchange = termination::Exchange::new(&control, protocol);
+                    let global = terminal_choreography();
+                    let peer_program = project::<PEER_EVENT>(&global);
+                    let peer_close_program = project::<PEER_CLOSE>(&global);
+                    let files_program = project::<FILES_EVENT>(&global);
+                    let files_close_program = project::<FILES_CLOSE>(&global);
+                    let session = SessionId::new(97);
+                    let queues = CarrierStorage::<1, 16, 8>::new();
+                    let carrier = queues.bind(session, &[]).unwrap();
+                    let mut slab = [0; 16 * 1024];
+                    let mut storage = SessionKitStorage::uninit();
+                    let rv = storage.init().rendezvous(&mut slab, &carrier).unwrap();
+                    let mut peer = rv.enter(session, &peer_program).unwrap();
+                    let mut peer_close = rv.enter(session, &peer_close_program).unwrap();
+                    let mut files = rv.enter(session, &files_program).unwrap();
+                    let mut files_close = rv.enter(session, &files_close_program).unwrap();
+                    let code = 0x103;
+                    let sending_peer = async {
+                        let expected = match peer_branch {
+                            0 => {
+                                peer.send::<PeerClose>(&code).await?;
+                                Some(CloseKind::Peer { code })
+                            }
+                            1 => {
+                                peer.send::<PeerApplicationClose>(&code).await?;
+                                Some(CloseKind::PeerApplication { code })
+                            }
+                            2 => {
+                                peer.send::<PeerFailed>(&code).await?;
+                                Some(CloseKind::Local {
+                                    application: false,
+                                    code,
+                                })
+                            }
+                            3 => {
+                                peer.send::<PeerApplicationFailed>(&()).await?;
+                                Some(CloseKind::Local {
+                                    application: true,
+                                    code: protocol.failure_code(),
+                                })
+                            }
+                            4 => {
+                                peer.send::<PeerCancelled>(&()).await?;
+                                None
+                            }
+                            _ => unreachable!(),
+                        };
+                        peer.recv::<PeerSeen>().await?;
+                        Ok::<_, Error>(expected)
+                    };
+                    let sending_files = async {
+                        let expected = match files_branch {
+                            0 => {
+                                files.send::<ResponsesComplete>(&()).await?;
+                                Some(CloseKind::Local {
+                                    application: true,
+                                    code: protocol.success_code(),
+                                })
+                            }
+                            1 => {
+                                files.send::<FilesComplete>(&()).await?;
+                                Some(CloseKind::Local {
+                                    application: true,
+                                    code: protocol.success_code(),
+                                })
+                            }
+                            2 => {
+                                files.send::<ApplicationFailed>(&()).await?;
+                                Some(CloseKind::Local {
+                                    application: true,
+                                    code: protocol.failure_code(),
+                                })
+                            }
+                            3 => {
+                                files.send::<IdleExpired>(&()).await?;
+                                Some(CloseKind::IdleExpired)
+                            }
+                            4 => {
+                                files.send::<CompletionCancelled>(&()).await?;
+                                None
+                            }
+                            _ => unreachable!(),
+                        };
+                        files.recv::<CompletionSeen>().await?;
+                        Ok::<_, Error>(expected)
+                    };
+                    let sending = async {
+                        if peer_first {
+                            crate::runtime::join::values2(sending_peer, sending_files).await
+                        } else {
+                            let (files, peer) =
+                                crate::runtime::join::values2(sending_files, sending_peer).await?;
+                            Ok((peer, files))
+                        }
+                    };
+                    let (expected, actual) =
+                        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                            tokio::try_join!(
+                                sending,
+                                termination::receive(&mut peer_close, &mut files_close, &exchange)
+                            )
+                        })
+                        .await
+                        .expect("terminal localsides stalled")
+                        .unwrap();
+                    assert_eq!(actual, expected);
+                    assert_eq!(queues.queued(), 0);
+                    assert_eq!(control.stopping(), actual.0.is_some() || actual.1.is_some());
+                }
+            }
+        }
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn validation_cannot_be_reported_before_write_startup_arrives() {

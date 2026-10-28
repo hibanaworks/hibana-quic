@@ -17,18 +17,15 @@ fn packet(pn: u64) -> Option<PacketNumber> {
 }
 
 #[test]
-fn production_is_one_shot_even_after_drop_and_same_stream_registration() {
-    // These expressions become ambiguous if somebody adds Copy or Clone
-    // to the lease. They check affinity at compile time, without a fixture
-    // that could merely fail because the type is private.
+fn physical_release_receipts_are_affine() {
+    // These expressions become ambiguous if a release receipt becomes Copy
+    // or Clone, so they check its ownership contract at compile time.
     trait NotCopy<A> {
         fn witness() {}
     }
     impl<T: ?Sized> NotCopy<()> for T {}
     impl<T: Copy> NotCopy<u8> for T {}
-    let _ = <Production<'static> as NotCopy<_>>::witness;
     let _ = <Delivered<'static> as NotCopy<_>>::witness;
-    let _ = <ProductionReleased<'static> as NotCopy<_>>::witness;
     let _ = <InputReleased<'static> as NotCopy<_>>::witness;
     let _ = <DeliveryReleased<'static> as NotCopy<_>>::witness;
     let _ = <crate::quic::application::imp::reclaim::Joined<'static> as NotCopy<_>>::witness;
@@ -38,42 +35,15 @@ fn production_is_one_shot_even_after_drop_and_same_stream_registration() {
     }
     impl<T: ?Sized> NotClone<()> for T {}
     impl<T: Clone> NotClone<u8> for T {}
-    let _ = <Production<'static> as NotClone<_>>::witness;
     let _ = <Delivered<'static> as NotClone<_>>::witness;
-    let _ = <ProductionReleased<'static> as NotClone<_>>::witness;
     let _ = <InputReleased<'static> as NotClone<_>>::witness;
     let _ = <DeliveryReleased<'static> as NotClone<_>>::witness;
     let _ = <crate::quic::application::imp::reclaim::Joined<'static> as NotClone<_>>::witness;
     let _ = <crate::quic::imp::recovery::ApplicationLoss<'static> as NotClone<_>>::witness;
-    let scope = ApplicationKeyScope::new(707);
-    let mut slots = [StreamSlot::<8>::EMPTY];
-    let mut chunks = [SendChunk::<8>::EMPTY];
-    let mut references = [PacketReference::EMPTY; 4];
-    let mut core = StreamNumbers::new(
-        &scope,
-        Role::Client,
-        local(Role::Server),
-        local(Role::Client),
-        &mut slots,
-        &mut chunks,
-        &mut references,
-    )
-    .unwrap();
-    let mut app = core.split().app;
-    let stream = app.open_local().unwrap();
-    let allocation = actor_test_allocator::NoAlloc::start();
-    let production = app.take_production(stream).unwrap();
-    assert!(matches!(app.take_production(stream), Err(Error::Binding)));
-    // Deliberately consume the affine token; it must not become reissuable.
-    #[allow(clippy::drop_non_drop)]
-    drop(production);
-    app.core.numbers.borrow_mut().register(stream).unwrap();
-    assert!(matches!(app.take_production(stream), Err(Error::Binding)));
-    allocation.finish();
 }
 
 #[test]
-fn production_cannot_cross_tables_with_identical_numeric_stream_ids() {
+fn stream_identity_cannot_cross_tables_with_identical_numeric_stream_ids() {
     let scope = ApplicationKeyScope::new(708);
     let mut slots_a = [StreamSlot::<8>::EMPTY];
     let mut chunks_a = [SendChunk::<8>::EMPTY];
@@ -110,15 +80,12 @@ fn production_cannot_cross_tables_with_identical_numeric_stream_ids() {
         "numeric identities alone must not authorize a different table"
     );
     let allocation = actor_test_allocator::NoAlloc::start();
-    let mut production = a.take_production(sa).unwrap();
+    let production = a.origin(sa.id()).unwrap();
     assert!(matches!(
-        b.enqueue_prefix(&mut production, b"data", false),
+        b.enqueue_prefix(production, b"data", false),
         Err(Error::Binding)
     ));
-    assert_eq!(
-        a.enqueue_prefix(&mut production, b"data", false).unwrap(),
-        4
-    );
+    assert_eq!(a.enqueue_prefix(production, b"data", false).unwrap(), 4);
     assert_eq!(a.queued_chunks().unwrap(), 1);
     assert_eq!(b.queued_chunks().unwrap(), 0);
     allocation.finish();
@@ -207,9 +174,9 @@ fn three_streams_have_independent_windows_payloads_and_completion() {
         .unwrap();
         assert!(app.read(stream, &mut output).unwrap().fin);
         assert_eq!(output, data);
-        let mut production = app.take_production(stream).unwrap();
+        let production = app.origin(stream.id()).unwrap();
         assert_eq!(
-            app.enqueue_prefix(&mut production, &data, true).unwrap(),
+            app.enqueue_prefix(production, &data, true).unwrap(),
             data.len()
         );
     }
@@ -259,10 +226,9 @@ fn publication_cancel_loss_late_ack_and_send_completion() {
         mut reset,
     } = core.split();
     let stream = app.open_local().unwrap();
-    let mut production = app.take_production(stream).unwrap();
+    let production = app.origin(stream.id()).unwrap();
     assert_eq!(
-        app.enqueue_prefix(&mut production, b"GET /\r\n", true)
-            .unwrap(),
+        app.enqueue_prefix(production, b"GET /\r\n", true).unwrap(),
         (b"GET /\r\n").len()
     );
     let bytes = tx.prepare::<64>(false).unwrap().unwrap();
@@ -474,10 +440,9 @@ fn stop_while_adapter_pending_settles_then_reliably_resets() {
         mut reset,
     } = core.split();
     let stream = app.open_local().unwrap();
-    let mut production = app.take_production(stream).unwrap();
+    let production = app.origin(stream.id()).unwrap();
     assert_eq!(
-        app.enqueue_prefix(&mut production, b"hello", false)
-            .unwrap(),
+        app.enqueue_prefix(production, b"hello", false).unwrap(),
         (b"hello").len()
     );
     let prepared = tx.prepare::<64>(false).unwrap().unwrap();
@@ -577,10 +542,10 @@ fn fin_delivery_waits_for_all_bytes_then_moves_once_to_the_observer() {
         reset: mut effects,
     } = core.split();
     let stream = app.open_local().unwrap();
-    let mut source = app.take_production(stream).unwrap();
+    let source = app.origin(stream.id()).unwrap();
     let allocation = actor_test_allocator::NoAlloc::start();
-    app.enqueue_prefix(&mut source, b"abc", false).unwrap();
-    app.enqueue_prefix(&mut source, b"", true).unwrap();
+    app.enqueue_prefix(source, b"abc", false).unwrap();
+    app.enqueue_prefix(source, b"", true).unwrap();
     for pn in 0..2 {
         let prepared = tx.prepare::<64>(false).unwrap().unwrap();
         let reservation = tx.reserve_transmission(&prepared, pn).unwrap();
@@ -659,9 +624,9 @@ fn delivered_receipt_cannot_cross_actual_tables() {
     } = b.split();
     let stream = app.open_local().unwrap();
     assert_eq!(stream, other_app.open_local().unwrap());
-    let mut source = app.take_production(stream).unwrap();
+    let source = app.origin(stream.id()).unwrap();
     let allocation = actor_test_allocator::NoAlloc::start();
-    app.enqueue_prefix(&mut source, b"", true).unwrap();
+    app.enqueue_prefix(source, b"", true).unwrap();
     let prepared = tx.prepare::<64>(false).unwrap().unwrap();
     let reservation = tx.reserve_transmission(&prepared, 0).unwrap();
     publication.commit(reservation).unwrap();
@@ -726,9 +691,9 @@ fn peer_stream_credit_follows_real_reclaim_and_retries_until_ack() {
         let mut bytes = [0; 8];
         assert!(app.read(stream, &mut bytes).unwrap().fin);
         let input = app.release_input(id).unwrap().unwrap();
-        let mut production = app.take_production(stream).unwrap();
-        app.enqueue_prefix(&mut production, b"y", true).unwrap();
-        let source = app.release_production(production).unwrap();
+        let production = app.origin(stream.id()).unwrap();
+        app.enqueue_prefix(production, b"y", true).unwrap();
+        let source = production;
         let prepared = tx.prepare::<128>(false).unwrap().unwrap();
         assert!(prepared.controls.max_streams_bidi.is_none());
         let reservation = tx.reserve_transmission(&prepared, index * 3).unwrap();
@@ -740,7 +705,7 @@ fn peer_stream_credit_follows_real_reclaim_and_retries_until_ack() {
             .unwrap();
         let delivered = effects.take_delivery().unwrap().unwrap();
         let delivery = tx.record_delivery(delivered).unwrap();
-        assert!(tx.reclaimable(source.origin()).unwrap());
+        assert!(tx.reclaimable(source).unwrap());
         assert_eq!(rx.core.numbers.borrow().bidi_credit.current, index + 1);
         effects
             .reclaim(Joined::new(source, input, delivery).unwrap())
@@ -805,13 +770,13 @@ fn owned_release_receipts_reuse_one_slot_and_ignore_only_closed_stream_frames() 
         let stream = app.open_local().unwrap();
         assert_eq!(stream.id(), pn * 4);
         assert_eq!(stream.slot(), 0);
-        let mut production = app.take_production(stream).unwrap();
+        let production = app.origin(stream.id()).unwrap();
         assert!(matches!(
             app.release_input(stream.id()),
             Err(Error::Binding)
         ));
-        app.enqueue_prefix(&mut production, b"x", true).unwrap();
-        let source = app.release_production(production).unwrap();
+        app.enqueue_prefix(production, b"x", true).unwrap();
+        let source = production;
         rx.apply(&Frame::Stream {
             id: stream.id(),
             offset: 0,
@@ -829,7 +794,7 @@ fn owned_release_receipts_reuse_one_slot_and_ignore_only_closed_stream_frames() 
         assert_eq!(read.len, 1);
         let input = app.release_input(stream.id()).unwrap().unwrap();
         assert!(app.release_input(stream.id()).unwrap().is_none());
-        assert!(!tx.reclaimable(source.origin()).unwrap());
+        assert!(!tx.reclaimable(source).unwrap());
         let prepared = tx.prepare::<128>(false).unwrap().unwrap();
         let reservation = tx.reserve_transmission(&prepared, pn).unwrap();
         publication.commit(reservation).unwrap();
@@ -841,7 +806,7 @@ fn owned_release_receipts_reuse_one_slot_and_ignore_only_closed_stream_frames() 
             .unwrap();
         let delivered = effects.take_delivery().unwrap().unwrap();
         let delivery = tx.record_delivery(delivered).unwrap();
-        assert!(tx.reclaimable(source.origin()).unwrap());
+        assert!(tx.reclaimable(source).unwrap());
         let joined = Joined::new(source, input, delivery).unwrap();
         effects.reclaim(joined).unwrap();
         assert!(matches!(
@@ -979,8 +944,7 @@ fn unidirectional_streams_own_only_their_real_half() {
         let mut app = roles.app;
         let mut rx = roles.rx;
         let local = app.open_local_uni().unwrap();
-        let mut production = app.take_production(local).unwrap();
-        assert!(app.take_production(local).is_err());
+        let production = app.origin(local.id()).unwrap();
         assert!(
             app.core
                 .numbers
@@ -992,8 +956,7 @@ fn unidirectional_streams_own_only_their_real_half() {
         );
         assert!(app.ready_streams().unwrap().iter().all(Option::is_none));
         assert_eq!(
-            app.enqueue_prefix(&mut production, b"control", false)
-                .unwrap(),
+            app.enqueue_prefix(production, b"control", false).unwrap(),
             7
         );
         let peer_id = if role == Role::Client { 3 } else { 2 };
@@ -1006,7 +969,7 @@ fn unidirectional_streams_own_only_their_real_half() {
         .unwrap();
         let peer = app.readable_stream().unwrap().unwrap();
         assert_eq!(peer.id(), peer_id);
-        assert!(app.take_production(peer).is_err());
+        assert!(app.origin(peer.id()).is_err());
         let mut bytes = [0; 8];
         let read = app.read(peer, &mut bytes).unwrap();
         assert!(read.fin);

@@ -22,7 +22,7 @@ pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: u
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     tx: &mut Tx<'book, '_, '_, RX, CHUNK>,
     publication: &mut Publication<'book, '_, '_, RX, CHUNK>,
-    state: &crate::quic::application::imp::io::Exchange<'book, CHUNK, B>,
+    state: &crate::quic::application::imp::io::Exchange<CHUNK, B>,
     reclaim: &crate::quic::application::imp::reclaim::Exchange<'book>,
 ) -> Result<(), Error> {
     let source = async {
@@ -59,12 +59,12 @@ pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: u
             if bytes.len() > CHUNK {
                 return Err(Error::Capacity);
             }
-            let released = {
+            let origin = {
                 let mut app = app.try_borrow_mut().map_err(|_| Error::Binding)?;
                 let stream = app.open_local()?;
                 check(stream.id(), index as u64 * 4)?;
-                let mut production = app.take_production(stream)?;
-                if app.enqueue_prefix(&mut production, bytes, true)? != bytes.len() {
+                let origin = app.origin(stream.id())?;
+                if app.enqueue_prefix(origin, bytes, true)? != bytes.len() {
                     return Err(Error::Capacity);
                 }
                 let prepared = tx.prepare::<N>(false)?.ok_or(Error::Binding)?;
@@ -72,9 +72,9 @@ pub(super) async fn admit<'book, const N: usize, const RX: usize, const CHUNK: u
                 let pn = requests.accepted_packet(index, prepared.bytes())?;
                 let transmission = tx.reserve_transmission(&prepared, pn)?;
                 publication.commit(transmission)?;
-                app.release_production(production)?
+                origin
             };
-            reclaim.source.put(released).map_err(|_| Error::Binding)?;
+            reclaim.source.put(origin).map_err(|_| Error::Binding)?;
             endpoints
                 .ingress
                 .send::<p::ProductionReclaim>(&(index as u64 * 4))

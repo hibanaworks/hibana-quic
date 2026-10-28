@@ -6,7 +6,7 @@ use crate::quic::ecn::global as ep;
 use crate::quic::path::global as pp;
 use hibana::g::Message;
 
-use super::{CloseKind, Control, Error, OrdinaryRetired, global as p, termination};
+use super::{CloseKind, Control, Error, OrdinaryRetired, global as p};
 use crate::quic;
 use crate::quic::Clock;
 use crate::quic::Config;
@@ -613,7 +613,7 @@ pub(crate) async fn publish<
 /// Results of the joined ordinary retirement and terminal observations.
 pub(super) struct Closing<'scope> {
     pub(super) ordinary: OrdinaryRetired<'scope>,
-    pub(super) permission: termination::Permission<'scope>,
+    pub(super) reason: CloseKind,
 }
 
 /// Continue after ordinary retirement, keeping allocated packet numbers intact.
@@ -639,10 +639,9 @@ pub(super) async fn close<
 ) -> Result<(), Error> {
     let Closing {
         ordinary: retired,
-        permission,
+        reason: kind,
     } = closing;
     if !core::ptr::eq(owner.scope(), retired.scope())
-        || !core::ptr::eq(owner.scope(), permission.scope())
         || !control.stopping()
         || state.pending.borrow().is_some()
     {
@@ -661,7 +660,6 @@ pub(super) async fn close<
         .map(|cid| ConnectionId::new(cid.cid.as_bytes()))
         .transpose()?;
     let peer = selected_id.as_ref().unwrap_or(peer);
-    let kind = permission.kind();
     let pto = book.pto_duration_us()?.max(1);
     let started_at = clock.now();
     let deadline = started_at

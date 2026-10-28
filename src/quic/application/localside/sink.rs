@@ -40,7 +40,7 @@ pub(super) enum Delivery {
 pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SINK }>,
     control: &Control<'_, '_>,
-    state: &Exchange<'book, CHUNK, B>,
+    state: &Exchange<CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     sink: &mut impl StreamSink,
     reclaim: &crate::quic::application::imp::reclaim::Exchange<'book>,
@@ -53,7 +53,11 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                 let stream_id = offered.recv::<p::ReceivedData>().await?;
                 let delivery = if control.stopping() {
                     Ok(Delivery::Interrupted)
-                } else if state.is_complete(stream_id) {
+                } else if app
+                    .try_borrow()
+                    .map_err(|_| Error::Binding)?
+                    .input_released(stream_id)?
+                {
                     Ok(Delivery::Fin)
                 } else if stream_id & 2 != 0 {
                     async {
@@ -105,7 +109,6 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                             }
                         }
                         if read.fin {
-                            state.complete(stream)?;
                             control.changed()?;
                             Ok(Delivery::Fin)
                         } else {
@@ -114,10 +117,10 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                     }
                     .await
                 } else {
-                    deliver(control, state, app, sink, stream_id).await
+                    deliver(control, app, sink, stream_id).await
                 };
                 if !matches!(delivery, Ok(Delivery::More)) {
-                    let receipt = if state.is_complete(stream_id) {
+                    let receipt = if matches!(delivery, Ok(Delivery::Fin)) {
                         app.try_borrow_mut()
                             .map_err(|_| Error::Binding)?
                             .release_input(stream_id)?
@@ -125,6 +128,7 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
                         None
                     };
                     if let Some(receipt) = receipt {
+                        state.record_input_release(stream_id)?;
                         reclaim.input.put(receipt).map_err(|_| Error::Binding)?;
                         endpoint.send::<p::InputReclaim>(&stream_id).await?;
                     } else {
@@ -170,9 +174,8 @@ pub(crate) async fn client_sink<'book, const RX: usize, const CHUNK: usize, B>(
     }
 }
 
-pub(super) async fn deliver<const RX: usize, const CHUNK: usize, B>(
+pub(super) async fn deliver<const RX: usize, const CHUNK: usize>(
     control: &Control<'_, '_>,
-    state: &Exchange<'_, CHUNK, B>,
     app: &RefCell<App<'_, '_, '_, RX, CHUNK>>,
     sink: &mut impl StreamSink,
     stream_id: u64,
@@ -233,7 +236,6 @@ pub(super) async fn deliver<const RX: usize, const CHUNK: usize, B>(
             Some(result) => result.map_err(|_| Error::Application)?,
             None => return Ok(Delivery::Interrupted),
         }
-        state.complete(stream)?;
         control.changed()?;
     }
     Ok(if read.fin {
@@ -247,7 +249,7 @@ pub(super) async fn deliver<const RX: usize, const CHUNK: usize, B>(
 pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
     endpoint: &mut Endpoint<'_, { p::SINK }>,
     control: &Control<'_, '_>,
-    state: &Exchange<'book, CHUNK, B>,
+    state: &Exchange<CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut Sender<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
     mut streaming: Option<&mut impl StreamSink>,
@@ -263,7 +265,11 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                 let stream_id = offered.recv::<p::ReceivedData>().await?;
                 let delivery = if control.stopping() {
                     Ok(Delivery::Interrupted)
-                } else if state.is_complete(stream_id) {
+                } else if app
+                    .try_borrow()
+                    .map_err(|_| Error::Binding)?
+                    .input_released(stream_id)?
+                {
                     Ok(Delivery::Fin)
                 } else if stream_id & 2 != 0 {
                     async {
@@ -315,7 +321,6 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                             }
                         }
                         if read.fin {
-                            state.complete(stream)?;
                             control.changed()?;
                             Ok(Delivery::Fin)
                         } else {
@@ -327,13 +332,19 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                     if let Some(sink) = streaming.as_deref_mut() {
                         async {
                             let stream = ready_handle(app, stream_id)?;
-                            let production = app
-                                .try_borrow_mut()
+                            // Delivery consumes bytes before another notification can
+                            // arrive. An empty FIN completes delivery in this call.
+                            if app
+                                .try_borrow()
                                 .map_err(|_| Error::Binding)?
-                                .take_unissued_production(stream)?;
-                            if let Some(production) = production {
+                                .receive_offset(stream)?
+                                == 0
+                            {
                                 let request = OwnedRequest {
-                                    production,
+                                    stream: app
+                                        .try_borrow()
+                                        .map_err(|_| Error::Binding)?
+                                        .origin(stream.id())?,
                                     bytes: [0; REQUEST_BYTES],
                                     len: 0,
                                 };
@@ -342,16 +353,15 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                                     None => return Ok(Delivery::Interrupted),
                                 }
                             }
-                            deliver(control, state, app, sink, stream_id).await
+                            deliver(control, app, sink, stream_id).await
                         }
                         .await
                     } else {
-                        receive_request(control, state, app, requests, &mut pending, stream_id)
-                            .await
+                        receive_request(control, app, requests, &mut pending, stream_id).await
                     }
                 };
                 if !matches!(delivery, Ok(Delivery::More)) {
-                    let receipt = if state.is_complete(stream_id) {
+                    let receipt = if matches!(delivery, Ok(Delivery::Fin)) {
                         app.try_borrow_mut()
                             .map_err(|_| Error::Binding)?
                             .release_input(stream_id)?
@@ -359,6 +369,7 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
                         None
                     };
                     if let Some(receipt) = receipt {
+                        state.record_input_release(stream_id)?;
                         reclaim.input.put(receipt).map_err(|_| Error::Binding)?;
                         endpoint.send::<p::InputReclaim>(&stream_id).await?;
                     } else {
@@ -405,9 +416,8 @@ pub(crate) async fn server_sink<'book, const RX: usize, const CHUNK: usize, B>(
     }
 }
 
-pub(super) async fn receive_request<'book, const RX: usize, const CHUNK: usize, B>(
+pub(super) async fn receive_request<'book, const RX: usize, const CHUNK: usize>(
     control: &Control<'_, '_>,
-    state: &Exchange<'book, CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
     requests: &mut Sender<'_, '_, OwnedRequest<'book>, REQUEST_CAPACITY>,
     pending: &mut [Option<PendingRequest>; MAX_LIVE_STREAMS],
@@ -450,12 +460,12 @@ pub(super) async fn receive_request<'book, const RX: usize, const CHUNK: usize, 
     }
     if read.fin {
         let pending = slot.take().ok_or(Error::Binding)?;
-        let production = app
-            .try_borrow_mut()
+        let origin = app
+            .try_borrow()
             .map_err(|_| Error::Binding)?
-            .take_production(pending.stream)?;
+            .origin(pending.stream.id())?;
         let request = OwnedRequest {
-            production,
+            stream: origin,
             bytes: pending.bytes,
             len: pending.len,
         };
@@ -463,7 +473,6 @@ pub(super) async fn receive_request<'book, const RX: usize, const CHUNK: usize, 
             Some(result) => result.map_err(|_| Error::Application)?,
             None => return Ok(Delivery::Interrupted),
         }
-        state.complete(stream)?;
         control.changed()?;
     }
     Ok(if read.fin {

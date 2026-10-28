@@ -134,10 +134,9 @@ fn dropping_staged_state_cancels_recovery_and_the_only_stream_reference() {
         ..
     } = numbers.split();
     let stream = app.open_local().unwrap();
-    let mut production = app.take_production(stream).unwrap();
+    let production = app.origin(stream.id()).unwrap();
     assert_eq!(
-        app.enqueue_prefix(&mut production, b"GET /\r\n", true)
-            .unwrap(),
+        app.enqueue_prefix(production, b"GET /\r\n", true).unwrap(),
         (b"GET /\r\n").len()
     );
     let (mut book_tx, _, _, book_publication, mut retirement) = book.split().unwrap();
@@ -202,9 +201,9 @@ fn dropping_actual_pending_udp_future_cancels_both_owned_reservations() {
         ..
     } = numbers.split();
     let stream = app.open_local().unwrap();
-    let mut production = app.take_production(stream).unwrap();
+    let production = app.origin(stream.id()).unwrap();
     assert_eq!(
-        app.enqueue_prefix(&mut production, b"GET /pending\r\n", true)
+        app.enqueue_prefix(production, b"GET /pending\r\n", true)
             .unwrap(),
         (b"GET /pending\r\n").len()
     );
