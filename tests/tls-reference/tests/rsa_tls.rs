@@ -269,11 +269,12 @@ fn exchange(
     let slot = hibana_tls::handshake::MessageSlot::new(&mut bytes);
     let carrier = CarrierStorage::<1, 16, 4>::new();
     let mut slab = vec![0; 65536];
+    let sid = SessionId::new(5900);
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
     let mut storage = SessionKitStorage::uninit();
     let kit = storage.init();
-    let sid = SessionId::new(5900);
     let rv = kit
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+        .rendezvous(&mut slab, &carrier_binding)
         .unwrap();
     let projection = {
         let graph = global::client();

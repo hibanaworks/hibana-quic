@@ -3,7 +3,7 @@ name: QUIC interoperability pilot
 on:
   push:
     branches: [main]
-    paths: ['src/**', 'examples/**', 'pal/src/**', 'Cargo.toml', 'Cargo.lock', 'pal/Cargo.toml', 'pal/Cargo.lock', 'tests/tls-reference/Cargo.toml', 'tests/tls-reference/Cargo.lock', tools/ci/stage-paired-source.py, tools/ci/pins.env, tools/ci/interop-request.json, tools/ci/run-interop.sh, tools/ci/run_in_tools.py, .github/workflows/interop-pilot.yml]
+    paths: ['src/**', 'examples/**', 'pal/src/**', 'Cargo.toml', 'Cargo.lock', 'pal/Cargo.toml', 'pal/Cargo.lock', 'tests/tls-reference/Cargo.toml', 'tests/tls-reference/Cargo.lock', 'tools/ci/source/**', tools/ci/pins.env, tools/ci/interop-request.json, tools/ci/run-interop.sh, tools/ci/run_in_tools.py, .github/workflows/interop-pilot.yml]
   workflow_dispatch:
     inputs:
       source_ref:
@@ -54,7 +54,9 @@ jobs:
           fetch-depth: 1
       - name: Read the immutable TLS revision
         id: tls
-        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+        run: |
+          rustup toolchain install stable --profile minimal
+          CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- tls-revision . >> "$GITHUB_OUTPUT"
       - name: Check out the exact owned TLS source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -68,7 +70,7 @@ jobs:
           INTEROP_DIAGNOSTIC_CASES: ${{ inputs.diagnostic_cases }}
           INTEROP_DIAGNOSTIC_DIRECTIONS: ${{ inputs.diagnostic_directions }}
         run: |
-          python3 tools/ci/audit_source.py --check
+          CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- audit .
           env -u INTEROP_DIAGNOSTIC_CASES -u INTEROP_DIAGNOSTIC_DIRECTIONS python3 -m unittest discover -s tests -p 'test_ci*.py'
           groups=$(ROOT="$PWD" python3 tools/ci/run_in_tools.py --matrix)
           echo "groups=$groups" >> "$GITHUB_OUTPUT"

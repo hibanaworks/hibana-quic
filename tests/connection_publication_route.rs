@@ -1,10 +1,5 @@
 //! A capacity-one reproduction of the real prefix's changing publication arms.
-use core::{
-    cell::Cell,
-    future::Future,
-    pin::pin,
-    task::{Context, Poll},
-};
+use core::{cell::Cell, future::Future, pin::pin, task::Poll};
 use hibana::runtime::program::Projectable;
 use hibana::{
     g::{self, Message},
@@ -13,32 +8,18 @@ use hibana::{
         ids::SessionId,
         program::{RoleProgram, project},
         resolver::{DecisionArm, ResolverError, ResolverRef},
+        transport::EndpointBinding,
     },
 };
 use hibana_quic::{
     quic::{application, global as p},
     runtime::carrier::CarrierStorage,
 };
-use std::{
-    sync::Arc,
-    task::{Wake, Waker},
-};
-
-struct WakeFlag(std::sync::atomic::AtomicBool);
-impl Wake for WakeFlag {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-#[test]
-fn initial_publication_changes_arms_after_a_parked_offer() {
+#[tokio::test(flavor = "current_thread")]
+async fn initial_publication_changes_arms_after_a_parked_offer() {
     for combined in [false, true] {
         for publications in [&[0, 1, 2][..], &[0][..], &[1][..], &[2][..], &[][..]] {
-            run_publications(publications, combined);
+            run_publications(publications, combined).await;
         }
     }
 }
@@ -84,27 +65,34 @@ fn minimal_programs() -> (RoleProgram<{ p::TX_WIRE }>, RoleProgram<{ p::UDP }>) 
     (project(&global), project(&global))
 }
 
-fn run_publications(publications: &[u8], combined: bool) {
-    let (sender_program, receiver_program, starter_program) = if combined {
-        let projection = application::global::choreography();
-        (
-            project(&projection),
-            project(&projection),
-            Some(project::<{ p::TLS_TX }>(&projection)),
-        )
-    } else {
-        let (sender, receiver) = minimal_programs();
-        (sender, receiver, None)
-    };
+async fn run_publications(publications: &[u8], combined: bool) {
+    let (sender_program, receiver_program, starter_program, owner_program, keys_program) =
+        if combined {
+            let projection = application::global::choreography();
+            (
+                project(&projection),
+                project(&projection),
+                Some(project::<{ p::TLS_TX }>(&projection)),
+                Some(project::<{ p::TX }>(&projection)),
+                Some(project::<{ p::WRITE_KEYS }>(&projection)),
+            )
+        } else {
+            let (sender, receiver) = minimal_programs();
+            (sender, receiver, None, None, None)
+        };
     let result = Cell::new(None);
     let queues = Box::new(CarrierStorage::<1, 32, 128>::new());
     let mut slab = vec![0; 256 * 1024];
+    let session = SessionId::new(171);
+    // SAFETY: this fixture has one publication resource and one initial issuer.
+    let binding = unsafe { EndpointBinding::new() };
+    let issuers = [(p::WRITE_KEYS, &binding)];
+    let queues_binding = queues
+        .bind(session, if combined { &issuers } else { &[] })
+        .unwrap();
     let mut storage = Box::new(SessionKitStorage::uninit());
     let kit = storage.init();
-    let session = SessionId::new(171);
-    let rendezvous = kit
-        .rendezvous(&mut slab, queues.bind(session).unwrap())
-        .unwrap();
+    let rendezvous = kit.rendezvous(&mut slab, &queues_binding).unwrap();
     rendezvous
         .set_resolver(
             &receiver_program,
@@ -118,6 +106,20 @@ fn run_publications(publications: &[u8], combined: bool) {
     let mut starter = starter_program
         .as_ref()
         .map(|program| rendezvous.enter(session, program).unwrap());
+    let mut owner = owner_program
+        .as_ref()
+        .map(|program| rendezvous.enter(session, program).unwrap());
+    let keys = keys_program
+        .as_ref()
+        .map(|program| rendezvous.enter(session, program).unwrap());
+    let lend = async {
+        match (owner.as_mut(), keys) {
+            (Some(owner), Some(keys)) => owner.send::<p::PacketKeys<'_>>(keys).await?,
+            (None, None) => {}
+            _ => unreachable!("the combined fixture attaches both owner and resource"),
+        }
+        Ok::<_, hibana::EndpointError>(())
+    };
     let start = async {
         if let Some(endpoint) = starter.as_mut() {
             endpoint
@@ -127,6 +129,7 @@ fn run_publications(publications: &[u8], combined: bool) {
                 .recv::<hibana_quic::quic::retry::global::client::Skipped>()
                 .await?;
             endpoint.send::<p::EarlySkip>(&()).await?;
+            endpoint.recv::<p::EarlyDone>().await?;
         }
         Ok::<_, hibana::EndpointError>(())
     };
@@ -136,37 +139,52 @@ fn run_publications(publications: &[u8], combined: bool) {
     type Boundary = <p::InitialTransmit as p::TransmitPhase>::WireBoundary;
     type Seen = <p::InitialTransmit as p::TransmitPhase>::WireBoundarySeen;
     let parked = Cell::new(0);
+    macro_rules! publish {
+        ($endpoint:ident, $pub:ty, $id:expr) => {{
+            $endpoint
+                .send::<<$pub as p::Publication>::Datagram>(&())
+                .await?;
+            $endpoint
+                .recv::<<$pub as p::Publication>::Accepted>()
+                .await?;
+            $endpoint
+                .send::<<$pub as p::Publication>::Settled>(&())
+                .await?;
+            while parked.get() <= $id {
+                hibana_quic::runtime::yield_now().await;
+            }
+        }};
+    }
+    macro_rules! publications {
+        ($endpoint:ident) => {{
+            for (id, kind) in publications.iter().enumerate() {
+                let id = id as u64;
+                match kind {
+                    0 => publish!($endpoint, Data, id),
+                    1 => publish!($endpoint, Ack, id),
+                    2 => publish!($endpoint, Probe, id),
+                    _ => unreachable!(),
+                }
+            }
+            $endpoint.send::<Boundary>(&()).await?;
+            $endpoint.recv::<Seen>().await?;
+        }};
+    }
     let send = async {
         if combined {
             sender.offer().await?.recv::<p::EarlySkip>().await?;
             sender.send::<p::EarlySkip>(&()).await?;
+            sender.recv::<p::EarlySettled>().await?;
+            sender.send::<p::EarlyDone>(&()).await?;
+            let mut keys = sender.recv::<p::PacketKeys<'_>>().await?;
+            let [mut keys] = keys.par()?;
+            let [_input, mut output] = keys.par()?;
+            publications!(output);
+            // This is a prefix check. The unexecuted TLS input is dropped only
+            // after the publication boundary and its reply have completed.
+        } else {
+            publications!(sender);
         }
-        macro_rules! publish {
-            ($pub:ty, $id:expr) => {{
-                sender
-                    .send::<<$pub as p::Publication>::Datagram>(&())
-                    .await?;
-                sender.recv::<<$pub as p::Publication>::Accepted>().await?;
-                sender
-                    .send::<<$pub as p::Publication>::Settled>(&())
-                    .await?;
-                // The receiver must actually park before the next route choice.
-                while parked.get() <= $id {
-                    hibana_quic::runtime::yield_now().await;
-                }
-            }};
-        }
-        for (id, kind) in publications.iter().enumerate() {
-            let id = id as u64;
-            match kind {
-                0 => publish!(Data, id),
-                1 => publish!(Ack, id),
-                2 => publish!(Probe, id),
-                _ => unreachable!(),
-            }
-        }
-        sender.send::<Boundary>(&()).await?;
-        sender.recv::<Seen>().await?;
         Ok::<_, hibana::EndpointError>(())
     };
     let receive = async {
@@ -180,6 +198,7 @@ fn run_publications(publications: &[u8], combined: bool) {
                 .send::<hibana_quic::quic::retry::global::client::Skipped>(&())
                 .await?;
             receiver.offer().await?.recv::<p::EarlySkip>().await?;
+            receiver.send::<p::EarlySettled>(&()).await?;
         }
         macro_rules! accept {
             ($pub:ty, $id:expr) => {{
@@ -233,32 +252,20 @@ fn run_publications(publications: &[u8], combined: bool) {
         receiver.send::<Seen>(&()).await?;
         Ok::<_, hibana::EndpointError>(())
     };
-    let wake = Arc::new(WakeFlag(std::sync::atomic::AtomicBool::new(true)));
-    let waker: Waker = wake.clone().into();
-    let mut cx = Context::from_waker(&waker);
-    let mut joined = Box::pin(hibana_quic::runtime::join2(
-        send,
-        hibana_quic::runtime::join2(receive, start),
-    ));
-    for _ in 0..128 {
-        wake.0.store(false, std::sync::atomic::Ordering::SeqCst);
-        match joined.as_mut().poll(&mut cx) {
-            Poll::Ready(value) => {
-                if value.is_err() {
-                    for event in rendezvous.tap() {
-                        eprintln!("runtime: {event:?}");
-                    }
-                }
-                value.unwrap_or_else(|error| panic!(
-                    "Initial publication must retain ownership: combined={combined}, arms={publications:?}, {error:?}"));
-                assert_eq!(queues.queued(), 0);
-                return;
-            }
-            Poll::Pending => assert!(
-                wake.0.load(std::sync::atomic::Ordering::SeqCst),
-                "parked publication must have a real wake"
-            ),
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::try_join!(send, receive, start, lend)
+    })
+    .await
+    .expect("publication route stalled");
+    if joined.is_err() {
+        for event in rendezvous.tap() {
+            eprintln!("runtime: {event:?}");
         }
     }
-    panic!("publication route did not complete within the bounded poll schedule");
+    joined.unwrap_or_else(|error| {
+        panic!(
+            "Initial publication must retain ownership: combined={combined}, arms={publications:?}, {error:?}"
+        )
+    });
+    assert_eq!(queues.queued(), 0);
 }

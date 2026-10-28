@@ -47,12 +47,14 @@ pub async fn handshake<'scope>(
     let projection = global::choreography();
     let adapter_result = Outcome::new();
     let queues = CarrierStorage::<1, 16, 64>::new();
-    let mut kit_storage = SessionKitStorage::uninit();
-    let kit = kit_storage.init();
     // One session per kit. Full generation is retained by cryptographic scope.
     let session = SessionId::new(generation as u32);
+    let bindings = source.source.scope().endpoint_bindings();
+    let queues_binding = queues.bind(session, &bindings).map_err(Error::Transport)?;
+    let mut kit_storage = SessionKitStorage::uninit();
+    let kit = kit_storage.init();
     let rendezvous = kit
-        .rendezvous(slab, queues.bind(session).map_err(Error::Transport)?)
+        .rendezvous(slab, &queues_binding)
         .map_err(Error::Attach)?;
     let mut endpoints = Endpoints::attach(&rendezvous, session, &projection, &adapter_result)
         .map_err(Error::Attachment)?;

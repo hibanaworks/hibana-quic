@@ -87,7 +87,6 @@ pub(in crate::quic) async fn receive<'scope, const N: usize, const P: usize>(
         wire.ecn = first.received.ecn;
         wire.path = first.received.path;
     }
-    use hibana_tls::handshake::global as tls;
     use hibana_tls::handshake::localside as direct;
     let mut input = async |level: Level, bytes: &mut [u8]| {
         let index = match level {
@@ -169,16 +168,13 @@ pub(in crate::quic) async fn receive<'scope, const N: usize, const P: usize>(
         let mut stopping = pin!(stop.recv::<p::StopReceive>());
         let first = {
             let mut tls_input = pin!(async {
-                let selected = endpoint.offer().await?;
                 match config.side {
                     Side::Client => {
-                        selected.recv::<tls::ClientStart>().await?;
                         direct::input::client_input(endpoint, message, &mut input)
                             .await
                             .map_err(Error::Transcript)?;
                     }
                     Side::Server => {
-                        selected.recv::<tls::ServerStart>().await?;
                         direct::input::server_input(endpoint, message, &mut input)
                             .await
                             .map_err(Error::Transcript)?;

@@ -74,7 +74,7 @@ fn projected_endpoint_rejects_reply_injected_on_the_outbound_route() {
                 let mut header = frame.header();
                 header[5] = SERVER;
                 header[6] = CLIENT;
-                header[7] = 1;
+                header[7..9].copy_from_slice(&1_u16.to_be_bytes());
                 peer.incoming(header, &(n * n).to_be_bytes())
                     .map_err(|_| ())?;
             }
@@ -204,11 +204,11 @@ fn raw_input_rejects_truncated_wrong_peer_and_oversized_messages() {
     {
         for malformed in 0..4 {
             let carrier = CarrierStorage::<4, 256, 8>::new();
-            let binding = carrier.bind(SessionId::new(9)).unwrap();
+            let binding = carrier.bind(SessionId::new(9), &[]).unwrap();
             let peer = carrier.peer(CLIENT, SERVER).unwrap();
             let mut input = stream::Input::new(&peer);
             let future = async {
-                let prefix: &[u8] = b"HBN1";
+                let prefix: &[u8] = b"HBN2";
                 async {
                     let bytes: &[u8] = prefix;
                     let n = poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
@@ -237,7 +237,7 @@ fn raw_input_rejects_truncated_wrong_peer_and_oversized_messages() {
                         .await
                     }
                     2 => {
-                        let raw = [0, 0, 0, 8, 0, 0, 0, 9, 0, 2, CLIENT, 1];
+                        let raw = [0, 0, 0, 9, 0, 0, 0, 9, 0, 2, CLIENT, 0, 1];
                         async {
                             let bytes: &[u8] = &raw;
                             let n = poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
@@ -247,7 +247,7 @@ fn raw_input_rejects_truncated_wrong_peer_and_oversized_messages() {
                         .await
                     }
                     _ => {
-                        let raw = [0, 0, 1, 9];
+                        let raw = [0, 0, 1, 10];
                         async {
                             let bytes: &[u8] = &raw;
                             let n = poll_fn(|cx| input.poll_write(0, bytes, cx)).await?;
@@ -259,12 +259,15 @@ fn raw_input_rejects_truncated_wrong_peer_and_oversized_messages() {
                 }
             };
             let mut future = pin!(future);
-            assert!(matches!(
-                future
-                    .as_mut()
-                    .poll(&mut Context::from_waker(Waker::noop())),
-                Poll::Ready(Err(()))
-            ));
+            assert!(
+                matches!(
+                    future
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop())),
+                    Poll::Ready(Err(()))
+                ),
+                "malformed case {malformed}"
+            );
             assert_eq!(carrier.queued(), 0);
             drop(binding);
         }
@@ -281,7 +284,7 @@ fn raw_adapters_reject_http_settings_and_non_raw_admission() {
         Protocol::Http09,
     ] {
         let carrier = CarrierStorage::<4, 256, 8>::new();
-        let binding = carrier.bind(SessionId::new(10)).unwrap();
+        let binding = carrier.bind(SessionId::new(10), &[]).unwrap();
         let peer = carrier.peer(CLIENT, SERVER).unwrap();
         let client_calls = Cell::new(0);
         let server_calls = Cell::new(0);
@@ -336,12 +339,12 @@ fn raw_adapters_reject_http_settings_and_non_raw_admission() {
             ));
             let mut prefix = [0; 4];
             assert_eq!(requests.next(&mut prefix).await, Ok(Some(4)));
-            assert_eq!(&prefix, b"HBN1");
+            assert_eq!(&prefix, b"HBN2");
             assert_eq!(requests.started(0), Ok(()));
             assert_eq!(requests.next(&mut prefix).await, Ok(None));
             let mut response = service.open(0, &[]).await.unwrap();
             assert_eq!(response.read(&mut prefix).await, Ok(4));
-            assert_eq!(&prefix, b"HBN1");
+            assert_eq!(&prefix, b"HBN2");
         });
         assert!(
             future
@@ -358,7 +361,7 @@ fn raw_adapters_reject_http_settings_and_non_raw_admission() {
 fn raw_request_prefix_stays_pending_until_one_successful_start() {
     use hibana_quic::runtime::carrier::CarrierStorage;
     let carrier = CarrierStorage::<4, 256, 8>::new();
-    let binding = carrier.bind(SessionId::new(14)).unwrap();
+    let binding = carrier.bind(SessionId::new(14), &[]).unwrap();
     let peer = carrier.peer(CLIENT, SERVER).unwrap();
     let mut requests = stream::Requests::new(&peer, async |_| Ok(()));
     let guard = actor_test_allocator::NoAlloc::start();
@@ -369,11 +372,11 @@ fn raw_request_prefix_stays_pending_until_one_successful_start() {
             for _ in 0..3 {
                 prefix.fill(0);
                 assert_eq!(requests.next(&mut prefix).await, Ok(Some(4)));
-                assert_eq!(&prefix, b"HBN1");
+                assert_eq!(&prefix, b"HBN2");
             }
             assert_eq!(requests.started(4), Err(()));
             assert_eq!(requests.next(&mut prefix).await, Ok(Some(4)));
-            assert_eq!(&prefix, b"HBN1");
+            assert_eq!(&prefix, b"HBN2");
             assert_eq!(requests.started(0), Ok(()));
             assert_eq!(requests.next(&mut prefix).await, Ok(None));
             assert_eq!(requests.started(0), Err(()));
@@ -396,7 +399,7 @@ fn raw_request_prefix_stays_pending_until_one_successful_start() {
 fn raw_input_rejects_http_headers_instead_of_unwrapping_a_tunnel() {
     use hibana_quic::runtime::carrier::CarrierStorage;
     let carrier = CarrierStorage::<4, 256, 8>::new();
-    let binding = carrier.bind(SessionId::new(11)).unwrap();
+    let binding = carrier.bind(SessionId::new(11), &[]).unwrap();
     let peer = carrier.peer(CLIENT, SERVER).unwrap();
     let mut input = stream::Input::new(&peer);
     // HTTP/3 HEADERS with a static :status 200 field, previously accepted by

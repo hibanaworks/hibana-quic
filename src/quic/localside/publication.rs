@@ -12,7 +12,7 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
     outcome: &Outcome,
     book: &mut recovery::Publication<'book, 'scope, N>,
 ) -> Result<(), Error> {
-    // InitialTransmit: actual UDP acceptance selects the declared reply.
+    // Initial recovery and CRYPTO publication share one projected loop.
     'initial: {
         loop {
             let input = endpoint.offer().await.map_err(|error| Error::EndpointAt {
@@ -313,7 +313,6 @@ pub(in crate::quic) async fn publish<'scope, 'book, const N: usize, const P: usi
             crate::runtime::yield_now().await;
         }
     }
-
     // HandshakeTransmit: actual UDP acceptance selects the declared reply.
     'handshake: {
         loop {

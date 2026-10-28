@@ -47,7 +47,9 @@ pub(in crate::quic) async fn run<'book, 'scope, const N: usize>(
                 handshake: None,
                 application: None,
             };
-            let mut flight = source.transmit::<N>()?.ok_or(Error::Binding)?;
+            let mut flight = source
+                .transmit::<N>(Level::Initial)?
+                .ok_or(Error::Binding)?;
             loop {
                 if flight.level() != Level::Initial {
                     return Err(Error::Binding);
@@ -95,7 +97,7 @@ pub(in crate::quic) async fn run<'book, 'scope, const N: usize>(
                     }
                     owner.send::<p::Settled>(&()).await?;
                 }
-                match source.transmit::<N>()? {
+                match source.transmit::<N>(Level::Initial)? {
                     Some(next) => flight = next,
                     None => break,
                 }

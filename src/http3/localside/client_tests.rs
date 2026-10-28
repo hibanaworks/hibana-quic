@@ -187,11 +187,9 @@ fn unfinished_application(early_upload: bool) {
     let carrier = CarrierStorage::<4, 16, 128>::new();
     let mut slab = [0; 65536];
     let sid = SessionId::new(92);
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
     let mut kit = SessionKitStorage::uninit();
-    let rendezvous = kit
-        .init()
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-        .unwrap();
+    let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
     let (mut reader, mut up, mut writer, mut down) = (
         rendezvous.enter(sid, &programs.0).unwrap(),
         rendezvous.enter(sid, &programs.1).unwrap(),

@@ -292,17 +292,124 @@ async fn connected<
     // The verified Finished owner carries its authenticated ALPN across locals;
     // no historical TLS state or configured-protocol observation is authority.
     let application_protocol = read.finished.receipt().protocol();
-    let (mut received, write, transcript) =
-        ownership::transfer(endpoints, source, config, read, write).await?;
+    let (mut material, finished) = read.into_parts();
+    let mut packet_write = endpoints
+        .handshake
+        .packet_write
+        .take()
+        .ok_or(Error::Binding)?;
     let owner = crate::quic::application::imp::keys::KeyOwner::new(scope, write)?;
     let exchange = crate::quic::application::imp::keys::Exchange::new(&owner);
-    let (peer, writer, rx_control) =
-        ownership::admit(endpoints, received.peer, &owner, &exchange).await?;
+    let (_, peer, _, _) = crate::runtime::join::values4(
+        async {
+            endpoints
+                .handshake
+                .tx
+                .send::<global::WriteForAdmission>(&())
+                .await?;
+            endpoints
+                .handshake
+                .tx
+                .recv::<global::ReadAdmission>()
+                .await?;
+            Ok::<(), Error>(())
+        },
+        async {
+            endpoints
+                .handshake
+                .rx
+                .recv::<global::WriteForAdmission>()
+                .await?;
+            let peer = crate::quic::imp::parameters::validate(
+                finished,
+                scope,
+                config.side,
+                material.peer_connection_id(),
+                if config.side == Side::Client {
+                    Some(config.original_destination_id)
+                } else {
+                    None
+                },
+                if config.side == Side::Client {
+                    material.retry_source_id()
+                } else {
+                    None
+                },
+            )?;
+            endpoints
+                .handshake
+                .rx
+                .send::<global::FinishedValidated>(&())
+                .await?;
+            Ok::<_, Error>(peer)
+        },
+        async {
+            endpoints
+                .handshake
+                .tls_rx
+                .recv::<global::FinishedValidated>()
+                .await?;
+            if !core::ptr::eq(scope, source.scope()) {
+                return Err(Error::Binding);
+            }
+            endpoints
+                .handshake
+                .tls_rx
+                .send::<global::TranscriptStart>(&())
+                .await?;
+            Ok::<(), Error>(())
+        },
+        async {
+            endpoints.receive.recv::<global::TranscriptStart>().await?;
+            endpoints.receive.send::<global::ReadAdmission>(&()).await?;
+            Ok::<(), Error>(())
+        },
+    )
+    .await?;
+    let transcript = source;
+    if !core::ptr::eq(peer.scope(), owner.scope()) {
+        return Err(Error::Binding);
+    }
+    let installation = endpoints
+        .handshake
+        .tls_material
+        .take()
+        .ok_or(Error::Binding)?;
+    let (_, mut rx_keys, _, _) = crate::runtime::join::values4(
+        async {
+            endpoints
+                .handshake
+                .tls_rx
+                .send::<global::KeyControlAdmission<'_>>(installation)
+                .await?;
+            Ok::<(), Error>(())
+        },
+        async {
+            endpoints
+                .receive
+                .recv::<global::KeyControlAdmission<'_>>()
+                .await
+                .map_err(Error::from)
+        },
+        async {
+            endpoints
+                .handshake
+                .tx
+                .send::<global::StreamAdmission>(&())
+                .await?;
+            Ok::<(), Error>(())
+        },
+        async {
+            endpoints.source.recv::<global::StreamAdmission>().await?;
+            Ok::<(), Error>(())
+        },
+    )
+    .await?;
     if peer.max_udp_payload() < (CHUNK + 192) as u64 {
         return Err(Error::Capacity);
     }
     let peer_cid_limit = peer.active_connection_id_limit();
-    let peer_id = ConnectionId::new(received.material.peer_connection_id())?;
+    let peer_id = ConnectionId::new(material.peer_connection_id())?;
     let accepted_early = if let Some(requests) = client_early.as_deref() {
         match requests.decision(peer.finished())? {
             crate::quic::early_data::imp::EarlyStatus::Accepted => {
@@ -392,7 +499,7 @@ async fn connected<
         config,
         early,
         peer.into_finished(),
-        &mut received.material.integrity,
+        &mut material.integrity,
         &mut book_rx,
         &mut rx,
         clock,
@@ -455,6 +562,12 @@ async fn connected<
     let first_io_error = RefCell::new(None);
 
     let result = {
+        let [
+            mut keys_endpoint,
+            mut publication_endpoint,
+            mut receipts_endpoint,
+            mut path_endpoint,
+        ] = packet_write.par()?;
         let mut source = core::pin::pin!(async {
             use crate::http3::{Protocol, global as h3};
             if application_protocol == Protocol::Http3 {
@@ -539,6 +652,7 @@ async fn connected<
         });
         let mut ingress = core::pin::pin!(ingress::ingress(
             &mut endpoints.ingress,
+            endpoints.production.take().ok_or(Error::Binding)?,
             &control,
             &state,
             &app,
@@ -584,9 +698,9 @@ async fn connected<
         let mut receiving = core::pin::pin!(async {
             receive::run::<N, RX, CHUNK, _>(
                 &mut endpoints.receive,
-                &mut endpoints.rx_keys,
+                &mut rx_keys,
                 &mut endpoints.peer_event,
-                received.material,
+                material,
                 config,
                 transcript,
                 &early_received.finished,
@@ -597,7 +711,7 @@ async fn connected<
                 &acknowledgments,
                 &app,
                 &state,
-                rx_control,
+                &exchange,
                 &control,
                 clock,
                 receive_io,
@@ -613,7 +727,7 @@ async fn connected<
             .await
         });
         let mut key_control = core::pin::pin!(async {
-            keys::run(&mut endpoints.tx_keys, &owner, &exchange)
+            keys::run(&mut keys_endpoint, &owner, &exchange)
                 .await
                 .map_err(Error::from)
         });
@@ -626,10 +740,12 @@ async fn connected<
         ));
         let mut timer_receive = core::pin::pin!(timer::receive(&mut endpoints.tx_clock, &control));
         let mut transmitting = core::pin::pin!(transmit::run(
-            &mut endpoints.transmit,
+            &mut publication_endpoint,
+            &mut receipts_endpoint,
+            &mut path_endpoint,
             &control,
             &publication_state,
-            writer,
+            &owner,
             &mut book_tx,
             &mut tx,
             &reset_exchange,
@@ -746,18 +862,83 @@ async fn connected<
     let all_streams_acked = app.borrow().queued_chunks()? == 0
         && completed_streams == state.submitted_count()
         && (config.side == Side::Client || state.completed_count() == completed_streams);
-    // This constructor is reached only after every ordinary future completed,
-    // including adapter cancellation, timer acknowledgement and key retirement.
-    let closing = ownership::retire(
-        endpoints,
-        OrdinaryRetired { scope },
-        permission.ok_or(Error::Binding)?,
+    let (peer, files) = permission.ok_or(Error::Binding)?.into_parts();
+    let (_, _, _, permission, _) = crate::runtime::join::values5(
+        async {
+            packet_write.send::<global::PublicationRetired>(&()).await?;
+            packet_write.recv::<global::CloseAuthority>().await?;
+            Ok::<(), Error>(())
+        },
+        async {
+            rx_keys.recv::<global::KeyRetirementGrant>().await?;
+            rx_keys.send::<global::KeyRetirement>(&()).await?;
+            Ok::<(), Error>(())
+        },
+        async {
+            endpoints
+                .peer_close
+                .recv::<global::PeerRetirementGrant>()
+                .await?;
+            endpoints
+                .peer_close
+                .send::<global::PeerOutcome>(&())
+                .await?;
+            Ok::<(), Error>(())
+        },
+        async {
+            endpoints
+                .files_close
+                .recv::<global::FilesRetirementGrant>()
+                .await?;
+            for permission in [peer.as_ref(), files.as_ref()].into_iter().flatten() {
+                if !core::ptr::eq(scope, permission.scope()) {
+                    return Err(Error::Binding);
+                }
+            }
+            let permission = peer.or(files).ok_or(Error::Binding)?;
+            endpoints
+                .files_close
+                .send::<global::FilesOutcome>(&())
+                .await?;
+            Ok::<_, Error>(permission)
+        },
+        async {
+            {
+                let [mut publication, mut keys, mut peer, mut files] =
+                    endpoints.close_join.par()?;
+                crate::runtime::join::values4(
+                    publication.recv::<global::PublicationRetired>(),
+                    async {
+                        keys.send::<global::KeyRetirementGrant>(&()).await?;
+                        keys.recv::<global::KeyRetirement>().await
+                    },
+                    async {
+                        peer.send::<global::PeerRetirementGrant>(&()).await?;
+                        peer.recv::<global::PeerOutcome>().await
+                    },
+                    async {
+                        files.send::<global::FilesRetirementGrant>(&()).await?;
+                        files.recv::<global::FilesOutcome>().await
+                    },
+                )
+                .await?;
+            }
+            endpoints
+                .close_join
+                .send::<global::CloseAuthority>(&())
+                .await?;
+            Ok::<(), Error>(())
+        },
     )
     .await?;
+    let closing = transmit::Closing {
+        ordinary: OrdinaryRetired { scope },
+        permission,
+    };
     let close_kind = closing.permission.kind();
     let result = crate::runtime::join2(
         transmit::close(
-            &mut endpoints.transmit,
+            &mut packet_write,
             &control,
             &publication_state,
             &owner,

@@ -19,12 +19,10 @@ fn retry_rekey_is_outside_the_receive_and_publication_rolls() {
         let io_program = hibana::runtime::program::project::<{ p::IO }>(&graph);
         let carrier = CarrierStorage::<1, 16, 8>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(1200);
-        let session = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let session = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut owner = session.enter(sid, &owner_program).unwrap();
         let mut io = session.enter(sid, &io_program).unwrap();
         let mut task = pin!(join2(

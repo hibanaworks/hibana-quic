@@ -169,14 +169,16 @@ fn try_handshake_observe<const MESSAGE: usize>(
     let sc = CarrierStorage::<1, 16, 4>::new();
     let mut cm = [0; 65536];
     let mut sm = [0; 65536];
-    let mut ck = SessionKitStorage::uninit();
-    let mut sk = SessionKitStorage::uninit();
-    let ck = ck.init();
-    let sk = sk.init();
     let cid = SessionId::new(5200);
     let sid = SessionId::new(5201);
-    let cr = ck.rendezvous(&mut cm, cc.bind(cid).unwrap()).unwrap();
-    let sr = sk.rendezvous(&mut sm, sc.bind(sid).unwrap()).unwrap();
+    let cc_binding = cc.bind(cid, &[]).unwrap();
+    let mut ck = SessionKitStorage::uninit();
+    let ck = ck.init();
+    let cr = ck.rendezvous(&mut cm, &cc_binding).unwrap();
+    let sc_binding = sc.bind(sid, &[]).unwrap();
+    let mut sk = SessionKitStorage::uninit();
+    let sk = sk.init();
+    let sr = sk.rendezvous(&mut sm, &sc_binding).unwrap();
     let cp = {
         let graph = global::client();
         (
@@ -258,12 +260,11 @@ pub fn probe_server_message<R>(
     let slot = hibana_tls::handshake::MessageSlot::new(&mut bytes);
     let carrier = CarrierStorage::<1, 16, 4>::new();
     let mut slab = [0; 65536];
+    let sid = SessionId::new(5202);
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
     let mut storage = SessionKitStorage::uninit();
     let kit = storage.init();
-    let sid = SessionId::new(5202);
-    let rv = kit
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-        .unwrap();
+    let rv = kit.rendezvous(&mut slab, &carrier_binding).unwrap();
     let projection = {
         let graph = global::server();
         (
@@ -367,15 +368,14 @@ pub fn handshake_key_sources_observe<'client, 'server>(
             let mut required = 4;
             while copied < required {
                 if self.pos == self.end {
-                    let output =
-                        poll_fn(
-                            |_| match self.remote.borrow_mut().transmit(&mut self.bytes) {
-                                Ok(Some(p)) => Poll::Ready(Ok(p)),
-                                Ok(None) => Poll::Pending,
-                                Err(e) => Poll::Ready(Err(hibana_tls::handshake::Error::Input(e))),
-                            },
-                        )
-                        .await?;
+                    let output = poll_fn(|_| {
+                        match self.remote.borrow_mut().transmit(level, &mut self.bytes) {
+                            Ok(Some(p)) => Poll::Ready(Ok(p)),
+                            Ok(None) => Poll::Pending,
+                            Err(e) => Poll::Ready(Err(hibana_tls::handshake::Error::Input(e))),
+                        }
+                    })
+                    .await?;
                     self.pos = 0;
                     self.end = output.len;
                     self.level = output.level;
@@ -418,22 +418,28 @@ pub fn handshake_key_sources_observe<'client, 'server>(
     let mut sb = [0; 8192];
     let cs = hibana_tls::handshake::MessageSlot::new(&mut cb);
     let ss = hibana_tls::handshake::MessageSlot::new(&mut sb);
-    let cc = CarrierStorage::<1, 16, 4>::new();
-    let sc = CarrierStorage::<1, 16, 4>::new();
+    const OWNED_PORTS: usize = [
+        hibana_tls::handshake::global::owned::INPUT,
+        hibana_tls::handshake::global::owned::VERIFY,
+        hibana_tls::handshake::global::owned::HANDOFF,
+        hibana_tls::handshake::global::owned::OUTPUT,
+        hibana_tls::handshake::global::owned::MATERIAL,
+    ]
+    .len();
+    let cc = CarrierStorage::<1, 16, OWNED_PORTS>::new();
+    let sc = CarrierStorage::<1, 16, OWNED_PORTS>::new();
     let mut cm = [0; 65536];
     let mut sm = [0; 65536];
-    let mut ck = SessionKitStorage::uninit();
-    let mut sk = SessionKitStorage::uninit();
     let cid = SessionId::new(5300);
     let sid = SessionId::new(5301);
-    let cr = ck
-        .init()
-        .rendezvous(&mut cm, cc.bind(cid).unwrap())
-        .unwrap();
-    let sr = sk
-        .init()
-        .rendezvous(&mut sm, sc.bind(sid).unwrap())
-        .unwrap();
+    let cbindings = c.borrow().scope().endpoint_bindings();
+    let cc_binding = cc.bind(cid, &cbindings).unwrap();
+    let mut ck = SessionKitStorage::uninit();
+    let cr = ck.init().rendezvous(&mut cm, &cc_binding).unwrap();
+    let sbindings = s.borrow().scope().endpoint_bindings();
+    let sc_binding = sc.bind(sid, &sbindings).unwrap();
+    let mut sk = SessionKitStorage::uninit();
+    let sr = sk.init().rendezvous(&mut sm, &sc_binding).unwrap();
     let cp = {
         let graph = hibana_tls::handshake::global::owned::choreography();
         (
@@ -444,6 +450,12 @@ pub fn handshake_key_sources_observe<'client, 'server>(
                 &graph,
             ),
             hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::HANDOFF }>(
+                &graph,
+            ),
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::MATERIAL }>(
+                &graph,
+            ),
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::OUTPUT }>(
                 &graph,
             ),
         )
@@ -460,6 +472,12 @@ pub fn handshake_key_sources_observe<'client, 'server>(
             hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::HANDOFF }>(
                 &graph,
             ),
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::MATERIAL }>(
+                &graph,
+            ),
+            hibana::runtime::program::project::<{ hibana_tls::handshake::global::owned::OUTPUT }>(
+                &graph,
+            ),
         )
     };
     let mut cv = cr.enter(cid, &cp.1).unwrap();
@@ -468,18 +486,28 @@ pub fn handshake_key_sources_observe<'client, 'server>(
     let mut sw = sr.enter(sid, &sp.0).unwrap();
     let mut ch = cr.enter(cid, &cp.2).unwrap();
     let mut sh = sr.enter(sid, &sp.2).unwrap();
-    let cmaterial = hibana_tls::handshake::keys::Handoff::<1024>::new();
-    let smaterial = hibana_tls::handshake::keys::Handoff::<1024>::new();
+    let mut cx = cr.enter(cid, &cp.4).unwrap();
+    let mut sx = sr.enter(sid, &sp.4).unwrap();
+    let ckeys = cr.enter(cid, &cp.3).unwrap();
+    let skeys = sr.enter(sid, &sp.3).unwrap();
     let mut cout = Collected::new();
     let mut sout = Collected::new();
     {
         let mut co = pin!(async {
             cv.send::<global::ClientStart>(&()).await?;
-            localside::verify::client_owned(&mut cv, &c, &cs, &cmaterial).await
+            localside::verify::client_owned(&mut cv, ckeys, &c, &cs, |h, a, f| {
+                cout.install(h, a, f)
+            })
+            .await
+            .map(drop)
         });
         let mut so = pin!(async {
             sv.send::<global::ServerStart>(&()).await?;
-            localside::verify::server_owned(&mut sv, &s, &ss, &smaterial).await
+            localside::verify::server_owned(&mut sv, skeys, &s, &ss, |h, a, f| {
+                sout.install(h, a, f)
+            })
+            .await
+            .map(drop)
         });
         let mut cin = pin!(async {
             cw.offer().await?.recv::<global::ClientStart>().await?;
@@ -489,15 +517,33 @@ pub fn handshake_key_sources_observe<'client, 'server>(
             sw.offer().await?.recv::<global::ServerStart>().await?;
             localside::input::server_input(&mut sw, &ss, &mut si).await
         });
-        let mut ct = pin!(collect(&mut ch, &cmaterial, &mut cout));
-        let mut st = pin!(collect(&mut sh, &smaterial, &mut sout));
+        let mut ct = pin!(collect(&mut ch));
+        let mut st = pin!(collect(&mut sh));
+        let mut client_output = pin!(async {
+            use hibana_tls::handshake::global::owned as p;
+            let keys = cx.recv::<p::Keys<'_>>().await?;
+            cx.send::<p::Keys<'_>>(keys).await?;
+            let keys = cx.recv::<p::Keys<'_>>().await?;
+            cx.send::<p::Keys<'_>>(keys).await?;
+            Ok::<(), hibana_tls::handshake::Error>(())
+        });
+        let mut server_output = pin!(async {
+            use hibana_tls::handshake::global::owned as p;
+            let keys = sx.recv::<p::Keys<'_>>().await?;
+            sx.send::<p::Keys<'_>>(keys).await?;
+            let keys = sx.recv::<p::Keys<'_>>().await?;
+            sx.send::<p::Keys<'_>>(keys).await?;
+            Ok::<(), hibana_tls::handshake::Error>(())
+        });
         let mut tasks = pin!(TaskSet::new([
             co.as_mut(),
             so.as_mut(),
             cin.as_mut(),
             sin.as_mut(),
             ct.as_mut(),
-            st.as_mut()
+            st.as_mut(),
+            client_output.as_mut(),
+            server_output.as_mut()
         ]));
         let mut complete = false;
         for _ in 0..128 {
@@ -523,7 +569,25 @@ pub struct Collected<'scope> {
     pub application: Option<hibana_tls::handshake::keys::ApplicationKeyMaterial<'scope>>,
     pub finished: Option<hibana_tls::handshake::keys::Finished<'scope, 1024>>,
 }
-impl Collected<'_> {
+impl<'scope> Collected<'scope> {
+    fn install(
+        &mut self,
+        handshake: Option<hibana_tls::handshake::keys::HandshakeKeyMaterial<'scope>>,
+        application: Option<hibana_tls::handshake::keys::ApplicationKeyMaterial<'scope>>,
+        finished: Option<hibana_tls::handshake::keys::Finished<'scope, 1024>>,
+    ) -> Result<(), hibana_tls::handshake::Error> {
+        if let Some(keys) = handshake {
+            assert!(self.handshake.replace(keys).is_none());
+        }
+        if let Some(keys) = application {
+            assert!(self.application.replace(keys).is_none());
+        }
+        if let Some(receipt) = finished {
+            assert!(self.finished.replace(receipt).is_none());
+        }
+        Ok(())
+    }
+
     fn new() -> Self {
         Self {
             handshake: None,
@@ -532,67 +596,18 @@ impl Collected<'_> {
         }
     }
 }
-async fn collect<'scope>(
+async fn collect(
     endpoint: &mut hibana::Endpoint<'_, { hibana_tls::handshake::global::owned::HANDOFF }>,
-    material: &hibana_tls::handshake::keys::Handoff<'scope, 1024>,
-    out: &mut Collected<'scope>,
 ) -> Result<(), hibana_tls::handshake::Error> {
     use hibana_tls::handshake::global::owned as h;
-    async fn take<'scope>(
-        endpoint: &mut hibana::Endpoint<'_, { hibana_tls::handshake::global::owned::HANDOFF }>,
-        material: &hibana_tls::handshake::keys::Handoff<'scope, 1024>,
-        out: &mut Collected<'scope>,
-    ) -> Result<(), hibana_tls::handshake::Error> {
-        endpoint.recv::<h::KeysReady>().await?;
-        if let Some(v) = material.take_handshake() {
-            assert!(out.handshake.replace(v).is_none());
-        }
-        if let Some(v) = material.take_application() {
-            assert!(out.application.replace(v).is_none());
-        }
-        if let Some(v) = material.take_finished() {
-            assert!(out.finished.replace(v).is_none());
-        }
-        assert!(material.is_empty());
-        endpoint.send::<h::KeysTaken>(&()).await?;
-        Ok(())
-    }
-    let route = endpoint.offer().await?;
-    let client = match route.label() {
-        247 => {
-            route.recv::<h::ClientKeys>().await?;
-            true
-        }
-        248 => {
-            route.recv::<h::ServerKeys>().await?;
-            false
-        }
-        _ => return Err(hibana_tls::handshake::Error::Binding),
-    };
-    take(endpoint, material, out).await?;
-    let route = endpoint.offer().await?;
-    match route.label() {
-        242 => {
-            route.recv::<h::RetryKeys>().await?;
-            take(endpoint, material, out).await?;
-        }
-        243 => route.recv::<h::HelloKeys>().await?,
-        _ => return Err(hibana_tls::handshake::Error::Binding),
-    }
-    if client {
-        take(endpoint, material, out).await?;
-        let route = endpoint.offer().await?;
-        match route.label() {
-            244 => route.recv::<h::ResumedKeys>().await?,
-            245 => {
-                route.recv::<h::FullKeys>().await?;
-                take(endpoint, material, out).await?;
-                take(endpoint, material, out).await?;
-            }
-            _ => return Err(hibana_tls::handshake::Error::Binding),
-        }
-    }
-    take(endpoint, material, out).await?;
-    endpoint.recv::<h::CompleteKeys>().await?;
+    let mut keys = endpoint.recv::<h::Keys<'_>>().await?;
+    keys.send::<h::Install>(&()).await?;
+    keys.recv::<h::Installed>().await?;
+    endpoint.send::<h::Keys<'_>>(keys).await?;
+
+    let mut keys = endpoint.recv::<h::Keys<'_>>().await?;
+    keys.send::<h::Install>(&()).await?;
+    keys.recv::<h::Installed>().await?;
+    endpoint.send::<h::Keys<'_>>(keys).await?;
     Ok(())
 }

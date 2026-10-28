@@ -120,9 +120,10 @@ fn exchange(
     );
     let carrier = CarrierStorage::<4, 16, 128>::new();
     let mut slab = [0; 65536];
-    let mut kit = SessionKitStorage::uninit();
     let sid = SessionId::new(77);
-    let r = kit.init().rendezvous(&mut slab, carrier.bind(sid)?)?;
+    let carrier_binding = carrier.bind(sid, &[])?;
+    let mut kit = SessionKitStorage::uninit();
+    let r = kit.init().rendezvous(&mut slab, &carrier_binding)?;
     let (mut read, mut application, mut write) = (
         r.enter(sid, &programs.0)?,
         r.enter(sid, &programs.1)?,
@@ -235,12 +236,10 @@ fn exact_hello_localside_serves_get_head_streaming_post_and_404() {
         );
         let carrier = CarrierStorage::<4, 16, 128>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(81);
-        let r = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let r = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let (mut read, mut app, mut write) = (
             r.enter(sid, &programs.0).unwrap(),
             r.enter(sid, &programs.1).unwrap(),

@@ -39,7 +39,9 @@ jobs:
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
       - name: Read the immutable TLS revision
         id: tls
-        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+        run: |
+          rustup toolchain install stable --profile minimal
+          CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- tls-revision . >> "$GITHUB_OUTPUT"
       - name: Check out the exact owned TLS source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -52,9 +54,10 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component clippy --target thumbv6m-none-eabi
       - name: Verify both sources and dependency identities
         run: |
-          python3 tools/ci/audit_source.py --check
-          python3 tools/ci/check_dependencies.py
-          python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
+          cargo +stable test --locked --manifest-path tools/ci/source/Cargo.toml
+          cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- audit .
+          cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- dependencies .
+          cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- stage . .ci-work/paired-source
       - name: Core, TLS, integration and compile-fail contracts
         if: inputs.check != 'diagnostics'
         run: |
@@ -119,7 +122,9 @@ jobs:
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
       - id: tls
-        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+        run: |
+          rustup toolchain install stable --profile minimal
+          CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- tls-revision . >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: hibanaworks/hibana-tls
@@ -128,10 +133,11 @@ jobs:
           persist-credentials: false
       - name: Install the specified Miri and rust-src
         run: rustup toolchain install nightly-2026-10-08 --profile minimal --component miri --component rust-src
-      - name: Secret memory, borrowed PEM and native wake ownership
+      - name: Secret memory, carrier delegation and native wake ownership
         run: |
           cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --lib secret::
           cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --lib certificate::pem::
+          MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly-2026-10-08 miri test --locked --test carrier_delegation
           cargo +nightly-2026-10-08 miri test --locked --manifest-path pal/Cargo.toml --lib sys::wake::tests::
   ack-delay-faults:
     if: github.event_name != 'workflow_dispatch' || inputs.check == 'all'
@@ -150,7 +156,9 @@ jobs:
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
       - id: tls
-        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+        run: |
+          rustup toolchain install stable --profile minimal
+          CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- tls-revision . >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: hibanaworks/hibana-tls
@@ -160,7 +168,7 @@ jobs:
       - run: rustup toolchain install stable --profile minimal
       - name: Build one exact candidate for all fault cases
         run: |
-          python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
+          cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- stage . .ci-work/paired-source
           mkdir -p ci-safe-results
           cp .ci-work/paired-source/source-pair.json ci-safe-results/
           cargo +stable build --locked --release --manifest-path tests/interop/driver/Cargo.toml --features hq --bin hq
@@ -201,7 +209,7 @@ jobs:
       - name: Read the immutable TLS revision for ARM tests
         if: runner.os == 'macOS'
         id: arm_tls
-        run: python3 tools/ci/tls-revision.py >> "$GITHUB_OUTPUT"
+        run: CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- tls-revision . >> "$GITHUB_OUTPUT"
       - name: Check out the exact TLS source for ARM tests
         if: runner.os == 'macOS'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

@@ -73,8 +73,8 @@ pub fn options(args: &[String]) -> Result<Options> {
     let role = args.first().ok_or_else(|| USAGE.to_owned())?;
     let mut flags = BTreeMap::new();
     let mut targets = Vec::new();
-    let mut pairs = args[1..].chunks_exact(2);
-    for pair in &mut pairs {
+    let (pairs, remainder) = args[1..].as_chunks::<2>();
+    for pair in pairs {
         if pair[0] == "--request" {
             if targets.len() >= MAX_REQUESTS {
                 return Err("at most 4096 requests are supported".into());
@@ -86,7 +86,7 @@ pub fn options(args: &[String]) -> Result<Options> {
             return Err(format!("invalid or repeated option {}", pair[0]));
         }
     }
-    if !pairs.remainder().is_empty() {
+    if !remainder.is_empty() {
         return Err("every option requires a value".into());
     }
     let application =

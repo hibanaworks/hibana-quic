@@ -76,6 +76,7 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                 state.opened.put(production).map_err(|_| Error::Binding)?;
                 endpoint.send::<p::SourceOpen>(&id).await?;
             }
+            let mut operations = endpoint.recv::<p::StreamLoan<'_>>().await?;
             let result = async {
                 let mut offset = 0;
                 while offset < len && !control.stopping() {
@@ -86,13 +87,11 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                     };
                     chunk.bytes[..count].copy_from_slice(&request[offset..offset + count]);
                     let admitted = async {
-                        let endpoint = &mut *endpoint;
-
                         let input = Input::Chunk(chunk);
 
                         state.data.put(input).map_err(|_| Error::Binding)?;
-                        endpoint.send::<p::SourceData>(&()).await?;
-                        let reply = endpoint.offer().await?;
+                        operations.send::<p::SourceData>(&()).await?;
+                        let reply = operations.offer().await?;
                         let accepted = match reply.label() {
                             1 => {
                                 reply.recv::<p::SourceAccepted>().await?;
@@ -112,7 +111,7 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                             }
                             label => return Err(Error::UnexpectedLabel(label)),
                         };
-                        endpoint.send::<p::SourceTaken>(&()).await?;
+                        operations.send::<p::SourceTaken>(&()).await?;
 
                         Ok(accepted)
                     }
@@ -149,8 +148,8 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                         .data
                         .put(Input::Chunk(chunk))
                         .map_err(|_| Error::Binding)?;
-                    endpoint.send::<p::SourceData>(&()).await?;
-                    let reply = endpoint.offer().await?;
+                    operations.send::<p::SourceData>(&()).await?;
+                    let reply = operations.offer().await?;
                     let admitted = match reply.label() {
                         1 => {
                             reply.recv::<p::SourceAccepted>().await?;
@@ -170,7 +169,7 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
                         }
                         label => return Err(Error::UnexpectedLabel(label)),
                     };
-                    endpoint.send::<p::SourceTaken>(&()).await?;
+                    operations.send::<p::SourceTaken>(&()).await?;
                     if admitted != Admission::Accepted {
                         return Ok(admitted);
                     }
@@ -180,17 +179,17 @@ pub(crate) async fn client_source<'book, const RX: usize, const CHUNK: usize, B>
             }
             .await;
             let finished = async {
-                let endpoint = &mut *endpoint;
                 let stream_id = stream.id();
                 let outcome = result.as_ref().copied().unwrap_or(Admission::Interrupted);
 
-                endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
+                operations.send::<p::SourceFlush>(&stream_id).await?;
+                check(operations.recv::<p::SourceFlushed>().await?, stream_id)?;
                 if outcome == Admission::Accepted {
-                    endpoint.send::<p::SourceFin>(&stream_id).await?;
+                    endpoint.send::<p::SourceFin<'_>>(operations).await?;
                 } else {
                     // Connection shutdown abandons production; this is not a fabricated
                     // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
-                    endpoint.send::<p::SourceAbandon>(&stream_id).await?;
+                    endpoint.send::<p::SourceAbandon<'_>>(operations).await?;
                 }
                 let reply = endpoint.offer().await?;
                 match reply.label() {
@@ -315,17 +314,16 @@ pub(crate) async fn server_source<
                 state.opened.put(production).map_err(|_| Error::Binding)?;
                 endpoint.send::<p::SourceOpen>(&id).await?;
             }
+            let mut operations = endpoint.recv::<p::StreamLoan<'_>>().await?;
             // The actual reader moves once through the Hibana data edge. Ingress
             // alone owns the reader until EOF, failure or cancellation; each packet
             // still uses its ordinary bounded send chunk and publication contract.
             let result = async {
-                let endpoint = &mut *endpoint;
-
                 let input = Input::Body(body);
 
                 state.data.put(input).map_err(|_| Error::Binding)?;
-                endpoint.send::<p::SourceData>(&()).await?;
-                let reply = endpoint.offer().await?;
+                operations.send::<p::SourceData>(&()).await?;
+                let reply = operations.offer().await?;
                 let accepted = match reply.label() {
                     1 => {
                         reply.recv::<p::SourceAccepted>().await?;
@@ -345,23 +343,22 @@ pub(crate) async fn server_source<
                     }
                     label => return Err(Error::UnexpectedLabel(label)),
                 };
-                endpoint.send::<p::SourceTaken>(&()).await?;
+                operations.send::<p::SourceTaken>(&()).await?;
 
                 Ok(accepted)
             }
             .await;
             let finished = async {
-                let endpoint = &mut *endpoint;
-
                 let outcome = result.as_ref().copied().unwrap_or(Admission::Interrupted);
 
-                endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
+                operations.send::<p::SourceFlush>(&stream_id).await?;
+                check(operations.recv::<p::SourceFlushed>().await?, stream_id)?;
                 if outcome == Admission::Accepted {
-                    endpoint.send::<p::SourceFin>(&stream_id).await?;
+                    endpoint.send::<p::SourceFin<'_>>(operations).await?;
                 } else {
                     // Connection shutdown abandons production; this is not a fabricated
                     // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
-                    endpoint.send::<p::SourceAbandon>(&stream_id).await?;
+                    endpoint.send::<p::SourceAbandon<'_>>(operations).await?;
                 }
                 let reply = endpoint.offer().await?;
                 match reply.label() {

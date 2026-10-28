@@ -90,12 +90,10 @@ mod tests {
         let owner_program: RoleProgram<OWNER> = project(&global);
         let carrier = crate::runtime::carrier::CarrierStorage::<1, 16, 32>::new();
         let mut slab = std::vec![0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(511);
-        let rv = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rv = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut source = rv.enter(sid, &source_program).unwrap();
         let mut sink = rv.enter(sid, &sink_program).unwrap();
         let mut owner = rv.enter(sid, &owner_program).unwrap();

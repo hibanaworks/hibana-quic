@@ -29,15 +29,12 @@ impl Transport for DeadlineCarrier {
     fn open<'a>(&'a self, _: PortOpen) -> (Self::Tx<'a>, Self::Rx<'a>) {
         ((), ())
     }
-    fn poll_send<'a, 'f>(
+    fn poll_send<'f>(
         &self,
-        _: &'a mut Self::Tx<'a>,
+        _: &mut Self::Tx<'_>,
         _: Outgoing<'f>,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<(), TransportError>>
-    where
-        'a: 'f,
-    {
+    ) -> Poll<Result<(), TransportError>> {
         if self.polled.replace(true) {
             Poll::Ready(Err(TransportError::Deadline))
         } else {
@@ -45,10 +42,10 @@ impl Transport for DeadlineCarrier {
             Poll::Pending
         }
     }
-    fn cancel_send<'a>(&self, _: &'a mut Self::Tx<'a>) {}
+    fn cancel_send(&self, _: &mut Self::Tx<'_>) {}
     fn poll_recv<'a>(
         &'a self,
-        _: &'a mut Self::Rx<'a>,
+        _: &'a mut Self::Rx<'_>,
         _: &mut Context<'_>,
     ) -> Poll<Result<ReceivedFrame<'a>, TransportError>> {
         Poll::Pending
@@ -70,7 +67,7 @@ fn carrier_deadline_propagates_and_cancels_parked_network() {
     let program = hibana::runtime::program::project::<0>(&graph);
     let storage = Storage::new();
     let sid = SessionId::new(55);
-    let binding = storage.carrier.bind(sid).unwrap();
+    let binding = storage.carrier.bind(sid, &[]).unwrap();
     let bridge = storage.carrier.peer(0, 1).unwrap();
     let mut slab = [0; 65536];
     let retired = Cell::new(false);

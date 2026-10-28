@@ -1,6 +1,8 @@
 //! Bounded framing for the raw QUIC application carrier.
 //! Native HTTP/3 messages use their own projected message localsides.
 use crate::runtime::carrier::Frame;
+use hibana::runtime::transport::FrameHeader;
+const HEADER_BYTES: usize = core::mem::size_of::<FrameHeader>();
 pub const CAPACITY: usize = 1024;
 pub struct Bytes {
     pub bytes: [u8; CAPACITY],
@@ -34,13 +36,13 @@ impl Bytes {
 }
 pub fn prefix() -> Bytes {
     let mut result = Bytes::new();
-    result.bytes[..4].copy_from_slice(b"HBN1");
+    result.bytes[..4].copy_from_slice(b"HBN2");
     result.len = 4;
     result
 }
 pub fn message(frame: Frame<256>) -> Result<Bytes, ()> {
     let mut envelope = Bytes::new();
-    envelope.append(&((8 + frame.payload().len()) as u32).to_be_bytes())?;
+    envelope.append(&((HEADER_BYTES + frame.payload().len()) as u32).to_be_bytes())?;
     envelope.append(&frame.header())?;
     envelope.append(frame.payload())?;
     Ok(envelope)
@@ -48,7 +50,7 @@ pub fn message(frame: Frame<256>) -> Result<Bytes, ()> {
 /// Only retained bytes and their consumed wire offset are tracked here.
 pub struct Decoded<'a> {
     pub consumed: usize,
-    pub header: [u8; 8],
+    pub header: [u8; HEADER_BYTES],
     pub payload: &'a [u8],
 }
 pub struct Decoder {
@@ -80,7 +82,7 @@ impl Decoder {
         if self.len < 4 {
             return Ok(false);
         }
-        if &self.bytes[..4] != b"HBN1" {
+        if &self.bytes[..4] != b"HBN2" {
             return Err(());
         }
         self.consume(4)?;
@@ -92,7 +94,7 @@ impl Decoder {
             return Ok(None);
         }
         let n = u32::from_be_bytes(bytes[..4].try_into().map_err(|_| ())?) as usize;
-        if !(8..=264).contains(&n) {
+        if !(HEADER_BYTES..=HEADER_BYTES + 256).contains(&n) {
             return Err(());
         }
         let end = 4 + n;
@@ -101,8 +103,8 @@ impl Decoder {
         }
         Ok(Some(Decoded {
             consumed: end,
-            header: bytes[4..12].try_into().map_err(|_| ())?,
-            payload: &bytes[12..end],
+            header: bytes[4..4 + HEADER_BYTES].try_into().map_err(|_| ())?,
+            payload: &bytes[4 + HEADER_BYTES..end],
         }))
     }
     pub fn finish(&self) -> Result<(), ()> {

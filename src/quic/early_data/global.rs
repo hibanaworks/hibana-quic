@@ -36,15 +36,18 @@ pub fn choreography() -> impl Projectable {
     let holding = g::seq(
         g::route(
             g::seq(
-                g::send::<INPUT, OWNER, Packet>(),
-                g::route(
-                    g::send::<OWNER, INPUT, PacketStored>(),
-                    g::send::<OWNER, INPUT, PacketDropped>(),
-                ),
+                g::seq(
+                    g::send::<INPUT, OWNER, Packet>(),
+                    g::route(
+                        g::send::<OWNER, INPUT, PacketStored>(),
+                        g::send::<OWNER, INPUT, PacketDropped>(),
+                    ),
+                )
+                .roll(),
+                g::send::<INPUT, OWNER, InputEnd>(),
             ),
             g::send::<INPUT, OWNER, InputEnd>(),
-        )
-        .roll(),
+        ),
         g::seq(
             g::send::<OWNER, INPUT, InputEnded>(),
             g::send::<INPUT, TLS, InputRetired>(),
@@ -53,18 +56,21 @@ pub fn choreography() -> impl Projectable {
     let deliver = g::seq(
         g::route(
             g::seq(
-                g::send::<OWNER, APPLICATION, Range>(),
-                g::send::<APPLICATION, OWNER, RangeApplied>(),
-            ),
-            g::route(
-                g::seq(
-                    g::send::<OWNER, APPLICATION, Controls>(),
-                    g::send::<APPLICATION, OWNER, ControlsApplied>(),
-                ),
+                g::route(
+                    g::seq(
+                        g::send::<OWNER, APPLICATION, Range>(),
+                        g::send::<APPLICATION, OWNER, RangeApplied>(),
+                    ),
+                    g::seq(
+                        g::send::<OWNER, APPLICATION, Controls>(),
+                        g::send::<APPLICATION, OWNER, ControlsApplied>(),
+                    ),
+                )
+                .roll(),
                 g::send::<OWNER, APPLICATION, Released>(),
             ),
-        )
-        .roll(),
+            g::send::<OWNER, APPLICATION, Released>(),
+        ),
         g::send::<APPLICATION, OWNER, ReleaseSeen>(),
     );
     let accepted = g::seq(

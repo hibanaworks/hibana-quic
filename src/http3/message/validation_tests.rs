@@ -58,9 +58,10 @@ fn decode(wire: &Wire, method: &[u8]) -> Result<()> {
     let programs = (project::<0>(&graph), project::<1>(&graph));
     let carrier = CarrierStorage::<4, 16, 128>::new();
     let mut slab = [0; 65536];
-    let mut kit = SessionKitStorage::uninit();
     let sid = SessionId::new(78);
-    let r = kit.init().rendezvous(&mut slab, carrier.bind(sid)?)?;
+    let carrier_binding = carrier.bind(sid, &[])?;
+    let mut kit = SessionKitStorage::uninit();
+    let r = kit.init().rendezvous(&mut slab, &carrier_binding)?;
     let (mut reader, mut app) = (r.enter(sid, &programs.0)?, r.enter(sid, &programs.1)?);
     let (mut body, mut headers) = ([0; 3], [0; 512]);
     let exchange = Exchange::new(&mut body, &mut headers);
@@ -209,12 +210,10 @@ fn application_cannot_send_a_forged_method_back_to_reader() {
     );
     let carrier = CarrierStorage::<4, 16, 128>::new();
     let mut slab = [0; 65536];
-    let mut kit = SessionKitStorage::uninit();
     let sid = SessionId::new(79);
-    let r = kit
-        .init()
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-        .unwrap();
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
+    let mut kit = SessionKitStorage::uninit();
+    let r = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
     let (mut read, mut app, mut writer) = (
         r.enter(sid, &programs.0).unwrap(),
         r.enter(sid, &programs.1).unwrap(),
@@ -245,12 +244,10 @@ fn acknowledging_a_live_loan_fails_without_overwriting_it() {
     let programs = (project::<0>(&graph), project::<1>(&graph));
     let carrier = CarrierStorage::<4, 16, 128>::new();
     let mut slab = [0; 65536];
-    let mut kit = SessionKitStorage::uninit();
     let sid = SessionId::new(80);
-    let r = kit
-        .init()
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-        .unwrap();
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
+    let mut kit = SessionKitStorage::uninit();
+    let r = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
     let (mut reader, mut app) = (
         r.enter(sid, &programs.0).unwrap(),
         r.enter(sid, &programs.1).unwrap(),

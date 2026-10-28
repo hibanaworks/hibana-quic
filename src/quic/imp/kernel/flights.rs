@@ -311,6 +311,20 @@ impl<const F: usize, const B: usize, const R: usize> FlightStore<F, B, R> {
             .then_some(id)
         })
     }
+    /// Retained CRYPTO bytes not yet referenced by a reserved or sent packet.
+    pub(crate) fn unsent_crypto(&self) -> Option<FlightId> {
+        self.flights.iter().enumerate().find_map(|(slot, f)| {
+            let id = FlightId {
+                slot,
+                generation: f.generation,
+            };
+            (f.active
+                && !f.control
+                && !f.acknowledged
+                && !self.references.iter().flatten().any(|r| r.flight == id))
+            .then_some(id)
+        })
+    }
     pub fn next_lost(&self) -> Option<FlightId> {
         self.flights.iter().enumerate().find_map(|(slot, f)| {
             let id = FlightId {
@@ -423,6 +437,27 @@ mod tests {
             space: PacketNumberSpace::Initial,
             value,
         }
+    }
+    #[test]
+    fn unsent_crypto_tracks_real_packet_reservations() {
+        let mut store = FlightStore::<3, 64, 4>::new();
+        let first = store.append(Level::Initial, 0, b"hello").unwrap();
+        let second = store.append(Level::Handshake, 0, b"certificate").unwrap();
+        let control = store.append_handshake_done().unwrap();
+        assert_eq!(store.unsent_crypto(), Some(first));
+        assert_eq!(store.unsent_control(), Some(control));
+        let reservation = store.reserve(first, pn(0)).unwrap();
+        assert_eq!(store.unsent_crypto(), Some(second));
+        store.cancelled(reservation).unwrap();
+        assert_eq!(store.unsent_crypto(), Some(first));
+        let reservation = store.reserve(first, pn(1)).unwrap();
+        store.accepted(reservation, 10).unwrap();
+        assert_eq!(store.unsent_crypto(), Some(second));
+        store.acknowledge(PacketNumberSpace::Initial, &[AckRange { start: 1, end: 1 }]);
+        assert_eq!(store.unsent_crypto(), Some(second));
+        store.discard_space(PacketNumberSpace::Handshake).unwrap();
+        assert_eq!(store.unsent_crypto(), None);
+        assert_eq!(store.unsent_control(), Some(control));
     }
     #[test]
     fn lost_packet_does_not_release_data_and_ack_of_retransmission_does() {

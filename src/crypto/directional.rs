@@ -159,9 +159,12 @@ pub struct ApplicationWriteKeys<'a> {
     update_evidence: Option<UpdateEvidence<'a>>,
     last_now: u64,
 }
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Peer updates transfer the actual affine key without allocation."
+#[cfg_attr(
+    target_pointer_width = "64",
+    expect(
+        clippy::large_enum_variant,
+        reason = "Peer updates transfer the actual affine key without allocation."
+    )
 )]
 pub enum AuthenticatedRead<'a, 'packet> {
     Ready(AckEligible<'a, 'packet>),

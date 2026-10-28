@@ -53,10 +53,11 @@ fn completed_read_then_normal_return_uses_the_outer_entry_with_the_reused_contra
     for reads in [0, 1, 2, 64] {
         let carrier = CarrierStorage::<1, 16, 8>::new();
         let mut slab = [0; 65536];
+        let carrier_binding = carrier.bind(SessionId::new(40), &[]).unwrap();
         let mut storage = SessionKitStorage::uninit();
         let kit = storage
             .init()
-            .rendezvous(&mut slab, carrier.bind(SessionId::new(40)).unwrap())
+            .rendezvous(&mut slab, &carrier_binding)
             .unwrap();
         let mut requester = kit.enter(SessionId::new(40), &p0).unwrap();
         let mut source = kit.enter(SessionId::new(40), &p1).unwrap();
@@ -124,10 +125,11 @@ fn an_unfinished_read_cannot_take_the_normal_return_entry() {
     let p1: RoleProgram<1> = project(&global);
     let carrier = CarrierStorage::<1, 16, 8>::new();
     let mut slab = [0; 65536];
+    let carrier_binding = carrier.bind(SessionId::new(40), &[]).unwrap();
     let mut storage = SessionKitStorage::uninit();
     let kit = storage
         .init()
-        .rendezvous(&mut slab, carrier.bind(SessionId::new(40)).unwrap())
+        .rendezvous(&mut slab, &carrier_binding)
         .unwrap();
     let mut requester = kit.enter(SessionId::new(40), &p0).unwrap();
     let mut source = kit.enter(SessionId::new(40), &p1).unwrap();
@@ -155,10 +157,11 @@ fn intrinsic_choice_can_start_with_either_nested_arm_and_reenter() {
     let p1: RoleProgram<1> = project(&global);
     let carrier = CarrierStorage::<1, 16, 8>::new();
     let mut slab = [0; 65536];
+    let carrier_binding = carrier.bind(SessionId::new(40), &[]).unwrap();
     let mut storage = SessionKitStorage::uninit();
     let kit = storage
         .init()
-        .rendezvous(&mut slab, carrier.bind(SessionId::new(40)).unwrap())
+        .rendezvous(&mut slab, &carrier_binding)
         .unwrap();
     let mut sender = kit.enter(SessionId::new(40), &p0).unwrap();
     let mut receiver = kit.enter(SessionId::new(40), &p1).unwrap();
@@ -213,11 +216,12 @@ fn nested_roll_failure_ack_retains_the_actual_connected_prefix() {
     for samples in [0, 1, 3] {
         let carrier = CarrierStorage::<1, 16, 8>::new();
         let mut slab = [0; 65536];
-        let mut storage = SessionKitStorage::uninit();
         let sid = SessionId::new(41);
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut storage = SessionKitStorage::uninit();
         let kit = storage
             .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+            .rendezvous(&mut slab, &carrier_binding)
             .unwrap();
         let mut source = kit.enter(sid, &p0).unwrap();
         let mut receiver = kit.enter(sid, &p1).unwrap();

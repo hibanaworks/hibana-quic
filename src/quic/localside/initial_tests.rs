@@ -196,12 +196,10 @@ fn finite_retirement_lane_waits_for_udp_cancellation_then_returns_actual_proof()
     let owner_program: RoleProgram<{ p::INITIAL_OWNER }> = project(&global);
     let carrier = CarrierStorage::<1, 16, 128>::new();
     let mut slab = [0; 65536];
-    let mut kit = SessionKitStorage::uninit();
     let sid = SessionId::new(200);
-    let rendezvous = kit
-        .init()
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-        .unwrap();
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
+    let mut kit = SessionKitStorage::uninit();
+    let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
     let mut event_endpoint = rendezvous.enter(sid, &event_program).unwrap();
     let mut owner_endpoint = rendezvous.enter(sid, &owner_program).unwrap();
     let exchange = Exchange::new();

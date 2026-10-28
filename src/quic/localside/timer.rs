@@ -173,12 +173,10 @@ mod tests {
         let sender_program: RoleProgram<{ p::TX_WIRE }> = project(&global);
         let carrier = CarrierStorage::<1, 16, 64>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(2);
-        let rv = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rv = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut timer_endpoint = rv.enter(sid, &timer_program).unwrap();
         let mut receiver_endpoint = rv.enter(sid, &receiver_program).unwrap();
         let mut stop_endpoint = rv.enter(sid, &stop_program).unwrap();
@@ -275,12 +273,10 @@ mod tests {
         let sender_program: RoleProgram<{ p::TX_WIRE }> = project(&global);
         let carrier = CarrierStorage::<1, 16, 64>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(2);
-        let rv = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rv = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut timer_endpoint = rv.enter(sid, &timer_program).unwrap();
         let mut receiver_endpoint = rv.enter(sid, &receiver_program).unwrap();
         let mut stop_endpoint = rv.enter(sid, &stop_program).unwrap();
@@ -374,12 +370,10 @@ mod tests {
         let receiver_program: RoleProgram<{ p::TIMER_TX }> = project(&global);
         let carrier = CarrierStorage::<1, 16, 128>::new();
         let mut slab = [0; 262144];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(1);
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut producer_endpoint = rendezvous.enter(sid, &producer_program).unwrap();
         let mut receiver_endpoint = rendezvous.enter(sid, &receiver_program).unwrap();
         let schedule = Schedule::new();

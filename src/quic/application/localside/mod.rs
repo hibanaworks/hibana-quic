@@ -12,7 +12,6 @@ mod ingress;
 #[cfg(test)]
 mod io_tests;
 pub(super) mod keys;
-pub(super) mod ownership;
 mod receive;
 pub(in crate::quic) mod reclaim;
 mod sink;
@@ -56,20 +55,16 @@ pub struct Endpoints<'a> {
     pub source_join: Endpoint<'a, { global::SOURCE_JOIN }>,
     /// Ingress localside that receives and hands off stream chunks.
     pub ingress: Endpoint<'a, { global::INGRESS }>,
+    /// Stream production endpoint, lent to each source and returned at its end.
+    pub production: Option<Endpoint<'a, { global::PRODUCTION }>>,
     /// Authenticated packet receive localside.
     pub receive: Endpoint<'a, { global::RECEIVE }>,
     /// Client response sink or server request sink.
     pub sink: Endpoint<'a, { global::SINK }>,
-    /// Read-key operations owned by receive, then affine key retirement.
-    pub rx_keys: Endpoint<'a, { global::RX_KEYS }>,
-    /// Write-key owner localside.
-    pub tx_keys: Endpoint<'a, { global::TX_KEYS }>,
     /// Independent loss/PTO timer localside.
     pub clock: Endpoint<'a, { global::CLOCK }>,
     /// Timer-event receiver; remains runnable during a pending UDP send.
     pub tx_clock: Endpoint<'a, { global::TX_CLOCK }>,
-    /// Packet preparation localside, then the closing continuation.
-    pub transmit: Endpoint<'a, { global::TRANSMIT }>,
     /// Physical publication localside, then closing publication and draining.
     pub adapter: Endpoint<'a, { global::ADAPTER }>,
     /// Peer terminal observation emitted by the receive localside.
@@ -110,13 +105,11 @@ impl<'kit> Endpoints<'kit> {
         let source = hibana::runtime::program::project(graph);
         let source_join = hibana::runtime::program::project(graph);
         let ingress = hibana::runtime::program::project(graph);
+        let production = hibana::runtime::program::project(graph);
         let receive = hibana::runtime::program::project(graph);
         let sink = hibana::runtime::program::project(graph);
-        let rx_keys = hibana::runtime::program::project(graph);
-        let tx_keys = hibana::runtime::program::project(graph);
         let clock = hibana::runtime::program::project(graph);
         let tx_clock = hibana::runtime::program::project(graph);
-        let transmit = hibana::runtime::program::project(graph);
         let adapter = hibana::runtime::program::project(graph);
         let peer_event = hibana::runtime::program::project(graph);
         let peer_close = hibana::runtime::program::project(graph);
@@ -162,13 +155,11 @@ impl<'kit> Endpoints<'kit> {
             source: enter!(source),
             source_join: enter!(source_join),
             ingress: enter!(ingress),
+            production: Some(enter!(production)),
             receive: enter!(receive),
             sink: enter!(sink),
-            rx_keys: enter!(rx_keys),
-            tx_keys: enter!(tx_keys),
             clock: enter!(clock),
             tx_clock: enter!(tx_clock),
-            transmit: enter!(transmit),
             adapter: enter!(adapter),
             peer_event: enter!(peer_event),
             peer_close: enter!(peer_close),

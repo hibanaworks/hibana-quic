@@ -27,8 +27,9 @@ fn backpressure(error: &stream::Error) -> bool {
     )
 }
 
-pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyReader>(
-    endpoint: &mut Endpoint<'_, { p::INGRESS }>,
+pub(crate) async fn ingress<'r, 'book, const RX: usize, const CHUNK: usize, B: BodyReader>(
+    endpoint: &mut Endpoint<'r, { p::INGRESS }>,
+    mut operations: Endpoint<'r, { p::PRODUCTION }>,
     control: &Control<'_, '_>,
     state: &Exchange<'book, CHUNK, B>,
     app: &RefCell<App<'book, '_, '_, RX, CHUNK>>,
@@ -41,6 +42,7 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                 let stream_id = offered.recv::<p::SourceOpen>().await?;
                 let mut production = state.opened.take().map_err(|_| Error::Binding)?;
                 check(production.id(), stream_id)?;
+                endpoint.send::<p::StreamLoan<'_>>(operations).await?;
                 loop {
                     let offered = endpoint.offer().await?;
                     match offered.label() {
@@ -115,7 +117,8 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                             endpoint.recv::<p::SourceTaken>().await?;
                         }
                         173 => {
-                            check(offered.recv::<p::SourceDataFinished>().await?, stream_id)?;
+                            check(offered.recv::<p::SourceFlush>().await?, stream_id)?;
+                            endpoint.send::<p::SourceFlushed>(&stream_id).await?;
                             break;
                         }
                         label => return Err(Error::UnexpectedLabel(label)),
@@ -124,7 +127,7 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                 let offered = endpoint.offer().await?;
                 let outcome = match offered.label() {
                     169 => {
-                        check(offered.recv::<p::SourceFin>().await?, stream_id)?;
+                        operations = offered.recv::<p::SourceFin<'_>>().await?;
                         let terminal = Chunk {
                             bytes: [0; CHUNK],
                             len: 0,
@@ -135,7 +138,7 @@ pub(crate) async fn ingress<'book, const RX: usize, const CHUNK: usize, B: BodyR
                         }
                     }
                     170 => {
-                        check(offered.recv::<p::SourceAbandon>().await?, stream_id)?;
+                        operations = offered.recv::<p::SourceAbandon<'_>>().await?;
                         Admission::Accepted
                     }
                     label => return Err(Error::UnexpectedLabel(label)),

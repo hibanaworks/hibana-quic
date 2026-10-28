@@ -374,14 +374,16 @@ fn bounded_case(wake: &'static hibana_quic_pal::unix::reactor::WakeStorage, case
         let sc = CarrierStorage::<1, 16, 4>::new();
         let mut cslab = vec![0; 65536];
         let mut sslab = vec![0; 65536];
-        let mut ck = SessionKitStorage::uninit();
-        let mut sk = SessionKitStorage::uninit();
         let cid = SessionId::new(4500);
         let sid = SessionId::new(4501);
+        let cc_binding = cc.bind(cid, &[]).unwrap();
+        let mut ck = SessionKitStorage::uninit();
         let ck = ck.init();
+        let cr = ck.rendezvous(&mut cslab, &cc_binding).unwrap();
+        let sc_binding = sc.bind(sid, &[]).unwrap();
+        let mut sk = SessionKitStorage::uninit();
         let sk = sk.init();
-        let cr = ck.rendezvous(&mut cslab, cc.bind(cid).unwrap()).unwrap();
-        let sr = sk.rendezvous(&mut sslab, sc.bind(sid).unwrap()).unwrap();
+        let sr = sk.rendezvous(&mut sslab, &sc_binding).unwrap();
         let cp = {
             let graph = global::client();
             (
@@ -734,11 +736,12 @@ fn reference_case(
     let slot = hibana_tls::handshake::MessageSlot::new(&mut bytes);
     let carrier = CarrierStorage::<1, 16, 4>::new();
     let mut slab = vec![0; 65536];
+    let id = SessionId::new(4700);
+    let carrier_binding = carrier.bind(id, &[]).unwrap();
     let mut kit = SessionKitStorage::uninit();
     let kit = kit.init();
-    let id = SessionId::new(4700);
     let rendezvous = kit
-        .rendezvous(&mut slab, carrier.bind(id).unwrap())
+        .rendezvous(&mut slab, &carrier_binding)
         .unwrap();
     let projection = if candidate_client {
         {

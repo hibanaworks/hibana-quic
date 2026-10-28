@@ -96,11 +96,12 @@ pub fn handshake_observe(
     let slot = hibana_tls::handshake::MessageSlot::new(&mut bytes);
     let carrier = CarrierStorage::<1, 16, 4>::new();
     let mut slab = vec![0; 65536];
+    let id = SessionId::new(4801);
+    let carrier_binding = carrier.bind(id, &[]).unwrap();
     let mut storage = SessionKitStorage::uninit();
     let kit = storage.init();
-    let id = SessionId::new(4801);
     let rv = kit
-        .rendezvous(&mut slab, carrier.bind(id).unwrap())
+        .rendezvous(&mut slab, &carrier_binding)
         .unwrap();
     let projection = if client {
         {

@@ -18,7 +18,8 @@ REFERENCE
 )
 export REFERENCE_IMPLEMENTATION
 mkdir -p ci-safe-results .ci-work/raw
-python3 tools/ci/audit_source.py --check
+rustup toolchain install stable --profile minimal
+CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- audit .
 if [[ -f tools/ci/recovery-diagnostics ]]; then
   exec bash tools/ci/compile-recovery.sh
 fi
@@ -182,8 +183,8 @@ fi
 echo 'Building bounded endpoint from audited source'
 # The candidate uses the immutable TLS revision checked out beside QUIC.
 # CI must restore that paired snapshot before this job; never silently fetch HEAD.
-python3 tools/ci/stage-paired-source.py --output .ci-work/paired-source
-python3 .ci-work/paired-source/hibana-quic/tools/ci/audit_source.py --check
+CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- stage . .ci-work/paired-source
+CARGO_TARGET_DIR="$RUNNER_TEMP/source-check-target" cargo +stable run --locked --manifest-path tools/ci/source/Cargo.toml -- audit .ci-work/paired-source/hibana-quic
 cp .ci-work/paired-source/source-pair.json ci-safe-results/source-pair.json
 docker build --platform linux/amd64 --build-arg RUST_IMAGE="$RUST_IMAGE" --build-arg ENDPOINT_IMAGE="$ENDPOINT_IMAGE" -f tests/interop/qns/Dockerfile -t hibana-pilot-bounded .ci-work/paired-source
 BOUNDED_IMAGE=$(docker image inspect hibana-pilot-bounded --format '{{.Id}}')

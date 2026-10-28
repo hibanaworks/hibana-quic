@@ -6,7 +6,7 @@ use crate::quic::ecn::global as ep;
 use crate::quic::path::global as pp;
 use hibana::g::Message;
 
-use super::{CloseKind, Control, Error, global as p, ownership};
+use super::{CloseKind, Control, Error, OrdinaryRetired, global as p, termination};
 use crate::quic;
 use crate::quic::Clock;
 use crate::quic::Config;
@@ -23,7 +23,7 @@ use core::{
     pin::pin,
     task::Poll,
 };
-use hibana::{Endpoint, runtime::resolver::DecisionArm};
+use hibana::{Endpoint, ParallelEndpoint, runtime::resolver::DecisionArm};
 
 use crate::quic::application::imp::publication::*;
 #[allow(clippy::too_many_arguments)]
@@ -35,7 +35,9 @@ pub(crate) async fn run<
     const RX: usize,
     const CHUNK: usize,
 >(
-    endpoint: &mut Endpoint<'_, { p::TRANSMIT }>,
+    endpoint: &mut ParallelEndpoint<'_, '_, { p::WRITE_KEYS }>,
+    receipts: &mut ParallelEndpoint<'_, '_, { p::WRITE_KEYS }>,
+    path: &mut ParallelEndpoint<'_, '_, { p::WRITE_KEYS }>,
     control: &Control<'_, 'scope>,
     state: &Exchange<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
     keys: &crate::quic::application::imp::keys::KeyOwner<'scope>,
@@ -64,8 +66,8 @@ pub(crate) async fn run<
                             check(receipt.id(), id)?;
                             let released = streams.record_delivery(receipt)?;
                             reclaim.delivery.put(released).map_err(|_| Error::Binding)?;
-                            endpoint.send::<p::DeliveryReclaim>(&id).await?;
-                            check(endpoint.recv::<p::DeliveryStored>().await?, id)?;
+                            receipts.send::<p::DeliveryReclaim>(&id).await?;
+                            check(receipts.recv::<p::DeliveryStored>().await?, id)?;
                             endpoint.send::<p::StreamDeliverySeen>(&id).await?;
                         }
                         183 => {
@@ -150,9 +152,9 @@ pub(crate) async fn run<
                         }),
                 }))
                 .map_err(|_| Error::Binding)?;
-            endpoint.send::<pp::Request>(&()).await?;
+            path.send::<pp::Request>(&()).await?;
             loop {
-                let offered = endpoint.offer().await?;
+                let offered = path.offer().await?;
                 match offered.label() {
                     label if label == pp::Reply::LOGICAL_LABEL => {
                         offered.recv::<pp::Reply>().await?;
@@ -176,7 +178,7 @@ pub(crate) async fn run<
                     }
                     label if label == pp::ProbePause::LOGICAL_LABEL => {
                         offered.recv::<pp::ProbePause>().await?;
-                        endpoint.send::<pp::ProbePaused>(&()).await?;
+                        path.send::<pp::ProbePaused>(&()).await?;
                         continue;
                     }
                     label if label == pp::Expand::LOGICAL_LABEL => {
@@ -201,7 +203,7 @@ pub(crate) async fn run<
                     }
                     label => return Err(Error::UnexpectedLabel(label)),
                 }
-                endpoint.send::<pp::Settled>(&()).await?;
+                path.send::<pp::Settled>(&()).await?;
                 state
                     .paths
                     .request
@@ -226,7 +228,7 @@ pub(crate) async fn run<
                             }),
                     }))
                     .map_err(|_| Error::Binding)?;
-                endpoint.send::<pp::Request>(&()).await?;
+                path.send::<pp::Request>(&()).await?;
             }
             let grant = state.paths.grant.take().map_err(|_| Error::Binding)?;
             let pending = match prepare(
@@ -245,12 +247,12 @@ pub(crate) async fn run<
                 Err(error) => {
                     // This grant has no published datagram. Close its actual
                     // path round before the terminal Request/End continuation.
-                    endpoint.send::<pp::Settled>(&()).await?;
+                    path.send::<pp::Settled>(&()).await?;
                     return Err(error);
                 }
             };
             let Some(pending) = pending else {
-                endpoint.send::<pp::Settled>(&()).await?;
+                path.send::<pp::Settled>(&()).await?;
                 if let Some(deadline) = state.paths.deadline(clock.now()) {
                     let _ = crate::runtime::select(
                         control.wait(4, revision),
@@ -276,7 +278,7 @@ pub(crate) async fn run<
                     offered.recv::<p::Rejected>().await?;
                     if !control.stopping() {
                         endpoint.send::<p::Settled>(&()).await?;
-                        endpoint.send::<pp::Settled>(&()).await?;
+                        path.send::<pp::Settled>(&()).await?;
                         control.revoke()?;
                         return Err(Error::Connection(quic::Error::Io(quic::IoError::Rejected)));
                     }
@@ -284,7 +286,7 @@ pub(crate) async fn run<
                 label => return Err(Error::UnexpectedLabel(label)),
             }
             endpoint.send::<p::Settled>(&()).await?;
-            endpoint.send::<pp::Settled>(&()).await?;
+            path.send::<pp::Settled>(&()).await?;
 
             crate::runtime::yield_now().await;
         }
@@ -292,19 +294,19 @@ pub(crate) async fn run<
     }
     .await;
     state.paths.request.put(None).map_err(|_| Error::Binding)?;
-    endpoint.send::<pp::Request>(&()).await?;
+    path.send::<pp::Request>(&()).await?;
     loop {
-        let offered = endpoint.offer().await?;
+        let offered = path.offer().await?;
         match offered.label() {
             label if label == pp::Pause::LOGICAL_LABEL => {
                 offered.recv::<pp::Pause>().await?;
-                endpoint.send::<pp::Paused>(&()).await?;
-                endpoint.recv::<pp::End>().await?;
+                path.send::<pp::Paused>(&()).await?;
+                path.recv::<pp::End>().await?;
                 break;
             }
             label if label == pp::ProbePause::LOGICAL_LABEL => {
                 offered.recv::<pp::ProbePause>().await?;
-                endpoint.send::<pp::ProbePaused>(&()).await?;
+                path.send::<pp::ProbePaused>(&()).await?;
                 continue;
             }
             label if label == pp::End::LOGICAL_LABEL => {
@@ -321,15 +323,15 @@ pub(crate) async fn run<
             }
             label => return Err(Error::UnexpectedLabel(label)),
         }
-        endpoint.send::<pp::Settled>(&()).await?;
+        path.send::<pp::Settled>(&()).await?;
         state.paths.request.put(None).map_err(|_| Error::Binding)?;
-        endpoint.send::<pp::Request>(&()).await?;
+        path.send::<pp::Request>(&()).await?;
     }
-    endpoint.send::<pp::Joined>(&()).await?;
+    path.send::<pp::Joined>(&()).await?;
     endpoint.send::<p::StopPublication>(&()).await?;
     endpoint.recv::<p::PublicationStopped>().await?;
-    endpoint.send::<p::DeliveryReclaimsDone>(&()).await?;
-    endpoint.recv::<p::DeliveryReclaimsClosed>().await?;
+    receipts.send::<p::DeliveryReclaimsDone>(&()).await?;
+    receipts.recv::<p::DeliveryReclaimsClosed>().await?;
     publication_result
 }
 
@@ -608,11 +610,15 @@ pub(crate) async fn publish<
     }
 }
 
-/// Entered only by the post-parallel global continuation. The affine ordinary
-/// retirement proof frees bounded history without resetting any burned PN;
-/// actual key-role retirement releases the sole write key for close sealing.
+/// Results of the joined ordinary retirement and terminal observations.
+pub(super) struct Closing<'scope> {
+    pub(super) ordinary: OrdinaryRetired<'scope>,
+    pub(super) permission: termination::Permission<'scope>,
+}
+
+/// Continue after ordinary retirement, keeping allocated packet numbers intact.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn close<
+pub(super) async fn close<
     'book,
     'streams,
     'owner,
@@ -621,17 +627,17 @@ pub(crate) async fn close<
     const RX: usize,
     const CHUNK: usize,
 >(
-    endpoint: &mut Endpoint<'_, { p::TRANSMIT }>,
+    endpoint: &mut Endpoint<'_, { p::WRITE_KEYS }>,
     control: &Control<'_, 'scope>,
     state: &Exchange<'book, 'streams, '_, 'scope, N, RX, CHUNK>,
     owner: &'owner crate::quic::application::imp::keys::KeyOwner<'scope>,
-    closing: ownership::Closing<'scope>,
+    closing: Closing<'scope>,
     book: &mut recovery::Tx<'book, 'scope, N>,
     peer: &ConnectionId,
     receive: &mut impl DatagramRx,
     clock: &impl Clock,
 ) -> Result<(), Error> {
-    let ownership::Closing {
+    let Closing {
         ordinary: retired,
         permission,
     } = closing;
@@ -753,11 +759,11 @@ pub(crate) async fn close<
                 endpoint.send::<p::CloseDatagram>(&()).await?;
                 let offered = endpoint.offer().await?;
                 match offered.label() {
-                    33 => {
+                    p::CloseAccepted::LOGICAL_LABEL => {
                         offered.recv::<p::CloseAccepted>().await?;
                         close_accepted = true;
                     }
-                    34 => offered.recv::<p::CloseRejected>().await?,
+                    p::CloseRejected::LOGICAL_LABEL => offered.recv::<p::CloseRejected>().await?,
                     label => return Err(Error::UnexpectedLabel(label)),
                 }
                 endpoint.send::<p::CloseSettled>(&()).await?;
@@ -847,14 +853,14 @@ pub(crate) async fn publish_close<
                 endpoint.recv::<p::CloseSettled>().await?;
                 outcome.clear();
             }
-            36 => {
+            p::CloseFlightDone::LOGICAL_LABEL => {
                 offered.recv::<p::CloseFlightDone>().await?;
                 let deadline = state.drain_deadline.get().ok_or(Error::Binding)?;
                 clock.wait_until(deadline).await;
                 endpoint.send::<p::CloseFlightSettled>(&()).await?;
                 break;
             }
-            38 => {
+            p::Drain::LOGICAL_LABEL => {
                 offered.recv::<p::Drain>().await?;
                 let deadline = state.drain_deadline.get().ok_or(Error::Binding)?;
                 clock.wait_until(deadline).await;

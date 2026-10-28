@@ -16,13 +16,14 @@ impl<'source, 'scope, 'cfg, 'buf> Numbers<'source, 'scope, 'cfg, 'buf> {
     }
     pub(in crate::quic) fn transmit<const N: usize>(
         &self,
+        level: Level,
     ) -> Result<Option<CryptoFlight<N>>, hibana_tls::quic::Error> {
         let mut source = self.source.borrow_mut();
         if source.last_failure().is_some() {
             return Err(hibana_tls::quic::Error::Handshake);
         }
         let mut bytes = [0; N];
-        let Some(output) = source.transmit(&mut bytes)? else {
+        let Some(output) = source.transmit(level, &mut bytes)? else {
             return Ok(None);
         };
         if output.len == 0 || output.len > N {

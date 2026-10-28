@@ -1,12 +1,13 @@
 //! The connected global: actual affine startup, concurrent ordinary endpoints,
 //! complete ordinary retirement, then closing or draining.
 //!
-//! Role identifiers below index the role projections. Their attached affine
-//! endpoints are defined and created in [`crate::quic::application::localside::Endpoints`].
+//! [`crate::quic::application::localside::Endpoints`] attaches the participants.
+//! The TLS installation and packet-write endpoints continue from the handshake.
 //! [`crate::quic::application::localside::run`] shows which actual futures own or borrow each endpoint
 //! and how those futures are polled together.
 use crate::quic::ecn::global as e;
 use crate::quic::global::{RX as PREFIX_RX, TLS_RX as PREFIX_TLS_RX, TX as PREFIX_TX};
+use hibana::Endpoint;
 use hibana::g;
 use hibana::runtime::program::Projectable;
 
@@ -14,11 +15,13 @@ pub const SOURCE: u8 = 8;
 pub const INGRESS: u8 = 9;
 pub const RECEIVE: u8 = 10;
 pub const SINK: u8 = 11;
-pub const RX_KEYS: u8 = 12;
-pub const TX_KEYS: u8 = 13;
+/// The TLS installation endpoint continues as the client's key-control endpoint.
+pub const RX_KEYS: u8 = hibana_tls::handshake::global::owned::MATERIAL;
+/// The packet-write endpoint returned by the handshake continues into key
+/// updates, packet preparation, and connection closing.
+pub const WRITE_KEYS: u8 = hibana_tls::handshake::global::owned::WRITE_KEYS;
 pub const CLOCK: u8 = 14;
 pub const TX_CLOCK: u8 = 15;
-pub const TRANSMIT: u8 = 16;
 pub const ADAPTER: u8 = 17;
 pub const PEER_EVENT: u8 = 22;
 pub const PEER_CLOSE: u8 = 23;
@@ -30,6 +33,9 @@ pub const SOURCE_COLLECTOR: u8 = 27;
 pub const INPUT_COLLECTOR: u8 = 28;
 pub const DELIVERY_COLLECTOR: u8 = 29;
 pub const SOURCE_JOIN: u8 = 30;
+/// Permission to produce the current stream's data and return it at its end.
+pub const PRODUCTION: u8 = hibana_tls::handshake::global::owned::PRODUCTION;
+pub type StreamLoan<'r> = g::Msg<221, Endpoint<'r, PRODUCTION>>;
 pub type SourceJoined = g::Msg<213, ()>;
 pub type SourceFailed = g::Msg<214, ()>;
 pub type SourceDataFailed = g::Msg<215, ()>;
@@ -66,6 +72,7 @@ pub type Expired = g::Msg<22, ()>;
 pub type TimerTaken = g::Msg<23, ()>;
 pub type ClockRetired = g::Msg<24, ()>;
 pub type ClockAcknowledged = g::Msg<25, ()>;
+pub type StopClock = g::Msg<223, ()>;
 pub type Datagram = g::Msg<26, ()>;
 pub type Accepted = g::Msg<27, ()>;
 pub type Rejected = g::Msg<28, ()>;
@@ -76,7 +83,7 @@ pub type CloseDatagram = g::Msg<32, ()>;
 pub type CloseAccepted = g::Msg<33, ()>;
 pub type CloseRejected = g::Msg<34, ()>;
 pub type CloseSettled = g::Msg<35, ()>;
-pub type CloseFlightDone = g::Msg<36, ()>;
+pub type CloseFlightDone = g::Msg<213, ()>;
 pub type CloseFlightSettled = g::Msg<37, ()>;
 pub type Drain = g::Msg<38, ()>;
 pub type Drained = g::Msg<39, ()>;
@@ -96,14 +103,16 @@ pub type CompletionCancelled = g::Msg<50, ()>;
 pub type CompletionSeen = g::Msg<51, ()>;
 pub type IdleExpired = g::Msg<52, ()>;
 
-// Stream production has a finite terminal outside the rolled data fragment.
-// FIN is a choreography message, never a boolean hidden in a data slot.
 pub type SourceOpen = g::Msg<168, u64>;
-pub type SourceFin = g::Msg<169, u64>;
-pub type SourceAbandon = g::Msg<170, u64>;
+/// Finish the stream and return its production endpoint to ingress.
+pub type SourceFin<'r> = g::Msg<169, Endpoint<'r, PRODUCTION>>;
+/// Stop producing data and return its endpoint without sending FIN.
+pub type SourceAbandon<'r> = g::Msg<170, Endpoint<'r, PRODUCTION>>;
 pub type SourceEnded = g::Msg<171, u64>;
 pub type SourceEndRejected = g::Msg<172, u64>;
-pub type SourceDataFinished = g::Msg<173, u64>;
+/// Wait for ingress to finish consuming the current stream's input.
+pub type SourceFlush = g::Msg<173, u64>;
+pub type SourceFlushed = g::Msg<222, u64>;
 pub type SourceStopped = g::Msg<187, ()>;
 pub type SourceEndStopped = g::Msg<188, u64>;
 pub type ProductionReclaim = g::Msg<189, u64>;
@@ -151,37 +160,28 @@ pub type PeerRetirementGrant = g::Msg<58, ()>;
 pub type FilesRetirementGrant = g::Msg<59, ()>;
 pub type FinishedValidated = g::Msg<160, ()>;
 pub type TranscriptStart = g::Msg<161, ()>;
-pub type WriteStart = g::Msg<162, ()>;
+/// Verified TLS startup lets the source begin opening application streams.
 pub type StreamAdmission = g::Msg<163, ()>;
-pub type WriteAdmission = g::Msg<164, ()>;
 pub type ReadAdmission = g::Msg<165, ()>;
-pub type KeyControlAdmission = g::Msg<166, ()>;
+pub type KeyControlAdmission<'r> = g::Msg<166, Endpoint<'r, RX_KEYS>>;
 pub type WriteForAdmission = g::Msg<167, ()>;
 
 fn startup() -> impl Projectable {
-    // The write continuation visits RX for the actual Finished/parameter/scope
-    // check. Its owned bundle then returns through the transcript/read path.
-    // RX cannot publish FinishedValidated before receiving WriteForAdmission,
-    // so a capacity-one carrier has no unordered arrivals at TX_KEYS.
+    // RX validates Finished and transport parameters after write startup.
+    // TLS_RX and RECEIVE acknowledge that validation before traffic starts.
     let authenticated_read = g::seq(
         g::send::<PREFIX_RX, PREFIX_TLS_RX, FinishedValidated>(),
         g::seq(
             g::send::<PREFIX_TLS_RX, RECEIVE, TranscriptStart>(),
-            g::send::<RECEIVE, TX_KEYS, ReadAdmission>(),
+            g::send::<RECEIVE, PREFIX_TX, ReadAdmission>(),
         ),
     );
-    let settled_write = g::seq(
-        g::send::<PREFIX_TX, TX_KEYS, WriteStart>(),
-        g::send::<TX_KEYS, PREFIX_RX, WriteForAdmission>(),
-    );
+    let settled_write = g::send::<PREFIX_TX, PREFIX_RX, WriteForAdmission>();
     g::seq(
-        g::par(authenticated_read, settled_write),
-        g::seq(
-            g::send::<TX_KEYS, RX_KEYS, KeyControlAdmission>(),
-            g::seq(
-                g::send::<TX_KEYS, TRANSMIT, WriteAdmission>(),
-                g::send::<TRANSMIT, SOURCE, StreamAdmission>(),
-            ),
+        g::seq(settled_write, authenticated_read),
+        g::par(
+            g::send::<PREFIX_TLS_RX, RECEIVE, KeyControlAdmission<'_>>(),
+            g::send::<PREFIX_TX, SOURCE, StreamAdmission>(),
         ),
     )
 }
@@ -189,40 +189,46 @@ fn startup() -> impl Projectable {
 fn source_base() -> impl Projectable {
     let chunks = g::route(
         g::seq(
-            g::send::<SOURCE, INGRESS, SourceData>(),
+            g::send::<PRODUCTION, INGRESS, SourceData>(),
             g::seq(
                 g::route(
-                    g::send::<INGRESS, SOURCE, SourceAccepted>(),
+                    g::send::<INGRESS, PRODUCTION, SourceAccepted>(),
                     g::route(
-                        g::send::<INGRESS, SOURCE, SourceStopped>(),
+                        g::send::<INGRESS, PRODUCTION, SourceStopped>(),
                         g::route(
-                            g::send::<INGRESS, SOURCE, SourceRejected>(),
-                            g::send::<INGRESS, SOURCE, SourceDataFailed>(),
+                            g::send::<INGRESS, PRODUCTION, SourceRejected>(),
+                            g::send::<INGRESS, PRODUCTION, SourceDataFailed>(),
                         ),
                     ),
                 ),
-                g::send::<SOURCE, INGRESS, SourceTaken>(),
+                g::send::<PRODUCTION, INGRESS, SourceTaken>(),
             ),
         ),
-        g::send::<SOURCE, INGRESS, SourceDataFinished>(),
+        g::seq(
+            g::send::<PRODUCTION, INGRESS, SourceFlush>(),
+            g::send::<INGRESS, PRODUCTION, SourceFlushed>(),
+        ),
     )
     .roll();
     let stream = g::seq(
         g::send::<SOURCE, INGRESS, SourceOpen>(),
         g::seq(
-            chunks,
+            g::send::<INGRESS, SOURCE, StreamLoan<'_>>(),
             g::seq(
-                g::route(
-                    g::send::<SOURCE, INGRESS, SourceFin>(),
-                    g::send::<SOURCE, INGRESS, SourceAbandon>(),
-                ),
-                g::route(
-                    g::send::<INGRESS, SOURCE, SourceEnded>(),
+                chunks,
+                g::seq(
                     g::route(
-                        g::send::<INGRESS, SOURCE, SourceEndStopped>(),
+                        g::send::<SOURCE, INGRESS, SourceFin<'_>>(),
+                        g::send::<SOURCE, INGRESS, SourceAbandon<'_>>(),
+                    ),
+                    g::route(
+                        g::send::<INGRESS, SOURCE, SourceEnded>(),
                         g::route(
-                            g::send::<INGRESS, SOURCE, SourceEndRejected>(),
-                            g::send::<INGRESS, SOURCE, SourceEndFailed>(),
+                            g::send::<INGRESS, SOURCE, SourceEndStopped>(),
+                            g::route(
+                                g::send::<INGRESS, SOURCE, SourceEndRejected>(),
+                                g::send::<INGRESS, SOURCE, SourceEndFailed>(),
+                            ),
                         ),
                     ),
                 ),
@@ -290,28 +296,31 @@ pub fn receive_choreography() -> impl Projectable {
         ),
     )
     .roll();
-    g::par(packets, receipts)
+    g::par(
+        g::seq(packets, g::send::<RECEIVE, CLOCK, StopClock>()),
+        receipts,
+    )
 }
 pub fn publication_choreography() -> impl Projectable {
     let publish = g::seq(
-        g::send::<TRANSMIT, ADAPTER, Datagram>(),
+        g::send::<WRITE_KEYS, ADAPTER, Datagram>(),
         g::seq(
             g::route(
-                g::send::<ADAPTER, TRANSMIT, Accepted>(),
-                g::send::<ADAPTER, TRANSMIT, Rejected>(),
+                g::send::<ADAPTER, WRITE_KEYS, Accepted>(),
+                g::send::<ADAPTER, WRITE_KEYS, Rejected>(),
             ),
-            g::send::<TRANSMIT, ADAPTER, Settled>(),
+            g::send::<WRITE_KEYS, ADAPTER, Settled>(),
         ),
     );
     let reset = g::seq(
-        g::send::<TRANSMIT, ADAPTER, ApplyStop>(),
+        g::send::<WRITE_KEYS, ADAPTER, ApplyStop>(),
         g::seq(
             g::route(
-                g::send::<ADAPTER, TRANSMIT, StopApplied>(),
-                g::send::<ADAPTER, TRANSMIT, StopFailed>(),
+                g::send::<ADAPTER, WRITE_KEYS, StopApplied>(),
+                g::send::<ADAPTER, WRITE_KEYS, StopFailed>(),
             )
             .resolve::<STOP_RESULT>(),
-            g::send::<TRANSMIT, ADAPTER, StopSettled>(),
+            g::send::<WRITE_KEYS, ADAPTER, StopSettled>(),
         ),
     );
     let base = g::seq(
@@ -321,55 +330,55 @@ pub fn publication_choreography() -> impl Projectable {
                 reset,
                 g::route(
                     g::seq(
-                        g::send::<TRANSMIT, ADAPTER, ApplyAcknowledgments>(),
+                        g::send::<WRITE_KEYS, ADAPTER, ApplyAcknowledgments>(),
                         g::seq(
-                            g::send::<ADAPTER, TRANSMIT, AcknowledgmentsApplied>(),
+                            g::send::<ADAPTER, WRITE_KEYS, AcknowledgmentsApplied>(),
                             g::seq(
                                 g::route(
                                     g::seq(
-                                        g::send::<ADAPTER, TRANSMIT, StreamDelivered>(),
-                                        g::send::<TRANSMIT, ADAPTER, StreamDeliverySeen>(),
+                                        g::send::<ADAPTER, WRITE_KEYS, StreamDelivered>(),
+                                        g::send::<WRITE_KEYS, ADAPTER, StreamDeliverySeen>(),
                                     ),
-                                    g::send::<ADAPTER, TRANSMIT, DeliveriesDone>(),
+                                    g::send::<ADAPTER, WRITE_KEYS, DeliveriesDone>(),
                                 )
                                 .roll(),
-                                g::send::<TRANSMIT, ADAPTER, AcknowledgmentsSettled>(),
+                                g::send::<WRITE_KEYS, ADAPTER, AcknowledgmentsSettled>(),
                             ),
                         ),
                     ),
                     g::route(
                         g::seq(
-                            g::send::<TRANSMIT, ADAPTER, ApplyLoss>(),
+                            g::send::<WRITE_KEYS, ADAPTER, ApplyLoss>(),
                             g::seq(
-                                g::send::<ADAPTER, TRANSMIT, LossApplied>(),
-                                g::send::<TRANSMIT, ADAPTER, LossSettled>(),
+                                g::send::<ADAPTER, WRITE_KEYS, LossApplied>(),
+                                g::send::<WRITE_KEYS, ADAPTER, LossSettled>(),
                             ),
                         ),
                         g::route(
                             g::seq(
-                                g::send::<TRANSMIT, ADAPTER, ReclaimStream>(),
+                                g::send::<WRITE_KEYS, ADAPTER, ReclaimStream>(),
                                 g::seq(
-                                    g::send::<ADAPTER, TRANSMIT, StreamReclaimed>(),
-                                    g::send::<TRANSMIT, ADAPTER, ReclaimSettled>(),
+                                    g::send::<ADAPTER, WRITE_KEYS, StreamReclaimed>(),
+                                    g::send::<WRITE_KEYS, ADAPTER, ReclaimSettled>(),
                                 ),
                             ),
-                            g::send::<TRANSMIT, ADAPTER, StopPublication>(),
+                            g::send::<WRITE_KEYS, ADAPTER, StopPublication>(),
                         ),
                     ),
                 ),
             ),
         )
         .roll(),
-        g::send::<ADAPTER, TRANSMIT, PublicationStopped>(),
+        g::send::<ADAPTER, WRITE_KEYS, PublicationStopped>(),
     );
     let receipt = g::route(
         g::seq(
-            g::send::<TRANSMIT, DELIVERY_COLLECTOR, DeliveryReclaim>(),
-            g::send::<DELIVERY_COLLECTOR, TRANSMIT, DeliveryStored>(),
+            g::send::<WRITE_KEYS, DELIVERY_COLLECTOR, DeliveryReclaim>(),
+            g::send::<DELIVERY_COLLECTOR, WRITE_KEYS, DeliveryStored>(),
         ),
         g::seq(
-            g::send::<TRANSMIT, DELIVERY_COLLECTOR, DeliveryReclaimsDone>(),
-            g::send::<DELIVERY_COLLECTOR, TRANSMIT, DeliveryReclaimsClosed>(),
+            g::send::<WRITE_KEYS, DELIVERY_COLLECTOR, DeliveryReclaimsDone>(),
+            g::send::<DELIVERY_COLLECTOR, WRITE_KEYS, DeliveryReclaimsClosed>(),
         ),
     )
     .roll();
@@ -378,24 +387,24 @@ pub fn publication_choreography() -> impl Projectable {
 
 pub fn key_choreography() -> impl Projectable {
     let peer_update = g::seq(
-        g::send::<RX_KEYS, TX_KEYS, PeerUpdate>(),
+        g::send::<RX_KEYS, WRITE_KEYS, PeerUpdate>(),
         g::route(
-            g::send::<TX_KEYS, RX_KEYS, WriteInstalled>(),
-            g::send::<TX_KEYS, RX_KEYS, UpdateFailed>(),
+            g::send::<WRITE_KEYS, RX_KEYS, WriteInstalled>(),
+            g::send::<WRITE_KEYS, RX_KEYS, UpdateFailed>(),
         ),
     );
     let key_ack = g::seq(
-        g::send::<RX_KEYS, TX_KEYS, KeyAck>(),
+        g::send::<RX_KEYS, WRITE_KEYS, KeyAck>(),
         g::route(
-            g::send::<TX_KEYS, RX_KEYS, KeyAckApplied>(),
-            g::send::<TX_KEYS, RX_KEYS, KeyAckFailed>(),
+            g::send::<WRITE_KEYS, RX_KEYS, KeyAckApplied>(),
+            g::send::<WRITE_KEYS, RX_KEYS, KeyAckFailed>(),
         ),
     );
     let confirmation = g::seq(
-        g::send::<RX_KEYS, TX_KEYS, Confirmed>(),
+        g::send::<RX_KEYS, WRITE_KEYS, Confirmed>(),
         g::route(
-            g::send::<TX_KEYS, RX_KEYS, ConfirmationApplied>(),
-            g::send::<TX_KEYS, RX_KEYS, ConfirmationFailed>(),
+            g::send::<WRITE_KEYS, RX_KEYS, ConfirmationApplied>(),
+            g::send::<WRITE_KEYS, RX_KEYS, ConfirmationFailed>(),
         ),
     );
     let key_work = g::route(
@@ -406,41 +415,40 @@ pub fn key_choreography() -> impl Projectable {
                 confirmation,
                 g::route(
                     g::seq(
-                        g::send::<RX_KEYS, TX_KEYS, LocalUpdate>(),
+                        g::send::<RX_KEYS, WRITE_KEYS, LocalUpdate>(),
                         g::seq(
                             g::route(
-                                g::send::<TX_KEYS, RX_KEYS, LocalInstalled>(),
-                                g::send::<TX_KEYS, RX_KEYS, LocalRejected>(),
+                                g::send::<WRITE_KEYS, RX_KEYS, LocalInstalled>(),
+                                g::send::<WRITE_KEYS, RX_KEYS, LocalRejected>(),
                             ),
-                            g::send::<RX_KEYS, TX_KEYS, LocalSettled>(),
+                            g::send::<RX_KEYS, WRITE_KEYS, LocalSettled>(),
                         ),
                     ),
-                    g::send::<RX_KEYS, TX_KEYS, KeysRetire>(),
+                    g::send::<RX_KEYS, WRITE_KEYS, KeysRetire>(),
                 ),
             ),
         ),
     )
     .roll();
-    g::seq(key_work, g::send::<TX_KEYS, RX_KEYS, KeysRetired>())
+    g::seq(key_work, g::send::<WRITE_KEYS, RX_KEYS, KeysRetired>())
+}
+
+fn timer_choreography() -> impl Projectable {
+    g::route(
+        g::seq(
+            g::send::<CLOCK, TX_CLOCK, Expired>(),
+            g::send::<TX_CLOCK, CLOCK, TimerTaken>(),
+        ),
+        g::send::<CLOCK, TX_CLOCK, ClockRetired>(),
+    )
+    .roll()
 }
 
 fn ordinary() -> impl Projectable {
     let source = source_choreography();
     let receive = receive_choreography();
-
     let keys = key_choreography();
-
-    let timer = g::route(
-        g::seq(
-            g::send::<CLOCK, TX_CLOCK, Expired>(),
-            g::send::<TX_CLOCK, CLOCK, TimerTaken>(),
-        ),
-        g::seq(
-            g::send::<CLOCK, TX_CLOCK, ClockRetired>(),
-            g::send::<TX_CLOCK, CLOCK, ClockAcknowledged>(),
-        ),
-    )
-    .roll();
+    let timer = timer_choreography();
     let publication = publication_choreography();
 
     let peer = g::seq(
@@ -474,8 +482,7 @@ fn ordinary() -> impl Projectable {
     );
     let terminal = g::par(peer, files);
 
-    // Each lane is an actual bounded IO/key/clock continuation. They all finish
-    // before the closing capability and sole write key can be transferred.
+    // Run the independent protocol fragments before joining their retirement.
     let ordinary_base = g::par(
         source,
         g::par(
@@ -490,9 +497,11 @@ fn ordinary() -> impl Projectable {
         ),
         crate::http3::global::choreography(),
     );
-    // The fresh close owner passes the actual accumulated grant to one
-    // retired owner at a time. Each response requires consuming that grant;
-    // no unsolicited input can occupy a capacity-one carrier ahead of it.
+    // CLOCK joins its timeout loop and receive-side stop notice before
+    // consuming the retirement acknowledgment.
+    let ordinary = g::seq(ordinary, g::send::<TX_CLOCK, CLOCK, ClockAcknowledged>());
+    // Join publication and the independent key, peer and file acknowledgments
+    // before the transmit role begins closing.
     let retired_keys = g::seq(
         g::send::<CLOSE_JOIN, RX_KEYS, KeyRetirementGrant>(),
         g::send::<RX_KEYS, CLOSE_JOIN, KeyRetirement>(),
@@ -507,40 +516,40 @@ fn ordinary() -> impl Projectable {
     );
     let retirement = g::seq(
         g::par(
-            g::send::<TRANSMIT, CLOSE_JOIN, PublicationRetired>(),
+            g::send::<WRITE_KEYS, CLOSE_JOIN, PublicationRetired>(),
             g::par(retired_keys, g::par(retired_peer, retired_files)),
         ),
-        g::send::<CLOSE_JOIN, TRANSMIT, CloseAuthority>(),
+        g::send::<CLOSE_JOIN, WRITE_KEYS, CloseAuthority>(),
     );
 
     let close_packet = g::seq(
-        g::send::<TRANSMIT, ADAPTER, CloseDatagram>(),
+        g::send::<WRITE_KEYS, ADAPTER, CloseDatagram>(),
         g::seq(
             g::route(
-                g::send::<ADAPTER, TRANSMIT, CloseAccepted>(),
-                g::send::<ADAPTER, TRANSMIT, CloseRejected>(),
+                g::send::<ADAPTER, WRITE_KEYS, CloseAccepted>(),
+                g::send::<ADAPTER, WRITE_KEYS, CloseRejected>(),
             )
             .resolve::<SUBMISSION_RESULT>(),
-            g::send::<TRANSMIT, ADAPTER, CloseSettled>(),
+            g::send::<WRITE_KEYS, ADAPTER, CloseSettled>(),
         ),
     );
     let closing = g::seq(
         g::route(
             close_packet,
-            g::send::<TRANSMIT, ADAPTER, CloseFlightDone>(),
+            g::send::<WRITE_KEYS, ADAPTER, CloseFlightDone>(),
         )
         .roll(),
-        g::send::<ADAPTER, TRANSMIT, CloseFlightSettled>(),
+        g::send::<ADAPTER, WRITE_KEYS, CloseFlightSettled>(),
     );
     let draining = g::seq(
-        g::send::<TRANSMIT, ADAPTER, Drain>(),
-        g::send::<ADAPTER, TRANSMIT, Drained>(),
+        g::send::<WRITE_KEYS, ADAPTER, Drain>(),
+        g::send::<ADAPTER, WRITE_KEYS, Drained>(),
     );
     let final_phase = g::seq(
         g::route(closing, draining),
         g::seq(
-            g::send::<TRANSMIT, ADAPTER, Retire>(),
-            g::send::<ADAPTER, TRANSMIT, Retired>(),
+            g::send::<WRITE_KEYS, ADAPTER, Retire>(),
+            g::send::<ADAPTER, WRITE_KEYS, Retired>(),
         ),
     );
     g::seq(ordinary, g::seq(retirement, final_phase))
@@ -582,4 +591,129 @@ pub fn choreography() -> impl Projectable {
             ),
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::carrier::CarrierStorage;
+    use hibana::runtime::{SessionKitStorage, ids::SessionId, program::project};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn validation_cannot_be_reported_before_write_startup_arrives() {
+        let global = startup();
+        let session = SessionId::new(91);
+        let queues = CarrierStorage::<1, 16, 2>::new();
+        let carrier = queues.bind(session, &[]).unwrap();
+        let mut slab = [0; 16 * 1024];
+        let mut storage = SessionKitStorage::uninit();
+        let rendezvous = storage.init().rendezvous(&mut slab, &carrier).unwrap();
+        let program = project::<PREFIX_RX>(&global);
+        let mut receive = rendezvous.enter(session, &program).unwrap();
+        assert!(receive.send::<FinishedValidated>(&()).await.is_err());
+        assert_eq!(queues.queued(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn validation_can_be_reported_after_write_startup_arrives() {
+        let global = startup();
+        let session = SessionId::new(92);
+        const PORTS: usize = [PREFIX_TX, PREFIX_RX, PREFIX_TLS_RX].len();
+        let queues = CarrierStorage::<1, 16, PORTS>::new();
+        let carrier = queues.bind(session, &[]).unwrap();
+        let mut slab = [0; 16 * 1024];
+        let mut storage = SessionKitStorage::uninit();
+        let rendezvous = storage.init().rendezvous(&mut slab, &carrier).unwrap();
+        let sent = project::<PREFIX_TX>(&global);
+        let received = project::<PREFIX_RX>(&global);
+        let verified = project::<PREFIX_TLS_RX>(&global);
+        let mut sent = rendezvous.enter(session, &sent).unwrap();
+        let mut receive = rendezvous.enter(session, &received).unwrap();
+        let mut verified = rendezvous.enter(session, &verified).unwrap();
+        sent.send::<WriteForAdmission>(&()).await.unwrap();
+        receive.recv::<WriteForAdmission>().await.unwrap();
+        receive.send::<FinishedValidated>(&()).await.unwrap();
+        verified.recv::<FinishedValidated>().await.unwrap();
+        assert_eq!(queues.queued(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn clock_cannot_finish_before_the_receive_retirement_notice() {
+        let global = g::seq(
+            g::par(receive_choreography(), timer_choreography()),
+            g::send::<TX_CLOCK, CLOCK, ClockAcknowledged>(),
+        );
+        let session = SessionId::new(93);
+        // Packet delivery, input reclamation and timeouts are parallel.
+        const PORTS: usize = [CLOCK, TX_CLOCK].len() * 3;
+        let queues = CarrierStorage::<1, 16, PORTS>::new();
+        let carrier = queues.bind(session, &[]).unwrap();
+        let mut slab = [0; 16 * 1024];
+        let mut storage = SessionKitStorage::uninit();
+        let rendezvous = storage.init().rendezvous(&mut slab, &carrier).unwrap();
+        let clock_program = project::<CLOCK>(&global);
+        let timer_program = project::<TX_CLOCK>(&global);
+        let mut clock = rendezvous.enter(session, &clock_program).unwrap();
+        let mut timer = rendezvous.enter(session, &timer_program).unwrap();
+        clock.send::<ClockRetired>(&()).await.unwrap();
+        timer.recv::<ClockRetired>().await.unwrap();
+        timer.send::<ClockAcknowledged>(&()).await.unwrap();
+        assert!(clock.recv::<ClockAcknowledged>().await.is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn clock_joins_its_notice_and_acknowledgment_in_both_orders() {
+        for notice_first in [false, true] {
+            let global = g::seq(
+                g::par(receive_choreography(), timer_choreography()),
+                g::send::<TX_CLOCK, CLOCK, ClockAcknowledged>(),
+            );
+            let session = SessionId::new(94 + u32::from(notice_first));
+            const PORTS: usize = [CLOCK, TX_CLOCK, RECEIVE, SINK].len() * 3;
+            let queues = CarrierStorage::<1, 16, PORTS>::new();
+            let carrier = queues.bind(session, &[]).unwrap();
+            let mut slab = [0; 16 * 1024];
+            let mut storage = SessionKitStorage::uninit();
+            let rendezvous = storage.init().rendezvous(&mut slab, &carrier).unwrap();
+            let clock_program = project::<CLOCK>(&global);
+            let timer_program = project::<TX_CLOCK>(&global);
+            let receive_program = project::<RECEIVE>(&global);
+            let sink_program = project::<SINK>(&global);
+            let mut clock = rendezvous.enter(session, &clock_program).unwrap();
+            let mut timer = rendezvous.enter(session, &timer_program).unwrap();
+            let mut receive = rendezvous.enter(session, &receive_program).unwrap();
+            let mut sink = rendezvous.enter(session, &sink_program).unwrap();
+            let finishing = async {
+                {
+                    let [mut notice, mut timeouts] = clock.par()?;
+                    tokio::try_join!(async { notice.recv::<StopClock>().await }, async {
+                        timeouts.send::<ClockRetired>(&()).await
+                    },)?;
+                }
+                clock.recv::<ClockAcknowledged>().await
+            };
+            let peer = async {
+                if !notice_first {
+                    timer.recv::<ClockRetired>().await?;
+                    timer.send::<ClockAcknowledged>(&()).await?;
+                }
+                receive.send::<ReceiveRetire>(&()).await?;
+                sink.recv::<ReceiveRetire>().await?;
+                sink.send::<ReceiveRetired>(&()).await?;
+                receive.recv::<ReceiveRetired>().await?;
+                receive.send::<StopClock>(&()).await?;
+                if notice_first {
+                    timer.recv::<ClockRetired>().await?;
+                    timer.send::<ClockAcknowledged>(&()).await?;
+                }
+                Ok::<(), hibana::EndpointError>(())
+            };
+            if notice_first {
+                tokio::try_join!(peer, finishing).unwrap();
+            } else {
+                tokio::try_join!(finishing, peer).unwrap();
+            }
+            assert_eq!(queues.queued(), 0);
+        }
+    }
 }

@@ -156,10 +156,14 @@ impl<'scope, 'cfg, 'buf> Transcript<'scope, 'cfg, 'buf> {
         self.received[index] = end;
         Ok(())
     }
-    pub fn transmit<const N: usize>(&mut self) -> Result<Option<CryptoFlight<N>>, Error> {
+    /// Copy pending CRYPTO data for this level, retaining bytes for other levels.
+    pub fn transmit<const N: usize>(
+        &mut self,
+        level: Level,
+    ) -> Result<Option<CryptoFlight<N>>, Error> {
         self.ensure_live()?;
         let mut bytes = [0; N];
-        let Some(output) = self.source.transmit(&mut bytes)? else {
+        let Some(output) = self.source.transmit(level, &mut bytes)? else {
             return Ok(None);
         };
         if output.len == 0 || output.len > N {

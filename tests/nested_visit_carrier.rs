@@ -81,12 +81,11 @@ macro_rules! with_endpoints {
         let receiver_program: RoleProgram<1> = project(&global);
         let queues = Box::new(CarrierStorage::<1, 32, 128>::new());
         let mut slab = vec![0; 256 * 1024];
+        let session = SessionId::new(192);
+        let queues_binding = queues.bind(session, &[]).unwrap();
         let mut storage = Box::new(SessionKitStorage::uninit());
         let kit = storage.init();
-        let session = SessionId::new(192);
-        let rendezvous = kit
-            .rendezvous(&mut slab, queues.bind(session).unwrap())
-            .unwrap();
+        let rendezvous = kit.rendezvous(&mut slab, &queues_binding).unwrap();
         let mut $source = rendezvous.enter(session, &source_program).unwrap();
         let mut $receiver = rendezvous.enter(session, &receiver_program).unwrap();
         let wake = Arc::new(WakeFlag(AtomicBool::new(true)));

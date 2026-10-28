@@ -27,11 +27,12 @@ fn run(scenario: Scenario) {
     let publisher_program: RoleProgram<{ p::PUBLISHER }> = project(&global);
     let carrier = CarrierStorage::<1, 16, 16>::new();
     let mut slab = [0; 65536];
-    let mut storage = SessionKitStorage::uninit();
     let sid = SessionId::new(1801);
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
+    let mut storage = SessionKitStorage::uninit();
     let rv = storage
         .init()
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+        .rendezvous(&mut slab, &carrier_binding)
         .unwrap();
     let mut owner = rv.enter(sid, &owner_program).unwrap();
     let mut publisher = rv.enter(sid, &publisher_program).unwrap();

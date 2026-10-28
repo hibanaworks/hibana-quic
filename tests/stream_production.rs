@@ -1,244 +1,233 @@
-//! Exercise the actual source fragment, with capacity-one transport and no
-//! surrogate stream FSM. A finite terminal must retire the inner data roll.
-use core::{
-    future::Future,
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
+//! Drive the source protocol, returned endpoint and reclamation with bounded transport.
 use hibana::{
     EndpointError,
-    runtime::{
-        SessionKitStorage,
-        ids::SessionId,
-        program::{RoleProgram, project},
-    },
+    runtime::{SessionKitStorage, ids::SessionId, program::project},
 };
-use hibana_quic::{
-    quic::application::global as p, runtime::carrier::CarrierStorage, runtime::join2,
-};
+use hibana_quic::{quic::application::global as p, runtime::carrier::CarrierStorage};
+use hibana_tls::quic::scope::ApplicationKeyScope;
 
 #[global_allocator]
 static ALLOCATOR: actor_test_allocator::Counting = actor_test_allocator::Counting;
 
-fn run(chunks: usize, abandon: bool, rejected: bool, illegal: u8) {
+async fn run(cases: &[(usize, bool, u8, u8)], illegal: u8) {
     let global = p::source_choreography();
-    let source: RoleProgram<{ p::SOURCE }> = project(&global);
-    let ingress: RoleProgram<{ p::INGRESS }> = project(&global);
-    let carrier = CarrierStorage::<1, 16, 8>::new();
+    let source_program = project::<{ p::SOURCE }>(&global);
+    let ingress_program = project::<{ p::INGRESS }>(&global);
+    let production_program = project::<{ p::PRODUCTION }>(&global);
+    let collector_program = project::<{ p::SOURCE_COLLECTOR }>(&global);
+    let join_program = project::<{ p::SOURCE_JOIN }>(&global);
+    // Five logical roles participate in the two parallel protocol fragments.
+    let queues = CarrierStorage::<1, 16, { 5 * 2 }>::new();
+    let scope = ApplicationKeyScope::new(907);
+    let bindings = scope.endpoint_bindings();
+    let id = SessionId::new(907);
+    let carrier = queues.bind(id, &bindings).unwrap();
     let mut slab = [0; 65536];
     let mut storage = SessionKitStorage::uninit();
-    let id = SessionId::new(907);
-    let rv = storage
-        .init()
-        .rendezvous(&mut slab, carrier.bind(id).unwrap())
-        .unwrap();
-    let mut source = rv.enter(id, &source).unwrap();
-    let mut ingress = rv.enter(id, &ingress).unwrap();
-    let allocation = actor_test_allocator::NoAlloc::start();
-    let mut all = pin!(join2(
-        async {
-            source.send::<p::SourceOpen>(&4).await?;
-            for _ in 0..chunks {
-                source.send::<p::SourceData>(&()).await?;
-                source.offer().await?.recv::<p::SourceAccepted>().await?;
-                source.send::<p::SourceTaken>(&()).await?;
-            }
-            source.send::<p::SourceDataFinished>(&4).await?;
-            if abandon {
-                source.send::<p::SourceAbandon>(&4).await?;
-            } else {
-                source.send::<p::SourceFin>(&4).await?;
-            }
-            let terminal = source.offer().await?;
-            if rejected {
-                assert_eq!(terminal.recv::<p::SourceEndRejected>().await?, 4);
-            } else {
-                assert_eq!(terminal.recv::<p::SourceEnded>().await?, 4);
-            }
-            match illegal {
-                1 => assert!(
-                    source.send::<p::SourceData>(&()).await.is_err(),
-                    "data roll reopened after terminal"
-                ),
-                2 => assert!(
-                    source.send::<p::SourceFin>(&4).await.is_err(),
-                    "FIN repeated without a new stream"
-                ),
-                3 => assert!(
-                    source.send::<p::SourceAbandon>(&4).await.is_err(),
-                    "abandon repeated after terminal"
-                ),
-                _ => {
-                    source.send::<p::SourceDone>(&()).await?;
-                    source.recv::<p::SourceRetired>().await?;
+    let runtime = storage.init().rendezvous(&mut slab, &carrier).unwrap();
+    let mut source = runtime.enter(id, &source_program).unwrap();
+    let mut ingress = runtime.enter(id, &ingress_program).unwrap();
+    let mut operations = runtime.enter(id, &production_program).unwrap();
+    let mut collector = runtime.enter(id, &collector_program).unwrap();
+    let mut joined = runtime.enter(id, &join_program).unwrap();
+    let all = async {
+        tokio::try_join!(
+            async {
+                for (index, &(chunks, abandon, reply, terminal)) in cases.iter().enumerate() {
+                    let stream_id = (index as u64 + 1) * 4;
+                    source.send::<p::SourceOpen>(&stream_id).await.unwrap();
+                    let mut operations = source.recv::<p::StreamLoan<'_>>().await.unwrap();
+                    for _ in 0..chunks {
+                        operations.send::<p::SourceData>(&()).await.unwrap();
+                        let offered = operations.offer().await.unwrap();
+                        assert_eq!(offered.label(), reply);
+                        match reply {
+                            1 => offered.recv::<p::SourceAccepted>().await?,
+                            187 => offered.recv::<p::SourceStopped>().await?,
+                            _ => unreachable!(),
+                        }
+                        operations.send::<p::SourceTaken>(&()).await.unwrap();
+                    }
+                    operations.send::<p::SourceFlush>(&stream_id).await.unwrap();
+                    assert_eq!(
+                        operations.recv::<p::SourceFlushed>().await.unwrap(),
+                        stream_id
+                    );
+                    if abandon {
+                        source
+                            .send::<p::SourceAbandon<'_>>(operations)
+                            .await
+                            .unwrap();
+                    } else {
+                        source.send::<p::SourceFin<'_>>(operations).await.unwrap();
+                    }
+                    let offered = source.offer().await.unwrap();
+                    assert_eq!(offered.label(), terminal);
+                    let actual = match terminal {
+                        171 => offered.recv::<p::SourceEnded>().await?,
+                        172 => offered.recv::<p::SourceEndRejected>().await?,
+                        188 => offered.recv::<p::SourceEndStopped>().await?,
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(actual, stream_id);
                 }
-            }
-            Ok::<_, EndpointError>(())
-        },
-        async {
-            assert_eq!(ingress.offer().await?.recv::<p::SourceOpen>().await?, 4);
-            for _ in 0..chunks {
-                ingress.offer().await?.recv::<p::SourceData>().await?;
-                ingress.send::<p::SourceAccepted>(&()).await?;
-                ingress.recv::<p::SourceTaken>().await?;
-            }
-            assert_eq!(
+                source.send::<p::SourceDone>(&()).await.unwrap();
+                source.recv::<p::SourceRetired>().await.unwrap();
+                source.send::<p::SourceJoined>(&()).await.unwrap();
+                Ok::<_, EndpointError>(())
+            },
+            async {
+                for (index, &(chunks, abandon, reply, terminal)) in cases.iter().enumerate() {
+                    let stream_id = (index as u64 + 1) * 4;
+                    assert_eq!(
+                        ingress.offer().await?.recv::<p::SourceOpen>().await?,
+                        stream_id
+                    );
+                    ingress.send::<p::StreamLoan<'_>>(operations).await.unwrap();
+                    for _ in 0..chunks {
+                        let offered = ingress.offer().await.unwrap();
+                        offered.recv::<p::SourceData>().await.unwrap();
+                        match reply {
+                            1 => ingress.send::<p::SourceAccepted>(&()).await?,
+                            187 => ingress.send::<p::SourceStopped>(&()).await?,
+                            _ => unreachable!(),
+                        }
+                        ingress.recv::<p::SourceTaken>().await.unwrap();
+                    }
+                    assert_eq!(
+                        ingress.offer().await?.recv::<p::SourceFlush>().await?,
+                        stream_id
+                    );
+                    ingress.send::<p::SourceFlushed>(&stream_id).await.unwrap();
+                    let offered = ingress.offer().await.unwrap();
+                    operations = if abandon {
+                        offered.recv::<p::SourceAbandon<'_>>().await?
+                    } else {
+                        offered.recv::<p::SourceFin<'_>>().await?
+                    };
+                    ingress
+                        .send::<p::ProductionReclaim>(&stream_id)
+                        .await
+                        .unwrap();
+                    assert_eq!(ingress.recv::<p::ProductionStored>().await?, stream_id);
+                    match terminal {
+                        171 => ingress.send::<p::SourceEnded>(&stream_id).await?,
+                        172 => ingress.send::<p::SourceEndRejected>(&stream_id).await?,
+                        188 => ingress.send::<p::SourceEndStopped>(&stream_id).await?,
+                        _ => unreachable!(),
+                    }
+                }
                 ingress
                     .offer()
                     .await?
-                    .recv::<p::SourceDataFinished>()
-                    .await?,
-                4
-            );
-            let terminal = ingress.offer().await?;
-            if abandon {
-                assert_eq!(terminal.recv::<p::SourceAbandon>().await?, 4);
-            } else {
-                assert_eq!(terminal.recv::<p::SourceFin>().await?, 4);
+                    .recv::<p::SourceDone>()
+                    .await
+                    .unwrap();
+                ingress
+                    .send::<p::ProductionReclaimsDone>(&())
+                    .await
+                    .unwrap();
+                ingress.recv::<p::ProductionReclaimsClosed>().await.unwrap();
+                ingress.send::<p::SourceRetired>(&()).await.unwrap();
+                Ok::<_, EndpointError>(operations)
+            },
+            async {
+                for index in 0..cases.len() {
+                    let stream_id = (index as u64 + 1) * 4;
+                    assert_eq!(
+                        collector
+                            .offer()
+                            .await?
+                            .recv::<p::ProductionReclaim>()
+                            .await?,
+                        stream_id
+                    );
+                    collector
+                        .send::<p::ProductionStored>(&stream_id)
+                        .await
+                        .unwrap();
+                }
+                collector
+                    .offer()
+                    .await?
+                    .recv::<p::ProductionReclaimsDone>()
+                    .await
+                    .unwrap();
+                collector
+                    .send::<p::ProductionReclaimsClosed>(&())
+                    .await
+                    .unwrap();
+                Ok::<_, EndpointError>(())
+            },
+            async {
+                joined
+                    .offer()
+                    .await?
+                    .recv::<p::SourceJoined>()
+                    .await
+                    .unwrap();
+                Ok::<_, EndpointError>(())
+            },
+        )
+    };
+    // Initialize the host watchdog before measuring the endpoint operations.
+    let mut deadline = core::pin::pin!(tokio::time::sleep(std::time::Duration::from_secs(2)));
+    let until = deadline.deadline();
+    deadline.as_mut().reset(until);
+    let allocation = actor_test_allocator::NoAlloc::start();
+    let (_, mut operations, _, _) = tokio::select! {
+        biased;
+        result = all => result.unwrap(),
+        _ = deadline.as_mut() => panic!("stream production stalled"),
+    };
+    assert_eq!(queues.queued(), 0);
+    // A fault probe must not race another local's pending terminal receive.
+    let rejected = tokio::select! {
+        biased;
+        result = async {
+            match illegal {
+                0 => Ok(()),
+                1 => operations.send::<p::SourceData>(&()).await,
+                2 => ingress.send::<p::SourceFin<'_>>(operations).await,
+                3 => ingress.send::<p::SourceAbandon<'_>>(operations).await,
+                4 => source.recv::<p::StreamLoan<'_>>().await.map(|_| ()),
+                5 => source.send::<p::SourceData>(&()).await,
+                _ => unreachable!(),
             }
-            if rejected {
-                ingress.send::<p::SourceEndRejected>(&4).await?;
-            } else {
-                ingress.send::<p::SourceEnded>(&4).await?;
-            }
-            if illegal == 0 {
-                ingress.offer().await?.recv::<p::SourceDone>().await?;
-                ingress.send::<p::SourceRetired>(&()).await?;
-            }
-            Ok(())
-        }
-    ));
-    for _ in 0..1000 {
-        if let Poll::Ready(result) = all.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-            result.unwrap();
-            allocation.finish();
-            return;
-        }
+        } => result,
+        _ = deadline.as_mut() => panic!("post-terminal operation stalled: {illegal}"),
+    };
+    if illegal != 0 {
+        assert!(
+            rejected.is_err(),
+            "operation after returning endpoint: {illegal}"
+        );
     }
-    panic!("stream production did not settle");
+    allocation.finish();
 }
 
-#[test]
-fn empty_and_multi_chunk_streams_finish_or_abandon_without_allocating() {
+#[tokio::test(flavor = "current_thread")]
+async fn empty_and_multi_chunk_streams_finish_or_abandon_without_allocating() {
     for chunks in [0, 1, 8] {
         for abandon in [false, true] {
-            for rejected in [false, true] {
-                run(chunks, abandon, rejected, 0);
+            for terminal in [171, 172] {
+                run(&[(chunks, abandon, 1, terminal)], 0).await;
             }
         }
     }
 }
-#[test]
-fn terminal_rejects_data_reentry_duplicate_fin_and_duplicate_abandon() {
+#[tokio::test(flavor = "current_thread")]
+async fn terminal_rejects_data_reentry_duplicate_fin_and_duplicate_abandon() {
     for chunks in [0, 3] {
         for abandon in [false, true] {
-            for illegal in 1..=3 {
-                run(chunks, abandon, false, illegal);
+            for illegal in 1..=5 {
+                run(&[(chunks, abandon, 1, 171)], illegal).await;
             }
         }
     }
 }
-
-fn stopped_stream_then_next(stop_at_fin: bool) {
-    let global = p::source_choreography();
-    let source: RoleProgram<{ p::SOURCE }> = project(&global);
-    let ingress: RoleProgram<{ p::INGRESS }> = project(&global);
-    let carrier = CarrierStorage::<1, 16, 8>::new();
-    let mut slab = [0; 65536];
-    let mut storage = SessionKitStorage::uninit();
-    let id = SessionId::new(910);
-    let rv = storage
-        .init()
-        .rendezvous(&mut slab, carrier.bind(id).unwrap())
-        .unwrap();
-    let mut source = rv.enter(id, &source).unwrap();
-    let mut ingress = rv.enter(id, &ingress).unwrap();
-    let allocation = actor_test_allocator::NoAlloc::start();
-    let mut all = pin!(join2(
-        async {
-            source.send::<p::SourceOpen>(&4).await?;
-            source.send::<p::SourceData>(&()).await?;
-            let reply = source.offer().await?;
-            if stop_at_fin {
-                reply.recv::<p::SourceAccepted>().await?;
-            } else {
-                reply.recv::<p::SourceStopped>().await?;
-            }
-            source.send::<p::SourceTaken>(&()).await?;
-            source.send::<p::SourceDataFinished>(&4).await?;
-            if stop_at_fin {
-                source.send::<p::SourceFin>(&4).await?;
-            } else {
-                source.send::<p::SourceAbandon>(&4).await?;
-            }
-            let reply = source.offer().await?;
-            if stop_at_fin {
-                assert_eq!(reply.recv::<p::SourceEndStopped>().await?, 4);
-            } else {
-                assert_eq!(reply.recv::<p::SourceEnded>().await?, 4);
-            }
-            // The finite stopped production ends; the same projected connection
-            // admits another stream without resetting or rebuilding its endpoints.
-            source.send::<p::SourceOpen>(&8).await?;
-            source.send::<p::SourceDataFinished>(&8).await?;
-            source.send::<p::SourceFin>(&8).await?;
-            assert_eq!(source.offer().await?.recv::<p::SourceEnded>().await?, 8);
-            source.send::<p::SourceDone>(&()).await?;
-            source.recv::<p::SourceRetired>().await?;
-            Ok::<_, EndpointError>(())
-        },
-        async {
-            assert_eq!(ingress.offer().await?.recv::<p::SourceOpen>().await?, 4);
-            ingress.offer().await?.recv::<p::SourceData>().await?;
-            if stop_at_fin {
-                ingress.send::<p::SourceAccepted>(&()).await?;
-            } else {
-                ingress.send::<p::SourceStopped>(&()).await?;
-            }
-            ingress.recv::<p::SourceTaken>().await?;
-            assert_eq!(
-                ingress
-                    .offer()
-                    .await?
-                    .recv::<p::SourceDataFinished>()
-                    .await?,
-                4
-            );
-            let end = ingress.offer().await?;
-            if stop_at_fin {
-                assert_eq!(end.recv::<p::SourceFin>().await?, 4);
-                ingress.send::<p::SourceEndStopped>(&4).await?;
-            } else {
-                assert_eq!(end.recv::<p::SourceAbandon>().await?, 4);
-                ingress.send::<p::SourceEnded>(&4).await?;
-            }
-            assert_eq!(ingress.offer().await?.recv::<p::SourceOpen>().await?, 8);
-            assert_eq!(
-                ingress
-                    .offer()
-                    .await?
-                    .recv::<p::SourceDataFinished>()
-                    .await?,
-                8
-            );
-            assert_eq!(ingress.offer().await?.recv::<p::SourceFin>().await?, 8);
-            ingress.send::<p::SourceEnded>(&8).await?;
-            ingress.offer().await?.recv::<p::SourceDone>().await?;
-            ingress.send::<p::SourceRetired>(&()).await?;
-            Ok(())
-        }
-    ));
-    for _ in 0..1000 {
-        if let Poll::Ready(result) = all.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-            result.unwrap();
-            allocation.finish();
-            return;
-        }
-    }
-    panic!("stopped production blocked the next stream");
-}
-#[test]
-fn peer_stop_during_data_or_fin_preserves_the_next_stream_continuation() {
-    stopped_stream_then_next(false);
-    stopped_stream_then_next(true);
+#[tokio::test(flavor = "current_thread")]
+async fn peer_stop_during_data_or_fin_preserves_the_next_stream_continuation() {
+    run(&[(1, true, 187, 171), (0, false, 1, 171)], 0).await;
+    run(&[(1, false, 1, 188), (0, false, 1, 171)], 0).await;
 }

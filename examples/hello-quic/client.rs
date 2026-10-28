@@ -1,4 +1,5 @@
 //! Application global and localside; native initialization is in ../environment.rs.
+// Project the complete TLS/QUIC/application graph in this binary.
 #[path = "../environment.rs"]
 mod environment;
 mod global;

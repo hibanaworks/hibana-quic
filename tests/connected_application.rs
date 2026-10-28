@@ -7,6 +7,8 @@
 //! This is an in-memory QUIC lifecycle check, not a claim about native OS I/O
 //! or every HTTP/3 application path.
 
+// Project the complete TLS/QUIC/application graph in this test crate.
+
 #[allow(dead_code)]
 #[path = "support/connected_tls_fixture.rs"]
 mod fixture;
@@ -647,7 +649,9 @@ impl DatagramTx for Tx<'_, '_> {
                     (first..first + count).contains(&ordinal)
                 }
                 Loss::ServerApplicationAcks | Loss::ServerApplicationAcksPersistentServer => {
-                    classification.as_ref().is_some_and(|p| p.application_ack)
+                    classification
+                        .as_ref()
+                        .is_some_and(|p| p.any_application_ack)
                 }
                 Loss::FirstServerOneRtt => bytes[0] & 0x80 == 0,
                 Loss::ServerHandshakeAck => classification
@@ -915,6 +919,59 @@ fn actual_get_selects_encrypted_body_and_completes_close() {
     run_connection(1, Loss::None);
 }
 
+struct ConnectionTiming {
+    preparation: std::time::Duration,
+    attachment: std::time::Duration,
+    execution: std::time::Duration,
+    cleanup: std::time::Duration,
+}
+
+#[test]
+#[ignore = "measure the complete connection with --release --nocapture"]
+fn full_connection_runtime_profile() {
+    let samples = match std::env::var("HIBANA_RUNTIME_SAMPLES") {
+        Ok(value) => value.parse::<usize>().expect("positive sample count"),
+        Err(std::env::VarError::NotPresent) => 5,
+        Err(error) => panic!("sample count: {error}"),
+    };
+    assert!(samples != 0, "positive sample count");
+    for (name, requests, loss) in [
+        ("get", 1, Loss::None),
+        ("four-streams", STREAMS, Loss::None),
+        ("lost-one-rtt", 1, Loss::FirstServerOneRtt),
+    ] {
+        let mut elapsed = Vec::with_capacity(samples);
+        let mut phases: [Vec<_>; 4] = core::array::from_fn(|_| Vec::with_capacity(samples));
+        for _ in 0..samples {
+            let started = std::time::Instant::now();
+            let timing = connection_case_with_failure(requests, loss, STREAMS, FileFailure::None);
+            elapsed.push(started.elapsed());
+            for (values, value) in phases.iter_mut().zip([
+                timing.preparation,
+                timing.attachment,
+                timing.execution,
+                timing.cleanup,
+            ]) {
+                values.push(value);
+            }
+        }
+        elapsed.sort_unstable();
+        for values in &mut phases {
+            values.sort_unstable();
+        }
+        eprintln!(
+            "full_connection case={name} samples={samples} requests={requests} response_bytes={} min_us={} median_us={} preparation_median_us={} attachment_median_us={} execution_median_us={} cleanup_median_us={}",
+            BODY_SIZES[..requests].iter().sum::<usize>(),
+            elapsed[0].as_micros(),
+            elapsed[samples / 2].as_micros(),
+            phases[0][samples / 2].as_micros(),
+            phases[1][samples / 2].as_micros(),
+            phases[2][samples / 2].as_micros(),
+            phases[3][samples / 2].as_micros(),
+        );
+    }
+}
+
 #[test]
 fn advertised_connection_credit_cannot_exceed_reserved_receive_windows() {
     use hibana_quic::quic::application::stream::Error;
@@ -1098,7 +1155,8 @@ fn connection_case_with_failure(
     loss: Loss,
     client_slots: usize,
     failure: FileFailure,
-) {
+) -> ConnectionTiming {
+    let started = std::time::Instant::now();
     let client_limits = Limits {
         max_data: (client_slots * RECEIVE_WINDOW) as u64,
         ..limits(Side::Client)
@@ -1232,6 +1290,9 @@ fn connection_case_with_failure(
     let mut client_tls_buffers = fixture::Buffers::new();
     let mut server_tls_buffers = fixture::Buffers::new();
     let measured = actor_test_allocator::NoAlloc::start();
+    let prepared = std::time::Instant::now();
+    let execution_started;
+    let executed;
     'protocol: {
         let client_tls = BoundedTls::client(
             ClientConfig {
@@ -1298,10 +1359,12 @@ fn connection_case_with_failure(
         let server_recovery = server_install.take_recovery().unwrap();
         let mut client_gate = PublicationGate::new(client_install.take_publication_gate().unwrap());
         let mut server_gate = PublicationGate::new(server_install.take_publication_gate().unwrap());
-        let mut client_transcript =
-            Transcript::new(client_tls.into_key_source(client_install).unwrap());
-        let mut server_transcript =
-            Transcript::new(server_tls.into_key_source(server_install).unwrap());
+        let client_source = client_tls.into_key_source(client_install).unwrap();
+        let server_source = server_tls.into_key_source(server_install).unwrap();
+        let client_bindings = client_source.scope().endpoint_bindings();
+        let server_bindings = server_source.scope().endpoint_bindings();
+        let mut client_transcript = Transcript::new(client_source);
+        let mut server_transcript = Transcript::new(server_source);
         let initial_rtt = if matches!(loss, Loss::DuplexPacketMask { .. }) {
             333_000
         } else {
@@ -1330,17 +1393,19 @@ fn connection_case_with_failure(
         let server_outcomes = application::Outcomes::new();
         let client_carrier = CarrierStorage::<1, 16, 128>::new();
         let server_carrier = CarrierStorage::<1, 16, 128>::new();
-        let mut client_kit = SessionKitStorage::uninit();
-        let mut server_kit = SessionKitStorage::uninit();
         let client_sid = SessionId::new(11);
         let server_sid = SessionId::new(12);
+        let client_carrier_binding = client_carrier.bind(client_sid, &client_bindings).unwrap();
+        let mut client_kit = SessionKitStorage::uninit();
         let client_rv = client_kit
             .init()
-            .rendezvous(&mut client_slab, client_carrier.bind(client_sid).unwrap())
+            .rendezvous(&mut client_slab, &client_carrier_binding)
             .unwrap();
+        let server_carrier_binding = server_carrier.bind(server_sid, &server_bindings).unwrap();
+        let mut server_kit = SessionKitStorage::uninit();
         let server_rv = server_kit
             .init()
-            .rendezvous(&mut server_slab, server_carrier.bind(server_sid).unwrap())
+            .rendezvous(&mut server_slab, &server_carrier_binding)
             .unwrap();
         let mut client_roles = application::localside::Endpoints::attach(
             &client_rv,
@@ -1430,8 +1495,8 @@ fn connection_case_with_failure(
                 crypto: CryptoBuffer::new(sa, sma).unwrap(),
             },
         };
-        let mut client_report = None;
-        let mut server_report = None;
+        let client_report = RefCell::new(None);
+        let server_report = RefCell::new(None);
         // Pin the connection futures in caller-owned host storage too. The
         // executor polls a pointer, rather than moving both peers onto its stack.
         let client = Box::into_pin(Box::write(
@@ -1467,19 +1532,32 @@ fn connection_case_with_failure(
                 &mut handler,
             ),
         ));
+        execution_started = std::time::Instant::now();
         execute(
             &clock,
             hibana_quic::runtime::join2(
                 async {
-                    client_report = Some(client.await);
+                    let result = client.await;
+                    *client_report.borrow_mut() = Some(result);
                     Ok::<(), application::Error>(())
                 },
                 async {
-                    server_report = Some(server.await);
+                    let result = server.await;
+                    *server_report.borrow_mut() = Some(result);
                     Ok::<(), application::Error>(())
                 },
             ),
             || {
+                for (side, report) in [
+                    ("client", &client_report),
+                    ("server", &server_report),
+                ] {
+                    match report.borrow().as_ref() {
+                        Some(Ok(_)) => eprintln!("{side} connection completed"),
+                        Some(Err(error)) => eprintln!("{side} connection failed: {error:?}"),
+                        None => eprintln!("{side} connection pending"),
+                    }
+                }
                 eprintln!(
                     "diagnostic now={} next={:?} client_sent={} client_dropped={} client_delivered={} server_sent={} server_dropped={} server_delivered={}",
                     clock.now(),
@@ -1503,6 +1581,7 @@ fn connection_case_with_failure(
             trace_polls,
         )
         .unwrap();
+        executed = std::time::Instant::now();
         assert_eq!(
             client_carrier.queued(),
             0,
@@ -1513,8 +1592,8 @@ fn connection_case_with_failure(
             0,
             "server left internal messages retained"
         );
-        let client = client_report.unwrap();
-        let server = server_report.unwrap();
+        let client = client_report.into_inner().unwrap();
+        let server = server_report.into_inner().unwrap();
         if failure == FileFailure::StalledRead {
             let client = client.expect("idle expiry retires the connection");
             let server = server.expect("idle expiry cancels the parked body source");
@@ -1723,6 +1802,12 @@ fn connection_case_with_failure(
         // Optional host diagnostics are reported after the measured lifecycle;
         // libtest may allocate while capturing their output.
         eprintln!("duplex elapsed_us={}", clock.now());
+    }
+    ConnectionTiming {
+        preparation: prepared.duration_since(started),
+        attachment: execution_started.duration_since(prepared),
+        execution: executed.duration_since(execution_started),
+        cleanup: executed.elapsed(),
     }
 }
 

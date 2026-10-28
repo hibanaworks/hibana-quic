@@ -114,6 +114,11 @@ pub enum Error {
     UnsupportedLevel,
     UnexpectedLabel(u8),
 }
+impl From<hibana_tls::handshake::Error> for Error {
+    fn from(error: hibana_tls::handshake::Error) -> Self {
+        Self::Transcript(error)
+    }
+}
 impl From<EndpointError> for Error {
     fn from(v: EndpointError) -> Self {
         Self::Endpoint(v)

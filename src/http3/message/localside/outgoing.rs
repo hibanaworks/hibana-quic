@@ -191,12 +191,10 @@ mod tests {
             let result_program = project::<6>(&graph);
             let carrier = CarrierStorage::<2, 16, 128>::new();
             let mut slab = [0; 65536];
-            let mut kit = SessionKitStorage::uninit();
             let sid = SessionId::new(45);
-            let rendezvous = kit
-                .init()
-                .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-                .unwrap();
+            let carrier_binding = carrier.bind(sid, &[]).unwrap();
+            let mut kit = SessionKitStorage::uninit();
+            let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
             let mut app = rendezvous.enter(sid, &app_program).unwrap();
             let mut writer = rendezvous.enter(sid, &writer_program).unwrap();
             let mut result = rendezvous.enter(sid, &result_program).unwrap();
@@ -250,12 +248,10 @@ mod tests {
         let app_program = project::<0>(&graph);
         let carrier = CarrierStorage::<2, 16, 128>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(46);
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut app = rendezvous.enter(sid, &app_program).unwrap();
         let mut body = [0; 2];
         let mut headers = [0; 256];
@@ -292,12 +288,10 @@ mod tests {
         let app_program = project::<0>(&graph);
         let carrier = CarrierStorage::<2, 16, 128>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(47);
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut app = rendezvous.enter(sid, &app_program).unwrap();
         let mut body = [];
         let mut headers = [0; 1];
@@ -323,12 +317,10 @@ mod tests {
             let writer_program = project::<1>(&graph);
             let carrier = CarrierStorage::<2, 16, 128>::new();
             let mut slab = [0; 65536];
-            let mut kit = SessionKitStorage::uninit();
             let sid = SessionId::new(48);
-            let rendezvous = kit
-                .init()
-                .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-                .unwrap();
+            let carrier_binding = carrier.bind(sid, &[]).unwrap();
+            let mut kit = SessionKitStorage::uninit();
+            let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
             let mut app = rendezvous.enter(sid, &app_program).unwrap();
             let mut writer = rendezvous.enter(sid, &writer_program).unwrap();
             let mut body = [0; 2];

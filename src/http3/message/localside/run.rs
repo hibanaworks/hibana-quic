@@ -45,11 +45,12 @@ pub async fn receive_response(
     let reader = project::<READER>(&global);
     let consumer_program = project::<CONSUMER>(&global);
     let carrier = CarrierStorage::<1, 16, 128>::new();
-    let mut kit = SessionKitStorage::uninit();
     let sid = SessionId::new(1);
+    let carrier_binding = carrier.bind(sid, &[]).map_err(Error::from)?;
+    let mut kit = SessionKitStorage::uninit();
     let rendezvous = kit
         .init()
-        .rendezvous(storage.slab, carrier.bind(sid).map_err(Error::from)?)
+        .rendezvous(storage.slab, &carrier_binding)
         .map_err(Error::from)?;
     let mut reader = rendezvous.enter(sid, &reader).map_err(Error::from)?;
     let mut endpoint = rendezvous
@@ -263,12 +264,10 @@ mod tests {
         let writer_program = project::<CONSUMER>(&graph);
         let carrier = CarrierStorage::<1, 16, 128>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(31);
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut reader = rendezvous.enter(sid, &reader_program).unwrap();
         let mut writer = rendezvous.enter(sid, &writer_program).unwrap();
         let mut download = crate::http3::message::imp::download::Download(&output);
@@ -361,12 +360,10 @@ mod tests {
         let result_program = project::<RESULT>(&graph);
         let carrier = CarrierStorage::<2, 16, 128>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(32);
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut input_endpoint = rendezvous.enter(sid, &input_program).unwrap();
         let mut app_endpoint = rendezvous.enter(sid, &app_program).unwrap();
         let mut result_endpoint = rendezvous.enter(sid, &result_program).unwrap();
@@ -447,12 +444,10 @@ mod tests {
         let exchange = Exchange::new(&mut body, &mut headers);
         let carrier = CarrierStorage::<2, 16, 128>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(33);
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut reader = rendezvous.enter(sid, &reader_program).unwrap();
         let mut app = rendezvous.enter(sid, &app_program).unwrap();
         let mut reply = rendezvous.enter(sid, &reply_program).unwrap();
@@ -526,12 +521,10 @@ mod tests {
             // artificial cross-direction dependency in this exact graph.
             let carrier = CarrierStorage::<4, 16, 128>::new();
             let mut slab = [0; 65536];
-            let mut kit = SessionKitStorage::uninit();
             let sid = SessionId::new(34);
-            let rendezvous = kit
-                .init()
-                .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-                .unwrap();
+            let carrier_binding = carrier.bind(sid, &[]).unwrap();
+            let mut kit = SessionKitStorage::uninit();
+            let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
             let mut reader = rendezvous.enter(sid, &reader_program).unwrap();
             let mut app = rendezvous.enter(sid, &app_program).unwrap();
             let mut writer = rendezvous.enter(sid, &writer_program).unwrap();
@@ -662,12 +655,10 @@ mod tests {
             let consume_program = project::<CONSUMER>(&global);
             let carrier = CarrierStorage::<1, 16, 128>::new();
             let mut slab = [0; 65536];
-            let mut kit = SessionKitStorage::uninit();
             let sid = SessionId::new(71);
-            let rendezvous = kit
-                .init()
-                .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-                .unwrap();
+            let carrier_binding = carrier.bind(sid, &[]).unwrap();
+            let mut kit = SessionKitStorage::uninit();
+            let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
             let mut reader = rendezvous.enter(sid, &read_program).unwrap();
             let mut consumer = rendezvous.enter(sid, &consume_program).unwrap();
             let mut body = [0; 2];
@@ -785,12 +776,10 @@ mod tests {
         let writer_program = project::<1>(&global);
         let carrier = CarrierStorage::<1, 16, 128>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(72);
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut app = rendezvous.enter(sid, &app_program).unwrap();
         let mut writer = rendezvous.enter(sid, &writer_program).unwrap();
         let mut body = [0; 2];

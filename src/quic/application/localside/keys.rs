@@ -1,12 +1,11 @@
-//! Drive the TX_KEYS endpoint.
+//! Apply key requests through the packet-write endpoint's parallel fragment.
 use crate::quic::application::global as p;
 use crate::quic::application::imp::keys::*;
-use hibana::Endpoint;
-/// Owns only the key-control endpoint. Its synchronous owner is also available
-/// to the independent TX sealing future, so a pending UDP syscall cannot hold
-/// the key-update continuation hostage.
+use hibana::ParallelEndpoint;
+/// Key updates and packet preparation borrow separate fragments of the same
+/// endpoint. Key borrows end before either fragment awaits communication.
 pub(crate) async fn run<'owner, 'scope>(
-    endpoint: &mut Endpoint<'_, { p::TX_KEYS }>,
+    endpoint: &mut ParallelEndpoint<'_, '_, { p::WRITE_KEYS }>,
     owner: &'owner KeyOwner<'scope>,
     exchange: &Exchange<'owner, 'scope>,
 ) -> Result<(), Error> {

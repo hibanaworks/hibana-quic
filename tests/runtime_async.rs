@@ -51,12 +51,11 @@ fn with_pair<R>(
 ) -> R {
     let carrier = CarrierStorage::<1, 16, 8>::new();
     let mut slab = [0u8; 32 * 1024];
+    let sid = SessionId::new(33);
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
     let mut storage = SessionKitStorage::uninit();
     let kit = storage.init();
-    let sid = SessionId::new(33);
-    let rv = kit
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-        .unwrap();
+    let rv = kit.rendezvous(&mut slab, &carrier_binding).unwrap();
     body(
         rv.enter(sid, &projection.0).unwrap(),
         rv.enter(sid, &projection.1).unwrap(),
@@ -296,35 +295,32 @@ fn owned_join_drops_every_child_on_error_and_cancellation() {
 
 #[test]
 fn outer_session_drop_closes_pending_generation_wakes_peer_and_prevents_replay() {
-    with_pair(pair_programs(), |sender, mut receiver, carrier| {
-        let (wakes, waker) = context_waker();
-        let mut cx = Context::from_waker(&waker);
-        let mut waiting = pin!(async { receiver.recv::<Msg<10, u32>>().await });
-        assert!(waiting.as_mut().poll(&mut cx).is_pending());
-        {
-            let owner = async move {
-                let _sender = sender;
-                join2(
-                    core::future::pending::<Result<(), EndpointError>>(),
-                    core::future::pending::<Result<(), EndpointError>>(),
-                )
-                .await
-            };
-            let mut owner = pin!(owner);
-            assert!(owner.as_mut().poll(&mut cx).is_pending());
-            assert!(!carrier.is_closed());
-        }
-        assert!(carrier.is_closed());
-        assert!(count(&wakes) > 0);
-        assert_eq!(carrier.queued(), 0);
-        assert!(matches!(
-            waiting.as_mut().poll(&mut cx),
-            Poll::Ready(Err(_))
-        ));
-        // The old transport is still bound. Neither cancellation nor the same
-        // numeric session ID can reopen that generation or replay a frame.
-        assert!(carrier.bind(SessionId::new(33)).is_err());
-    });
+    let carrier = CarrierStorage::<1, 16, 8>::new();
+    let program = pair_programs().0;
+    let (wakes, waker) = context_waker();
+    let mut cx = Context::from_waker(&waker);
+    let peer;
+    {
+        let mut owner = pin!(async {
+            let binding = carrier.bind(SessionId::new(33), &[]).unwrap();
+            let mut slab = [0; 32 * 1024];
+            let mut storage = SessionKitStorage::uninit();
+            let runtime = storage.init().rendezvous(&mut slab, &binding).unwrap();
+            let _sender = runtime.enter(SessionId::new(33), &program).unwrap();
+            core::future::pending::<Result<(), EndpointError>>().await
+        });
+        assert!(owner.as_mut().poll(&mut cx).is_pending());
+        peer = carrier.peer(0, 1).unwrap();
+        assert!(peer.poll_outgoing(&mut cx).is_pending());
+        assert!(!carrier.is_closed());
+    }
+    assert!(carrier.is_closed());
+    assert!(count(&wakes) > 0);
+    assert_eq!(carrier.queued(), 0);
+    assert!(matches!(peer.poll_outgoing(&mut cx), Poll::Ready(Err(_))));
+    // Reusing the number creates a fresh run. The previous bridge is fenced.
+    let _fresh = carrier.bind(SessionId::new(33), &[]).unwrap();
+    assert!(matches!(peer.poll_outgoing(&mut cx), Poll::Ready(Err(_))));
 }
 
 #[test]
@@ -364,12 +360,11 @@ fn six_real_roles_repeat_parallel_routes_while_an_independent_receive_is_idle() 
     let program = g::par(idle, g::par(first, second));
     let carrier = CarrierStorage::<1, 16, 12>::new();
     let mut slab = [0u8; 32 * 1024];
+    let sid = SessionId::new(34);
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
     let mut storage = SessionKitStorage::uninit();
     let kit = storage.init();
-    let sid = SessionId::new(34);
-    let rv = kit
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-        .unwrap();
+    let rv = kit.rendezvous(&mut slab, &carrier_binding).unwrap();
     // The enclosing session owns endpoints until every actor has stopped.
     let mut e0 = rv.enter(sid, &project::<0>(&program)).unwrap();
     let mut e1 = rv.enter(sid, &project::<1>(&program)).unwrap();

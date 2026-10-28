@@ -9,7 +9,6 @@ use super::global as p;
 use super::wire::WriteKeys;
 use super::*;
 use crate::crypto::directional::ApplicationKeyScope;
-use crate::quic::imp::kernel::packet::Frame;
 use crate::quic::imp::kernel::parameters::Parameters;
 use crate::quic::imp::kernel::parameters::Peer;
 use core::{future::Future, pin::pin};
@@ -18,11 +17,13 @@ use hibana::g::Message;
 pub(crate) mod timer;
 pub(crate) mod transcript;
 use crate::quic::retry::localside::client as retry_client;
+mod packets;
 mod publication;
 mod receive;
 mod transmit;
-use crate::quic::imp::sealing::prepare;
-use crate::quic::imp::sealing::{RecoveryPacket, prepare_recovery_packet};
+
+use crate::quic::imp::sealing::RecoveryPacket;
+pub(super) use packets::packets;
 pub(super) use publication::publish;
 pub(super) use receive::receive;
 pub(super) use transmit::transmit;
@@ -37,10 +38,10 @@ pub struct Endpoints<'a> {
     pub tx: Endpoint<'a, { global::TX }>,
     /// Retry/early startup, then the TLS transcript transmit continuation.
     pub tls_tx: Endpoint<'a, { global::TLS_TX }>,
-    /// TLS transmit completion, consumed before key handoff.
-    pub tls_complete: Endpoint<'a, { global::TLS_COMPLETE }>,
-    /// Transfers actual authenticated key and Finished ownership.
-    pub tls_handoff: Endpoint<'a, { global::TLS_HANDOFF }>,
+    /// Initial installation endpoint, moved into the TLS verification future.
+    pub tls_material: Option<Endpoint<'a, { hibana_tls::handshake::global::owned::MATERIAL }>>,
+    /// Packet-write endpoint, lent to the packet producer during the handshake.
+    pub packet_write: Option<Endpoint<'a, { global::WRITE_KEYS }>>,
     /// Physical publication continuation; shares no endpoint with the packet producer.
     pub udp: Endpoint<'a, { global::UDP }>,
     /// Loss/PTO clock continuation.
@@ -81,8 +82,8 @@ impl<'kit> Endpoints<'kit> {
         let tls_rx = hibana::runtime::program::project(graph);
         let tx = hibana::runtime::program::project(graph);
         let tls_tx = hibana::runtime::program::project(graph);
-        let tls_complete = hibana::runtime::program::project(graph);
-        let tls_handoff = hibana::runtime::program::project(graph);
+        let tls_material = hibana::runtime::program::project(graph);
+        let packet_write = hibana::runtime::program::project(graph);
         let udp = hibana::runtime::program::project(graph);
         let timer = hibana::runtime::program::project(graph);
         let timer_tx = hibana::runtime::program::project(graph);
@@ -104,11 +105,11 @@ impl<'kit> Endpoints<'kit> {
         Ok(Self {
             rx: enter!(rx),
             tls_rx: enter!(tls_rx),
+            tls_material: Some(enter!(tls_material)),
             tx: enter!(tx),
+            packet_write: Some(enter!(packet_write)),
             tx_wire: enter!(tx_wire),
             tls_tx: enter!(tls_tx),
-            tls_complete: enter!(tls_complete),
-            tls_handoff: enter!(tls_handoff),
             udp: enter!(udp),
             timer: enter!(timer),
             timer_tx: enter!(timer_tx),

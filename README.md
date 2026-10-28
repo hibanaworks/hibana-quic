@@ -2,7 +2,7 @@
 
 QUIC v1/v2 and HTTP/3 for Rust, using [Hibana](https://github.com/hibanaworks/hibana)
 to express protocol order and transfer ownership between roles.
-Both libraries use [Hibana at 5ee442ea](https://github.com/hibanaworks/hibana/commit/5ee442ea69f9baf451be832b6040d1eb8c92f24f), pinned in Cargo.toml.
+The Hibana and TLS revisions are pinned in [Cargo.toml](Cargo.toml).
 TLS is provided by [hibana-tls](https://github.com/hibanaworks/hibana-tls).
 
 The library is `no_std`, forbids unsafe Rust, and does not link the `alloc` crate.
@@ -35,10 +35,11 @@ participants in that choreography.
    [Handshake packet storage and decoding](src/quic/imp/handshake_wire.rs)
    perform authentication and CRYPTO reassembly without advancing endpoints.
 4. **Move resources with the protocol.**
-   [Application admission](src/quic/application/localside/ownership.rs) moves the
-   transmit continuation, authenticated Finished receipt and transcript through
-   owned slots. It checks their connection scope before admitting application
-   traffic. A message label alone is not a substitute for those resources.
+   [TLS verification](src/quic/localside/transcript.rs) returns its installation
+   endpoint. [Application execution](src/quic/application/localside/run.rs)
+   sends that endpoint to packet receive, which uses it to request key updates.
+   Ingress lends the stream-production endpoint to each source and receives it
+   back with FIN or abandonment. Both transfers continue the same session.
 
 ### Where are the running roles?
 
@@ -63,10 +64,9 @@ For a complete connection, follow these concrete definitions:
   [their execution](src/quic/localside/run.rs): the same ownership/attachment and
   execution split for the authenticated prefix.
 
-Some localsides hold several endpoints; for example, application receive holds
-`receive`, `rx_keys` and `peer_event`. Startup and retirement also borrow these
-endpoints in the order required by the global. Their fields document the
-consumers rather than pretending there is one task for every endpoint.
+Some localsides hold several endpoints; for example, application receive borrows
+`receive` and `peer_event`, and obtains the key-control endpoint by delegation.
+Startup and retirement use these endpoints in the order required by the global.
 
 [`runtime::TaskSet`](src/runtime/mod.rs) polls the composed local futures; it does
 not choose QUIC/TLS protocol transitions. On native systems, the PAL
@@ -502,7 +502,7 @@ caller-owned stream array and arena and calls that same attachment. There is no
 supply the same physical capabilities and poll the same Rust futures.
 
 The environment supplies [DatagramRx, DatagramTx, DatagramSocket and Clock](src/io/mod.rs),
-[cryptographic Entropy](https://github.com/hibanaworks/hibana-tls/blob/d1806e9c4a6d6c59294d15b671e72a637165691a/src/entropy.rs),
+[cryptographic Entropy](https://github.com/hibanaworks/hibana-tls/blob/75a31bc3d9ddb3060a7bacf58b0789b60faaa1f7/src/entropy.rs),
 and an executor that polls ordinary Rust futures. Native implementations and
 minimal environment examples are under [pal/](pal/README.md).
 

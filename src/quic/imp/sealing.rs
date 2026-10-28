@@ -94,8 +94,49 @@ pub(in crate::quic) fn prepare<'book, 'scope, const N: usize>(
     }
 }
 pub(in crate::quic) enum RecoveryPacket {
+    Data(crate::quic::imp::kernel::accounting::PacketNumberSpace),
     Acknowledgment(crate::quic::imp::kernel::accounting::PacketNumberSpace),
     Probe(crate::quic::imp::kernel::accounting::PacketNumberSpace),
+}
+
+/// Prepare one datagram from retained CRYPTO or recovery bookkeeping.
+pub(in crate::quic) fn prepare_pending_packet<'scope, 'book, const N: usize, const P: usize>(
+    slots: &Storage<'scope, 'book, N, P>,
+    keys: &mut WriteKeys<'_, 'scope>,
+    book: &mut recovery::Tx<'book, 'scope, N>,
+    config: Config<'_>,
+    clock: &impl Clock,
+) -> Result<Option<RecoveryPacket>, Error> {
+    if let Some(packet) = prepare_recovery_packet(slots, keys, book, config, clock)? {
+        return Ok(Some(packet));
+    }
+    if let Some(flight) = book.unsent_crypto() {
+        let data = book.flight_data(flight)?;
+        if data.level() == Level::Initial && !keys.initial.available() {
+            return Ok(None);
+        }
+        let peer = *slots.peer.borrow();
+        if let Some(packet) = prepare(
+            keys,
+            book,
+            config,
+            &peer,
+            data.level(),
+            Frame::Crypto {
+                offset: data.offset(),
+                data: data.bytes(),
+            },
+            Some(flight),
+            false,
+            None,
+            clock.now(),
+        )? {
+            let space = packet.reservation.packet().space;
+            slots.datagram.put(packet)?;
+            return Ok(Some(RecoveryPacket::Data(space)));
+        }
+    }
+    Ok(None)
 }
 pub(in crate::quic) fn prepare_recovery_packet<'scope, 'book, const N: usize, const P: usize>(
     slots: &Storage<'scope, 'book, N, P>,

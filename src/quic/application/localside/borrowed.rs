@@ -31,10 +31,12 @@ pub async fn client<'scope, const N: usize, const P: usize, const RX: usize, con
     let projection = global::choreography();
     let outcomes = Outcomes::new();
     let queues = CarrierStorage::<1, 32, 128>::new();
+    let bindings = source.source.scope().endpoint_bindings();
+    let queues_binding = queues.bind(session, &bindings).map_err(Error::Transport)?;
     let mut kit = SessionKitStorage::uninit();
     let rendezvous = kit
         .init()
-        .rendezvous(slab, queues.bind(session).map_err(Error::Transport)?)
+        .rendezvous(slab, &queues_binding)
         .map_err(Error::Attach)?;
     let mut endpoints = Endpoints::attach(&rendezvous, session, &projection, &outcomes)
         .map_err(Error::Attachment)?;
@@ -95,10 +97,12 @@ pub async fn server<'scope, const N: usize, const P: usize, const RX: usize, con
     let projection = global::choreography();
     let outcomes = Outcomes::new();
     let queues = CarrierStorage::<1, 32, 128>::new();
+    let bindings = source.source.scope().endpoint_bindings();
+    let queues_binding = queues.bind(session, &bindings).map_err(Error::Transport)?;
     let mut kit = SessionKitStorage::uninit();
     let rendezvous = kit
         .init()
-        .rendezvous(slab, queues.bind(session).map_err(Error::Transport)?)
+        .rendezvous(slab, &queues_binding)
         .map_err(Error::Attach)?;
     let mut endpoints = Endpoints::attach(&rendezvous, session, &projection, &outcomes)
         .map_err(Error::Attachment)?;

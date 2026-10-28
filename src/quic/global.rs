@@ -11,13 +11,14 @@ pub const RX: u8 = 0;
 pub const TLS_RX: u8 = 1;
 pub const TX: u8 = 2;
 pub const TLS_TX: u8 = 3;
-pub const TLS_COMPLETE: u8 = 32;
-pub const TLS_HANDOFF: u8 = hibana_tls::handshake::global::owned::HANDOFF;
 pub type TranscriptComplete = g::Msg<227, ()>;
 pub const UDP: u8 = 4;
 pub const TIMER: u8 = 5;
 pub const TIMER_TX: u8 = 6;
 pub const TX_WIRE: u8 = 7;
+pub const WRITE_KEYS: u8 = hibana_tls::handshake::global::owned::WRITE_KEYS;
+pub type PacketKeys<'r> = g::Msg<94, hibana::Endpoint<'r, WRITE_KEYS>>;
+pub type ApplicationInputEnd = g::Msg<95, ()>;
 pub const ADAPTER_RESULT: u16 = 1001;
 pub type ReceiveComplete = g::Msg<20, ()>;
 pub type ReceiveContinuation = g::Msg<21, ()>;
@@ -35,7 +36,6 @@ impl<const D: u8, const A: u8, const R: u8, const S: u8> Publication for Emissio
     type Settled = g::Msg<S, ()>;
 }
 pub trait TransmitPhase {
-    type Request: g::Message<Payload = ()>;
     type Flight: g::Message<Payload = ()>;
     type Idle: g::Message<Payload = u64>;
     type Boundary: g::Message<Payload = ()>;
@@ -55,7 +55,6 @@ macro_rules! tx_phase {
     ($name:ident,$b:literal) => {
         pub struct $name;
         impl TransmitPhase for $name {
-            type Request = g::Msg<{ $b }, ()>;
             type Flight = g::Msg<{ $b + 1 }, ()>;
             type Idle = g::Msg<{ $b + 2 }, u64>;
             type Boundary = g::Msg<{ $b + 3 }, ()>;
@@ -76,8 +75,8 @@ macro_rules! tx_phase {
 tx_phase!(InitialTransmit, 32);
 tx_phase!(HandshakeTransmit, 64);
 tx_phase!(ApplicationTransmit, 96);
-pub type WriteHandshake = g::Msg<61, ()>;
-pub type WriteApplication = g::Msg<93, ()>;
+pub type WriteApplication<'r> =
+    g::Msg<93, hibana::Endpoint<'r, { hibana_tls::handshake::global::owned::MATERIAL }>>;
 pub type DrainAck = Emission<128, 129, 130, 131>;
 pub type DrainProbe = Emission<132, 133, 134, 135>;
 // Concrete message names keep each written local continuation directly readable.
@@ -96,9 +95,7 @@ pub type InitialDataDatagram = <<InitialTransmit as TransmitPhase>::Data as Publ
 pub type InitialDataAccepted = <<InitialTransmit as TransmitPhase>::Data as Publication>::Accepted;
 pub type InitialDataRejected = <<InitialTransmit as TransmitPhase>::Data as Publication>::Rejected;
 pub type InitialDataSettled = <<InitialTransmit as TransmitPhase>::Data as Publication>::Settled;
-pub type InitialRequest = <InitialTransmit as TransmitPhase>::Request;
 pub type InitialFlight = <InitialTransmit as TransmitPhase>::Flight;
-pub type InitialIdle = <InitialTransmit as TransmitPhase>::Idle;
 pub type InitialBoundary = <InitialTransmit as TransmitPhase>::Boundary;
 pub type InitialTaken = <InitialTransmit as TransmitPhase>::Taken;
 pub type InitialPhaseSettled = <InitialTransmit as TransmitPhase>::PhaseSettled;
@@ -126,7 +123,6 @@ pub type HandshakeDataRejected =
     <<HandshakeTransmit as TransmitPhase>::Data as Publication>::Rejected;
 pub type HandshakeDataSettled =
     <<HandshakeTransmit as TransmitPhase>::Data as Publication>::Settled;
-pub type HandshakeRequest = <HandshakeTransmit as TransmitPhase>::Request;
 pub type HandshakeFlight = <HandshakeTransmit as TransmitPhase>::Flight;
 pub type HandshakeIdle = <HandshakeTransmit as TransmitPhase>::Idle;
 pub type HandshakeBoundary = <HandshakeTransmit as TransmitPhase>::Boundary;
@@ -157,7 +153,6 @@ pub type ApplicationDataRejected =
     <<ApplicationTransmit as TransmitPhase>::Data as Publication>::Rejected;
 pub type ApplicationDataSettled =
     <<ApplicationTransmit as TransmitPhase>::Data as Publication>::Settled;
-pub type ApplicationRequest = <ApplicationTransmit as TransmitPhase>::Request;
 pub type ApplicationFlight = <ApplicationTransmit as TransmitPhase>::Flight;
 pub type ApplicationIdle = <ApplicationTransmit as TransmitPhase>::Idle;
 pub type ApplicationBoundary = <ApplicationTransmit as TransmitPhase>::Boundary;
@@ -186,55 +181,47 @@ pub type TimerExpired = g::Msg<141, ()>;
 pub type TimerTaken = g::Msg<142, ()>;
 pub type TimerRetired = g::Msg<143, ()>;
 pub type TimerAcknowledged = g::Msg<144, ()>;
-fn publication<P: Publication>() -> impl Projectable {
+fn publication<const FROM: u8, P: Publication>() -> impl Projectable {
     g::seq(
-        g::send::<TX_WIRE, UDP, P::Datagram>(),
+        g::send::<FROM, UDP, P::Datagram>(),
         g::seq(
             g::route(
-                g::send::<UDP, TX_WIRE, P::Accepted>(),
-                g::send::<UDP, TX_WIRE, P::Rejected>(),
+                g::send::<UDP, FROM, P::Accepted>(),
+                g::send::<UDP, FROM, P::Rejected>(),
             )
             .resolve::<ADAPTER_RESULT>(),
-            g::send::<TX_WIRE, UDP, P::Settled>(),
+            g::send::<FROM, UDP, P::Settled>(),
         ),
     )
 }
-fn tx_work<P: TransmitPhase>() -> impl Projectable {
-    let source = g::seq(
-        g::send::<TX, TLS_TX, P::Request>(),
+fn tx_wire<P: TransmitPhase>() -> impl Projectable {
+    g::route(
+        publication::<WRITE_KEYS, P::Data>(),
         g::route(
-            g::seq(
-                g::send::<TLS_TX, TX, P::Flight>(),
-                g::send::<TX, TLS_TX, P::Taken>(),
-            ),
+            publication::<WRITE_KEYS, P::Ack>(),
             g::route(
+                publication::<WRITE_KEYS, P::Probe>(),
                 g::seq(
-                    g::send::<TLS_TX, TX, P::Idle>(),
-                    g::send::<TX, TLS_TX, P::Taken>(),
-                ),
-                g::send::<TLS_TX, TX, P::Boundary>(),
-            ),
-        ),
-    )
-    .roll();
-    let wire = g::route(
-        publication::<P::Data>(),
-        g::route(
-            publication::<P::Ack>(),
-            g::route(
-                publication::<P::Probe>(),
-                g::seq(
-                    g::send::<TX_WIRE, UDP, P::WireBoundary>(),
-                    g::send::<UDP, TX_WIRE, P::WireBoundarySeen>(),
+                    g::send::<WRITE_KEYS, UDP, P::WireBoundary>(),
+                    g::send::<UDP, WRITE_KEYS, P::WireBoundarySeen>(),
                 ),
             ),
         ),
     )
-    .roll();
+    .roll()
+}
+fn tx_work<P: TransmitPhase>(source: impl Projectable) -> impl Projectable {
     g::seq(
-        g::par(source, wire),
-        g::send::<TX, TLS_TX, P::PhaseSettled>(),
+        g::par(source, tx_wire::<P>()),
+        g::send::<WRITE_KEYS, TLS_TX, P::PhaseSettled>(),
     )
+}
+
+fn flight<P: TransmitPhase>() -> impl Projectable {
+    g::send::<TLS_TX, WRITE_KEYS, P::Flight>()
+}
+fn idle<P: TransmitPhase>() -> impl Projectable {
+    g::send::<TLS_TX, WRITE_KEYS, P::Idle>()
 }
 
 /// Actual key-space retirement is independent of TLS flight transport. The
@@ -256,6 +243,7 @@ pub type EarlySkip = g::Msg<149, ()>;
 pub type EarlyEnd = g::Msg<150, ()>;
 pub type EarlyDone = g::Msg<151, ()>;
 pub type EarlyContinue = g::Msg<160, ()>;
+pub type EarlySettled = g::Msg<161, ()>;
 pub type EarlyInitial = Emission<152, 153, 154, 155>;
 pub type EarlyPacket = Emission<156, 157, 158, 159>;
 pub type EarlyInitialDatagram = <EarlyInitial as Publication>::Datagram;
@@ -267,65 +255,59 @@ pub type EarlyPacketAccepted = <EarlyPacket as Publication>::Accepted;
 pub type EarlyPacketRejected = <EarlyPacket as Publication>::Rejected;
 pub type EarlyPacketSettled = <EarlyPacket as Publication>::Settled;
 pub fn early_prefix() -> impl Projectable {
-    g::route(
-        g::seq(
-            g::send::<TLS_TX, TX_WIRE, EarlyStart>(),
+    g::seq(
+        g::route(
             g::seq(
-                g::send::<TX_WIRE, UDP, EarlyStart>(),
+                g::send::<TLS_TX, TX_WIRE, EarlyStart>(),
                 g::seq(
-                    publication::<EarlyInitial>(),
+                    g::send::<TX_WIRE, UDP, EarlyStart>(),
                     g::seq(
+                        publication::<TX_WIRE, EarlyInitial>(),
                         g::route(
-                            publication::<EarlyPacket>(),
+                            publication::<TX_WIRE, EarlyPacket>(),
                             g::send::<TX_WIRE, UDP, EarlyEnd>(),
                         )
                         .roll(),
-                        g::send::<TX_WIRE, TLS_TX, EarlyDone>(),
                     ),
                 ),
             ),
+            g::seq(
+                g::send::<TLS_TX, TX_WIRE, EarlySkip>(),
+                g::send::<TX_WIRE, UDP, EarlySkip>(),
+            ),
         ),
         g::seq(
-            g::send::<TLS_TX, TX_WIRE, EarlySkip>(),
-            g::send::<TX_WIRE, UDP, EarlySkip>(),
+            g::send::<UDP, TX_WIRE, EarlySettled>(),
+            g::send::<TX_WIRE, TLS_TX, EarlyDone>(),
         ),
     )
 }
 
-pub fn choreography() -> impl Projectable {
-    let receive = g::seq(
-        hibana_tls::handshake::global::owned::choreography(),
-        g::seq(
-            g::send::<TLS_RX, TLS_COMPLETE, TranscriptComplete>(),
-            g::seq(
-                g::send::<RX, TLS_RX, ReceiveComplete>(),
-                g::send::<TLS_RX, RX, ReceiveContinuation>(),
-            ),
-        ),
-    );
+fn handshake() -> impl Projectable {
+    use hibana_tls::handshake::global::owned as tls;
     let drain = g::route(
-        publication::<DrainAck>(),
+        publication::<WRITE_KEYS, DrainAck>(),
         g::route(
-            publication::<DrainProbe>(),
-            g::send::<TX_WIRE, UDP, HandshakeRecoveryTransferred>(),
+            publication::<WRITE_KEYS, DrainProbe>(),
+            g::send::<WRITE_KEYS, UDP, HandshakeRecoveryTransferred>(),
         ),
     )
     .roll();
     let complete = g::seq(
-        g::send::<TX_WIRE, RECEIVE_STOP, StopReceive>(),
+        g::send::<WRITE_KEYS, RECEIVE_STOP, StopReceive>(),
         g::seq(
-            g::send::<RECEIVE_STOP, TX_WIRE, ReceiveStopped>(),
+            g::send::<RECEIVE_STOP, WRITE_KEYS, ReceiveStopped>(),
             g::seq(
-                g::send::<TX_WIRE, TIMER_STOP, StopTimer>(),
+                g::send::<WRITE_KEYS, TIMER_STOP, StopTimer>(),
                 g::seq(
-                    g::send::<TIMER_STOP, TX_WIRE, TimerStopped>(),
+                    g::send::<TIMER_STOP, WRITE_KEYS, TimerStopped>(),
                     g::seq(
-                        g::send::<TX, TLS_TX, TransmitComplete>(),
+                        g::send::<WRITE_KEYS, TLS_TX, TransmitComplete>(),
                         g::seq(
-                            g::send::<TLS_TX, TX, TransmitContinuation>(),
+                            g::send::<TLS_TX, WRITE_KEYS, TransmitContinuation>(),
                             g::seq(
-                                g::send::<TX_WIRE, UDP, AdapterComplete>(),
-                                g::send::<UDP, TX_WIRE, AdapterRetired>(),
+                                g::send::<WRITE_KEYS, UDP, AdapterComplete>(),
+                                g::send::<UDP, WRITE_KEYS, AdapterRetired>(),
                             ),
                         ),
                     ),
@@ -333,19 +315,102 @@ pub fn choreography() -> impl Projectable {
             ),
         ),
     );
-    let transmit = g::seq(
-        tx_work::<InitialTransmit>(),
+    let hello = g::seq(
+        tls::hello(),
         g::seq(
-            g::send::<TLS_TX, TX, WriteHandshake>(),
+            g::send::<TLS_RX, TX, tls::Keys<'_>>(),
             g::seq(
-                tx_work::<HandshakeTransmit>(),
+                g::send::<{ tls::MATERIAL }, TLS_RX, tls::Install>(),
                 g::seq(
-                    g::send::<TLS_TX, TX, WriteApplication>(),
-                    g::seq(tx_work::<ApplicationTransmit>(), g::seq(drain, complete)),
+                    g::send::<TLS_RX, { tls::MATERIAL }, tls::Installed>(),
+                    g::seq(
+                        g::send::<TX, TLS_TX, tls::Keys<'_>>(),
+                        g::send::<TLS_TX, TLS_RX, tls::Keys<'_>>(),
+                    ),
                 ),
             ),
         ),
     );
+    let initial_output = tx_work::<InitialTransmit>(g::seq(
+        hello,
+        g::seq(
+            g::send::<WRITE_KEYS, TLS_TX, InitialTaken>(),
+            g::route(
+                flight::<InitialTransmit>(),
+                g::send::<TLS_TX, WRITE_KEYS, InitialBoundary>(),
+            ),
+        )
+        .roll(),
+    ));
+    let handshake_output = tx_work::<HandshakeTransmit>(
+        g::seq(
+            g::send::<WRITE_KEYS, TLS_TX, HandshakeTaken>(),
+            g::route(
+                flight::<HandshakeTransmit>(),
+                g::route(
+                    idle::<HandshakeTransmit>(),
+                    g::send::<TLS_TX, WRITE_KEYS, HandshakeBoundary>(),
+                ),
+            ),
+        )
+        .roll(),
+    );
+    let application_output = tx_work::<ApplicationTransmit>(g::seq(
+        g::par(
+            g::seq(
+                g::send::<TX_WIRE, TLS_RX, tls::Keys<'_>>(),
+                g::seq(
+                    tls::complete(),
+                    g::send::<TLS_RX, TLS_TX, TranscriptComplete>(),
+                ),
+            ),
+            g::seq(
+                g::send::<WRITE_KEYS, TLS_TX, ApplicationTaken>(),
+                g::route(
+                    flight::<ApplicationTransmit>(),
+                    g::route(
+                        idle::<ApplicationTransmit>(),
+                        g::send::<TLS_TX, WRITE_KEYS, ApplicationInputEnd>(),
+                    ),
+                ),
+            )
+            .roll(),
+        ),
+        g::send::<TLS_TX, WRITE_KEYS, ApplicationBoundary>(),
+    ));
+    g::seq(
+        g::send::<TX, TX_WIRE, PacketKeys<'_>>(),
+        g::seq(
+            initial_output,
+            g::seq(
+                g::par(
+                    g::seq(
+                        g::route(tls::client_messages(), tls::server_messages()),
+                        tls::installation(),
+                    ),
+                    handshake_output,
+                ),
+                g::seq(
+                    g::send::<TLS_TX, TX_WIRE, WriteApplication<'_>>(),
+                    g::seq(
+                        application_output,
+                        g::par(
+                            g::seq(
+                                g::send::<RX, TLS_RX, ReceiveComplete>(),
+                                g::send::<TLS_RX, RX, ReceiveContinuation>(),
+                            ),
+                            g::seq(
+                                g::seq(drain, complete),
+                                g::send::<TX_WIRE, TX, PacketKeys<'_>>(),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+}
+pub fn choreography() -> impl Projectable {
     let timer = g::route(
         g::seq(
             g::send::<TIMER, TIMER_TX, TimerExpired>(),
@@ -369,8 +434,8 @@ pub fn choreography() -> impl Projectable {
         g::seq(
             early_prefix(),
             g::seq(
-                g::send::<TLS_TX, TX, EarlyContinue>(),
-                g::par(receive, g::par(transmit, g::par(timer, initial))),
+                g::send::<TLS_TX, TLS_RX, EarlyContinue>(),
+                g::par(handshake(), g::par(timer, initial)),
             ),
         ),
     )

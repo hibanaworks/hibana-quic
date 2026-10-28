@@ -95,12 +95,11 @@ fn delayed_parallel_offer_retains_cancelled_ingress_and_acknowledges_every_paylo
     let e: RoleProgram<28> = project(&global);
     let queues = Box::new(CarrierStorage::<1, 32, 128>::new());
     let mut slab = vec![0; 65536];
+    let sid = SessionId::new(1);
+    let queues_binding = queues.bind(sid, &[]).unwrap();
     let mut storage = Box::new(SessionKitStorage::uninit());
     let kit = storage.init();
-    let sid = SessionId::new(1);
-    let rendezvous = kit
-        .rendezvous(&mut slab, queues.bind(sid).unwrap())
-        .unwrap();
+    let rendezvous = kit.rendezvous(&mut slab, &queues_binding).unwrap();
     let mut a = rendezvous.enter(sid, &a).unwrap();
     let mut b = rendezvous.enter(sid, &b).unwrap();
     let mut c = rendezvous.enter(sid, &c).unwrap();

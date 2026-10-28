@@ -113,12 +113,10 @@ fn exchange(
     let outbound = Exchange::new(&mut outbound_body, &mut outbound_headers);
     let carrier = CarrierStorage::<4, 16, 128>::new();
     let mut slab = [0; 65536];
-    let mut kit = SessionKitStorage::uninit();
     let sid = SessionId::new(35);
-    let rendezvous = kit
-        .init()
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-        .unwrap();
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
+    let mut kit = SessionKitStorage::uninit();
+    let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
     let mut reader = rendezvous.enter(sid, &reader_program).unwrap();
     let mut app = rendezvous.enter(sid, &app_program).unwrap();
     let mut writer = rendezvous.enter(sid, &writer_program).unwrap();
@@ -286,12 +284,10 @@ fn client_writer_transfers_actual_head_method_to_independent_download_role() {
         let outbound = Exchange::new(&mut outbound_body, &mut outbound_headers);
         let carrier = CarrierStorage::<4, 16, 128>::new();
         let mut slab = [0; 65536];
-        let mut kit = SessionKitStorage::uninit();
         let sid = SessionId::new(36);
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut kit = SessionKitStorage::uninit();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let mut read = rendezvous.enter(sid, &read_program).unwrap();
         let mut upload = rendezvous.enter(sid, &upload_program).unwrap();
         let mut write = rendezvous.enter(sid, &write_program).unwrap();

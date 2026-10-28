@@ -55,7 +55,7 @@ pub(crate) async fn run<
     acknowledgments: &super::acknowledgments::Exchange<'scope>,
     app: &RefCell<stream::App<'_, '_, 'scope, RX, CHUNK>>,
     state: &crate::quic::application::imp::io::Exchange<'_, CHUNK, B>,
-    mut keys: crate::quic::application::imp::keys::RxControl<'_, 'owner, 'scope>,
+    keys: &crate::quic::application::imp::keys::Exchange<'owner, 'scope>,
     control: &Control<'_, 'scope>,
     clock: &impl Clock,
     socket: &mut impl DatagramRx,
@@ -82,7 +82,6 @@ pub(crate) async fn run<
     if let Some(confirmation) = initial_confirmation {
         async {
             let endpoint = &mut *rx_keys;
-            let keys = &mut keys;
             let material = &mut material;
             let book = &mut *book;
 
@@ -104,7 +103,7 @@ pub(crate) async fn run<
                 let endpoint = &mut *endpoint;
                 let confirmation = ScopedHandshakeConfirmation::from_connection(confirmation);
 
-                keys.exchange.confirmation.put(confirmation)?;
+                keys.confirmation.put(confirmation)?;
                 endpoint.send::<p::Confirmed>(&()).await?;
                 let response = endpoint.offer().await?;
                 let accepted = match response.label() {
@@ -122,7 +121,7 @@ pub(crate) async fn run<
                         ));
                     }
                 };
-                let result = keys.exchange.confirmation_applied.take()?;
+                let result = keys.confirmation_applied.take()?;
                 keys::check_result(&result, accepted)?;
 
                 result
@@ -283,7 +282,6 @@ pub(crate) async fn run<
                             let packet_start = offset - packet.bytes.len();
                             async {
                                 let endpoint = &mut *rx_keys;
-                                let keys = &mut keys;
                                 let material = &mut material;
                                 let destination = &destination_copy[..destination_len];
                                 let packet = &mut datagram[packet_start..offset];
@@ -329,7 +327,7 @@ pub(crate) async fn run<
                                         let installed = async {
                                             let endpoint = &mut *endpoint;
 
-                                            keys.exchange.peer_update.put(crate::quic::application::imp::keys::PeerUpdate {
+                                            keys.peer_update.put(crate::quic::application::imp::keys::PeerUpdate {
                                                 authenticated,
                                                 now,
                                                 pto,
@@ -351,7 +349,7 @@ pub(crate) async fn run<
                                                     ));
                                                 }
                                             };
-                                            let result = keys.exchange.write_installed.take()?;
+                                            let result = keys.write_installed.take()?;
                                             keys::check_result(&result, accepted)?;
 
                                             result
@@ -392,7 +390,7 @@ pub(crate) async fn run<
                                         let validated =
                                             ValidatedKeyAck::from_connection_ack(grant)?;
 
-                                        keys.exchange.key_ack.put(crate::quic::application::imp::keys::KeyAck {
+                                        keys.key_ack.put(crate::quic::application::imp::keys::KeyAck {
                                             validated,
                                             now,
                                             pto,
@@ -412,7 +410,7 @@ pub(crate) async fn run<
                                                 return Err(crate::quic::application::imp::keys::Error::UnexpectedLabel(label));
                                             }
                                         };
-                                        let result = keys.exchange.key_ack_applied.take()?;
+                                        let result = keys.key_ack_applied.take()?;
                                         keys::check_result(&result, accepted)?;
 
                                         result
@@ -422,7 +420,6 @@ pub(crate) async fn run<
                                 if let Some(confirmation) = outcome.confirmation.take() {
                                     async {
                                         let endpoint = &mut *endpoint;
-                                        let keys = &mut *keys;
                                         let material = &mut *material;
                                         let book = &mut *book;
 
@@ -449,7 +446,7 @@ pub(crate) async fn run<
                                                     confirmation,
                                                 );
 
-                                            keys.exchange.confirmation.put(confirmation)?;
+                                            keys.confirmation.put(confirmation)?;
                                             endpoint.send::<p::Confirmed>(&()).await?;
                                             let response = endpoint.offer().await?;
                                             let accepted = match response.label() {
@@ -472,7 +469,7 @@ pub(crate) async fn run<
                                                 }
                                             };
                                             let result =
-                                                keys.exchange.confirmation_applied.take()?;
+                                                keys.confirmation_applied.take()?;
                                             keys::check_result(&result, accepted)?;
 
                                             result
@@ -626,7 +623,7 @@ pub(crate) async fn run<
                                     }
                                 }
                                 if key_update_target != 0
-                                    && keys.local_update_due(key_update_target, clock.now())?
+                                    && keys.owner.local_update_due(key_update_target, clock.now())?
                                 {
                                     let update_pto = book.pto_duration_us()?;
                                     async {
@@ -637,7 +634,7 @@ pub(crate) async fn run<
 
                                         read.maintain(now, pto)?;
                                         let ready = read.prepare_local_update()?;
-                                        keys.exchange
+                                        keys
                                             .local_update
                                             .put(crate::quic::application::imp::keys::LocalUpdateRequest { ready, now, pto })?;
                                         endpoint.send::<p::LocalUpdate>(&()).await?;
@@ -655,7 +652,7 @@ pub(crate) async fn run<
                                                 return Err(crate::quic::application::imp::keys::Error::UnexpectedLabel(label));
                                             }
                                         };
-                                        let result = keys.exchange.local_result.take()?;
+                                        let result = keys.local_result.take()?;
                                         if result.is_ok() != accepted {
                                             return Err(crate::quic::application::imp::keys::Error::Binding);
                                         }
@@ -893,6 +890,7 @@ pub(crate) async fn run<
     }
     receive.send::<p::ReceiveRetire>(&()).await?;
     receive.recv::<p::ReceiveRetired>().await?;
+    receive.send::<p::StopClock>(&()).await?;
     material.application.discard();
     if let Some(mut initial) = material.initial.take() {
         initial.discard();

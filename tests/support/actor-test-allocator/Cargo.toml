@@ -9,3 +9,6 @@ license = "MIT OR Apache-2.0"
 path = "lib.rs"
 
 [workspace]
+
+[lints.rust]
+long_running_const_eval = "forbid"

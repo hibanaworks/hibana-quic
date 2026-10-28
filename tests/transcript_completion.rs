@@ -44,12 +44,11 @@ fn run_completion_exchange(order: [usize; 4], peer_delay: usize) {
     );
     let carrier = CarrierStorage::<1, 16, 16>::new();
     let mut slab = [0; 65536];
+    let id = SessionId::new(9001);
+    let carrier_binding = carrier.bind(id, &[]).unwrap();
     let mut storage = SessionKitStorage::uninit();
     let kit = storage.init();
-    let id = SessionId::new(9001);
-    let rv = kit
-        .rendezvous(&mut slab, carrier.bind(id).unwrap())
-        .unwrap();
+    let rv = kit.rendezvous(&mut slab, &carrier_binding).unwrap();
     let rx_program = project::<0>(&graph);
     let verify_program = project::<1>(&graph);
     let source_program = project::<2>(&graph);

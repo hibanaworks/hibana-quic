@@ -1,5 +1,6 @@
 //! Ordinary HTTP/3: GET/HEAD /hello, streaming POST /echo, and 404.
 //! Native credentials, sockets and execution stay in ../environment.rs.
+// Project the complete TLS/QUIC/application graph in this binary.
 #[path = "../environment.rs"]
 mod environment;
 mod server_app;

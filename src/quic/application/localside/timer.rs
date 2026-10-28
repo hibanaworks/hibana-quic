@@ -3,6 +3,7 @@ use super::{Control, Error, global as p};
 use crate::quic::Clock;
 use crate::quic::application::imp::keys::KeyOwner;
 use crate::quic::imp::recovery;
+use core::{ops::ControlFlow, pin::pin};
 use hibana::Endpoint;
 
 pub(crate) async fn run<const N: usize>(
@@ -12,38 +13,53 @@ pub(crate) async fn run<const N: usize>(
     book: &mut recovery::Clock<'_, '_, N>,
     clock: &impl Clock,
 ) -> Result<(), Error> {
-    loop {
-        if control.stopping() {
-            endpoint.send::<p::ClockRetired>(&()).await?;
-            endpoint.recv::<p::ClockAcknowledged>().await?;
-            return Ok(());
-        }
-        let revision = control.revision();
-        let available = keys.available_levels()?;
-        let Some(deadline) = book.update_application(clock.now(), available)? else {
-            control.wait(5, revision).await;
-            continue;
-        };
-        if let core::ops::ControlFlow::Break(()) =
-            crate::runtime::select(control.wait(5, revision), clock.wait_until(deadline.at())).await
-        {
-            continue;
-        }
-        match book.expire(deadline, clock.now()) {
-            Ok(Some(_)) => {
-                endpoint.send::<p::Expired>(&()).await?;
-                endpoint.recv::<p::TimerTaken>().await?;
+    {
+        let [mut notice, mut timer] = endpoint.par()?;
+        let mut stopped = pin!(notice.recv::<p::StopClock>());
+        loop {
+            let expired = crate::runtime::select(stopped.as_mut(), async {
+                let revision = control.revision();
+                let available = keys.available_levels()?;
+                let Some(deadline) = book.update_application(clock.now(), available)? else {
+                    control.wait(5, revision).await;
+                    return Ok::<_, Error>(None);
+                };
+                if let ControlFlow::Break(()) = crate::runtime::select(
+                    control.wait(5, revision),
+                    clock.wait_until(deadline.at()),
+                )
+                .await
+                {
+                    return Ok(None);
+                }
+                match book.expire(deadline, clock.now()) {
+                    Ok(value) => Ok(value),
+                    Err(recovery::Error::StaleDeadline) => Ok(None),
+                    Err(error) => Err(error.into()),
+                }
+            })
+            .await;
+            match expired {
+                ControlFlow::Break(result) => {
+                    result?;
+                    break;
+                }
+                ControlFlow::Continue(result) => {
+                    if result?.is_some() {
+                        timer.send::<p::Expired>(&()).await?;
+                        timer.recv::<p::TimerTaken>().await?;
+                    }
+                }
             }
-            Ok(None) | Err(recovery::Error::StaleDeadline) => {}
-            Err(error) => return Err(error.into()),
+            crate::runtime::yield_now().await;
         }
-        crate::runtime::yield_now().await;
+        timer.send::<p::ClockRetired>(&()).await?;
     }
+    endpoint.recv::<p::ClockAcknowledged>().await?;
+    Ok(())
 }
 
-/// This distinct logical facet remains runnable while TRANSMIT waits on UDP.
-/// Only after observing the actual timeout edge does it wake packet preparation.
-/// No shared endpoint borrow or queued timer frame can block adapter settlement.
+/// Receive timer notifications independently of packet submission.
 pub(crate) async fn receive(
     endpoint: &mut Endpoint<'_, { p::TX_CLOCK }>,
     control: &Control<'_, '_>,

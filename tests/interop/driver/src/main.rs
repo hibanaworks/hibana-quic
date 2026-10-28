@@ -1,7 +1,6 @@
 //! Primary direct Hibana host attachment. File mode enters the library's one
 //! connected global from Initial through authenticated file IO and clean close.
 #![deny(unsafe_code)]
-#![allow(long_running_const_eval)]
 use hibana_quic::quic::application::storage as application_storage;
 #[path = "imp/cli.rs"]
 mod cli;
@@ -1463,22 +1462,43 @@ mod admission_tests {
         let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         peer.send_to(&bytes[..hlen + 1176], socket.local_addr().unwrap())
             .unwrap();
-        let mut first = vec![0; hibana_quic::session::DATAGRAM];
-        let mut admission = Box::pin(admit_initial(&socket, &mut first));
-        let mut context = Context::from_waker(Waker::noop());
-        assert!(admission.as_mut().poll(&mut context).is_pending());
-        assert!(
-            admission.as_mut().poll(&mut context).is_pending(),
-            "an unauthenticated source CID was committed as the peer identity"
-        );
+        let mut first = vec![0xa5; hibana_quic::session::DATAGRAM];
+        let started = Instant::now();
+        loop {
+            {
+                let mut admission = Box::pin(admit_initial(&socket, &mut first));
+                let mut context = Context::from_waker(Waker::noop());
+                assert!(admission.as_mut().poll(&mut context).is_pending());
+                assert!(
+                    admission.as_mut().poll(&mut context).is_pending(),
+                    "an unauthenticated source CID was committed as the peer identity"
+                );
+            }
+            if first[0] != 0xa5 {
+                assert_eq!(&first[..hlen + 1176], &bytes[..hlen + 1176]);
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "Initial did not arrive"
+            );
+            reactor
+                .block_on(reactor.sleep(Duration::from_millis(1)).unwrap())
+                .unwrap()
+                .unwrap();
+        }
         bytes[15] ^= 1;
         peer.send_to(&bytes[..hlen + 1176], socket.local_addr().unwrap())
             .unwrap();
-        let std::task::Poll::Ready(Ok((_, original, source, len, ecn))) =
-            admission.as_mut().poll(&mut context)
-        else {
-            panic!("the following intact Initial was not admitted");
-        };
+        let clock = HostClock::new(&reactor, Instant::now());
+        let (_, original, source, len, ecn) = reactor
+            .block_on(before_deadline(
+                &clock,
+                clock.start + Duration::from_secs(1),
+                admit_initial(&socket, &mut first),
+            ))
+            .unwrap()
+            .unwrap();
         assert_eq!(ecn, Some(hibana_quic::io::Codepoint::NotEct));
         assert_eq!(original, b"original");
         assert_eq!(source, b"client01");
@@ -1496,21 +1516,42 @@ mod admission_tests {
         let socket = reactor
             .register_udp(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap())
             .unwrap();
-        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let peer = reactor
+            .register_udp(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap())
+            .unwrap();
         // The simulator's WAIT version is deliberately not a v1 Initial.
         let probe = b"\xc0WAIT\x04dest\x03src";
-        peer.send_to(probe, socket.local_addr().unwrap()).unwrap();
+        reactor
+            .block_on(peer.send_to(
+                probe,
+                socket.local_addr().unwrap(),
+                hibana_quic::io::Codepoint::NotEct,
+            ))
+            .unwrap()
+            .unwrap();
         let mut first = vec![0; hibana_quic::session::DATAGRAM];
-        {
-            let mut admission = Box::pin(admit_initial(&socket, &mut first));
-            let mut context = Context::from_waker(Waker::noop());
-            assert!(admission.as_mut().poll(&mut context).is_pending());
-            assert!(admission.as_mut().poll(&mut context).is_pending());
-        }
         let mut reply = [0; 64];
-        let (len, source) = peer.recv_from(&mut reply).unwrap();
-        assert_eq!(source, socket.local_addr().unwrap());
+        let clock = HostClock::new(&reactor, Instant::now());
+        let received = {
+            let mut admission = Box::pin(admit_initial(&socket, &mut first));
+            let mut response = Box::pin(peer.recv_from(&mut reply));
+            reactor
+                .block_on(before_deadline(
+                    &clock,
+                    clock.start + Duration::from_secs(1),
+                    core::future::poll_fn(|cx| {
+                        assert!(
+                            admission.as_mut().poll(cx).is_pending(),
+                            "an unsupported version was admitted as an Initial"
+                        );
+                        response.as_mut().poll(cx)
+                    }),
+                ))
+                .unwrap()
+                .unwrap()
+        };
+        let len = received.len;
+        assert_eq!(received.source, socket.local_addr().unwrap());
         assert!(len <= 3 * probe.len());
         let packet = PacketIter::new(&reply[..len], 8, 8)
             .unwrap()
@@ -1555,12 +1596,30 @@ mod admission_tests {
             peer.send_to(&rejected, address).unwrap();
             peer.send_to(b"next datagram remains queued", address)
                 .unwrap();
-            let mut first = vec![0; hibana_quic::session::DATAGRAM];
-            {
-                let mut admission = Box::pin(admit_initial(&socket, &mut first));
-                let mut context = Context::from_waker(Waker::noop());
-                assert!(admission.as_mut().poll(&mut context).is_pending());
-                assert!(admission.as_mut().poll(&mut context).is_pending());
+            let mut first = vec![0xa5; hibana_quic::session::DATAGRAM];
+            let started = Instant::now();
+            loop {
+                {
+                    let mut admission = Box::pin(admit_initial(&socket, &mut first));
+                    let mut context = Context::from_waker(Waker::noop());
+                    assert!(admission.as_mut().poll(&mut context).is_pending());
+                    assert!(admission.as_mut().poll(&mut context).is_pending());
+                }
+                if first[0] != 0xa5 {
+                    assert_eq!(
+                        &first[..rejected.len().min(first.len())],
+                        &rejected[..rejected.len().min(first.len())]
+                    );
+                    break;
+                }
+                assert!(
+                    started.elapsed() < Duration::from_secs(1),
+                    "rejected datagram did not arrive"
+                );
+                reactor
+                    .block_on(reactor.sleep(Duration::from_millis(1)).unwrap())
+                    .unwrap()
+                    .unwrap();
             }
             let clock = HostClock::new(&reactor, Instant::now());
             let metadata = reactor

@@ -22,11 +22,12 @@ fn run_discard(cancel: bool, missing_finished: bool, release: bool, controls: bo
     let ap: RoleProgram<{ p::APPLICATION }> = project(&global);
     let carrier = CarrierStorage::<1, 16, 16>::new();
     let mut slab = [0; 65536];
-    let mut storage = SessionKitStorage::uninit();
     let sid = SessionId::new(1108);
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
+    let mut storage = SessionKitStorage::uninit();
     let rv = storage
         .init()
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+        .rendezvous(&mut slab, &carrier_binding)
         .unwrap();
     let mut input = rv.enter(sid, &ip).unwrap();
     let mut owner = rv.enter(sid, &op).unwrap();
@@ -191,11 +192,12 @@ fn projected_owner_cannot_publish_before_finished() {
     let op: RoleProgram<{ p::OWNER }> = project(&global);
     let carrier = CarrierStorage::<1, 16, 16>::new();
     let mut slab = [0; 65536];
-    let mut storage = SessionKitStorage::uninit();
     let sid = SessionId::new(1109);
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
+    let mut storage = SessionKitStorage::uninit();
     let rv = storage
         .init()
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+        .rendezvous(&mut slab, &carrier_binding)
         .unwrap();
     let mut owner = rv.enter(sid, &op).unwrap();
     let mut send = pin!(owner.send::<p::Range>(&0));
@@ -213,6 +215,60 @@ fn projected_release_consumes_and_returns_a_real_owned_tls_receipt() {
 #[test]
 fn deferred_controls_require_finished_and_consumer_ack_before_data() {
     run_discard(false, false, true, true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn projected_owner_cannot_end_input_before_input_end() {
+    let global = p::choreography();
+    let ip = project::<{ p::INPUT }>(&global);
+    let op = project::<{ p::OWNER }>(&global);
+    let carrier = CarrierStorage::<1, 16, 16>::new();
+    let sid = SessionId::new(1111);
+    let binding = carrier.bind(sid, &[]).unwrap();
+    let mut slab = [0; 65536];
+    let mut storage = SessionKitStorage::uninit();
+    let rv = storage.init().rendezvous(&mut slab, &binding).unwrap();
+    let mut input = rv.enter(sid, &ip).unwrap();
+    let mut owner = rv.enter(sid, &op).unwrap();
+    input.send::<p::Packet>(&0).await.unwrap();
+    owner.recv::<p::Packet>().await.unwrap();
+    owner.send::<p::PacketStored>(&0).await.unwrap();
+    input.recv::<p::PacketStored>().await.unwrap();
+    assert!(owner.send::<p::InputEnded>(&7).await.is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn projected_consumer_cannot_finish_before_released() {
+    let global = p::choreography();
+    let ip = project::<{ p::INPUT }>(&global);
+    let op = project::<{ p::OWNER }>(&global);
+    let tp = project::<{ p::TLS }>(&global);
+    let ap = project::<{ p::APPLICATION }>(&global);
+    let carrier = CarrierStorage::<1, 16, 16>::new();
+    let sid = SessionId::new(1110);
+    let binding = carrier.bind(sid, &[]).unwrap();
+    let mut slab = [0; 65536];
+    let mut storage = SessionKitStorage::uninit();
+    let rv = storage.init().rendezvous(&mut slab, &binding).unwrap();
+    let mut input = rv.enter(sid, &ip).unwrap();
+    let mut owner = rv.enter(sid, &op).unwrap();
+    let mut tls = rv.enter(sid, &tp).unwrap();
+    let mut app = rv.enter(sid, &ap).unwrap();
+    input.send::<p::InputEnd>(&7).await.unwrap();
+    owner.recv::<p::InputEnd>().await.unwrap();
+    owner.send::<p::InputEnded>(&7).await.unwrap();
+    input.recv::<p::InputEnded>().await.unwrap();
+    input.send::<p::InputRetired>(&7).await.unwrap();
+    tls.recv::<p::InputRetired>().await.unwrap();
+    tls.send::<p::Verified>(&7).await.unwrap();
+    owner.recv::<p::Verified>().await.unwrap();
+    owner.send::<p::VerifiedTaken>(&7).await.unwrap();
+    tls.recv::<p::VerifiedTaken>().await.unwrap();
+    owner.send::<p::Range>(&0).await.unwrap();
+    app.recv::<p::Range>().await.unwrap();
+    app.send::<p::RangeApplied>(&0).await.unwrap();
+    owner.recv::<p::RangeApplied>().await.unwrap();
+    assert!(app.send::<p::ReleaseSeen>(&7).await.is_err());
 }
 
 #[path = "../../../../tests/support/early_owned_fixture.rs"]

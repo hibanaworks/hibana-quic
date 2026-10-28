@@ -23,10 +23,13 @@ pub async fn run<const ROLE: u8, E>(
         Admission<'ch, 'st, 'r, ROLE>,
     ) -> Result<(), E>,
 ) -> Result<(), Error<E>> {
-    let carrier = storage.carrier.bind(session).map_err(Error::Transport)?;
+    let carrier = storage
+        .carrier
+        .bind(session, &[])
+        .map_err(Error::Transport)?;
     let bridge = storage.carrier.peer(ROLE, peer).map_err(Error::Transport)?;
     core::pin::pin!(run_on(
-        carrier,
+        &carrier,
         &bridge,
         slab,
         session,

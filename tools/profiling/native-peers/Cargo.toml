@@ -1,0 +1,22 @@
+[package]
+name = "native-peer-comparison"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+neqo-transport = { git = "https://github.com/mozilla/neqo", rev = "a4fac5d9f710ecdb6b52a03e68f906607d082745" }
+neqo-common = { git = "https://github.com/mozilla/neqo", rev = "a4fac5d9f710ecdb6b52a03e68f906607d082745" }
+nss = { package = "nss-rs", git = "https://github.com/mozilla/nss-rs", version = "0.16" }
+tokio = { version = "1", features = ["net", "rt", "macros", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "=0.2.183"
+mach2 = "=0.4.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+debug = "line-tables-only"

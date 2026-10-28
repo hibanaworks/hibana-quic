@@ -2,7 +2,7 @@
 //! return to ordinary publication without a resolved or abandoned boundary.
 //!
 //! OWNER executes the path-validation continuation in [`crate::quic::path::localside`].
-//! TRANSMIT requests and settles each probe from the application transmit local.
+//! WRITE_KEYS requests and settles each probe from the application transmit local.
 //! Their endpoints belong to [`crate::quic::application::localside::Endpoints`];
 //! [`crate::quic::application::localside::run`] polls both futures. Observed addresses,
 //! probe receipts and bounded arithmetic live in the private `imp` storage.
@@ -11,7 +11,7 @@ use hibana::runtime::program::Projectable;
 // The connected path owner has its own role in the application session.
 // Endpoints::attach enters it once; the path localside owns its continuation.
 pub const OWNER: u8 = 34;
-pub const TRANSMIT: u8 = crate::quic::application::global::TRANSMIT;
+pub const WRITE_KEYS: u8 = crate::quic::application::global::WRITE_KEYS;
 pub type Request = g::Msg<221, ()>;
 pub type Current = g::Msg<222, ()>;
 pub type Settled = g::Msg<223, ()>;
@@ -31,10 +31,10 @@ pub type Reply = g::Msg<236, ()>;
 pub type ProbeReply = g::Msg<237, ()>;
 pub fn choreography() -> impl Projectable {
     let current = g::seq(
-        g::send::<OWNER, TRANSMIT, Current>(),
+        g::send::<OWNER, WRITE_KEYS, Current>(),
         g::seq(
-            g::send::<TRANSMIT, OWNER, Settled>(),
-            g::send::<TRANSMIT, OWNER, Request>(),
+            g::send::<WRITE_KEYS, OWNER, Settled>(),
+            g::send::<WRITE_KEYS, OWNER, Request>(),
         ),
     );
     let pending = g::route(
@@ -42,48 +42,48 @@ pub fn choreography() -> impl Projectable {
             g::route(
                 g::route(
                     g::seq(
-                        g::send::<OWNER, TRANSMIT, Probe>(),
+                        g::send::<OWNER, WRITE_KEYS, Probe>(),
                         g::seq(
-                            g::send::<TRANSMIT, OWNER, Settled>(),
-                            g::send::<TRANSMIT, OWNER, Request>(),
+                            g::send::<WRITE_KEYS, OWNER, Settled>(),
+                            g::send::<WRITE_KEYS, OWNER, Request>(),
                         ),
                     ),
                     g::seq(
-                        g::send::<OWNER, TRANSMIT, Hold>(),
+                        g::send::<OWNER, WRITE_KEYS, Hold>(),
                         g::seq(
-                            g::send::<TRANSMIT, OWNER, Settled>(),
-                            g::send::<TRANSMIT, OWNER, Request>(),
+                            g::send::<WRITE_KEYS, OWNER, Settled>(),
+                            g::send::<WRITE_KEYS, OWNER, Request>(),
                         ),
                     ),
                 ),
                 g::seq(
-                    g::send::<OWNER, TRANSMIT, Expand>(),
+                    g::send::<OWNER, WRITE_KEYS, Expand>(),
                     g::seq(
-                        g::send::<TRANSMIT, OWNER, Settled>(),
-                        g::send::<TRANSMIT, OWNER, Request>(),
+                        g::send::<WRITE_KEYS, OWNER, Settled>(),
+                        g::send::<WRITE_KEYS, OWNER, Request>(),
                     ),
                 ),
             ),
             g::seq(
-                g::send::<OWNER, TRANSMIT, ProbeReply>(),
+                g::send::<OWNER, WRITE_KEYS, ProbeReply>(),
                 g::seq(
-                    g::send::<TRANSMIT, OWNER, Settled>(),
-                    g::send::<TRANSMIT, OWNER, Request>(),
+                    g::send::<WRITE_KEYS, OWNER, Settled>(),
+                    g::send::<WRITE_KEYS, OWNER, Request>(),
                 ),
             ),
         ),
         g::seq(
-            g::send::<OWNER, TRANSMIT, ProbePause>(),
+            g::send::<OWNER, WRITE_KEYS, ProbePause>(),
             g::seq(
-                g::send::<TRANSMIT, OWNER, ProbePaused>(),
+                g::send::<WRITE_KEYS, OWNER, ProbePaused>(),
                 g::seq(
                     g::route(
-                        g::send::<OWNER, TRANSMIT, Resolved>(),
-                        g::send::<OWNER, TRANSMIT, Abandoned>(),
+                        g::send::<OWNER, WRITE_KEYS, Resolved>(),
+                        g::send::<OWNER, WRITE_KEYS, Abandoned>(),
                     ),
                     g::seq(
-                        g::send::<TRANSMIT, OWNER, Settled>(),
-                        g::send::<TRANSMIT, OWNER, Request>(),
+                        g::send::<WRITE_KEYS, OWNER, Settled>(),
+                        g::send::<WRITE_KEYS, OWNER, Request>(),
                     ),
                 ),
             ),
@@ -91,35 +91,35 @@ pub fn choreography() -> impl Projectable {
     )
     .roll();
     let cycle = g::seq(
-        g::send::<OWNER, TRANSMIT, Begin>(),
+        g::send::<OWNER, WRITE_KEYS, Begin>(),
         g::seq(
             g::seq(
-                g::send::<TRANSMIT, OWNER, Settled>(),
-                g::send::<TRANSMIT, OWNER, Request>(),
+                g::send::<WRITE_KEYS, OWNER, Settled>(),
+                g::send::<WRITE_KEYS, OWNER, Request>(),
             ),
             pending,
         ),
     );
     let end = g::seq(
-        g::send::<OWNER, TRANSMIT, Pause>(),
+        g::send::<OWNER, WRITE_KEYS, Pause>(),
         g::seq(
-            g::send::<TRANSMIT, OWNER, Paused>(),
+            g::send::<WRITE_KEYS, OWNER, Paused>(),
             g::seq(
-                g::send::<OWNER, TRANSMIT, End>(),
-                g::send::<TRANSMIT, OWNER, Joined>(),
+                g::send::<OWNER, WRITE_KEYS, End>(),
+                g::send::<WRITE_KEYS, OWNER, Joined>(),
             ),
         ),
     );
     g::seq(
-        g::send::<TRANSMIT, OWNER, Request>(),
+        g::send::<WRITE_KEYS, OWNER, Request>(),
         g::route(
             g::route(
                 g::route(current, cycle),
                 g::seq(
-                    g::send::<OWNER, TRANSMIT, Reply>(),
+                    g::send::<OWNER, WRITE_KEYS, Reply>(),
                     g::seq(
-                        g::send::<TRANSMIT, OWNER, Settled>(),
-                        g::send::<TRANSMIT, OWNER, Request>(),
+                        g::send::<WRITE_KEYS, OWNER, Settled>(),
+                        g::send::<WRITE_KEYS, OWNER, Request>(),
                     ),
                 ),
             ),

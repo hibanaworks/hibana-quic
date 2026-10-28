@@ -1,0 +1,16 @@
+[package]
+name = "hibana-quic-source-check"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+regex = "1"
+serde_json = "1"
+sha2 = "0.10"
+toml = "1"
+
+[lints.rust]
+long_running_const_eval = "forbid"

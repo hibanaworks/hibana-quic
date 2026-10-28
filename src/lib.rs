@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(long_running_const_eval)]
 #![forbid(unsafe_code)]
 // Failure must return actual affine reservations/keys inline. Boxing would add
 // allocation and change ownership; their bounded sizes are deliberate.

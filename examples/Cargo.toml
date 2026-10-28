@@ -13,8 +13,8 @@ resolver = "3"
 [dependencies]
 hibana-quic = { path = "..", default-features = false }
 hibana-quic-pal = { path = "../pal" }
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "f3e030f0d3efcd59864e03dc9df537530f6f0107", default-features = false }
-hibana = { git = "https://github.com/hibanaworks/hibana", rev = "5ee442ea69f9baf451be832b6040d1eb8c92f24f", version = "=0.9.9", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "f0ca857c34466672195124f53bd26749920a2a2c", default-features = false }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "abe617ea3ff97a5b0e6327013149a8b21721df5c", version = "=0.10.0", default-features = false }
 
 [profile.release]
 codegen-units = 1
@@ -50,3 +50,6 @@ required-features = ["hq"]
 name = "hq-server"
 path = "hello-hq/server.rs"
 required-features = ["hq"]
+
+[lints.rust]
+long_running_const_eval = "forbid"

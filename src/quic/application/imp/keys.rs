@@ -53,9 +53,9 @@ struct Owned<'scope> {
     application: Option<ApplicationWriteKeys<'scope>>,
 }
 
-/// TX sealing and key-control may share this owner. Each operation is entirely
-/// synchronous, including release of the interior borrow. A sealed datagram
-/// owns its reservation and can remain pending while key control progresses.
+/// Packet keys used by the WRITE_KEYS endpoint's parallel fragments.
+/// Each key borrow ends before communication awaits. A sealed datagram owns
+/// its reservation while key updates continue in their independent fragment.
 pub(in crate::quic::application) struct KeyOwner<'scope> {
     scope: &'scope ApplicationKeyScope,
     owned: RefCell<Owned<'scope>>,
@@ -92,6 +92,19 @@ impl<'scope> KeyOwner<'scope> {
             .as_ref()
             .ok_or(Error::Retired)?
             .generation())
+    }
+
+    pub(in crate::quic::application) fn local_update_due(
+        &self,
+        target: u64,
+        now: u64,
+    ) -> Result<bool, Error> {
+        let owned = self.owned.try_borrow().map_err(|_| Error::Binding)?;
+        Ok(owned
+            .application
+            .as_ref()
+            .ok_or(Error::Retired)?
+            .local_update_due(target, now)?)
     }
 
     /// Only short synchronous inspection; no key borrow escapes this call.
@@ -295,39 +308,6 @@ impl<'owner, 'scope> Exchange<'owner, 'scope> {
     }
 }
 
-/// The receive role serializes its actual affine transitions on RX_KEYS.
-/// Only ApplicationReadKeys::accept_write_epoch can turn peer_update's result
-/// into ACK eligibility; neither this client nor the write owner can mint it.
-pub(in crate::quic::application) struct RxControl<'lane, 'owner, 'scope> {
-    pub(in crate::quic::application) exchange: &'lane Exchange<'owner, 'scope>,
-}
-
-impl<'lane, 'owner, 'scope> RxControl<'lane, 'owner, 'scope> {
-    pub(in crate::quic::application) const fn new(
-        exchange: &'lane Exchange<'owner, 'scope>,
-    ) -> Self {
-        Self { exchange }
-    }
-
-    pub(in crate::quic::application) fn local_update_due(
-        &self,
-        target: u64,
-        now: u64,
-    ) -> Result<bool, Error> {
-        let owned = self
-            .exchange
-            .owner
-            .owned
-            .try_borrow()
-            .map_err(|_| Error::Binding)?;
-        Ok(owned
-            .application
-            .as_ref()
-            .ok_or(Error::Retired)?
-            .local_update_due(target, now)?)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,26 +357,32 @@ mod tests {
             }),
         };
         let exchange = Exchange::new(&owner);
-        let control = RxControl::new(&exchange);
-        let global = p::key_choreography();
+        type Prepared = hibana::g::Msg<250, ()>;
+        let global = hibana::g::par(
+            p::key_choreography(),
+            hibana::g::send::<{ p::WRITE_KEYS }, { p::RX_KEYS }, Prepared>(),
+        );
         let rxp: RoleProgram<{ p::RX_KEYS }> = project(&global);
-        let txp: RoleProgram<{ p::TX_KEYS }> = project(&global);
+        let txp: RoleProgram<{ p::WRITE_KEYS }> = project(&global);
         let carrier = CarrierStorage::<1, 16, 16>::new();
         let mut slab = [0; 65536];
-        let mut storage = SessionKitStorage::uninit();
         let sid = SessionId::new(1200);
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
+        let mut storage = SessionKitStorage::uninit();
         let rv = storage
             .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
+            .rendezvous(&mut slab, &carrier_binding)
             .unwrap();
         let mut rx = rv.enter(sid, &rxp).unwrap();
         let mut tx = rv.enter(sid, &txp).unwrap();
         let expected = read.header_mask(&[0; 16]).unwrap();
         let measured = actor_test_allocator::NoAlloc::start();
         {
+            let [mut key_control, mut preparation] = tx.par().unwrap();
             let mut receiving = pin!(async {
-                assert!(!control.local_update_due(0, 0).unwrap());
-                assert_eq!(control.local_update_due(1, 0).unwrap(), authorized_fixture);
+                rx.recv::<Prepared>().await?;
+                assert!(!owner.local_update_due(0, 0).unwrap());
+                assert_eq!(owner.local_update_due(1, 0).unwrap(), authorized_fixture);
                 let result = async {
                     let endpoint = &mut rx;
                     let read = &mut read;
@@ -405,8 +391,7 @@ mod tests {
 
                     read.maintain(now, pto)?;
                     let ready = read.prepare_local_update()?;
-                    control
-                        .exchange
+                    exchange
                         .local_update
                         .put(LocalUpdateRequest { ready, now, pto })?;
                     endpoint.send::<p::LocalUpdate>(&()).await?;
@@ -424,7 +409,7 @@ mod tests {
                             return Err(Error::UnexpectedLabel(label));
                         }
                     };
-                    let result = control.exchange.local_result.take()?;
+                    let result = exchange.local_result.take()?;
                     if result.is_ok() != accepted {
                         return Err(Error::Binding);
                     }
@@ -445,7 +430,7 @@ mod tests {
                 if authorized_fixture {
                     result.unwrap();
                     assert_eq!(owner.generation().unwrap(), 1);
-                    assert!(!control.local_update_due(1, 0).unwrap());
+                    assert!(!owner.local_update_due(1, 0).unwrap());
                 } else {
                     assert!(matches!(
                         result,
@@ -473,8 +458,16 @@ mod tests {
                 assert!(matches!(owner.generation(), Err(Error::Retired)));
                 Ok::<_, Error>(())
             });
-            let mut writing = pin!(run(&mut tx, &owner, &exchange));
-            let mut all = pin!(TaskSet::new([receiving.as_mut(), writing.as_mut()]));
+            let mut writing = pin!(run(&mut key_control, &owner, &exchange));
+            let mut preparing = pin!(async {
+                preparation.send::<Prepared>(&()).await?;
+                Ok::<(), Error>(())
+            });
+            let mut all = pin!(TaskSet::new([
+                receiving.as_mut(),
+                writing.as_mut(),
+                preparing.as_mut(),
+            ]));
             let mut outcome = None;
             for _ in 0..200 {
                 if let Poll::Ready(result) =

@@ -43,10 +43,11 @@ pub async fn receive<const D: usize>(
     let owner_program = hibana::runtime::program::project::<{ p::OWNER }>(&graph);
     let output_program = hibana::runtime::program::project::<{ p::OUTPUT }>(&graph);
     let carrier = CarrierStorage::<1, 16, 8>::new();
+    let carrier_binding = carrier.bind(sid, &[]).map_err(Error::from)?;
     let mut kit = SessionKitStorage::uninit();
     let session = kit
         .init()
-        .rendezvous(slab, carrier.bind(sid).map_err(Error::from)?)
+        .rendezvous(slab, &carrier_binding)
         .map_err(Error::from)?;
     session
         .set_resolver(

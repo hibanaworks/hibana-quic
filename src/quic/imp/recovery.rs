@@ -1456,6 +1456,9 @@ impl<'book, 'scope, const B: usize> Tx<'book, 'scope, B> {
     pub(crate) fn unsent_control(&self) -> Option<FlightId> {
         self.book.numbers.borrow().flights.unsent_control()
     }
+    pub(crate) fn unsent_crypto(&self) -> Option<FlightId> {
+        self.book.numbers.borrow().flights.unsent_crypto()
+    }
     pub fn flight_data(&self, id: FlightId) -> Result<Flight<B>, Error> {
         let n = self.book.numbers.borrow();
         n.ordinary()?;

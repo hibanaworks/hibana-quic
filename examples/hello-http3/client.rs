@@ -3,6 +3,7 @@
 //! HTTP_PATH and HTTP_BODY environment variables select the request;
 //! defaults are POST /echo with "hello from Hibana\n". HEAD or GET defaults
 //! to /hello. Response bytes go to stdout; status and fields go to stderr.
+// Project the complete TLS/QUIC/application graph in this binary.
 mod client_app;
 #[path = "../environment.rs"]
 mod environment;

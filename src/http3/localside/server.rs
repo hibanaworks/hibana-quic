@@ -117,10 +117,11 @@ pub async fn run<const S: usize, const C: usize, const B: usize, const H: usize>
     );
     let carrier = CarrierStorage::<4, 16, 128>::new();
     let sid = SessionId::new(1);
+    let carrier_binding = carrier.bind(sid, &[]).map_err(message::Error::from)?;
     let mut kit = SessionKitStorage::uninit();
     let rendezvous = kit
         .init()
-        .rendezvous(slab, carrier.bind(sid).map_err(message::Error::from)?)
+        .rendezvous(slab, &carrier_binding)
         .map_err(message::Error::from)?;
     let endpoints = (
         rendezvous
@@ -269,11 +270,9 @@ mod tests {
         let carrier = CarrierStorage::<4, 16, 128>::new();
         let mut slab = [0; 65536];
         let sid = SessionId::new(91);
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
         let mut kit = SessionKitStorage::uninit();
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let (mut reader, mut app, mut writer) = (
             rendezvous.enter(sid, &programs.0).unwrap(),
             rendezvous.enter(sid, &programs.1).unwrap(),
@@ -360,11 +359,9 @@ mod tests {
         let carrier = CarrierStorage::<4, 16, 128>::new();
         let mut slab = [0; 65536];
         let sid = SessionId::new(92);
+        let carrier_binding = carrier.bind(sid, &[]).unwrap();
         let mut kit = SessionKitStorage::uninit();
-        let rendezvous = kit
-            .init()
-            .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-            .unwrap();
+        let rendezvous = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
         let (mut reader, mut app, mut writer) = (
             rendezvous.enter(sid, &programs.0).unwrap(),
             rendezvous.enter(sid, &programs.1).unwrap(),

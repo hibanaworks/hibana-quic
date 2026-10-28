@@ -453,11 +453,7 @@ mod stop_tests {
     use crate::quic::imp::kernel::streams::StreamSlot;
     use crate::quic::imp::publication_gate::PublicationGate;
     use crate::runtime::carrier::CarrierStorage;
-    use core::{
-        future::Future,
-        pin::pin,
-        task::{Context, Poll, Waker},
-    };
+    use core::task::Poll;
     use hibana::runtime::{
         SessionKitStorage,
         ids::SessionId,
@@ -502,7 +498,7 @@ mod stop_tests {
         }
     }
 
-    fn stopped_ingress(fin: bool, body: bool, fail_second: bool) {
+    async fn stopped_ingress(fin: bool, body: bool, fail_second: bool) {
         let mut scope = ApplicationKeyScope::new(912);
         let mut installation = scope.claim().unwrap();
         let mut gate = PublicationGate::new(installation.take_publication_gate().unwrap());
@@ -553,22 +549,25 @@ mod stop_tests {
         let source: RoleProgram<{ p::SOURCE }> = project(&global);
         let source_join_role: RoleProgram<{ p::SOURCE_JOIN }> = project(&global);
         let ingress_role: RoleProgram<{ p::INGRESS }> = project(&global);
+        let production_role: RoleProgram<{ p::PRODUCTION }> = project(&global);
         let collector_role: RoleProgram<{ p::SOURCE_COLLECTOR }> = project(&global);
         let reclaim = crate::quic::application::imp::reclaim::Exchange::new();
-        let carrier = CarrierStorage::<1, 16, 8>::new();
+        let carrier = CarrierStorage::<1, 16, { 5 * 2 }>::new();
         let mut slab = [0; 65536];
-        let mut storage = SessionKitStorage::uninit();
         let id = SessionId::new(912);
+        let issuers = installation.scope().endpoint_bindings();
+        let carrier_binding = carrier.bind(id, &issuers).unwrap();
+        let mut storage = SessionKitStorage::uninit();
         let rv = storage
             .init()
-            .rendezvous(&mut slab, carrier.bind(id).unwrap())
+            .rendezvous(&mut slab, &carrier_binding)
             .unwrap();
         let mut source = rv.enter(id, &source).unwrap();
         let mut source_join = rv.enter(id, &source_join_role).unwrap();
         let mut input = rv.enter(id, &ingress_role).unwrap();
+        let initial_production = rv.enter(id, &production_role).unwrap();
         let mut collector = rv.enter(id, &collector_role).unwrap();
-        let allocations = actor_test_allocator::NoAlloc::start();
-        let mut all = pin!(crate::runtime::join2(
+        let all = crate::runtime::join2(
             async {
                 {
                     let endpoint = &mut source;
@@ -579,11 +578,12 @@ mod stop_tests {
                     state.opened.put(production).map_err(|_| Error::Binding)?;
                     endpoint.send::<p::SourceOpen>(&id).await?;
                 }
+                let mut operations = source.recv::<p::StreamLoan<'_>>().await?;
                 let outcome = if fin {
                     Admission::Accepted
                 } else {
                     let result = async {
-                        let endpoint = &mut source;
+                        let endpoint = &mut operations;
                         let state = &state;
 
                         let input = if body {
@@ -635,13 +635,14 @@ mod stop_tests {
                         let endpoint = &mut source;
                         let stream_id = first.id();
 
-                        endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
+                        operations.send::<p::SourceFlush>(&stream_id).await?;
+                        check(operations.recv::<p::SourceFlushed>().await?, stream_id)?;
                         if outcome == Admission::Accepted {
-                            endpoint.send::<p::SourceFin>(&stream_id).await?;
+                            endpoint.send::<p::SourceFin<'_>>(operations).await?;
                         } else {
                             // Connection shutdown abandons production; this is not a fabricated
                             // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
-                            endpoint.send::<p::SourceAbandon>(&stream_id).await?;
+                            endpoint.send::<p::SourceAbandon<'_>>(operations).await?;
                         }
                         let reply = endpoint.offer().await?;
                         match reply.label() {
@@ -677,8 +678,9 @@ mod stop_tests {
                     state.opened.put(production).map_err(|_| Error::Binding)?;
                     endpoint.send::<p::SourceOpen>(&id).await?;
                 }
+                let mut operations = source.recv::<p::StreamLoan<'_>>().await?;
                 let second_outcome = async {
-                    let endpoint = &mut source;
+                    let endpoint = &mut operations;
                     let state = &state;
 
                     let input = if body {
@@ -734,13 +736,14 @@ mod stop_tests {
                         let stream_id = second.id();
                         let outcome = second_outcome;
 
-                        endpoint.send::<p::SourceDataFinished>(&stream_id).await?;
+                        operations.send::<p::SourceFlush>(&stream_id).await?;
+                        check(operations.recv::<p::SourceFlushed>().await?, stream_id)?;
                         if outcome == Admission::Accepted {
-                            endpoint.send::<p::SourceFin>(&stream_id).await?;
+                            endpoint.send::<p::SourceFin<'_>>(operations).await?;
                         } else {
                             // Connection shutdown abandons production; this is not a fabricated
                             // RESET_STREAM acknowledgment or a claim that FIN reached the peer.
-                            endpoint.send::<p::SourceAbandon>(&stream_id).await?;
+                            endpoint.send::<p::SourceAbandon<'_>>(operations).await?;
                         }
                         let reply = endpoint.offer().await?;
                         match reply.label() {
@@ -781,7 +784,14 @@ mod stop_tests {
                 Ok::<_, Error>(())
             },
             crate::runtime::join2(
-                ingress(&mut input, &control, &state, &app, &reclaim),
+                ingress(
+                    &mut input,
+                    initial_production,
+                    &control,
+                    &state,
+                    &app,
+                    &reclaim,
+                ),
                 crate::runtime::join2(
                     super::super::reclaim::source(&mut collector, &reclaim, &control),
                     async {
@@ -792,38 +802,39 @@ mod stop_tests {
                             offered.recv::<p::SourceJoined>().await?;
                         }
                         Ok::<(), Error>(())
-                    }
-                )
-            )
-        ));
-        for _ in 0..1000 {
-            if let Poll::Ready(result) = all.as_mut().poll(&mut Context::from_waker(Waker::noop()))
-            {
-                result.unwrap();
-                allocations.finish();
-                if body {
-                    // The stopped body is read once, never reaches EOF, and
-                    // is dropped once. The next body is read through real EOF.
-                    assert_eq!(reads.get(), if fail_second { 2 } else { 3 });
-                    assert_eq!(drops.get(), 2);
-                }
-                return;
-            }
+                    },
+                ),
+            ),
+        );
+        let mut deadline = core::pin::pin!(tokio::time::sleep(core::time::Duration::from_secs(2)));
+        let until = deadline.deadline();
+        deadline.as_mut().reset(until);
+        let allocations = actor_test_allocator::NoAlloc::start();
+        tokio::select! {
+            biased;
+            result = all => result.unwrap(),
+            _ = deadline => panic!("real ingress stalled after peer stop"),
         }
-        panic!("real ingress stalled after peer stop");
+        allocations.finish();
+        if body {
+            // The stopped body is read once, never reaches EOF, and is dropped
+            // once. The next body is read through EOF or returns its real error.
+            assert_eq!(reads.get(), if fail_second { 2 } else { 3 });
+            assert_eq!(drops.get(), 2);
+        }
     }
-    #[test]
-    fn actual_ingress_preserves_connection_after_stopped_data_and_fin() {
-        stopped_ingress(false, false, false);
-        stopped_ingress(true, false, false);
+    #[tokio::test(flavor = "current_thread")]
+    async fn actual_ingress_preserves_connection_after_stopped_data_and_fin() {
+        stopped_ingress(false, false, false).await;
+        stopped_ingress(true, false, false).await;
     }
-    #[test]
-    fn actual_owned_body_moves_once_and_stop_does_not_fabricate_eof() {
-        stopped_ingress(false, true, false);
+    #[tokio::test(flavor = "current_thread")]
+    async fn actual_owned_body_moves_once_and_stop_does_not_fabricate_eof() {
+        stopped_ingress(false, true, false).await;
     }
-    #[test]
-    fn actual_body_read_failure_is_rejected_without_a_successful_eof() {
-        stopped_ingress(false, true, true);
+    #[tokio::test(flavor = "current_thread")]
+    async fn actual_body_read_failure_is_rejected_without_a_successful_eof() {
+        stopped_ingress(false, true, true).await;
     }
 }
 
@@ -904,11 +915,12 @@ mod interrupted_delivery_tests {
         let collector_role: RoleProgram<{ p::INPUT_COLLECTOR }> = project(&global);
         let carrier = CarrierStorage::<1, 16, 8>::new();
         let mut slab = [0; 65536];
-        let mut storage = SessionKitStorage::uninit();
         let id = SessionId::new(914);
+        let carrier_binding = carrier.bind(id, &[]).unwrap();
+        let mut storage = SessionKitStorage::uninit();
         let rv = storage
             .init()
-            .rendezvous(&mut slab, carrier.bind(id).unwrap())
+            .rendezvous(&mut slab, &carrier_binding)
             .unwrap();
         let mut rx = rv.enter(id, &rx_role).unwrap();
         let mut sink_endpoint = rv.enter(id, &sink_role).unwrap();

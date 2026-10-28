@@ -24,7 +24,7 @@ static ALLOCATOR: actor_test_allocator::Counting = actor_test_allocator::Countin
 
 fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
     let global = p::publication_choreography();
-    let tx: RoleProgram<{ p::TRANSMIT }> = project(&global);
+    let tx: RoleProgram<{ p::WRITE_KEYS }> = project(&global);
     let adapter: RoleProgram<{ p::ADAPTER }> = project(&global);
     let carrier = CarrierStorage::<1, 16, 8>::new();
     let mut slab = [0; 65536];
@@ -37,11 +37,12 @@ fn run(illegal_at: u8, rejected: bool, reset_failed: bool) {
             DecisionArm::Left
         })
     });
-    let mut storage = SessionKitStorage::uninit();
     let id = SessionId::new(908);
+    let carrier_binding = carrier.bind(id, &[]).unwrap();
+    let mut storage = SessionKitStorage::uninit();
     let rv = storage
         .init()
-        .rendezvous(&mut slab, carrier.bind(id).unwrap())
+        .rendezvous(&mut slab, &carrier_binding)
         .unwrap();
     rv.set_resolver(
         &adapter,

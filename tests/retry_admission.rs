@@ -27,12 +27,10 @@ fn run(outcomes: &[Option<bool>], wrong_reply: bool) {
     let output_program = hibana::runtime::program::project::<{ p::OUTPUT }>(&graph);
     let carrier = CarrierStorage::<1, 16, 8>::new();
     let mut slab = [0; 65536];
-    let mut kit = SessionKitStorage::uninit();
     let sid = SessionId::new(1100);
-    let session = kit
-        .init()
-        .rendezvous(&mut slab, carrier.bind(sid).unwrap())
-        .unwrap();
+    let carrier_binding = carrier.bind(sid, &[]).unwrap();
+    let mut kit = SessionKitStorage::uninit();
+    let session = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
     session
         .set_resolver(
             &output_program,

@@ -161,7 +161,8 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
     )
     .await?;
     let numbers = crate::quic::imp::transcript::Numbers::new(source);
-    let handoff = hibana_tls::handshake::keys::Handoff::<P>::new();
+    let material = endpoints.tls_material.take().ok_or(Error::Binding)?;
+    let packet_keys = endpoints.packet_write.take().ok_or(Error::Binding)?;
     let mut initial_owner = tx.initial_retirement_owner();
     let (mut receive_initial, publish_initial) = match config.side {
         Side::Client => (None, Some(&mut endpoints.initial_event)),
@@ -194,37 +195,52 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
             Ok(())
         });
         let mut transmit = pin!(async {
-            transmitted = Some(
+            endpoints.packet_write = Some(
                 localside::transmit(
                     &mut endpoints.tx,
-                    &mut endpoints.tx_wire,
+                    packet_keys,
                     storage,
                     config,
                     scope,
                     &initial,
                     &write_keys,
+                )
+                .await?,
+            );
+            Ok(())
+        });
+        let mut packets = pin!(async {
+            transmitted = Some(
+                localside::packets(
+                    &mut endpoints.tx_wire,
+                    storage,
+                    scope,
+                    &initial,
+                    &write_keys,
                     &mut tx,
+                    config,
                     clock,
                 )
                 .await?,
             );
             Ok(())
         });
-        let mut tls_receive = pin!(transcript::receive(
-            &mut endpoints.tls_rx,
-            &numbers,
-            &handoff,
-            &message_slot,
-            config.side
-        ));
-        let mut key_handoff = pin!(transcript::handoff(
-            &mut endpoints.tls_handoff,
-            &handoff,
-            storage
-        ));
+        let mut tls_receive = pin!(async {
+            endpoints.tls_material = Some(
+                transcript::receive(
+                    &mut endpoints.tls_rx,
+                    material,
+                    &numbers,
+                    storage,
+                    &message_slot,
+                    config.side,
+                )
+                .await?,
+            );
+            Ok(())
+        });
         let mut tls_transmit = pin!(transcript::transmit(
             &mut endpoints.tls_tx,
-            &mut endpoints.tls_complete,
             &numbers,
             storage
         ));
@@ -259,9 +275,9 @@ pub(crate) async fn handshake_with_early<'scope, 'book, const N: usize, const P:
         crate::runtime::TaskSet::new([
             receive.as_mut(),
             transmit.as_mut(),
+            packets.as_mut(),
             tls_receive.as_mut(),
             tls_transmit.as_mut(),
-            key_handoff.as_mut(),
             publish.as_mut(),
             timer.as_mut(),
             timer_receiver.as_mut(),
