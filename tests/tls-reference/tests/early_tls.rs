@@ -723,10 +723,7 @@ fn projected_early_release<'scope>(
     let sid = SessionId::new(2300);
     let carrier_binding = carrier.bind(sid, &[]).unwrap();
     let mut kit = SessionKitStorage::uninit();
-    let rv = kit
-        .init()
-        .rendezvous(&mut slab, &carrier_binding)
-        .unwrap();
+    let rv = kit.init().rendezvous(&mut slab, &carrier_binding).unwrap();
     let mut source = rv.enter(sid, &ip).unwrap();
     let mut owner_ep = rv.enter(sid, &op).unwrap();
     let mut tls = rv.enter(sid, &tp).unwrap();

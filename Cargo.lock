@@ -24,7 +24,7 @@ dependencies = [
 [[package]]
 name = "hibana-tls"
 version = "0.1.0"
-source = "git+https://github.com/hibanaworks/hibana-tls?rev=f0ca857c34466672195124f53bd26749920a2a2c#f0ca857c34466672195124f53bd26749920a2a2c"
+source = "git+https://github.com/hibanaworks/hibana-tls?rev=8a3e22e3331a55a363ae3bad397301c9cd840956#8a3e22e3331a55a363ae3bad397301c9cd840956"
 dependencies = [
  "hibana",
 ]

@@ -14,6 +14,7 @@ use crate::{
 use hibana::runtime::ids::SessionId;
 #[allow(clippy::too_many_arguments)]
 pub async fn server<'scope>(
+    storage: &mut storage::Storage,
     streams: &mut [crate::quic::imp::kernel::streams::StreamSlot<{ storage::RECEIVE_BYTES }>],
     slab: &mut [u8],
     entropy: &mut impl crate::entropy::Entropy,
@@ -28,16 +29,24 @@ pub async fn server<'scope>(
     profile: ServerProfile<'_>,
     handler: &mut impl application::ServerHandler,
     input: Option<&mut impl application::StreamSink>,
-    mut early: Option<storage::EarlyStorage<'_>>,
+    early: Option<&mut storage::EarlyStorage<'_>>,
 ) -> Result<application::Report, application::Error> {
-    if streams.len() != profile.stream_capacity {
+    if streams.is_empty()
+        || streams.len() > storage::STREAMS
+        || (profile.protocol == crate::http3::Protocol::Http3 && streams.len() <= 6)
+        || streams.len() != profile.stream_capacity
+    {
         return Err(application::Error::Capacity);
     }
-    let mut storage =
-        storage::Storage::<{ storage::RECEIVE_BYTES }>::new(streams, profile.protocol, entropy)?;
-    let mut setup = storage.setup(config, profile.idle_timeout_ms)?;
+    let mut setup = storage.setup(
+        streams,
+        config,
+        profile.protocol,
+        profile.idle_timeout_ms,
+        entropy,
+    )?;
     setup.server_token = profile.server_token;
-    setup.early = early.as_mut().map(storage::EarlyStorage::borrow);
+    setup.early = early.map(storage::EarlyStorage::borrow);
     core::pin::pin!(application::localside::borrowed::server::<
         DATAGRAM,
         PARAMETERS,

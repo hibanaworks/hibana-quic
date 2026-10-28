@@ -136,6 +136,7 @@ jobs:
       - name: Secret memory, carrier delegation and native wake ownership
         run: |
           cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --lib secret::
+          MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly-2026-10-08 miri test --locked --lib quic::application::imp::owned::tests
           cargo +nightly-2026-10-08 miri test --locked --manifest-path ../hibana-tls/Cargo.toml --lib certificate::pem::
           MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly-2026-10-08 miri test --locked --test carrier_delegation
           cargo +nightly-2026-10-08 miri test --locked --manifest-path pal/Cargo.toml --lib sys::wake::tests::

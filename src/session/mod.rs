@@ -93,12 +93,16 @@ pub struct ConnectionMemory<const STREAMS: usize, const BYTES: usize = { 256 * 1
         { crate::quic::application::imp::owned::RECEIVE_BYTES },
     >; STREAMS],
     slab: [u8; BYTES],
+    tls: imp::tls::TlsBuffers,
+    buffers: crate::quic::application::imp::owned::Storage,
 }
 impl<const S: usize, const B: usize> ConnectionMemory<S, B> {
     pub const fn new() -> Self {
         Self {
             streams: [const { crate::quic::streams::StreamSlot::EMPTY }; S],
             slab: [0; B],
+            tls: imp::tls::TlsBuffers::new(),
+            buffers: crate::quic::application::imp::owned::Storage::new(),
         }
     }
 }

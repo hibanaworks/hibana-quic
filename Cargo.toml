@@ -14,7 +14,7 @@ categories = ["asynchronous", "network-programming", "embedded"]
 
 [dependencies]
 # The owned TLS repository is pinned to the same source checked out by CI.
-hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "f0ca857c34466672195124f53bd26749920a2a2c", default-features = false }
+hibana-tls = { git = "https://github.com/hibanaworks/hibana-tls", rev = "8a3e22e3331a55a363ae3bad397301c9cd840956", default-features = false }
 hibana = { git = "https://github.com/hibanaworks/hibana", rev = "abe617ea3ff97a5b0e6327013149a8b21721df5c", version = "=0.10.0", default-features = false }
 
 [features]

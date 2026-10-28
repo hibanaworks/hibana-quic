@@ -6,7 +6,7 @@ pub(crate) struct TlsBuffers {
     parameters: [u8; crate::session::PARAMETERS],
 }
 impl TlsBuffers {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             rx: [0; 16384],
             tx: [0; 16384],

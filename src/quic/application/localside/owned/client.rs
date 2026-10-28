@@ -14,6 +14,7 @@ use crate::{
 use hibana::runtime::ids::SessionId;
 #[allow(clippy::too_many_arguments)]
 pub async fn client<'scope, const RX: usize>(
+    storage: &mut storage::Storage,
     streams: &mut [crate::quic::imp::kernel::streams::StreamSlot<RX>],
     early_slots: &mut [crate::quic::imp::early_requests::RequestSlot],
     slab: &mut [u8],
@@ -33,15 +34,27 @@ pub async fn client<'scope, const RX: usize>(
     if profile.early_request_capacity > application::MAX_REQUESTS {
         return Err(application::Error::Capacity);
     }
-    let mut storage = storage::Storage::<RX>::new(streams, profile.protocol, entropy)?;
+    if streams.is_empty()
+        || streams.len() > storage::STREAMS
+        || (profile.protocol == crate::http3::Protocol::Http3 && streams.len() <= 6)
+        || profile.stream_capacity != streams.len()
+    {
+        return Err(application::Error::Capacity);
+    }
     let early_capacity = match source.early_status() {
         crate::quic::early_data::imp::EarlyStatus::Offered => profile.early_request_capacity,
         _ => 0,
     };
-    if profile.stream_capacity != storage.stream_capacity() || early_slots.len() < early_capacity {
+    if early_slots.len() < early_capacity {
         return Err(application::Error::Capacity);
     }
-    let mut setup = storage.setup(config, profile.idle_timeout_ms)?;
+    let mut setup = storage.setup(
+        streams,
+        config,
+        profile.protocol,
+        profile.idle_timeout_ms,
+        entropy,
+    )?;
     setup.key_update_target = profile.key_update_target;
     core::pin::pin!(application::localside::borrowed::client::<
         DATAGRAM,

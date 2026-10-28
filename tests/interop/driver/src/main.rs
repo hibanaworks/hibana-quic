@@ -278,7 +278,7 @@ async fn connected<const S: usize, const T: usize>(
     tls: BoundedTls<'_, '_>,
     first: Option<(&[u8], Option<hibana_quic::io::Codepoint>)>,
     mut files: Option<host_files::Files>,
-    early: Option<application_storage::EarlyStorage<'_>>,
+    early: Option<&mut application_storage::EarlyStorage<'_>>,
     key_update_target: u64,
     routed: Option<
         &mut hibana_quic::quic::routing::Receiver<'_, { hibana_quic::session::DATAGRAM }>,
@@ -346,6 +346,7 @@ async fn connected<const S: usize, const T: usize>(
         // One combined projection and one library invocation own every phase.
         // A failed transfer cannot fall back to a successful prefix report.
         let mut connection_slab = [0; 256 * 1024];
+        let mut connection_buffers = const { application_storage::Storage::new() };
         let report = Box::pin(async {
             match files {
                 host_files::Files::Client(client) => {
@@ -374,6 +375,7 @@ async fn connected<const S: usize, const T: usize>(
                         hibana_quic::quic::application::localside::owned::client::<
                             { application_storage::CLIENT_RECEIVE_BYTES },
                         >(
+                            &mut connection_buffers,
                             &mut streams,
                             &mut early_requests,
                             &mut connection_slab,
@@ -405,6 +407,7 @@ async fn connected<const S: usize, const T: usize>(
                         hibana_quic::quic::application::localside::owned::client::<
                             { application_storage::RECEIVE_BYTES },
                         >(
+                            &mut connection_buffers,
                             &mut streams,
                             &mut early_requests,
                             &mut connection_slab,
@@ -439,6 +442,7 @@ async fn connected<const S: usize, const T: usize>(
                         .map(|_| hibana_quic::quic::streams::StreamSlot::EMPTY)
                         .collect();
                     hibana_quic::quic::application::localside::owned::server(
+                        &mut connection_buffers,
                         &mut streams,
                         &mut connection_slab,
                         &mut hibana_quic_pal::unix::entropy::KernelEntropy,
@@ -1180,7 +1184,7 @@ async fn run_async<const S: usize, const T: usize>(
                 })
                     .map(|_| hibana_quic::quic::early_data::QuarantineSlot::EMPTY)
                     .collect();
-                let early_storage = early
+                let mut early_storage = early
                     .then(|| application_storage::EarlyStorage::new(&mut early_slots))
                     .transpose()
                     .map_err(|e| format!("early storage: {e:?}"))?;
@@ -1255,7 +1259,7 @@ async fn run_async<const S: usize, const T: usize>(
                     tls,
                     Some((&first[..len], ecn)),
                     files,
-                    early_storage,
+                    early_storage.as_mut(),
                     0,
                     None,
                     None,
@@ -1394,14 +1398,18 @@ mod admission_tests {
                     initial_token: &[],
                     peer_connection_id: b"peer0001",
                 };
-                let mut slots = [const { hibana_quic::quic::streams::StreamSlot::EMPTY }; 1];
-                let mut storage = application_storage::Storage::<1024>::new(
-                    &mut slots,
-                    hibana_quic::http3::Protocol::Http09,
-                    &mut KernelEntropy,
-                )
-                .unwrap();
-                let setup = storage.setup(config, idle_timeout_ms).unwrap();
+                let mut slots =
+                    [const { hibana_quic::quic::streams::StreamSlot::<1024>::EMPTY }; 1];
+                let mut storage = const { application_storage::Storage::new() };
+                let setup = storage
+                    .setup(
+                        &mut slots,
+                        config,
+                        hibana_quic::http3::Protocol::Http09,
+                        idle_timeout_ms,
+                        &mut KernelEntropy,
+                    )
+                    .unwrap();
                 let original = (side == Side::Server).then_some(&b"original"[..]);
                 let mut parameter_storage = [0; 2048];
                 let parameter_len = hibana_quic::quic::parameters::advertisement::Advertisement {

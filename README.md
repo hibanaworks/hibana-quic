@@ -86,8 +86,9 @@ and application execution use the same types on native and caller-owned paths.
 For a custom connection, `quic::application::{Buffers, Setup}` supplies storage
 and parameters. Use `quic::application::localside::Endpoints` for attachment,
 `Buffers` and `Setup` for caller-owned resources, and the corresponding localside
-to run them. Caller-owned stream arrays and arenas are grouped by `session::ConnectionMemory`;
-`session::Memory` additionally owns the application carrier arena.
+to run them. `session::ConnectionMemory` owns the receive windows, TLS buffers,
+packet buffers, send chunks and runtime arena. The connection future borrows
+this storage. `session::Memory` also owns the application carrier arena.
 Packet codecs (`quic::packet`), transport parameters (`quic::transport_parameters`),
 recovery receipts (`quic::recovery`) and publication capabilities
 (`quic::publication`) are the low-level public interfaces used by diagnostic tools.

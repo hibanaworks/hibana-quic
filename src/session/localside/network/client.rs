@@ -3,7 +3,7 @@ use crate::quic::application::Error;
 use crate::quic::application::{
     ClientRequests, StreamSink, imp::owned as storage, localside::owned as application,
 };
-use crate::session::{self as connection, imp::tls::TlsBuffers};
+use crate::session as connection;
 use crate::{
     crypto::directional::ApplicationKeyScope,
     entropy::Entropy,
@@ -28,7 +28,12 @@ impl connection::ClientConfig<'_> {
         sink: &mut impl StreamSink,
     ) -> Result<crate::quic::application::Report> {
         let options = self;
-        let connection::ConnectionMemory { streams, slab } = memory;
+        let connection::ConnectionMemory {
+            streams,
+            slab,
+            tls: buffers,
+            buffers: application_buffers,
+        } = memory;
         let connection::Environment {
             socket,
             clock,
@@ -57,7 +62,6 @@ impl connection::ClientConfig<'_> {
         .encode(&mut parameter_storage)
         .map_err(Error::Packet)?;
         let parameters = &parameter_storage[..parameter_len];
-        let mut buffers = TlsBuffers::new();
         let tls = BoundedTls::client(
             hibana_tls::handshake::ClientConfig {
                 protocol: options.protocol,
@@ -120,6 +124,7 @@ impl connection::ClientConfig<'_> {
             clock,
         };
         core::pin::pin!(application::client::<{ storage::RECEIVE_BYTES }>(
+            application_buffers,
             streams,
             &mut [],
             slab,
