@@ -6,7 +6,7 @@ publish = false
 [workspace]
 [dependencies]
 hibana-quic = { path = "../../..", default-features = false }
-hibana = { git = "https://github.com/hibanaworks/hibana", rev = "0b4928da30016c34ecbfeebeb3b5e09a315626f2", version = "=0.10.0", default-features = false }
+hibana = { git = "https://github.com/hibanaworks/hibana", rev = "be87736939f42edff8eadf70dad8030687c50196", version = "=0.10.0", default-features = false }
 
 [features]
 default = []

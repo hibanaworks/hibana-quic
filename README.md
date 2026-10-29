@@ -178,7 +178,7 @@ accepted native I/O. A submitted datagram is not evidence of peer delivery.
 
 The Lean/Z3 models are not an extraction or end-to-end proof of the Rust code.
 Miri checks the executions it runs; it does not prove cryptographic strength or
-constant-time machine code. See [Hibana's guarantee boundary](https://github.com/hibanaworks/hibana/blob/0b4928da30016c34ecbfeebeb3b5e09a315626f2/README.md#guarantees-and-verification)
+constant-time machine code. See [Hibana's guarantee boundary](https://github.com/hibanaworks/hibana/blob/be87736939f42edff8eadf70dad8030687c50196/README.md#guarantees-and-verification)
 for the underlying runtime and carrier assumptions.
 
 ## Write an application with Hibana
